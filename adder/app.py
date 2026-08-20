@@ -1,4 +1,5 @@
 """YouTube -> Navidrome: веб-интерфейс + фоновые воркеры."""
+import logging
 import os
 import json
 import queue
@@ -8,24 +9,65 @@ import sqlite3
 import subprocess
 import sys
 import threading
+import time
+import tempfile
+import signal
 from pathlib import Path
+from urllib.parse import urlparse
 
 import requests
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Depends, Security
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import HTMLResponse
 from mutagen.mp4 import MP4, MP4Cover
 from pydantic import BaseModel
 
+# Import unified configuration
+from config import (
+    LIBRARY, PORT, HOST, MAX_WORKERS, DELAY_BETWEEN_TRACKS,
+    MAX_LINKS_PER_REQUEST, MAX_QUEUE_SIZE, YT_SEARCH_COUNT, YT_MATCH_MIN_SCORE,
+    PRESERVE_FEAT_ARTISTS, API_TOKEN, MAX_RETRIES, RETRY_BACKOFF_BASE, SHUTDOWN_TIMEOUT,
+    MIN_FREE_SPACE_MB, TMP_TTL_HOURS
+)
+
 PROJECT = Path(__file__).resolve().parent
 TMP_DIR = PROJECT / "tmp"
-LIBRARY = Path(os.environ.get("LIBRARY_PATH", str(Path.home() / "Music" / "Normalized Library")))
 DB_PATH = PROJECT / "adder.db"
-PORT = int(os.environ.get("PORT", "8787"))
-MAX_WORKERS = int(os.environ.get("MAX_WORKERS", "2"))
+
+# Problem #29: Temporary directory configuration
+TMP_TTL_SECONDS = TMP_TTL_HOURS * 3600
 
 
 TASK_QUEUE: queue.Queue = queue.Queue()
+# Lock for thread-safe file operations and duplicate checking
+FILE_LOCK = threading.Lock()
+# Set of URLs currently being processed to prevent duplicates
+PROCESSING_URLS: set = set()
+
+# Problem #25: Structured logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(asctime)s] [task=%(task_id)s] %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
+
+# Problem #19: API Token authentication
+security = HTTPBearer(auto_error=False)
+
+def verify_token(credentials: HTTPAuthorizationCredentials = Security(security)) -> bool:
+    """Verify API token if configured (Problem #19)."""
+    if not API_TOKEN:
+        return True  # No token configured, allow all
+    
+    if credentials is None or credentials.credentials != API_TOKEN:
+        raise HTTPException(status_code=401, detail="Invalid or missing API token")
+    return True
+
+# Problem #22: Graceful shutdown state
+shutdown_event = threading.Event()
+active_workers = []
 
 # ---------------- SQLite ----------------
 def db_exec(sql: str, params=()):
@@ -49,12 +91,36 @@ def db_init():
     db_exec("""CREATE TABLE IF NOT EXISTS tasks(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         url TEXT, status TEXT, artist TEXT, title TEXT, error TEXT,
+        error_type TEXT, retry_count INTEGER DEFAULT 0,
         updated_at TEXT DEFAULT (datetime('now','localtime')))""")
+    # Add unique constraint on url to prevent duplicates
+    try:
+        db_exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_url ON tasks(url)")
+    except Exception:
+        pass  # Index may already exist
 
 def task_update(tid: int, **fields):
     sets = ", ".join(f"{k} = ?" for k in fields)
     db_exec(f"UPDATE tasks SET {sets}, updated_at = datetime('now','localtime') WHERE id = ?",
             (*fields.values(), tid))
+
+def recover_queued_tasks():
+    """Recovery tasks after restart (Problem #6)."""
+    # Find all tasks that were not completed
+    queued = db_query("SELECT id, url FROM tasks WHERE status IN ('queued', 'downloading', 'tagging')")
+    recovered = 0
+    for task in queued:
+        # Reset interrupted tasks to queued
+        if task['status'] in ('downloading', 'tagging'):
+            task_update(task['id'], status='queued')
+        # Add to queue (avoiding duplicates)
+        with FILE_LOCK:
+            if task['url'] not in PROCESSING_URLS:
+                TASK_QUEUE.put((task['id'], task['url']))
+                PROCESSING_URLS.add(task['url'])
+                recovered += 1
+    if recovered > 0:
+        logger.info(f"Recovered {recovered} tasks from previous session", extra={'task_id': 'system'})
 
 # ---------------- Текст / метаданные ----------------
 def sanitize_filename(name: str) -> str:
@@ -69,14 +135,50 @@ JUNK = [
     r"(lyric(s)?\s+video|visuali[sz]er|music\s+video)",
     r"премьера(\s+(трека|клипа))?",
     r"текст\s+песни",
-    r"\b(hd|hq|4k|remastered)\b",
 ]
 
-def clean_title(s: str) -> str:
+# Version keywords that should be preserved in metadata (Problem #13)
+VERSION_KEYWORDS = [
+    r"\b(live|remix|acoustic|radio\s+edit|remastered|deluxe|explicit|clean)\b",
+    r"\((live|remix|acoustic|radio\s+edit|remastered|deluxe|explicit|clean)[^)]*\)",
+    r"\[(live|remix|acoustic|radio\s+edit|remastered|deluxe|explicit|clean)[^\]]*\]",
+]
+
+def clean_title(s: str, for_filename: bool = True) -> str:
+    """Clean title for filename or metadata.
+    
+    Args:
+        s: Original title string
+        for_filename: If True, remove version keywords for safe filename.
+                     If False, preserve version info for metadata.
+    """
+    original = s
     for p in JUNK:
         s = re.sub(p, " ", s, flags=re.IGNORECASE)
     s = re.sub(r"\s{2,}", " ", s).strip(" -–—|_,:()")
+    
+    # For filenames, also remove version keywords to keep them simple
+    if for_filename:
+        for pattern in VERSION_KEYWORDS:
+            s = re.sub(pattern, " ", s, flags=re.IGNORECASE)
+        s = re.sub(r"\s{2,}", " ", s).strip(" -–—|_,:()")
+    
     return s or "Unknown"
+
+def extract_version_info(original_title: str) -> str:
+    """Extract version information from original title (Problem #13)."""
+    versions = []
+    for pattern in VERSION_KEYWORDS:
+        matches = re.findall(pattern, original_title, flags=re.IGNORECASE)
+        for match in matches:
+            if isinstance(match, tuple):
+                # Multiple groups in pattern, take first non-empty
+                v = next((m for m in match if m), None)
+                if v:
+                    versions.append(v)
+            elif match:
+                versions.append(match)
+    return " ".join(versions) if versions else ""
 
 def split_artist_title(meta: dict):
     artist = meta.get("artist") or meta.get("creator") or ""
@@ -85,16 +187,164 @@ def split_artist_title(meta: dict):
         artist, title = title.split(" - ", 1)
     if not artist:
         artist = meta.get("uploader", "Unknown Artist")
-    artist = artist.split(",")[0].split(" feat")[0].split(" ft")[0]
-    return sanitize_filename(artist), sanitize_filename(clean_title(title))
+    
+    # Problem #12: Preserve full artist metadata
+    full_artist = artist.strip()
+    
+    # For filesystem, use primary artist only (safe naming)
+    if not PRESERVE_FEAT_ARTISTS:
+        fs_artist = artist.split(",")[0].split(" feat")[0].split(" ft")[0]
+    else:
+        # Keep full artist string but sanitize for filesystem
+        fs_artist = artist
+    
+    return sanitize_filename(fs_artist), sanitize_filename(clean_title(title, for_filename=True)), full_artist, clean_title(title, for_filename=False)
 
 # ---------------- Сеть / yt-dlp ----------------
+def validate_url(url: str) -> tuple[bool, str]:
+    """Validate URL format (Problem #10).
+    
+    Returns:
+        (is_valid, error_message)
+    """
+    if not url or not url.strip():
+        return False, "Empty URL"
+    
+    url = url.strip()
+    
+    # Max length check
+    if len(url) > 2048:
+        return False, "URL too long (max 2048 characters)"
+    
+    # Parse URL
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False, "Invalid URL format"
+    
+    # Check scheme
+    if parsed.scheme not in ('http', 'https'):
+        return False, "URL must use http or https scheme"
+    
+    # Check hostname exists
+    if not parsed.netloc:
+        return False, "URL must have a hostname"
+    
+    return True, ""
+
 def yt_meta(url: str) -> dict:
     p = subprocess.run([sys.executable, "-m", "yt_dlp", "-J", "--no-playlist", url],
                        capture_output=True, text=True, timeout=120)
     if p.returncode != 0:
         raise RuntimeError(p.stderr.strip()[-300:])
     return json.loads(p.stdout)
+
+def yt_search_candidates(query: str, count: int = None) -> list[dict]:
+    """Search YouTube for multiple candidates and return scored results (Problem #11)."""
+    if count is None:
+        count = YT_SEARCH_COUNT
+    
+    cmd = [
+        sys.executable, "-m", "yt_dlp",
+        "--flat-playlist",
+        "--no-download",
+        "--no-warnings",
+        "-j",
+        f"ytsearch{count}:{query}"
+    ]
+    
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        if result.returncode != 0 or not result.stdout.strip():
+            return []
+        
+        candidates = []
+        for line in result.stdout.strip().splitlines():
+            try:
+                data = json.loads(line)
+                candidates.append(data)
+            except json.JSONDecodeError:
+                continue
+        return candidates
+    except Exception:
+        return []
+
+def score_candidate(candidate: dict, query_artist: str, query_title: str, query_duration: float = None) -> float:
+    """Score a YouTube candidate based on similarity to query (Problem #11).
+    
+    Returns:
+        Score between 0.0 and 1.0
+    """
+    candidate_title = (candidate.get('title') or '').lower()
+    candidate_uploader = (candidate.get('uploader') or candidate.get('channel') or '').lower()
+    candidate_duration = candidate.get('duration', 0)
+    
+    query_artist_lower = query_artist.lower()
+    query_title_lower = query_title.lower()
+    
+    # Title similarity (45% weight)
+    title_words = set(query_title_lower.split())
+    candidate_title_words = set(candidate_title.split())
+    title_overlap = len(title_words & candidate_title_words) / max(len(title_words), 1)
+    title_score = title_overlap * 0.45
+    
+    # Artist similarity (35% weight)
+    artist_words = set(query_artist_lower.split())
+    candidate_artist_words = set(candidate_uploader.split())
+    artist_overlap = len(artist_words & candidate_artist_words) / max(len(artist_words), 1)
+    artist_score = artist_overlap * 0.35
+    
+    # Duration similarity (20% weight)
+    duration_score = 0.0
+    if query_duration and candidate_duration:
+        duration_diff = abs(candidate_duration - query_duration) / max(query_duration, 1)
+        if duration_diff < 0.1:
+            duration_score = 0.20
+        elif duration_diff < 0.2:
+            duration_score = 0.15
+        elif duration_diff < 0.3:
+            duration_score = 0.10
+        else:
+            duration_score = 0.05
+    else:
+        duration_score = 0.10  # Neutral if no duration info
+    
+    total_score = title_score + artist_score + duration_score
+    
+    # Penalty for obvious non-matches
+    penalty_keywords = ['lyrics', 'karaoke', 'slowed', 'sped', 'remix', 'live', 'cover']
+    for kw in penalty_keywords:
+        if kw in candidate_title and kw not in query_title_lower:
+            total_score *= 0.8
+    
+    return min(total_score, 1.0)
+
+def find_best_youtube_match(artist: str, title: str, duration: float = None) -> tuple[str | None, float]:
+    """Find the best YouTube match for a track (Problem #11).
+    
+    Returns:
+        (best_url, confidence_score) or (None, 0.0) if no good match found
+    """
+    query = f"{artist} - {title}"
+    candidates = yt_search_candidates(query, YT_SEARCH_COUNT)
+    
+    if not candidates:
+        return None, 0.0
+    
+    best_candidate = None
+    best_score = 0.0
+    
+    for candidate in candidates:
+        score = score_candidate(candidate, artist, title, duration)
+        if score > best_score:
+            best_score = score
+            best_candidate = candidate
+    
+    if best_score >= YT_MATCH_MIN_SCORE and best_candidate:
+        url = best_candidate.get('url') or best_candidate.get('webpage_url')
+        return url, best_score
+    
+    return None, best_score
 
 def yt_download(url: str, vid: str) -> Path:
     p = subprocess.run([sys.executable, "-m", "yt_dlp", "-x", "--audio-format", "m4a",
@@ -146,43 +396,201 @@ def unique_path(base: Path) -> Path:
     return p
 
 # ---------------- Воркер ----------------
+def check_disk_space() -> tuple[bool, int]:
+    """Check if there's enough free disk space (Problem #30).
+    
+    Returns:
+        (has_space, free_mb)
+    """
+    try:
+        import shutil
+        stat = shutil.disk_usage(TMP_DIR)
+        free_mb = stat.free // (1024 * 1024)
+        return free_mb >= MIN_FREE_SPACE_MB, free_mb
+    except Exception:
+        return True, 0  # If we can't check, allow operation
+
+def validate_m4a_integrity(filepath: Path) -> tuple[bool, str]:
+    """Validate M4A file integrity (Problem #28).
+    
+    Returns:
+        (is_valid, error_message)
+    """
+    if not filepath.exists():
+        return False, "File does not exist"
+    
+    if filepath.stat().st_size == 0:
+        return False, "File is empty"
+    
+    try:
+        audio = MP4(filepath)
+        # Check for audio stream
+        if not audio.info or not hasattr(audio.info, 'length') or audio.info.length <= 0:
+            return False, "No valid audio stream found"
+        return True, ""
+    except Exception as e:
+        return False, f"M4A validation failed: {str(e)[:100]}"
+
+def cleanup_old_temp_files():
+    """Clean up old temporary files on startup (Problem #29)."""
+    if not TMP_DIR.exists():
+        return
+    
+    current_time = time.time()
+    cleaned = 0
+    
+    for f in TMP_DIR.glob("*"):
+        try:
+            # Don't delete files that are currently being processed
+            mtime = f.stat().st_mtime
+            age_seconds = current_time - mtime
+            
+            if age_seconds > TMP_TTL_SECONDS:
+                f.unlink()
+                cleaned += 1
+                logger.info(f"Cleaned up old temp file: {f.name}", extra={'task_id': 'system'})
+        except Exception:
+            pass
+    
+    if cleaned > 0:
+        logger.info(f"Cleaned {cleaned} old temp files", extra={'task_id': 'system'})
+
 def process(tid: int, url: str):
     tmp_file = None
-    try:
-        task_update(tid, status="downloading")
-        meta = yt_meta(url)
-        artist, title = split_artist_title(meta)
-        tmp_file = yt_download(url, meta["id"])
-
-        task_update(tid, status="tagging", artist=artist, title=title)
-        cover, fmt = fetch_cover(artist, title, meta.get("thumbnail"))
-
-        target = unique_path(LIBRARY / artist / "Singles" / f"{title}.m4a")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(tmp_file), str(target))
-        tmp_file = None
-
-        audio = MP4(target)
-        audio["\xa9nam"] = title
-        audio["\xa9ART"] = artist
-        audio["aART"] = artist
-        audio["\xa9alb"] = "Singles"
-        if cover:
-            fmt_const = MP4Cover.FORMAT_PNG if fmt == "png" else MP4Cover.FORMAT_JPEG
-            audio["covr"] = [MP4Cover(cover, imageformat=fmt_const)]
-        audio.save()
-        task_update(tid, status="done")
-    except Exception as e:
-        task_update(tid, status="error", error=str(e)[:300])
-    finally:
-        if tmp_file and tmp_file.exists():
-            tmp_file.unlink()
+    temp_path = None
+    retry_count = 0
+    last_error_type = None
+    last_error_msg = ""
+    
+    while retry_count < MAX_RETRIES:
+        try:
+            # Problem #30: Check disk space before download
+            has_space, free_mb = check_disk_space()
+            if not has_space:
+                raise RuntimeError(f"Insufficient disk space: {free_mb}MB free, {MIN_FREE_SPACE_MB}MB required")
+            
+            task_update(tid, status="downloading")
+            meta = yt_meta(url)
+            
+            # Get artist/title for matching and metadata
+            fs_artist, fs_title, full_artist, meta_title = split_artist_title(meta)
+            
+            # Problem #8 & #28: Download to temporary file first
+            tmp_file = yt_download(url, meta["id"])
+            temp_path = TMP_DIR / f"{meta['id']}_processing.m4a"
+            
+            # Validate downloaded file before processing (Problem #28)
+            if not tmp_file.exists():
+                raise RuntimeError("Downloaded file not found")
+            
+            is_valid, error_msg = validate_m4a_integrity(tmp_file)
+            if not is_valid:
+                raise RuntimeError(error_msg)
+            
+            # Move to temp processing location (not final library yet)
+            shutil.move(str(tmp_file), str(temp_path))
+            tmp_file = temp_path
+            
+            # Problem #12: Write full metadata
+            task_update(tid, status="tagging", artist=full_artist, title=meta_title)
+            cover, fmt = fetch_cover(fs_artist, fs_title, meta.get("thumbnail"))
+            
+            # Determine final destination
+            target_dir = LIBRARY / fs_artist / "Singles"
+            target_dir.mkdir(parents=True, exist_ok=True)
+            base_target = target_dir / f"{fs_title}.m4a"
+            
+            # Problem #8: Process metadata on temp file BEFORE moving to library
+            audio = MP4(tmp_file)
+            audio["\xa9nam"] = meta_title  # Full title with version info
+            audio["\xa9ART"] = full_artist  # Full artist metadata
+            audio["aART"] = full_artist
+            audio["\xa9alb"] = "Singles"
+            if cover:
+                fmt_const = MP4Cover.FORMAT_PNG if fmt == "png" else MP4Cover.FORMAT_JPEG
+                audio["covr"] = [MP4Cover(cover, imageformat=fmt_const)]
+            audio.save()
+            
+            # Validate the processed file (Problem #28)
+            audio_verify = MP4(tmp_file)
+            if not audio_verify.get("\xa9nam"):
+                raise RuntimeError("Metadata write failed verification")
+            
+            is_valid, error_msg = validate_m4a_integrity(tmp_file)
+            if not is_valid:
+                raise RuntimeError(f"Final validation failed: {error_msg}")
+            
+            # Problem #7 & #8: Atomic move to library ONLY after successful processing
+            with FILE_LOCK:
+                final_target = unique_path(base_target)
+                shutil.move(str(tmp_file), str(final_target))
+            
+            tmp_file = None  # Successfully moved, don't cleanup in finally
+            
+            # Problem #24: Clear error fields on success
+            task_update(tid, status="done", error="", error_type="")
+            return  # Success, exit retry loop
+            
+        except Exception as e:
+            error_str = str(e)[:300]
+            last_error_msg = error_str
+            
+            # Problem #24: Classify error type
+            error_lower = error_str.lower()
+            if "invalid url" in error_lower or "url" in error_lower:
+                last_error_type = "invalid_url"
+            elif "not found" in error_lower or "unavailable" in error_lower:
+                last_error_type = "youtube_not_found"
+            elif "download" in error_lower:
+                last_error_type = "download_error"
+            elif "metadata" in error_lower:
+                last_error_type = "metadata_error"
+            elif "artwork" in error_lower or "cover" in error_lower:
+                last_error_type = "artwork_error"
+            elif "disk" in error_lower or "space" in error_lower:
+                last_error_type = "filesystem_error"
+            elif "database" in error_lower or "sqlite" in error_lower:
+                last_error_type = "database_error"
+            elif "network" in error_lower or "timeout" in error_lower or "http" in error_lower:
+                last_error_type = "network_error"
+            else:
+                last_error_type = "unknown_error"
+            
+            # Problem #23: Retry logic for transient errors
+            retryable_errors = {"network_error", "download_error", "artwork_error"}
+            
+            if last_error_type in retryable_errors and retry_count < MAX_RETRIES - 1:
+                retry_count += 1
+                backoff_time = RETRY_BACKOFF_BASE ** retry_count
+                logger.warning(f"Retry {retry_count}/{MAX_RETRIES} after {backoff_time}s: {error_str}", 
+                             extra={'task_id': tid})
+                time.sleep(backoff_time)
+                continue
+            
+            # Not retryable or max retries reached
+            task_update(tid, status="error", error=error_str, 
+                       error_type=last_error_type, retry_count=retry_count)
+            
+            # Problem #8: Cleanup temp files on error
+            if tmp_file and tmp_file.exists():
+                try:
+                    tmp_file.unlink()
+                except Exception:
+                    pass
+            
+            break  # Exit retry loop
+        finally:
+            # Remove URL from processing set
+            with FILE_LOCK:
+                PROCESSING_URLS.discard(url)
 
 def worker():
     while True:
         tid, url = TASK_QUEUE.get()
-        process(tid, url)
-        TASK_QUEUE.task_done()
+        try:
+            process(tid, url)
+        finally:
+            TASK_QUEUE.task_done()
 
 # ---------------- Web ----------------
 app = FastAPI()
@@ -191,20 +599,84 @@ class AddRequest(BaseModel):
     links: list[str]
 
 @app.post("/api/add")
-def add(req: AddRequest):
+def add(req: AddRequest, authenticated: bool = Depends(verify_token)):
+    """Add YouTube links to queue (Problem #19: API auth)."""
+    # Problem #9: Check request limits
+    if len(req.links) > MAX_LINKS_PER_REQUEST:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Too many links. Maximum {MAX_LINKS_PER_REQUEST} per request."
+        )
+    
+    # Problem #9: Check queue size limit
+    current_queue_size = TASK_QUEUE.qsize()
+    if current_queue_size + len(req.links) > MAX_QUEUE_SIZE:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Queue full. Current: {current_queue_size}, Max: {MAX_QUEUE_SIZE}"
+        )
+    
     ids = []
     for link in req.links:
         link = link.strip()
         if not link:
             continue
-        cur = db_exec("INSERT INTO tasks(url, status) VALUES(?, 'queued')", (link,))
-        TASK_QUEUE.put((cur.lastrowid, link))
-        ids.append(cur.lastrowid)
+        
+        # Problem #10: Validate URL
+        is_valid, error_msg = validate_url(link)
+        if not is_valid:
+            raise HTTPException(status_code=400, detail=f"Invalid URL: {error_msg}")
+        
+        # Problem #7: Check for duplicate URLs already in queue/processing
+        with FILE_LOCK:
+            if link in PROCESSING_URLS:
+                continue  # Skip duplicate
+            
+            # Check if URL already exists in database
+            existing = db_query("SELECT id FROM tasks WHERE url = ? AND status != 'error'", (link,))
+            if existing:
+                continue  # Skip duplicate
+            
+            cur = db_exec("INSERT INTO tasks(url, status) VALUES(?, 'queued')", (link,))
+            tid = cur.lastrowid
+            TASK_QUEUE.put((tid, link))
+            PROCESSING_URLS.add(link)
+            ids.append(tid)
+    
     return {"added": ids}
 
 @app.get("/api/tasks")
 def tasks():
     return db_query("SELECT * FROM tasks ORDER BY id DESC LIMIT 50")
+
+@app.get("/health")
+def health():
+    """Health endpoint (Problem #21)."""
+    try:
+        # Check database connectivity
+        db_exec("SELECT 1")
+        db_status = "ok"
+    except Exception as e:
+        db_status = f"error: {str(e)[:100]}"
+    
+    # Check library path
+    if LIBRARY.exists():
+        library_status = "ok"
+    else:
+        library_status = f"not found: {LIBRARY}"
+    
+    # Queue stats
+    queue_size = TASK_QUEUE.qsize()
+    
+    return {
+        "status": "healthy" if db_status == "ok" and library_status == "ok" else "unhealthy",
+        "database": db_status,
+        "library": library_status,
+        "library_path": str(LIBRARY),
+        "workers": MAX_WORKERS,
+        "queue_size": queue_size,
+        "max_queue_size": MAX_QUEUE_SIZE
+    }
 
 @app.get("/", response_class=HTMLResponse)
 def index():
@@ -239,10 +711,48 @@ async function poll(){
 setInterval(poll,2000);poll();
 </script></body></html>"""
 
+def shutdown_handler(signum, frame):
+    """Handle graceful shutdown (Problem #22)."""
+    logger.info("Shutdown signal received, stopping workers...", extra={'task_id': 'system'})
+    shutdown_event.set()
+    
+    # Wait for active workers to finish
+    for worker_thread in active_workers:
+        worker_thread.join(timeout=SHUTDOWN_TIMEOUT / len(active_workers) if active_workers else SHUTDOWN_TIMEOUT)
+    
+    # Cleanup temporary files
+    if TMP_DIR.exists():
+        for f in TMP_DIR.glob("*"):
+            try:
+                f.unlink()
+                logger.info(f"Cleaned up temp file: {f.name}", extra={'task_id': 'system'})
+            except Exception:
+                pass
+    
+    logger.info("Shutdown complete", extra={'task_id': 'system'})
+    sys.exit(0)
+
 if __name__ == "__main__":
     PROJECT.mkdir(parents=True, exist_ok=True)
     TMP_DIR.mkdir(parents=True, exist_ok=True)
     db_init()
+    
+    # Problem #29: Clean up old temp files on startup
+    cleanup_old_temp_files()
+    
+    # Problem #22: Register signal handlers for graceful shutdown
+    signal.signal(signal.SIGTERM, shutdown_handler)
+    signal.signal(signal.SIGINT, shutdown_handler)
+    
+    # Problem #6: Recover queued tasks from previous session
+    recover_queued_tasks()
+    
+    # Start workers and track them
     for _ in range(MAX_WORKERS):
-        threading.Thread(target=worker, daemon=True).start()
-    uvicorn.run(app, host="0.0.0.0", port=PORT)
+        t = threading.Thread(target=worker, daemon=True)
+        t.start()
+        active_workers.append(t)
+    
+    # Problem #18: Use configurable HOST instead of hardcoded 0.0.0.0
+    logger.info(f"Starting server on {HOST}:{PORT}", extra={'task_id': 'system'})
+    uvicorn.run(app, host=HOST, port=PORT)

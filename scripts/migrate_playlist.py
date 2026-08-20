@@ -19,10 +19,13 @@ from pathlib import Path
 import requests
 from mutagen.mp4 import MP4, MP4Cover
 
+# Add parent directory to path to import config
+sys.path.insert(0, str(Path(__file__).parent.parent / "adder"))
+from config import LIBRARY, DELAY_BETWEEN_TRACKS
+
 CSV_PATH = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("spotify_tracks_youtube.csv")
-LIBRARY = Path(os.environ.get("LIBRARY_PATH", str(Path.home() / "Music" / "Normalized Library")))
 TMP_DIR = Path(__file__).resolve().parent / "tmp"
-DELAY = 1.1  # пауза между треками (rate-limit iTunes)
+DELAY = DELAY_BETWEEN_TRACKS  # пауза между треками (rate-limit iTunes)
 
 
 def sanitize_filename(name: str) -> str:
