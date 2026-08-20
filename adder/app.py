@@ -1,4 +1,5 @@
 """YouTube -> Navidrome: веб-интерфейс + фоновые воркеры."""
+import os
 import json
 import queue
 import re
@@ -16,13 +17,13 @@ from fastapi.responses import HTMLResponse
 from mutagen.mp4 import MP4, MP4Cover
 from pydantic import BaseModel
 
-HOME = Path.home()
-PROJECT = HOME / "Spotify in Telegram" / "youtube_to_navidrome"
+PROJECT = Path(__file__).resolve().parent
 TMP_DIR = PROJECT / "tmp"
-LIBRARY = HOME / "Music" / "Normalized Library"
+LIBRARY = Path(os.environ.get("LIBRARY_PATH", str(Path.home() / "Music" / "Normalized Library")))
 DB_PATH = PROJECT / "adder.db"
-PORT = 8787
-MAX_WORKERS = 2
+PORT = int(os.environ.get("PORT", "8787"))
+MAX_WORKERS = int(os.environ.get("MAX_WORKERS", "2"))
+
 
 TASK_QUEUE: queue.Queue = queue.Queue()
 

@@ -1,0 +1,5 @@
+MusicFolder = "/home/USER/Music/Normalized Library"
+DataFolder = "/var/lib/navidrome"
+Address = "0.0.0.0"
+Port = 4533
+LogLevel = "info"
