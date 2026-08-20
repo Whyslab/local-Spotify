@@ -300,7 +300,8 @@ spotify_tracks_youtube.csv
 Запустите:
 
 ```bash
-python normalize_library.py
+source ../adder/.venv/bin/activate
+python migrate_playlist.py
 ```
 
 Скрипт автоматически:
