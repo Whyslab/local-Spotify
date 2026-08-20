@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
 set -e
-REPO="$HOME/localSpotify"
+
+# Determine the absolute path to the repository root relative to this script
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
 mkdir -p ~/.config/systemd/user
-cp "$REPO/deploy/music-adder.service" ~/.config/systemd/user/
+
+# Generate systemd service with absolute paths based on actual repo location
+sed "s|%REPO%|$REPO|g" "$REPO/deploy/music-adder.service.template" > ~/.config/systemd/user/music-adder.service
+
 systemctl --user daemon-reload
 systemctl --user enable --now music-adder
 loginctl enable-linger "$USER"

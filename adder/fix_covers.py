@@ -4,8 +4,10 @@ import requests
 from pathlib import Path
 from mutagen.mp4 import MP4, MP4Cover
 
-LIBRARY = Path.home() / "Music" / "Normalized Library"
-DELAY = 1.1  # защита от rate-limit iTunes
+# Import unified configuration
+from config import LIBRARY, DELAY_BETWEEN_TRACKS
+
+DELAY = DELAY_BETWEEN_TRACKS  # защита от rate-limit iTunes
 
 def itunes_cover(artist: str, title: str):
     q = f"{artist} {title}".replace(" ", "+")
