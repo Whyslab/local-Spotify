@@ -1,7 +1,7 @@
 [Unit]
 Description=YouTube to Navidrome adder
 [Service]
-ExecStart="%h/localSpotify/adder/.venv/bin/python" "%h/localSpotify/adder/app.py"
+ExecStart=%h/localSpotify/adder/.venv/bin/python %h/localSpotify/adder/app.py
 Restart=on-failure
 [Install]
 WantedBy=default.target
