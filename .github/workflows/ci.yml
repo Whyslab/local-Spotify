@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: adder/requirements.txt
+
+      - name: Install dependencies
+        run: python -m pip install -r adder/requirements.txt
+
+      - name: Compile Python sources
+        run: python -m compileall -q adder scripts tests
+
+      - name: Run tests
+        env:
+          API_TOKEN: ci-test-token
+          LIBRARY_PATH: ${{ github.workspace }}/test-library
+        run: pytest -q
