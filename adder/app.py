@@ -113,8 +113,11 @@ def db_init():
     # Add unique constraint on url to prevent duplicates
     try:
         db_exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_url ON tasks(url)")
-    except Exception:
-        pass  # Index may already exist
+    except sqlite3.Error as e:
+        logger.warning(
+            f"Could not create task URL unique index: {e}",
+            extra={"task_id": "system"},
+        )
 
 def task_update(tid: int, **fields):
     sets = ", ".join(f"{k} = ?" for k in fields)
@@ -124,7 +127,7 @@ def task_update(tid: int, **fields):
 def recover_queued_tasks():
     """Recovery tasks after restart (Problem #6)."""
     # Find all tasks that were not completed
-    queued = db_query("SELECT id, url FROM tasks WHERE status IN ('queued', 'downloading', 'tagging')")
+    queued = db_query("SELECT id, url, status FROM tasks WHERE status IN ('queued', 'downloading', 'tagging')")
     recovered = 0
     for task in queued:
         # Reset interrupted tasks to queued
@@ -480,8 +483,11 @@ def cleanup_old_temp_files():
                 f.unlink()
                 cleaned += 1
                 logger.info(f"Cleaned up old temp file: {f.name}", extra={'task_id': 'system'})
-        except Exception:
-            pass
+        except OSError as e:
+            logger.warning(
+                f"Could not clean temp file {f.name}: {e}",
+                extra={"task_id": "system"},
+            )
     
     if cleaned > 0:
         logger.info(f"Cleaned {cleaned} old temp files", extra={'task_id': 'system'})
@@ -606,8 +612,11 @@ def process(tid: int, url: str):
             if tmp_file and tmp_file.exists():
                 try:
                     tmp_file.unlink()
-                except Exception:
-                    pass
+                except OSError as e:
+                    logger.warning(
+                        f"Could not remove temporary file {tmp_file}: {e}",
+                        extra={"task_id": tid},
+                    )
             
             break  # Exit retry loop
         finally:
@@ -800,8 +809,11 @@ def shutdown_handler(signum, frame):
             try:
                 f.unlink()
                 logger.info(f"Cleaned up temp file: {f.name}", extra={'task_id': 'system'})
-            except Exception:
-                pass
+            except OSError as e:
+                logger.warning(
+                    f"Could not remove temp file during shutdown {f.name}: {e}",
+                    extra={'task_id': 'system'},
+                )
     
     logger.info("Shutdown complete", extra={'task_id': 'system'})
     sys.exit(0)
