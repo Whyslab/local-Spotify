@@ -3,11 +3,30 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# Fail early instead of installing a systemd unit that cannot start.
+if [[ ! -x "$REPO/adder/.venv/bin/python" ]]; then
+  echo "ERROR: Python virtual environment not found at $REPO/adder/.venv" >&2
+  echo "Run: python -m venv adder/.venv && adder/.venv/bin/pip install -r adder/requirements.txt" >&2
+  exit 1
+fi
+
+if [[ ! -f "$REPO/adder/.env" ]]; then
+  echo "ERROR: Missing $REPO/adder/.env" >&2
+  echo "Copy .env.example to adder/.env and set API_TOKEN." >&2
+  exit 1
+fi
+
+API_TOKEN_VALUE="$(sed -n 's/^API_TOKEN=//p' "$REPO/adder/.env" | head -n1 | tr -d '\r')"
+if [[ -z "$API_TOKEN_VALUE" || "$API_TOKEN_VALUE" == "CHANGE_ME_TO_A_LONG_RANDOM_SECRET" ]]; then
+  echo "ERROR: API_TOKEN must be configured in adder/.env before deployment." >&2
+  exit 1
+fi
+
 mkdir -p "$HOME/.config/systemd/user"
 
 # Keep systemd in sync with the same configurable library path used by Python.
 LIBRARY_PATH_VALUE="${LIBRARY_PATH:-}"
-if [[ -z "$LIBRARY_PATH_VALUE" && -f "$REPO/adder/.env" ]]; then
+if [[ -z "$LIBRARY_PATH_VALUE" ]]; then
   LIBRARY_PATH_VALUE="$(sed -n 's/^LIBRARY_PATH=//p' "$REPO/adder/.env" | head -n1)"
 fi
 LIBRARY_PATH_VALUE="${LIBRARY_PATH_VALUE:-$HOME/Music/Normalized Library}"
