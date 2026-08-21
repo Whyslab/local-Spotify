@@ -46,11 +46,27 @@ FILE_LOCK = threading.Lock()
 PROCESSING_URLS: set = set()
 
 # Problem #25: Structured logging
+class TaskIdFormatter(logging.Formatter):
+    """Formatter that tolerates log records without task_id."""
+    def format(self, record):
+        if not hasattr(record, "task_id"):
+            record.task_id = "-"
+        return super().format(record)
+
 logging.basicConfig(
     level=logging.INFO,
     format='[%(asctime)s] [task=%(task_id)s] %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
+
+# Apply the tolerant formatter to the root handlers so third-party
+# libraries (httpx, uvicorn, etc.) cannot trigger KeyError.
+for handler in logging.getLogger().handlers:
+    handler.setFormatter(TaskIdFormatter(
+        '[%(asctime)s] [task=%(task_id)s] %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    ))
+
 logger = logging.getLogger(__name__)
 
 # Problem #19: API Token authentication
@@ -595,6 +611,13 @@ def worker():
 # ---------------- Web ----------------
 app = FastAPI()
 
+@app.on_event("startup")
+def startup():
+    """Initialize runtime state when FastAPI starts."""
+    PROJECT.mkdir(parents=True, exist_ok=True)
+    TMP_DIR.mkdir(parents=True, exist_ok=True)
+    db_init()
+
 class AddRequest(BaseModel):
     links: list[str]
 
@@ -646,7 +669,7 @@ def add(req: AddRequest, authenticated: bool = Depends(verify_token)):
     return {"added": ids}
 
 @app.get("/api/tasks")
-def tasks():
+def tasks(authenticated: bool = Depends(verify_token)):
     return db_query("SELECT * FROM tasks ORDER BY id DESC LIMIT 50")
 
 @app.get("/health")
@@ -693,18 +716,51 @@ td,th{padding:6px 4px;border-bottom:1px solid #333;text-align:left;vertical-alig
 .done{color:#4caf50}.error{color:#f44336}.queued,.downloading,.tagging{color:#ffb300}
 </style></head><body>
 <h2>YouTube → Navidrome</h2>
+<div id=authbox style="margin-bottom:12px">
+  <input id=token type=password placeholder="API Token" autocomplete="off"
+         style="width:70%;box-sizing:border-box;background:#222;color:#eee;border:1px solid #444;border-radius:8px;padding:9px">
+  <button onclick=saveToken() style="margin-left:4px">Сохранить</button>
+  <button onclick=clearToken() style="margin-left:4px;background:#555">Очистить</button>
+</div>
 <textarea id=links placeholder="https://www.youtube.com/watch?v=...&#10;https://youtu.be/..."></textarea>
 <button onclick=add()>Добавить</button>
 <table><thead><tr><th>Статус</th><th>Трек</th><th>URL</th></tr></thead><tbody id=tb></tbody></table>
 <script>
+const TOKEN_KEY = 'localSpotifyApiToken';
+
+function getToken(){
+  return sessionStorage.getItem(TOKEN_KEY) || '';
+}
+
+function saveToken(){
+  const value = document.getElementById('token').value.trim();
+  if(value) sessionStorage.setItem(TOKEN_KEY, value);
+  else sessionStorage.removeItem(TOKEN_KEY);
+  poll();
+}
+
+function clearToken(){
+  sessionStorage.removeItem(TOKEN_KEY);
+  document.getElementById('token').value = '';
+  poll();
+}
+
+document.getElementById('token').value = getToken();
+
 async function add(){
   const links=document.getElementById('links').value.split('\\n').map(s=>s.trim()).filter(Boolean);
   if(!links.length)return;
-  await fetch('/api/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({links})});
+  const token = sessionStorage.getItem('localSpotifyApiToken') || '';
+  const headers = {'Content-Type':'application/json'};
+  if (token) headers['Authorization'] = 'Bearer ' + token;
+  await fetch('/api/add',{method:'POST',headers,body:JSON.stringify({links})});
   document.getElementById('links').value='';poll();
 }
 async function poll(){
-  const r=await fetch('/api/tasks');const t=await r.json();
+  const token = sessionStorage.getItem('localSpotifyApiToken') || '';
+  const headers = {};
+  if (token) headers['Authorization'] = 'Bearer ' + token;
+  const r=await fetch('/api/tasks',{headers});const t=await r.json();
   document.getElementById('tb').innerHTML=t.map(x=>
    `<tr><td class=${x.status}>${x.status}</td><td>${x.artist?x.artist+' — ':''}${x.title||''}${x.error?'<br><small>'+x.error+'</small>':''}</td><td><small>${x.url}</small></td></tr>`).join('');
 }
@@ -735,7 +791,6 @@ def shutdown_handler(signum, frame):
 if __name__ == "__main__":
     PROJECT.mkdir(parents=True, exist_ok=True)
     TMP_DIR.mkdir(parents=True, exist_ok=True)
-    db_init()
     
     # Problem #29: Clean up old temp files on startup
     cleanup_old_temp_files()
