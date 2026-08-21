@@ -12,6 +12,7 @@ import threading
 import time
 import tempfile
 import signal
+from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -623,14 +624,17 @@ def worker():
             TASK_QUEUE.task_done()
 
 # ---------------- Web ----------------
-app = FastAPI()
-
-@app.on_event("startup")
-def startup():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     """Initialize runtime state when FastAPI starts."""
     PROJECT.mkdir(parents=True, exist_ok=True)
     TMP_DIR.mkdir(parents=True, exist_ok=True)
     db_init()
+
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
 
 class AddRequest(BaseModel):
     links: list[str]
