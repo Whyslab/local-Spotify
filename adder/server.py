@@ -7,7 +7,7 @@ import threading
 
 import uvicorn
 
-from app import (
+from .app import (
     HOST,
     PORT,
     MAX_WORKERS,
