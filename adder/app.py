@@ -218,34 +218,48 @@ def split_artist_title(meta: dict):
 
 # ---------------- Сеть / yt-dlp ----------------
 def validate_url(url: str) -> tuple[bool, str]:
-    """Validate URL format (Problem #10).
-    
+    """Validate that a URL points to a supported YouTube host.
+
     Returns:
         (is_valid, error_message)
     """
     if not url or not url.strip():
         return False, "Empty URL"
-    
+
     url = url.strip()
-    
+
     # Max length check
     if len(url) > 2048:
         return False, "URL too long (max 2048 characters)"
-    
+
     # Parse URL
     try:
         parsed = urlparse(url)
     except Exception:
         return False, "Invalid URL format"
-    
+
     # Check scheme
-    if parsed.scheme not in ('http', 'https'):
+    if parsed.scheme not in ("http", "https"):
         return False, "URL must use http or https scheme"
-    
+
     # Check hostname exists
-    if not parsed.netloc:
+    hostname = (parsed.hostname or "").lower().rstrip(".")
+    if not hostname:
         return False, "URL must have a hostname"
-    
+
+    # Only YouTube URLs are supported.
+    allowed_hosts = {
+        "youtube.com",
+        "www.youtube.com",
+        "m.youtube.com",
+        "music.youtube.com",
+        "youtu.be",
+        "www.youtu.be",
+    }
+
+    if hostname not in allowed_hosts:
+        return False, "URL must be a YouTube URL"
+
     return True, ""
 
 def yt_meta(url: str) -> dict:
