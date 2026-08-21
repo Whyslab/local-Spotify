@@ -6,3 +6,5 @@ requests>=2.31,<3
 python-dotenv>=1.0,<2
 yt-dlp>=2026.7,<2027
 yt-dlp-ejs>=0.8,<1
+pytest>=8.0,<9
+httpx>=0.27,<1
