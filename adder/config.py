@@ -38,7 +38,13 @@ YT_MATCH_MIN_SCORE = float(os.environ.get("YT_MATCH_MIN_SCORE", "0.5"))
 PRESERVE_FEAT_ARTISTS = os.environ.get("PRESERVE_FEAT_ARTISTS", "true").lower() == "true"
 
 # API Authentication (Problem #19)
-API_TOKEN = os.environ.get("API_TOKEN", "")
+# The API is reachable from the LAN, so an empty token must fail closed.
+API_TOKEN = os.environ.get("API_TOKEN", "").strip()
+if not API_TOKEN:
+    raise RuntimeError(
+        "API_TOKEN is required. Set a strong random token in adder/.env "
+        "or the systemd environment before starting local-Spotify."
+    )
 
 # Retry settings (Problem #23)
 MAX_RETRIES = int(os.environ.get("MAX_RETRIES", "3"))
