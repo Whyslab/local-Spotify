@@ -2,7 +2,7 @@
 Description=YouTube to Navidrome adder
 
 [Service]
-ExecStart=%REPO%/adder/.venv/bin/python %REPO%/adder/app.py
+ExecStart=%REPO%/adder/.venv/bin/python %REPO%/adder/server.py
 Restart=on-failure
 
 NoNewPrivileges=true
