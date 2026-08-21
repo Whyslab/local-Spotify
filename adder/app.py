@@ -25,7 +25,7 @@ from mutagen.mp4 import MP4, MP4Cover
 from pydantic import BaseModel
 
 # Import unified configuration
-from config import (
+from .config import (
     LIBRARY, PORT, HOST, MAX_WORKERS, DELAY_BETWEEN_TRACKS,
     MAX_LINKS_PER_REQUEST, MAX_QUEUE_SIZE, YT_SEARCH_COUNT, YT_MATCH_MIN_SCORE,
     PRESERVE_FEAT_ARTISTS, API_TOKEN, MAX_RETRIES, RETRY_BACKOFF_BASE, SHUTDOWN_TIMEOUT,
@@ -271,86 +271,145 @@ def run_yt_dlp(cmd: list[str], timeout: float) -> subprocess.CompletedProcess:
 
     The subprocess is placed in its own process group so that yt-dlp and
     children such as ffmpeg can be terminated together during shutdown.
+
+    stdout and stderr are drained continuously in non-blocking mode to
+    prevent pipe-buffer deadlocks when yt-dlp produces a large amount
+    of output.
     """
+    import selectors
+
     process = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
+        text=False,
         start_new_session=True,
     )
 
+    selector = selectors.DefaultSelector()
+
+    if process.stdout is not None:
+        os.set_blocking(process.stdout.fileno(), False)
+        selector.register(process.stdout, selectors.EVENT_READ, "stdout")
+
+    if process.stderr is not None:
+        os.set_blocking(process.stderr.fileno(), False)
+        selector.register(process.stderr, selectors.EVENT_READ, "stderr")
+
+    stdout_chunks: list[bytes] = []
+    stderr_chunks: list[bytes] = []
     start_time = time.monotonic()
 
+    def terminate_process() -> None:
+        """Terminate the entire yt-dlp process group."""
+        if process.poll() is not None:
+            return
+
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait()
+
+    def drain_pipes() -> None:
+        """Drain all currently available data without blocking."""
+        for key in list(selector.get_map().values()):
+            stream = key.fileobj
+
+            while True:
+                try:
+                    chunk = os.read(stream.fileno(), 65536)
+                except BlockingIOError:
+                    break
+                except OSError:
+                    try:
+                        selector.unregister(stream)
+                    except Exception:
+                        pass
+                    break
+
+                if not chunk:
+                    try:
+                        selector.unregister(stream)
+                    except Exception:
+                        pass
+                    break
+
+                if key.data == "stdout":
+                    stdout_chunks.append(chunk)
+                else:
+                    stderr_chunks.append(chunk)
+
     try:
-        while process.poll() is None:
+        while True:
+            events = selector.select(timeout=0.25)
+
+            for key, _ in events:
+                stream = key.fileobj
+
+                while True:
+                    try:
+                        chunk = os.read(stream.fileno(), 65536)
+                    except BlockingIOError:
+                        break
+                    except OSError:
+                        try:
+                            selector.unregister(stream)
+                        except Exception:
+                            pass
+                        break
+
+                    if not chunk:
+                        try:
+                            selector.unregister(stream)
+                        except Exception:
+                            pass
+                        break
+
+                    if key.data == "stdout":
+                        stdout_chunks.append(chunk)
+                    else:
+                        stderr_chunks.append(chunk)
+
+            if process.poll() is not None:
+                drain_pipes()
+                break
+
             if shutdown_event.is_set():
                 logger.info(
                     "Stopping yt-dlp subprocess due to shutdown",
                     extra={"task_id": "system"},
                 )
-
-                try:
-                    os.killpg(process.pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
-
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    try:
-                        os.killpg(process.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                    process.wait()
-
+                terminate_process()
+                drain_pipes()
                 raise RuntimeError("Shutdown requested while yt-dlp was running")
 
             if time.monotonic() - start_time >= timeout:
-                try:
-                    os.killpg(process.pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
-
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    try:
-                        os.killpg(process.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                    process.wait()
-
+                terminate_process()
+                drain_pipes()
                 raise subprocess.TimeoutExpired(cmd, timeout)
-
-            time.sleep(0.25)
-
-        stdout, stderr = process.communicate()
 
         return subprocess.CompletedProcess(
             cmd,
             process.returncode,
-            stdout,
-            stderr,
+            b"".join(stdout_chunks).decode("utf-8", errors="replace"),
+            b"".join(stderr_chunks).decode("utf-8", errors="replace"),
         )
 
     except BaseException:
-        if process.poll() is None:
-            try:
-                os.killpg(process.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                process.wait()
-
+        terminate_process()
         raise
+
+    finally:
+        selector.close()
 
 
 def yt_meta(url: str) -> dict:
@@ -712,6 +771,12 @@ def process(tid: int, url: str):
                         "Shutdown requested during retry backoff",
                         extra={'task_id': tid},
                     )
+
+                    # The normal cleanup below the retry loop is skipped by
+                    # this early return, so release the processing lock here.
+                    with FILE_LOCK:
+                        PROCESSING_URLS.discard(url)
+
                     return
 
                 continue
@@ -731,10 +796,11 @@ def process(tid: int, url: str):
                     )
             
             break  # Exit retry loop
-        finally:
-            # Remove URL from processing set
-            with FILE_LOCK:
-                PROCESSING_URLS.discard(url)
+    # Remove URL from processing set only after the entire task
+    # (including all retry attempts) has finished.
+    with FILE_LOCK:
+        PROCESSING_URLS.discard(url)
+
 
 def worker():
     while not shutdown_event.is_set():
@@ -826,13 +892,38 @@ def add(req: AddRequest, authenticated: bool = Depends(verify_token)):
             if link in PROCESSING_URLS:
                 continue  # Skip duplicate
             
-            # Check if URL already exists in database
-            existing = db_query("SELECT id FROM tasks WHERE url = ? AND status != 'error'", (link,))
+            # Check if URL already exists in database.
+            # Failed tasks can be explicitly retried by re-submitting the URL.
+            existing = db_query(
+                "SELECT id, status FROM tasks WHERE url = ?",
+                (link,),
+            )
+
             if existing:
-                continue  # Skip duplicate
-            
-            cur = db_exec("INSERT INTO tasks(url, status) VALUES(?, 'queued')", (link,))
-            tid = cur.lastrowid
+                task = existing[0]
+
+                if task["status"] != "error":
+                    continue  # Skip active/completed duplicate
+
+                # Reuse the existing failed task instead of inserting a
+                # second row, which would violate the UNIQUE(url) index.
+                tid = task["id"]
+                task_update(
+                    tid,
+                    status="queued",
+                    artist=None,
+                    title=None,
+                    error=None,
+                    error_type=None,
+                    retry_count=0,
+                )
+            else:
+                cur = db_exec(
+                    "INSERT INTO tasks(url, status) VALUES(?, 'queued')",
+                    (link,),
+                )
+                tid = cur.lastrowid
+
             TASK_QUEUE.put((tid, link))
             PROCESSING_URLS.add(link)
             ids.append(tid)
@@ -931,9 +1022,61 @@ async function poll(){
   const token = sessionStorage.getItem('localSpotifyApiToken') || '';
   const headers = {};
   if (token) headers['Authorization'] = 'Bearer ' + token;
-  const r=await fetch('/api/tasks',{headers});const t=await r.json();
-  document.getElementById('tb').innerHTML=t.map(x=>
-   `<tr><td class=${x.status}>${x.status}</td><td>${x.artist?x.artist+' — ':''}${x.title||''}${x.error?'<br><small>'+x.error+'</small>':''}</td><td><small>${x.url}</small></td></tr>`).join('');
+
+  try {
+    const r = await fetch('/api/tasks', {headers});
+
+    if (!r.ok) {
+      return;
+    }
+
+    const tasks = await r.json();
+    const tbody = document.getElementById('tb');
+
+    tbody.replaceChildren();
+
+    for (const task of tasks) {
+      const row = document.createElement('tr');
+
+      const statusCell = document.createElement('td');
+      statusCell.className = task.status || '';
+      statusCell.textContent = task.status || '';
+
+      const trackCell = document.createElement('td');
+
+      if (task.artist) {
+        const artist = document.createElement('span');
+        artist.textContent = task.artist + ' — ';
+        trackCell.appendChild(artist);
+      }
+
+      if (task.title) {
+        const title = document.createElement('span');
+        title.textContent = task.title;
+        trackCell.appendChild(title);
+      }
+
+      if (task.error) {
+        const error = document.createElement('small');
+        error.textContent = task.error;
+        error.style.display = 'block';
+        trackCell.appendChild(error);
+      }
+
+      const urlCell = document.createElement('td');
+      const url = document.createElement('small');
+      url.textContent = task.url || '';
+      urlCell.appendChild(url);
+
+      row.appendChild(statusCell);
+      row.appendChild(trackCell);
+      row.appendChild(urlCell);
+
+      tbody.appendChild(row);
+    }
+  } catch (error) {
+    console.error('Failed to fetch tasks:', error);
+  }
 }
 setInterval(poll,2000);poll();
 </script></body></html>"""

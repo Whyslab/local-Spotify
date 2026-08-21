@@ -13,8 +13,15 @@ def app_module(tmp_path, monkeypatch):
     """
     monkeypatch.setenv("API_TOKEN", "test-secret")
 
+    import sys
+
+    project_root = str(Path(__file__).resolve().parents[1])
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
+
     import importlib
-    import app as app_module
+
+    app_module = importlib.import_module("adder.app")
 
     # Isolate database from the real project database.
     monkeypatch.setattr(
@@ -237,3 +244,175 @@ def test_non_youtube_urls_are_rejected(client, url):
     )
 
     assert response.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Security: XSS regression
+# ---------------------------------------------------------------------------
+
+def test_index_does_not_render_api_data_with_innerhtml(client):
+    response = client.get("/")
+
+    assert response.status_code == 200
+
+    html = response.text
+
+    # API task fields must be inserted through safe DOM APIs such as
+    # textContent, never by assigning untrusted values to innerHTML.
+    assert "document.getElementById('tb').innerHTML" not in html
+    assert "tbody.innerHTML" not in html
+    assert "textContent" in html
+    assert "replaceChildren()" in html
+
+
+def test_processing_url_remains_locked_during_retry(app_module, monkeypatch):
+    url = "https://www.youtube.com/watch?v=retry-lock-test"
+    task_id = 1
+
+    app_module.PROCESSING_URLS.clear()
+    app_module.shutdown_event.clear()
+
+    calls = []
+
+    def fake_yt_meta(_url):
+        calls.append("attempt")
+        if len(calls) == 1:
+            raise RuntimeError("network timeout")
+        return {
+            "id": "retry-lock-video",
+            "title": "Test Track",
+            "artist": "Test Artist",
+        }
+
+    def fake_task_update(*args, **kwargs):
+        pass
+
+    def fake_yt_download(*args, **kwargs):
+        raise RuntimeError("stop after retry")
+
+    monkeypatch.setattr(app_module, "yt_meta", fake_yt_meta)
+    monkeypatch.setattr(app_module, "task_update", fake_task_update)
+    monkeypatch.setattr(app_module, "yt_download", fake_yt_download)
+    monkeypatch.setattr(app_module, "MAX_RETRIES", 2)
+    monkeypatch.setattr(app_module, "RETRY_BACKOFF_BASE", 1)
+
+    original_wait = app_module.shutdown_event.wait
+
+    def check_lock_during_backoff(timeout):
+        assert url in app_module.PROCESSING_URLS
+        return original_wait(0)
+
+    monkeypatch.setattr(app_module.shutdown_event, "wait", check_lock_during_backoff)
+
+    app_module.PROCESSING_URLS.add(url)
+
+    app_module.process(task_id, url)
+
+    assert len(calls) == 2
+    assert url not in app_module.PROCESSING_URLS
+
+
+def test_failed_url_can_be_requeued_without_duplicate(client, app_module):
+    url = "https://www.youtube.com/watch?v=failed-retry-test"
+
+    # Create the original task through the API.
+    first = client.post(
+        "/api/add",
+        json={"links": [url]},
+        headers=auth_headers(),
+    )
+
+    assert first.status_code == 200
+    first_id = first.json()["added"][0]
+
+    # Simulate a permanently failed task.
+    app_module.task_update(
+        first_id,
+        status="error",
+        artist="Old Artist",
+        title="Old Title",
+        error="download failed",
+        error_type="network",
+        retry_count=3,
+    )
+
+    # Remove the simulated task from the in-memory processing lock so the
+    # API follows the database retry path.
+    with app_module.FILE_LOCK:
+        app_module.PROCESSING_URLS.discard(url)
+
+    # Re-submit the same URL.
+    second = client.post(
+        "/api/add",
+        json={"links": [url]},
+        headers=auth_headers(),
+    )
+
+    assert second.status_code == 200
+
+    body = second.json()
+    assert body["added"] == [first_id]
+
+    # Verify that the same database row was reused.
+    tasks = client.get(
+        "/api/tasks",
+        headers=auth_headers(),
+    )
+
+    assert tasks.status_code == 200
+
+    matching = [
+        task for task in tasks.json()
+        if task["url"] == url
+    ]
+
+    assert len(matching) == 1
+
+    task = matching[0]
+
+    assert task["id"] == first_id
+    assert task["status"] == "queued"
+    assert task["artist"] is None
+    assert task["title"] is None
+    assert task["error"] is None
+    assert task["error_type"] is None
+    assert task["retry_count"] == 0
+
+
+def test_shutdown_during_retry_releases_processing_lock(app_module, monkeypatch):
+    url = "https://www.youtube.com/watch?v=shutdown-cleanup-test"
+    task_id = 1
+
+    app_module.PROCESSING_URLS.clear()
+    app_module.shutdown_event.clear()
+
+    attempts = []
+
+    def fake_yt_meta(_url):
+        attempts.append("attempt")
+        raise RuntimeError("network timeout")
+
+    def fake_task_update(*args, **kwargs):
+        pass
+
+    monkeypatch.setattr(app_module, "yt_meta", fake_yt_meta)
+    monkeypatch.setattr(app_module, "task_update", fake_task_update)
+    monkeypatch.setattr(app_module, "MAX_RETRIES", 3)
+    monkeypatch.setattr(app_module, "RETRY_BACKOFF_BASE", 1)
+
+    app_module.PROCESSING_URLS.add(url)
+
+    def trigger_shutdown(timeout):
+        app_module.shutdown_event.set()
+        return True
+
+    monkeypatch.setattr(
+        app_module.shutdown_event,
+        "wait",
+        trigger_shutdown,
+    )
+
+    app_module.process(task_id, url)
+
+    assert attempts == ["attempt"]
+    assert url not in app_module.PROCESSING_URLS
