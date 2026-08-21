@@ -3,7 +3,6 @@
 Keeps worker startup and recovery outside app.py's import path so the
 systemd service and direct ASGI deployments use the same runtime setup.
 """
-import signal
 import threading
 
 import uvicorn
@@ -19,7 +18,6 @@ from app import (
     cleanup_old_temp_files,
     db_init,
     recover_queued_tasks,
-    shutdown_handler,
     worker,
 )
 
@@ -30,9 +28,6 @@ def main() -> None:
     db_init()
     cleanup_old_temp_files()
     recover_queued_tasks()
-
-    signal.signal(signal.SIGTERM, shutdown_handler)
-    signal.signal(signal.SIGINT, shutdown_handler)
 
     for _ in range(MAX_WORKERS):
         thread = threading.Thread(target=worker, daemon=True)

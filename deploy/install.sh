@@ -4,9 +4,9 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # Fail early instead of installing a systemd unit that cannot start.
-if [[ ! -x "$REPO/adder/.venv/bin/python" ]]; then
-  echo "ERROR: Python virtual environment not found at $REPO/adder/.venv" >&2
-  echo "Run: python -m venv adder/.venv && adder/.venv/bin/pip install -r adder/requirements.txt" >&2
+if [[ ! -x "$REPO/.venv/bin/python" ]]; then
+  echo "ERROR: Python virtual environment not found at $REPO/.venv" >&2
+  echo "Run: python -m venv .venv && .venv/bin/pip install -r adder/requirements.txt" >&2
   exit 1
 fi
 
@@ -31,16 +31,14 @@ if [[ -z "$LIBRARY_PATH_VALUE" ]]; then
 fi
 LIBRARY_PATH_VALUE="${LIBRARY_PATH_VALUE:-$HOME/Music/Normalized Library}"
 
-# Escape replacement values for sed.
-escape_sed_replacement() {
-  printf '%s' "$1" | sed 's/[\\&|]/\\&/g'
-}
-REPO_ESCAPED="$(escape_sed_replacement "$REPO")"
-LIBRARY_ESCAPED="$(escape_sed_replacement "$LIBRARY_PATH_VALUE")"
+# Generate the systemd unit.
+# Keep the library path quoted in the generated unit so paths containing
+# spaces remain a single systemd argument.
+UNIT_TEMPLATE="$(cat "$REPO/deploy/music-adder.service.template")"
+UNIT_CONTENT="${UNIT_TEMPLATE//%REPO%/$REPO}"
+UNIT_CONTENT="${UNIT_CONTENT//%LIBRARY%/$LIBRARY_PATH_VALUE}"
 
-sed -e "s|%REPO%|$REPO_ESCAPED|g" \
-    -e "s|%LIBRARY%|$LIBRARY_ESCAPED|g" \
-    "$REPO/deploy/music-adder.service.template" \
+printf '%s\n' "$UNIT_CONTENT" \
     > "$HOME/.config/systemd/user/music-adder.service"
 
 systemctl --user daemon-reload

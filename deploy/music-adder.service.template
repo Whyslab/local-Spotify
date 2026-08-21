@@ -2,7 +2,7 @@
 Description=YouTube to Navidrome adder
 
 [Service]
-ExecStart=%REPO%/adder/.venv/bin/python %REPO%/adder/server.py
+ExecStart=%REPO%/.venv/bin/python %REPO%/adder/server.py
 Restart=on-failure
 
 NoNewPrivileges=true
@@ -17,7 +17,7 @@ RestrictNamespaces=true
 
 # The installer replaces %LIBRARY% with the configured library path.
 ReadWritePaths=%REPO%
-ReadWritePaths=%LIBRARY%
+ReadWritePaths="%LIBRARY%"
 
 TimeoutStopSec=30
 

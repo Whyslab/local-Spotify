@@ -1,6 +1,7 @@
 """YouTube -> Navidrome: веб-интерфейс + фоновые воркеры."""
 import logging
 import os
+import signal
 import json
 import queue
 import re
@@ -11,7 +12,6 @@ import sys
 import threading
 import time
 import tempfile
-import signal
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlparse
@@ -266,9 +266,98 @@ def validate_url(url: str) -> tuple[bool, str]:
 
     return True, ""
 
+def run_yt_dlp(cmd: list[str], timeout: float) -> subprocess.CompletedProcess:
+    """Run yt-dlp with timeout and shutdown-aware subprocess handling.
+
+    The subprocess is placed in its own process group so that yt-dlp and
+    children such as ffmpeg can be terminated together during shutdown.
+    """
+    process = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+
+    start_time = time.monotonic()
+
+    try:
+        while process.poll() is None:
+            if shutdown_event.is_set():
+                logger.info(
+                    "Stopping yt-dlp subprocess due to shutdown",
+                    extra={"task_id": "system"},
+                )
+
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    process.wait()
+
+                raise RuntimeError("Shutdown requested while yt-dlp was running")
+
+            if time.monotonic() - start_time >= timeout:
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    process.wait()
+
+                raise subprocess.TimeoutExpired(cmd, timeout)
+
+            time.sleep(0.25)
+
+        stdout, stderr = process.communicate()
+
+        return subprocess.CompletedProcess(
+            cmd,
+            process.returncode,
+            stdout,
+            stderr,
+        )
+
+    except BaseException:
+        if process.poll() is None:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.wait()
+
+        raise
+
+
 def yt_meta(url: str) -> dict:
-    p = subprocess.run([sys.executable, "-m", "yt_dlp", "-J", "--no-playlist", url],
-                       capture_output=True, text=True, timeout=120)
+    p = run_yt_dlp(
+        [sys.executable, "-m", "yt_dlp", "-J", "--no-playlist", url],
+        timeout=120,
+    )
     if p.returncode != 0:
         raise RuntimeError(p.stderr.strip()[-300:])
     return json.loads(p.stdout)
@@ -288,7 +377,7 @@ def yt_search_candidates(query: str, count: int = None) -> list[dict]:
     ]
     
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        result = run_yt_dlp(cmd, timeout=60)
         if result.returncode != 0 or not result.stdout.strip():
             return []
         
@@ -381,10 +470,23 @@ def find_best_youtube_match(artist: str, title: str, duration: float = None) -> 
     return None, best_score
 
 def yt_download(url: str, vid: str) -> Path:
-    p = subprocess.run([sys.executable, "-m", "yt_dlp", "-x", "--audio-format", "m4a",
-                        "--audio-quality", "0", "--no-playlist",
-                        "-o", str(TMP_DIR / f"{vid}.%(ext)s"), url],
-                       capture_output=True, text=True, timeout=600)
+    p = run_yt_dlp(
+        [
+            sys.executable,
+            "-m",
+            "yt_dlp",
+            "-x",
+            "--audio-format",
+            "m4a",
+            "--audio-quality",
+            "0",
+            "--no-playlist",
+            "-o",
+            str(TMP_DIR / f"{vid}.%(ext)s"),
+            url,
+        ],
+        timeout=600,
+    )
     if p.returncode != 0:
         raise RuntimeError(p.stderr.strip()[-300:])
     target = TMP_DIR / f"{vid}.m4a"
@@ -599,9 +701,19 @@ def process(tid: int, url: str):
             if last_error_type in retryable_errors and retry_count < MAX_RETRIES - 1:
                 retry_count += 1
                 backoff_time = RETRY_BACKOFF_BASE ** retry_count
-                logger.warning(f"Retry {retry_count}/{MAX_RETRIES} after {backoff_time}s: {error_str}", 
-                             extra={'task_id': tid})
-                time.sleep(backoff_time)
+                logger.warning(
+                    f"Retry {retry_count}/{MAX_RETRIES} after {backoff_time}s: {error_str}",
+                    extra={'task_id': tid},
+                )
+
+                # Allow SIGTERM/shutdown to interrupt retry backoff immediately.
+                if shutdown_event.wait(backoff_time):
+                    logger.info(
+                        "Shutdown requested during retry backoff",
+                        extra={'task_id': tid},
+                    )
+                    return
+
                 continue
             
             # Not retryable or max retries reached
@@ -625,9 +737,16 @@ def process(tid: int, url: str):
                 PROCESSING_URLS.discard(url)
 
 def worker():
-    while True:
-        tid, url = TASK_QUEUE.get()
+    while not shutdown_event.is_set():
         try:
+            tid, url = TASK_QUEUE.get(timeout=1)
+        except queue.Empty:
+            continue
+
+        try:
+            if shutdown_event.is_set():
+                return
+
             process(tid, url)
         finally:
             TASK_QUEUE.task_done()
@@ -635,12 +754,37 @@ def worker():
 # ---------------- Web ----------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize runtime state when FastAPI starts."""
+    """Initialize runtime state and gracefully stop workers."""
     PROJECT.mkdir(parents=True, exist_ok=True)
     TMP_DIR.mkdir(parents=True, exist_ok=True)
     db_init()
 
     yield
+
+    # Uvicorn handles SIGTERM and enters the lifespan shutdown phase.
+    # Stop workers without blocking indefinitely.
+    shutdown_event.set()
+
+    if active_workers:
+        deadline = time.monotonic() + SHUTDOWN_TIMEOUT
+        for worker_thread in active_workers:
+            remaining = max(0, deadline - time.monotonic())
+            worker_thread.join(timeout=remaining)
+
+    # Cleanup temporary files after workers have stopped.
+    if TMP_DIR.exists():
+        for f in TMP_DIR.glob("*"):
+            try:
+                f.unlink()
+                logger.info(
+                    f"Cleaned up temp file: {f.name}",
+                    extra={"task_id": "system"},
+                )
+            except OSError as e:
+                logger.warning(
+                    f"Could not remove temp file during shutdown {f.name}: {e}",
+                    extra={"task_id": "system"},
+                )
 
 
 app = FastAPI(lifespan=lifespan)
@@ -793,51 +937,3 @@ async function poll(){
 }
 setInterval(poll,2000);poll();
 </script></body></html>"""
-
-def shutdown_handler(signum, frame):
-    """Handle graceful shutdown (Problem #22)."""
-    logger.info("Shutdown signal received, stopping workers...", extra={'task_id': 'system'})
-    shutdown_event.set()
-    
-    # Wait for active workers to finish
-    for worker_thread in active_workers:
-        worker_thread.join(timeout=SHUTDOWN_TIMEOUT / len(active_workers) if active_workers else SHUTDOWN_TIMEOUT)
-    
-    # Cleanup temporary files
-    if TMP_DIR.exists():
-        for f in TMP_DIR.glob("*"):
-            try:
-                f.unlink()
-                logger.info(f"Cleaned up temp file: {f.name}", extra={'task_id': 'system'})
-            except OSError as e:
-                logger.warning(
-                    f"Could not remove temp file during shutdown {f.name}: {e}",
-                    extra={'task_id': 'system'},
-                )
-    
-    logger.info("Shutdown complete", extra={'task_id': 'system'})
-    sys.exit(0)
-
-if __name__ == "__main__":
-    PROJECT.mkdir(parents=True, exist_ok=True)
-    TMP_DIR.mkdir(parents=True, exist_ok=True)
-    
-    # Problem #29: Clean up old temp files on startup
-    cleanup_old_temp_files()
-    
-    # Problem #22: Register signal handlers for graceful shutdown
-    signal.signal(signal.SIGTERM, shutdown_handler)
-    signal.signal(signal.SIGINT, shutdown_handler)
-    
-    # Problem #6: Recover queued tasks from previous session
-    recover_queued_tasks()
-    
-    # Start workers and track them
-    for _ in range(MAX_WORKERS):
-        t = threading.Thread(target=worker, daemon=True)
-        t.start()
-        active_workers.append(t)
-    
-    # Problem #18: Use configurable HOST instead of hardcoded 0.0.0.0
-    logger.info(f"Starting server on {HOST}:{PORT}", extra={'task_id': 'system'})
-    uvicorn.run(app, host=HOST, port=PORT)
