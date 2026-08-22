@@ -26,6 +26,14 @@ dist/
 *.swo
 *.tmp
 
+# Pre-edit backup copies (e.g. app.py.backup-before-web, app.js.before-ui) -
+# useful locally while editing, but not meant to be committed or served.
+*backup*
+*before-*
+
+# Test tooling
+.pytest_cache/
+
 # OS generated files
 .DS_Store
 Thumbs.db

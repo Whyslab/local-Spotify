@@ -1,4 +1,5 @@
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -44,8 +45,21 @@ def app_module(tmp_path, monkeypatch):
         tmp_path / "tmp",
     )
 
+    # Isolate the music library. Without this, /health's "is the library
+    # folder present" check depends on whether ~/Music/Normalized Library
+    # already exists on whatever machine runs the tests - true on a
+    # machine with a real library, false on a clean checkout or CI runner
+    # (see ci.yml, which points LIBRARY_PATH at a directory that is never
+    # created). That made this fixture non-hermetic.
+    monkeypatch.setattr(
+        app_module,
+        "LIBRARY",
+        tmp_path / "library",
+    )
+
     app_module.PROJECT.mkdir(parents=True, exist_ok=True)
     app_module.TMP_DIR.mkdir(parents=True, exist_ok=True)
+    app_module.LIBRARY.mkdir(parents=True, exist_ok=True)
 
     return app_module
 
@@ -257,19 +271,29 @@ def test_non_youtube_urls_are_rejected(client, url):
 # Security: XSS regression
 # ---------------------------------------------------------------------------
 
-def test_index_does_not_render_api_data_with_innerhtml(client):
-    response = client.get("/")
+def test_static_app_js_does_not_render_api_data_with_innerhtml(client):
+    # The previous version of this test checked GET / (index.html), but
+    # index.html only contains a <script src="/static/app.js"> tag - the
+    # code that actually renders task.title/task.artist/task.url (all
+    # derived from attacker-controlled YouTube metadata) lives in the
+    # separately served app.js and was never inspected here. That let a
+    # real stored-XSS regression (innerHTML template interpolation of
+    # task fields, capable of exfiltrating the API token from
+    # localStorage) ship silently. Check the file that matters.
+    response = client.get("/static/app.js")
 
     assert response.status_code == 200
 
-    html = response.text
+    js = response.text
 
-    # API task fields must be inserted through safe DOM APIs such as
+    # Task fields must be inserted through safe DOM APIs such as
     # textContent, never by assigning untrusted values to innerHTML.
-    assert "document.getElementById('tb').innerHTML" not in html
-    assert "tbody.innerHTML" not in html
-    assert "textContent" in html
-    assert "replaceChildren()" in html
+    # (Checks for an actual assignment, not just the word - the file's
+    # own comments legitimately mention innerHTML when explaining why
+    # it's avoided.)
+    assert re.search(r"\.innerHTML\s*=", js) is None
+    assert "textContent" in js
+    assert "replaceChildren" in js
 
 
 def test_processing_url_remains_locked_during_retry(app_module, monkeypatch):

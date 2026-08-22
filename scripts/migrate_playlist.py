@@ -48,11 +48,12 @@ def validate_m4a(path: Path) -> None:
 
 
 def itunes_cover(artist: str, title: str):
-    q = f"{artist} {title}".replace(" ", "+")
+    params = {"term": f"{artist} {title}", "limit": 1, "entity": "song"}
     for _ in range(3):
         try:
             r = requests.get(
-                f"https://itunes.apple.com/search?term={q}&limit=1&entity=song",
+                "https://itunes.apple.com/search",
+                params=params,
                 timeout=10,
             )
             if r.status_code in (403, 429):

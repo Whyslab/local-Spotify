@@ -1,8 +1,16 @@
 """Добивает обложки для всех треков без covr-тега. iTunes (throttled) -> Deezer fallback."""
+import sys
 import time
 import requests
 from pathlib import Path
 from mutagen.mp4 import MP4, MP4Cover
+
+# Explicitly add this file's own directory to sys.path so "import config"
+# resolves whether this script is run directly (python adder/fix_covers.py,
+# where sys.path[0] already happens to be this directory) or as a module
+# (python -m adder.fix_covers, where it does not). Matches the pattern
+# already used by scripts/*.py.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 # Import unified configuration
 from config import LIBRARY, DELAY_BETWEEN_TRACKS
@@ -10,10 +18,10 @@ from config import LIBRARY, DELAY_BETWEEN_TRACKS
 DELAY = DELAY_BETWEEN_TRACKS  # защита от rate-limit iTunes
 
 def itunes_cover(artist: str, title: str):
-    q = f"{artist} {title}".replace(" ", "+")
+    params = {"term": f"{artist} {title}", "limit": 1, "entity": "song"}
     for _ in range(3):
         try:
-            r = requests.get(f"https://itunes.apple.com/search?term={q}&limit=1&entity=song", timeout=10)
+            r = requests.get("https://itunes.apple.com/search", params=params, timeout=10)
         except Exception:
             time.sleep(5)
             continue

@@ -5,6 +5,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "adder"))
 
+# config.py raises RuntimeError at import time if API_TOKEN is unset. This
+# file used to depend on another test file setting it first and being
+# collected earlier - harmless in the full suite, but it meant running
+# `pytest tests/test_config.py` alone failed with an unrelated-looking
+# RuntimeError. setdefault so a real API_TOKEN already in the environment
+# is never overridden.
+os.environ.setdefault("API_TOKEN", "test-secret")
+
 def test_config_loads():
     """Test that config module loads without errors."""
     from config import LIBRARY, PORT, HOST, MAX_WORKERS

@@ -17,7 +17,11 @@ LockPersonality=true
 RestrictNamespaces=true
 
 # The installer replaces %LIBRARY% with the configured library path.
-ReadWritePaths=%REPO%
+# Scoped to adder/ (holds adder.db and tmp/) rather than the whole repo,
+# so the service can't write to its own source, the web/ frontend it
+# serves, deploy/ scripts, or .git even if it were ever tricked into an
+# arbitrary file write.
+ReadWritePaths=%REPO%/adder
 ReadWritePaths="%LIBRARY%"
 
 TimeoutStopSec=30

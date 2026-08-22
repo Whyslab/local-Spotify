@@ -99,21 +99,34 @@ local-Spotify/
 ├── adder/
 │   ├── app.py
 │   ├── server.py
+│   ├── fix_covers.py
+│   ├── config.py
+│   ├── requirements.txt
 │   ├── .env
 │   └── tmp/
+│
+├── web/
+│   ├── index.html
+│   ├── app.js
+│   └── style.css
 │
 ├── tests/
 │   ├── test_app.py
 │   ├── test_config.py
-│   └── test_title_cleaning.py
+│   ├── test_title_cleaning.py
+│   ├── test_duplicates.py
+│   ├── test_duplicate_integration.py
+│   └── test_youtube_links.py
 │
 ├── scripts/
 │   └── ...
 │
-├── systemd/
+├── deploy/
+│   ├── install.sh
+│   ├── backup.sh
+│   ├── music-adder.service.template
 │   └── ...
 │
-├── requirements.txt
 ├── README.md
 └── ...
 ```
@@ -235,7 +248,7 @@ PYTHONPATH="$PWD" pytest -q
 Текущий проверенный результат:
 
 ```text
-47 passed
+70 passed
 ```
 
 Тесты покрывают:
@@ -1370,7 +1383,7 @@ PYTHONPATH="$PWD" pytest -q
 Автоматический тестовый набор:
 
 ```text
-47 passed
+70 passed
 ```
 
 ---

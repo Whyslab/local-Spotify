@@ -6,6 +6,7 @@ import json
 import hashlib
 import queue
 import re
+import secrets
 import shutil
 import sqlite3
 import subprocess
@@ -76,11 +77,14 @@ logger = logging.getLogger(__name__)
 security = HTTPBearer(auto_error=False)
 
 def verify_token(credentials: HTTPAuthorizationCredentials = Security(security)) -> bool:
-    """Verify API token if configured (Problem #19)."""
-    if not API_TOKEN:
-        return True  # No token configured, allow all
-    
-    if credentials is None or credentials.credentials != API_TOKEN:
+    """Verify API token (Problem #19).
+
+    config.py refuses to start the app at all if API_TOKEN is unset, so
+    there is no "no token configured" case to allow through here.
+    secrets.compare_digest avoids leaking the token via a timing side
+    channel on the comparison.
+    """
+    if credentials is None or not secrets.compare_digest(credentials.credentials, API_TOKEN):
         raise HTTPException(status_code=401, detail="Invalid or missing API token")
     return True
 
@@ -629,8 +633,8 @@ def yt_download(url: str, vid: str) -> Path:
 def get_hd_cover(artist: str, title: str):
     """Возвращает (bytes, fmt) или (None, None)."""
     try:
-        q = f"{artist} {title}".replace(" ", "+")
-        r = requests.get(f"https://itunes.apple.com/search?term={q}&limit=1&entity=song", timeout=10)
+        params = {"term": f"{artist} {title}", "limit": 1, "entity": "song"}
+        r = requests.get("https://itunes.apple.com/search", params=params, timeout=10)
         if r.ok and r.json().get("resultCount", 0) > 0:
             art = r.json()["results"][0].get("artworkUrl100", "").replace("100x100bb", "3000x3000bb")
             img = requests.get(art, timeout=15)
