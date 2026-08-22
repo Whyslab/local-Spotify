@@ -165,25 +165,36 @@ VERSION_KEYWORDS = [
 ]
 
 def clean_title(s: str, for_filename: bool = True) -> str:
-    """Clean title for filename or metadata.
-    
-    Args:
-        s: Original title string
-        for_filename: If True, remove version keywords for safe filename.
-                     If False, preserve version info for metadata.
-    """
-    original = s
-    for p in JUNK:
-        s = re.sub(p, " ", s, flags=re.IGNORECASE)
-    s = re.sub(r"\s{2,}", " ", s).strip(" -–—|_,:()")
-    
-    # For filenames, also remove version keywords to keep them simple
+    """Clean YouTube title for filesystem or metadata use."""
+
+    for pattern in JUNK:
+        s = re.sub(pattern, " ", s, flags=re.IGNORECASE)
+
+    # Remove empty brackets left behind after junk removal.
+    # Example: "Get Lucky (Official Video)" -> "Get Lucky".
+    s = re.sub(r"\(\s*\)", " ", s)
+    s = re.sub(r"\[\s*\]", " ", s)
+
+    # For filenames, remove version information.
+    # Metadata keeps version information such as "(Live)".
     if for_filename:
         for pattern in VERSION_KEYWORDS:
             s = re.sub(pattern, " ", s, flags=re.IGNORECASE)
-        s = re.sub(r"\s{2,}", " ", s).strip(" -–—|_,:()")
-    
+
+        # Version removal can leave empty brackets.
+        s = re.sub(r"\(\s*\)", " ", s)
+        s = re.sub(r"\[\s*\]", " ", s)
+
+    # Collapse whitespace.
+    s = re.sub(r"\s{2,}", " ", s)
+
+    # Only strip separators from the outside.
+    # Do NOT strip parentheses/brackets because they can be meaningful
+    # metadata, e.g. "Song (Live)".
+    s = s.strip(" -–—|_,:")
+
     return s or "Unknown"
+
 
 def extract_version_info(original_title: str) -> str:
     """Extract version information from original title (Problem #13)."""
@@ -265,6 +276,51 @@ def validate_url(url: str) -> tuple[bool, str]:
         return False, "URL must be a YouTube URL"
 
     return True, ""
+
+
+def canonicalize_youtube_url(url: str) -> str:
+    """Return one canonical URL for a supported YouTube video URL.
+
+    The function normalizes different YouTube URL forms to:
+
+        https://www.youtube.com/watch?v=VIDEO_ID
+
+    It intentionally does not verify whether the video actually exists.
+    That is the responsibility of yt-dlp during task processing.
+    """
+    from urllib.parse import parse_qs
+
+    parsed = urlparse(url.strip())
+    hostname = (parsed.hostname or "").lower().rstrip(".")
+
+    if hostname in {
+        "youtube.com",
+        "www.youtube.com",
+        "m.youtube.com",
+        "music.youtube.com",
+    }:
+        if parsed.path != "/watch":
+            raise ValueError("YouTube URL must use /watch?v=VIDEO_ID")
+
+        video_id = parse_qs(parsed.query).get("v", [None])[0]
+
+    elif hostname in {"youtu.be", "www.youtu.be"}:
+        video_id = parsed.path.lstrip("/").split("/", 1)[0]
+
+    else:
+        raise ValueError("URL must be a YouTube URL")
+
+    if not video_id:
+        raise ValueError("YouTube URL is missing video ID")
+
+    # YouTube video IDs use URL-safe characters. We keep this check
+    # deliberately independent of yt-dlp/existence validation so unit
+    # tests can use synthetic IDs such as "abc123".
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", video_id):
+        raise ValueError("Invalid YouTube video ID")
+
+    return f"https://www.youtube.com/watch?v={video_id}"
+
 
 def run_yt_dlp(cmd: list[str], timeout: float) -> subprocess.CompletedProcess:
     """Run yt-dlp with timeout and shutdown-aware subprocess handling.
@@ -825,6 +881,31 @@ async def lifespan(app: FastAPI):
     TMP_DIR.mkdir(parents=True, exist_ok=True)
     db_init()
 
+    # Recover tasks left unfinished by a previous process.
+    recover_queued_tasks()
+
+    # Remove stale temporary files from previous runs.
+    cleanup_old_temp_files()
+
+    # Start background workers.
+    # Each worker consumes tasks from the shared queue and processes them.
+    shutdown_event.clear()
+    active_workers.clear()
+
+    for i in range(MAX_WORKERS):
+        worker_thread = threading.Thread(
+            target=worker,
+            name=f"music-adder-worker-{i + 1}",
+            daemon=True,
+        )
+        active_workers.append(worker_thread)
+        worker_thread.start()
+
+    logger.info(
+        f"Started {len(active_workers)} worker(s)",
+        extra={"task_id": "system"},
+    )
+
     yield
 
     # Uvicorn handles SIGTERM and enters the lifespan shutdown phase.
@@ -836,6 +917,8 @@ async def lifespan(app: FastAPI):
         for worker_thread in active_workers:
             remaining = max(0, deadline - time.monotonic())
             worker_thread.join(timeout=remaining)
+
+        active_workers.clear()
 
     # Cleanup temporary files after workers have stopped.
     if TMP_DIR.exists():
@@ -881,11 +964,21 @@ def add(req: AddRequest, authenticated: bool = Depends(verify_token)):
         link = link.strip()
         if not link:
             continue
-        
+
         # Problem #10: Validate URL
         is_valid, error_msg = validate_url(link)
         if not is_valid:
             raise HTTPException(status_code=400, detail=f"Invalid URL: {error_msg}")
+
+        # Normalize all supported YouTube URL forms to one canonical URL
+        # before duplicate checks and database insertion.
+        try:
+            link = canonicalize_youtube_url(link)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid YouTube URL: {exc}",
+            ) from exc
         
         # Problem #7: Check for duplicate URLs already in queue/processing
         with FILE_LOCK:

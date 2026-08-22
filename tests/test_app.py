@@ -23,6 +23,13 @@ def app_module(tmp_path, monkeypatch):
 
     app_module = importlib.import_module("adder.app")
 
+    # Isolate authentication from the real production token in adder/.env.
+    monkeypatch.setattr(app_module, "API_TOKEN", "test-secret")
+
+    # Disable background workers for API unit tests.
+    # Worker execution is covered by dedicated worker tests below.
+    monkeypatch.setattr(app_module, "MAX_WORKERS", 0)
+
     # Isolate database from the real project database.
     monkeypatch.setattr(
         app_module,
@@ -210,10 +217,10 @@ def test_health_does_not_require_auth(client):
     "url",
     [
         "https://www.youtube.com/watch?v=abc123",
-        "https://youtube.com/watch?v=abc123",
-        "https://m.youtube.com/watch?v=abc123",
-        "https://music.youtube.com/watch?v=abc123",
-        "https://youtu.be/abc123",
+        "https://youtube.com/watch?v=xyz456",
+        "https://m.youtube.com/watch?v=qwe789",
+        "https://music.youtube.com/watch?v=asd987",
+        "https://youtu.be/zxc654",
     ],
 )
 def test_supported_youtube_urls_are_accepted(client, url):
@@ -416,3 +423,270 @@ def test_shutdown_during_retry_releases_processing_lock(app_module, monkeypatch)
 
     assert attempts == ["attempt"]
     assert url not in app_module.PROCESSING_URLS
+
+# ---------------------------------------------------------------------------
+# Worker / startup lifecycle
+# ---------------------------------------------------------------------------
+
+def test_recover_queued_tasks_requeues_interrupted_tasks(app_module):
+    app_module.db_init()
+
+    queued_id = app_module.db_exec(
+        """
+        INSERT INTO tasks(url, status)
+        VALUES (?, ?)
+        """,
+        ("https://www.youtube.com/watch?v=queued-recovery", "queued"),
+    ).lastrowid
+
+    downloading_id = app_module.db_exec(
+        """
+        INSERT INTO tasks(url, status)
+        VALUES (?, ?)
+        """,
+        ("https://www.youtube.com/watch?v=downloading-recovery", "downloading"),
+    ).lastrowid
+
+    tagging_id = app_module.db_exec(
+        """
+        INSERT INTO tasks(url, status)
+        VALUES (?, ?)
+        """,
+        ("https://www.youtube.com/watch?v=tagging-recovery", "tagging"),
+    ).lastrowid
+
+    app_module.PROCESSING_URLS.clear()
+
+    while not app_module.TASK_QUEUE.empty():
+        try:
+            app_module.TASK_QUEUE.get_nowait()
+            app_module.TASK_QUEUE.task_done()
+        except Exception:
+            break
+
+    app_module.recover_queued_tasks()
+
+    tasks = app_module.db_query(
+        "SELECT id, url, status FROM tasks ORDER BY id"
+    )
+
+    assert len(tasks) == 3
+    assert tasks[0]["id"] == queued_id
+    assert tasks[0]["status"] == "queued"
+    assert tasks[1]["id"] == downloading_id
+    assert tasks[1]["status"] == "queued"
+    assert tasks[2]["id"] == tagging_id
+    assert tasks[2]["status"] == "queued"
+
+    recovered = []
+
+    while True:
+        try:
+            item = app_module.TASK_QUEUE.get_nowait()
+        except Exception:
+            break
+
+        recovered.append(item)
+        app_module.TASK_QUEUE.task_done()
+
+    assert len(recovered) == 3
+    assert {item[0] for item in recovered} == {
+        queued_id,
+        downloading_id,
+        tagging_id,
+    }
+
+    assert {item[1] for item in recovered} == {
+        "https://www.youtube.com/watch?v=queued-recovery",
+        "https://www.youtube.com/watch?v=downloading-recovery",
+        "https://www.youtube.com/watch?v=tagging-recovery",
+    }
+
+
+def test_recover_queued_tasks_does_not_duplicate_processing_urls(app_module):
+    app_module.db_init()
+
+    url = "https://www.youtube.com/watch?v=recovery-duplicate"
+
+    task_id = app_module.db_exec(
+        """
+        INSERT INTO tasks(url, status)
+        VALUES (?, ?)
+        """,
+        (url, "queued"),
+    ).lastrowid
+
+    app_module.PROCESSING_URLS.clear()
+
+    while not app_module.TASK_QUEUE.empty():
+        try:
+            app_module.TASK_QUEUE.get_nowait()
+            app_module.TASK_QUEUE.task_done()
+        except Exception:
+            break
+
+    app_module.PROCESSING_URLS.add(url)
+
+    app_module.recover_queued_tasks()
+
+    assert app_module.TASK_QUEUE.empty()
+    assert url in app_module.PROCESSING_URLS
+    assert task_id > 0
+
+
+def test_cleanup_old_temp_files_removes_only_expired_files(app_module):
+    import os
+    import time
+
+    app_module.TMP_DIR.mkdir(parents=True, exist_ok=True)
+
+    old_file = app_module.TMP_DIR / "old_processing.m4a"
+    fresh_file = app_module.TMP_DIR / "fresh_processing.m4a"
+
+    old_file.write_bytes(b"old")
+    fresh_file.write_bytes(b"fresh")
+
+    now = time.time()
+    old_timestamp = now - (app_module.TMP_TTL_SECONDS + 60)
+
+    os.utime(old_file, (old_timestamp, old_timestamp))
+
+    app_module.cleanup_old_temp_files()
+
+    assert not old_file.exists()
+    assert fresh_file.exists()
+
+
+def test_worker_processes_queue_and_calls_task_done(app_module, monkeypatch):
+    import threading
+
+    task_id = 123
+    url = "https://www.youtube.com/watch?v=worker-test"
+
+    processed = []
+
+    def fake_process(tid, task_url):
+        processed.append((tid, task_url))
+        app_module.shutdown_event.set()
+
+    monkeypatch.setattr(app_module, "process", fake_process)
+
+    app_module.shutdown_event.clear()
+
+    while not app_module.TASK_QUEUE.empty():
+        try:
+            app_module.TASK_QUEUE.get_nowait()
+            app_module.TASK_QUEUE.task_done()
+        except Exception:
+            break
+
+    app_module.TASK_QUEUE.put((task_id, url))
+
+    worker_thread = threading.Thread(
+        target=app_module.worker,
+        daemon=True,
+    )
+    worker_thread.start()
+    worker_thread.join(timeout=2)
+
+    assert not worker_thread.is_alive()
+    assert processed == [(task_id, url)]
+
+    app_module.TASK_QUEUE.join()
+
+
+def test_worker_stops_without_processing_when_shutdown_is_set(
+    app_module,
+    monkeypatch,
+):
+    processed = []
+
+    def fake_process(*args):
+        processed.append(args)
+
+    monkeypatch.setattr(app_module, "process", fake_process)
+
+    app_module.shutdown_event.set()
+
+    app_module.TASK_QUEUE.put(
+        (
+            999,
+            "https://www.youtube.com/watch?v=should-not-run",
+        )
+    )
+
+    app_module.worker()
+
+    assert processed == []
+
+    app_module.TASK_QUEUE.task_done()
+    app_module.shutdown_event.clear()
+
+
+# ---------------------------------------------------------------------------
+# YouTube URL canonicalization
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://www.youtube.com/watch?v=abc12345678",
+        "https://youtube.com/watch?v=abc12345678",
+        "https://m.youtube.com/watch?v=abc12345678",
+        "https://music.youtube.com/watch?v=abc12345678",
+        "https://youtu.be/abc12345678",
+        "https://www.youtu.be/abc12345678",
+    ],
+)
+def test_youtube_urls_are_canonicalized(app_module, url):
+    assert app_module.canonicalize_youtube_url(url) == (
+        "https://www.youtube.com/watch?v=abc12345678"
+    )
+
+
+def test_youtube_canonicalization_rejects_invalid_video_id(app_module):
+    with pytest.raises(ValueError):
+        app_module.canonicalize_youtube_url(
+            "https://www.youtube.com/watch?v=invalid%20video%21"
+        )
+
+
+def test_equivalent_youtube_urls_are_not_added_twice(
+    app_module,
+    monkeypatch,
+):
+    app_module.db_init()
+    app_module.PROCESSING_URLS.clear()
+
+    while not app_module.TASK_QUEUE.empty():
+        try:
+            app_module.TASK_QUEUE.get_nowait()
+            app_module.TASK_QUEUE.task_done()
+        except Exception:
+            break
+
+    youtube_id = "CCHdMIEGaaM"
+
+    first = app_module.add(
+        app_module.AddRequest(
+            links=[f"https://youtu.be/{youtube_id}"]
+        ),
+        authenticated=True,
+    )
+
+    second = app_module.add(
+        app_module.AddRequest(
+            links=[f"https://www.youtube.com/watch?v={youtube_id}"]
+        ),
+        authenticated=True,
+    )
+
+    assert len(first["added"]) == 1
+    assert second["added"] == []
+
+    rows = app_module.db_query(
+        "SELECT url FROM tasks WHERE url = ?",
+        (f"https://www.youtube.com/watch?v={youtube_id}",),
+    )
+
+    assert len(rows) == 1
