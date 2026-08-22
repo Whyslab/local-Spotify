@@ -1198,11 +1198,33 @@ document.getElementById('token').value = getToken();
 async function add(){
   const links=document.getElementById('links').value.split('\\n').map(s=>s.trim()).filter(Boolean);
   if(!links.length)return;
+
   const token = sessionStorage.getItem('localSpotifyApiToken') || '';
   const headers = {'Content-Type':'application/json'};
   if (token) headers['Authorization'] = 'Bearer ' + token;
-  await fetch('/api/add',{method:'POST',headers,body:JSON.stringify({links})});
-  document.getElementById('links').value='';poll();
+
+  try {
+    const r = await fetch('/api/add',{
+      method:'POST',
+      headers,
+      body:JSON.stringify({links})
+    });
+
+    if (!r.ok) {
+      let message = 'Request failed: HTTP ' + r.status;
+      try {
+        const data = await r.json();
+        if (data.detail) message = data.detail;
+      } catch (_) {}
+      alert(message);
+      return;
+    }
+
+    document.getElementById('links').value='';
+    poll();
+  } catch (error) {
+    alert('Network error: ' + error.message);
+  }
 }
 async function poll(){
   const token = sessionStorage.getItem('localSpotifyApiToken') || '';
@@ -1213,6 +1235,11 @@ async function poll(){
     const r = await fetch('/api/tasks', {headers});
 
     if (!r.ok) {
+      if (r.status === 401) {
+        console.warn('API authentication required or token is invalid');
+      } else {
+        console.warn('Task polling failed:', r.status);
+      }
       return;
     }
 

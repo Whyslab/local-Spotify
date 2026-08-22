@@ -32,8 +32,6 @@ NAME_KEYS = ["name", "track name", "title", "track", "song", "название"]
 ARTIST_KEYS = ["artists", "artist", "artist name(s)", "artist(s)", "artist name", "исполнитель"]
 POS_KEYS = ["position", "#", "index", "n", "no", "№"]
 
-SEARCH_COUNT = 5
-MIN_MATCH_SCORE = 0.55
 
 
 def pick(row: dict, keys: list[str]) -> str:
