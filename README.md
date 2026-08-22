@@ -1,34 +1,42 @@
 # 🎵 localSpotify
 
-> **Personal self-hosted music server for Arch Linux with an iOS client.**
+> **Self-hosted музыкальная система для локального хранения, обработки и воспроизведения музыки.**
 
-Полноценная домашняя замена Spotify: музыка хранится локально на собственном сервере, добавляется через веб-интерфейс из YouTube, автоматически обрабатывается и появляется в **Navidrome**, после чего доступна с iPhone через **Amperfy**.
+`localSpotify` — домашняя музыкальная система, которая позволяет хранить собственную музыкальную библиотеку на сервере, добавлять треки через YouTube, автоматически загружать и обрабатывать их, нормализовать метаданные и воспроизводить музыку через **Navidrome** с iPhone или других устройств.
 
-Проект рассчитан на **личное использование в домашней сети**.
-
----
-
-## ✨ Features
-
-* 🎧 Полностью локальная музыкальная библиотека
-* 📱 iOS-клиент с офлайн-кэшем
-* 🖥️ Сервер на Arch Linux
-* 🎵 Navidrome + Subsonic API
-* ▶️ Добавление треков через YouTube
-* 🌐 Веб-интерфейс `adder`
-* ⚡ Автоматическое обнаружение новых файлов
-* 🏷️ Автоматическое тегирование M4A
-* 🖼️ Автоматический поиск и встраивание обложек
-* 📥 Импорт больших Spotify-плейлистов
-* 🔄 Автоматическая нормализация библиотеки
-* 🚀 Автозапуск через systemd
-* 🔒 Доступ только из локальной сети
-* 💾 Простое резервное копирование
-* 🛠️ Автоматическое развёртывание на новой машине
+Проект рассчитан прежде всего на **личное self-hosted использование в домашней сети**.
 
 ---
 
-# 🏗️ Architecture
+## ✨ Возможности
+
+* 🎵 Локальная музыкальная библиотека
+* ▶️ Добавление музыки через YouTube URL
+* ⚡ Фоновая очередь обработки
+* 👷 Несколько worker-потоков для обработки задач
+* 📥 Загрузка через `yt-dlp`
+* 🎚️ Конвертация и нормализация через FFmpeg
+* 🏷️ Автоматическая обработка метаданных
+* 🖼️ Работа с обложками
+* 🧹 Очистка названий треков и файлов
+* 🔄 Автоматические retry при временных ошибках
+* 💾 SQLite для хранения состояния задач
+* 🔐 Защита API через `API_TOKEN`
+* ❤️ Health endpoint
+* 🛑 Graceful shutdown
+* ♻️ Восстановление незавершённых задач после перезапуска
+* 🧹 Очистка старых временных файлов
+* 🎧 Navidrome как музыкальный сервер
+* 📱 Поддержка Subsonic API-клиентов
+* 🚀 Запуск через systemd
+* 🐧 Оптимизировано под Arch Linux
+* 🔒 Предназначено для использования в локальной сети
+
+---
+
+# 🏗️ Архитектура
+
+Система состоит из нескольких независимых компонентов.
 
 ```text
                          ┌──────────────────────┐
@@ -41,1040 +49,1420 @@
                               Subsonic API
                                     │
                                     ▼
-┌─────────────────────────────────────────────────────────────┐
-│                         ThinkPad                            │
-│                       Arch Linux                            │
-│                                                             │
-│   ┌─────────────────┐                                      │
-│   │    Navidrome    │◄──────────────┐                       │
-│   │   Subsonic API  │               │                       │
-│   │      :4533      │               │ watcher / inotify     │
-│   └────────┬────────┘               │                       │
-│            │                        │                       │
-│            ▼                        │                       │
-│   ┌─────────────────────────────┐  │                       │
-│   │   Normalized Library        │──┘                       │
-│   │                             │                          │
-│   │ Artist / Singles / Track    │                          │
-│   └─────────────────────────────┘                          │
-│                                                             │
-│   ┌─────────────────┐                                      │
-│   │      adder      │                                      │
-│   │   Web UI :8787  │                                      │
-│   └────────┬────────┘                                      │
-│            │                                                │
-│            ▼                                                │
-│         YouTube                                             │
-│            │                                                │
-│            ▼                                                │
-│       yt-dlp → M4A                                         │
-└─────────────────────────────────────────────────────────────┘
+                         ┌──────────────────────┐
+                         │      Navidrome       │
+                         │                      │
+                         │   Music Server       │
+                         └──────────┬───────────┘
+                                    │
+                                    ▼
+                         ┌──────────────────────┐
+                         │   Music Library      │
+                         │                      │
+                         │ Artist / Singles     │
+                         │ Albums / Tracks      │
+                         └──────────────────────┘
+
+
+                         Music ingestion
+                               │
+                               ▼
+                    ┌──────────────────────┐
+                    │      adder API       │
+                    │      FastAPI         │
+                    └──────────┬───────────┘
+                               │
+                         Task Queue
+                               │
+                               ▼
+                    ┌──────────────────────┐
+                    │       Workers        │
+                    │                      │
+                    │       yt-dlp         │
+                    │        FFmpeg        │
+                    └──────────┬───────────┘
+                               │
+                               ▼
+                    ┌──────────────────────┐
+                    │  Normalized Library  │
+                    └──────────────────────┘
 ```
 
-### Components
+---
 
-| Component      | Purpose                             |
-| -------------- | ----------------------------------- |
-| **Navidrome**  | Музыкальный сервер и Subsonic API   |
-| **adder**      | Веб-интерфейс для добавления треков |
-| **yt-dlp**     | Загрузка аудио с YouTube            |
-| **FFmpeg**     | Обработка и конвертация аудио       |
-| **watcher**    | Обнаружение новых файлов            |
-| **Amperfy**    | iOS-клиент с офлайн-кэшем           |
-| **iTunes API** | Основной источник обложек           |
-| **Deezer API** | Fallback для обложек                |
-| **systemd**    | Автозапуск сервисов                 |
-| **UFW**        | Ограничение доступа к LAN           |
+# 📁 Структура проекта
+
+Основная структура репозитория:
+
+```text
+local-Spotify/
+├── adder/
+│   ├── app.py
+│   ├── server.py
+│   ├── .env
+│   └── tmp/
+│
+├── tests/
+│   ├── test_app.py
+│   ├── test_config.py
+│   └── test_title_cleaning.py
+│
+├── scripts/
+│   └── ...
+│
+├── systemd/
+│   └── ...
+│
+├── requirements.txt
+├── README.md
+└── ...
+```
 
 ---
 
-# 📋 Prerequisites
+# 📂 Основные файлы
 
-Перед установкой убедись, что на машине установлены необходимые компоненты.
+## `adder/app.py`
 
-| Requirement         | Arch Linux                         |
-| ------------------- | ---------------------------------- |
-| Python 3.10+        | `sudo pacman -S python python-pip` |
-| FFmpeg              | `sudo pacman -S ffmpeg`            |
-| Git                 | `sudo pacman -S git`               |
-| AUR helper          | `yay` или `paru`                   |
-| UFW *(опционально)* | `sudo pacman -S ufw`               |
+Главный файл приложения.
 
-Для других Linux-дистрибутивов принцип установки тот же, но менеджер пакетов будет отличаться (`apt`, `dnf`, `pacman` и т.д.).
+В нём находятся:
+
+* FastAPI application;
+* API endpoints;
+* авторизация;
+* SQLite database;
+* task queue;
+* worker logic;
+* YouTube URL validation;
+* YouTube URL canonicalization;
+* загрузка через `yt-dlp`;
+* обработка через FFmpeg;
+* metadata processing;
+* retry logic;
+* cleanup;
+* graceful shutdown;
+* recovery незавершённых задач.
+
+Это **основная логика сервиса**.
 
 ---
 
-# 🚀 Deployment
+## `adder/server.py`
 
-## 1. Clone repository
+Production launcher приложения.
+
+Файл специально оставлен максимально простым:
+
+```text
+adder/server.py
+        │
+        ▼
+uvicorn
+        │
+        ▼
+adder.app:app
+        │
+        ▼
+FastAPI lifespan
+        │
+        ▼
+worker startup
+```
+
+Worker'ы запускаются через lifecycle FastAPI, а не отдельно в launcher.
+
+Это предотвращает ситуацию, когда worker'ы запускаются дважды.
+
+Запуск:
 
 ```bash
+python -m adder.server
+```
+
+---
+
+## `adder/.env`
+
+Локальная конфигурация приложения.
+
+Пример:
+
+```text
+API_TOKEN=change-this-token
+HOST=127.0.0.1
+PORT=8787
+```
+
+Файл содержит секреты и **не должен попадать в Git**.
+
+Добавь его в `.gitignore`:
+
+```text
+adder/.env
+```
+
+---
+
+## `adder/tmp/`
+
+Временная директория.
+
+Используется во время:
+
+* загрузки;
+* конвертации;
+* обработки;
+* временного хранения файлов.
+
+После завершения обработки временные файлы удаляются.
+
+При запуске приложения также выполняется очистка устаревших временных файлов.
+
+---
+
+# 🧪 Тесты
+
+Проект содержит автоматические тесты.
+
+Запуск:
+
+```bash
+source .venv/bin/activate
+PYTHONPATH="$PWD" pytest -q
+```
+
+Текущий проверенный результат:
+
+```text
+47 passed
+```
+
+Тесты покрывают:
+
+* `/health`;
+* API authentication;
+* API `/api/add`;
+* URL validation;
+* YouTube URL canonicalization;
+* duplicate detection;
+* SQLite;
+* task queue;
+* worker execution;
+* worker shutdown;
+* task recovery;
+* retry behavior;
+* temporary file cleanup;
+* title cleaning;
+* metadata behavior.
+
+---
+
+# 🐍 Требования
+
+Минимально необходимы:
+
+| Компонент    | Назначение         |
+| ------------ | ------------------ |
+| Python 3.10+ | Runtime            |
+| FastAPI      | Web API            |
+| Uvicorn      | ASGI server        |
+| SQLite       | Database           |
+| yt-dlp       | YouTube downloader |
+| FFmpeg       | Audio processing   |
+| systemd      | Автозапуск         |
+| Navidrome    | Music server       |
+
+Для разработки дополнительно используется:
+
+```text
+pytest
+```
+
+---
+
+# 🐧 Установка на Arch Linux
+
+## 1. Установка системных пакетов
+
+```bash
+sudo pacman -Syu
+sudo pacman -S git python python-pip ffmpeg
+```
+
+Проверь версии:
+
+```bash
+python --version
+ffmpeg -version
+```
+
+---
+
+# 📥 Клонирование проекта
+
+```bash
+cd ~
 git clone https://github.com/Whyslab/local-Spotify.git
 cd local-Spotify
 ```
 
----
-
-## 2. Install Navidrome
+Проверить текущую ветку:
 
 ```bash
-yay -S navidrome
+git branch --show-current
+```
+
+Для production рекомендуется использовать:
+
+```text
+main
 ```
 
 ---
 
-## 3. Create Python environment
+# 🐍 Создание виртуального окружения
 
 ```bash
-cd adder
-
 python -m venv .venv
+```
+
+Активировать:
+
+```bash
 source .venv/bin/activate
+```
 
+Обновить pip:
+
+```bash
+python -m pip install --upgrade pip
+```
+
+Установить зависимости:
+
+```bash
 pip install -r requirements.txt
+```
 
-deactivate
-cd ..
+Проверить:
+
+```bash
+pip list
 ```
 
 ---
 
-## 4. Run automatic installer
+# 🔐 Настройка API_TOKEN
 
-Сделай installer executable:
+API защищён Bearer Token.
+
+Создай:
+
+```text
+adder/.env
+```
+
+Пример:
+
+```text
+API_TOKEN=your-long-random-secret-token
+```
+
+Лучше использовать длинный случайный токен.
+
+Например:
 
 ```bash
-chmod +x deploy/install.sh
+python -c 'import secrets; print(secrets.token_urlsafe(32))'
+```
+
+Полученное значение вставь в:
+
+```text
+adder/.env
+```
+
+Например:
+
+```text
+API_TOKEN=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+```
+
+**Не публикуй настоящий токен в GitHub, README, Issues или скриншотах.**
+
+---
+
+# ▶️ Запуск приложения вручную
+
+Активируй окружение:
+
+```bash
+cd ~/local-Spotify
+source .venv/bin/activate
 ```
 
 Запусти:
 
 ```bash
-./deploy/install.sh
+python -m adder.server
 ```
 
-### `install.sh` автоматически:
-
-* устанавливает `music-adder.service`;
-* устанавливает конфигурацию Navidrome;
-* заменяет placeholder пользователя на текущего пользователя;
-* применяет systemd hardening;
-* настраивает доступ Navidrome к музыкальной библиотеке;
-* открывает порты `4533` и `8787` в UFW;
-* ограничивает доступ к сервисам локальной подсетью.
-
-После установки:
+После запуска API будет доступен по адресу:
 
 ```text
-Navidrome:
-http://localhost:4533
-
-Adder:
-http://localhost:8787
+http://127.0.0.1:8787
 ```
 
-Сначала зайди в Navidrome и создай администратора.
-
-После этого открой `adder` и попробуй добавить тестовый YouTube-трек.
-
 ---
 
-# ⚙️ Configuration
+# ❤️ Проверка `/health`
 
-Все основные настройки можно менять через `.env` или systemd environment variables.
-
-## Environment variables
-
-| Variable               | Used by                            |                      Default | Description                      |
-| ---------------------- | ---------------------------------- | ---------------------------: | -------------------------------- |
-| `LIBRARY_PATH`         | `adder/app.py`, playlist migration | `~/Music/Normalized Library` | Путь к музыкальной библиотеке    |
-| `PORT`                 | `adder/app.py`                     |                       `8787` | Порт веб-интерфейса              |
-| `MAX_WORKERS`          | `adder/app.py`                     |                          `2` | Количество параллельных загрузок |
-| `DELAY_BETWEEN_TRACKS` | playlist migration                 |                        `1.1` | Пауза между запросами            |
-
-### `LIBRARY_PATH`
-
-Путь, который одновременно используется:
-
-* `adder`;
-* скриптами миграции;
-* Navidrome.
-
-Если библиотека находится в другом месте, необходимо изменить соответствующие настройки.
-
----
-
-# 🔧 Environment setup
-
-## Option A — `.env`
-
-Создай `.env` внутри `adder`:
+Endpoint health не требует авторизации.
 
 ```bash
-cp .env.example adder/.env
-nano adder/.env
+curl http://127.0.0.1:8787/health
 ```
+
+Ожидаемый результат:
+
+```json
+{
+  "status": "ok"
+}
+```
+
+---
+
+# 🔐 Проверка авторизации
+
+Получить token:
+
+```bash
+TOKEN="$(grep '^API_TOKEN=' adder/.env | cut -d= -f2-)"
+```
+
+Запрос без token:
+
+```bash
+curl http://127.0.0.1:8787/api/tasks
+```
+
+Должен быть отклонён.
+
+Запрос с token:
+
+```bash
+curl \
+  -H "Authorization: Bearer $TOKEN" \
+  http://127.0.0.1:8787/api/tasks
+```
+
+---
+
+# ▶️ Добавление YouTube трека
 
 Пример:
 
-```env
-LIBRARY_PATH=/home/your-user/Music/Normalized Library
-PORT=8787
-MAX_WORKERS=3
-DELAY_BETWEEN_TRACKS=1.1
+```bash
+TOKEN="$(grep '^API_TOKEN=' adder/.env | cut -d= -f2-)"
+
+curl -sS \
+  -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  --data '{
+    "links": [
+      "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+    ]
+  }' \
+  http://127.0.0.1:8787/api/add
 ```
+
+Пример ответа:
+
+```json
+{
+  "added": [
+    123
+  ]
+}
+```
+
+ID означает номер задачи в SQLite.
 
 ---
 
-## Option B — systemd override
+# 📚 Добавление нескольких треков
 
-Если используется `deploy/music-adder.service`, можно задать переменные через systemd:
+Можно передать несколько ссылок:
 
 ```bash
-systemctl --user edit music-adder
+curl -sS \
+  -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  --data '{
+    "links": [
+      "https://www.youtube.com/watch?v=VIDEO_ID_1",
+      "https://www.youtube.com/watch?v=VIDEO_ID_2",
+      "https://www.youtube.com/watch?v=VIDEO_ID_3"
+    ]
+  }' \
+  http://127.0.0.1:8787/api/add
 ```
 
-Добавь:
+Каждая ссылка становится отдельной задачей.
 
-```ini
-[Service]
-Environment="LIBRARY_PATH=/home/your-user/Music/Normalized Library"
-Environment="PORT=8787"
-Environment="MAX_WORKERS=3"
-Environment="DELAY_BETWEEN_TRACKS=1.1"
-```
+---
 
-После изменения:
+# 📊 Проверка очереди
+
+Получить все задачи:
 
 ```bash
-systemctl --user restart music-adder
+curl \
+  -H "Authorization: Bearer $TOKEN" \
+  http://127.0.0.1:8787/api/tasks
+```
+
+Задача может находиться в состояниях:
+
+```text
+queued
+downloading
+tagging
+done
+error
 ```
 
 ---
 
-# 📝 Where to enter your own values
+# 🔄 Как работает обработка
 
-При развёртывании на новой машине необходимо проверить несколько значений.
-
-## 1. Music library
-
-В:
-
-```text
-/etc/navidrome/navidrome.toml
-```
-
-должно быть:
-
-```toml
-MusicFolder = "/home/YOUR_USER/Music/Normalized Library"
-```
-
-Замените `YOUR_USER` на своего пользователя Linux.
-
----
-
-## 2. Local network
-
-Узнать свою локальную подсеть:
-
-```bash
-hostname -I
-```
-
-или:
-
-```bash
-ip route
-```
-
-Например:
-
-```text
-192.168.1.0/24
-```
-
-UFW должен разрешать доступ к:
-
-```text
-4533 → Navidrome
-8787 → adder
-```
-
----
-
-## 3. Navidrome credentials
-
-При первом открытии:
-
-```text
-http://localhost:4533
-```
-
-создайте администратора.
-
-Эти данные понадобятся для подключения iPhone-клиента.
-
----
-
-## 4. Server IP
-
-Узнать локальный IP сервера:
-
-```bash
-ip route get 1.1.1.1 | awk '{print $7; exit}'
-```
-
-Например:
-
-```text
-192.168.1.42
-```
-
-Тогда iPhone будет подключаться к:
-
-```text
-http://192.168.1.42:4533
-```
-
----
-
-# 📱 iOS Client
-
-Для iPhone используется **Amperfy**.
-
-После установки добавь новый сервер:
-
-```text
-http://IP_OF_SERVER:4533
-```
-
-Например:
-
-```text
-http://192.168.1.42:4533
-```
-
-Используй логин и пароль администратора Navidrome.
-
-### Требования
-
-Телефон и сервер должны находиться в одной локальной сети:
-
-```text
-iPhone
-   │
-   │ Wi-Fi
-   ▼
-Router
-   │
-   │ LAN
-   ▼
-ThinkPad
-```
-
----
-
-# 🎵 Adding music
-
-Добавить новый трек можно напрямую с телефона.
-
-## Workflow
+После добавления URL:
 
 ```text
 YouTube URL
      │
      ▼
-   adder
+Validation
      │
      ▼
-   queued
+Canonicalization
      │
      ▼
- downloading
+Duplicate check
      │
      ▼
-  tagging
+SQLite
      │
      ▼
-    done
+Task Queue
+     │
+     ▼
+Worker
+     │
+     ▼
+yt-dlp
+     │
+     ▼
+Downloaded audio
+     │
+     ▼
+FFmpeg
+     │
+     ▼
+Metadata
      │
      ▼
 Normalized Library
      │
      ▼
-   Navidrome
+Navidrome
      │
      ▼
-   Amperfy
+iPhone / Amperfy
 ```
-
-### Шаги
-
-1. Найди трек на YouTube.
-2. Открой `http://IP_OF_SERVER:8787`.
-3. Вставь ссылку.
-4. Нажми **Add**.
-5. Дождись статуса `done`.
-6. Navidrome автоматически обнаружит файл.
-7. Трек появится в Amperfy.
 
 ---
 
-# 🔄 Spotify Playlist Migration
+# 👷 Worker System
 
-Проект поддерживает перенос больших плейлистов Spotify в локальную библиотеку.
+Приложение использует фоновые worker-потоки.
 
-## 1. Export Spotify playlist
+Worker:
 
-Используй Spotify Playlist Exporter:
+1. получает задачу из очереди;
+2. запускает обработку;
+3. выполняет download;
+4. выполняет conversion;
+5. записывает metadata;
+6. перемещает готовый файл;
+7. отмечает задачу как `done`;
+8. при ошибке запускает retry;
+9. освобождает task lock.
+
+Количество worker'ов определяется настройкой:
 
 ```text
-https://www.chosic.com/spotify-playlist-exporter/svg
+MAX_WORKERS
 ```
 
-Экспортируй плейлист в `.txt`.
+Worker'ы запускаются во время FastAPI lifespan.
+
+Это важно: приложение не должно запускать одну группу worker'ов из `server.py`, а вторую из `app.py`.
 
 ---
 
-## 2. Find YouTube URLs
+# ♻️ Recovery после перезапуска
 
-Перейди в `scripts`:
+Если сервер был остановлен во время обработки:
+
+```text
+downloading
+tagging
+```
+
+такие задачи могут быть восстановлены после следующего запуска.
+
+Механизм recovery возвращает незавершённые задачи в очередь.
+
+Это позволяет переживать:
+
+* reboot;
+* restart systemd;
+* crash процесса;
+* остановку сервера.
+
+---
+
+# 🔁 Retry
+
+Временные ошибки обработки могут приводить к повторной попытке.
+
+Состояние retry хранится в задаче:
+
+```text
+retry_count
+```
+
+Если ошибка является окончательной, задача получает:
+
+```text
+status = error
+```
+
+и дополнительную информацию:
+
+```text
+error
+error_type
+```
+
+---
+
+# 🧹 Temporary Files
+
+Временные файлы хранятся в:
+
+```text
+adder/tmp/
+```
+
+Сервис автоматически удаляет устаревшие временные файлы.
+
+После graceful shutdown выполняется дополнительная очистка.
+
+---
+
+# 🎵 Music Library
+
+Готовая библиотека хранится отдельно от исходников проекта.
+
+Типичная структура:
+
+```text
+~/Music/
+└── Normalized Library/
+    ├── Artist A/
+    │   └── Singles/
+    │       └── Track.m4a
+    │
+    ├── Artist B/
+    │   └── Singles/
+    │       └── Track.m4a
+    │
+    └── Artist C/
+        └── Albums/
+            └── Album/
+                └── Track.m4a
+```
+
+Navidrome должен быть настроен на каталог:
+
+```text
+~/Music/Normalized Library
+```
+
+или соответствующий абсолютный путь на сервере.
+
+---
+
+# 🎧 Navidrome
+
+Navidrome отвечает за:
+
+* индексацию музыки;
+* музыкальную библиотеку;
+* поиск;
+* playlists;
+* воспроизведение;
+* Subsonic API.
+
+`localSpotify` не является музыкальным streaming-сервером сам по себе.
+
+Архитектура разделена:
+
+```text
+localSpotify adder
+        │
+        ▼
+Music Library
+        │
+        ▼
+Navidrome
+        │
+        ▼
+Subsonic API
+        │
+        ▼
+Amperfy
+```
+
+Это позволяет заменить Navidrome другим совместимым сервером в будущем.
+
+---
+
+# 📱 iPhone
+
+Для iPhone можно использовать Subsonic-совместимый клиент.
+
+Например:
+
+```text
+Amperfy
+```
+
+Подключение выполняется к Navidrome.
+
+В приложении указываются:
+
+```text
+Server URL
+Username
+Password
+```
+
+Конкретный URL зависит от конфигурации домашней сети.
+
+---
+
+# 🖥️ systemd
+
+Для production использования рекомендуется запускать приложение через systemd.
+
+Пример service-файла:
+
+```ini
+[Unit]
+Description=localSpotify Music Adder
+After=network.target
+
+[Service]
+Type=simple
+User=YOUR_USER
+WorkingDirectory=/home/YOUR_USER/local-Spotify
+Environment="PATH=/home/YOUR_USER/local-Spotify/.venv/bin"
+ExecStart=/home/YOUR_USER/local-Spotify/.venv/bin/python -m adder.server
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Замени:
+
+```text
+YOUR_USER
+```
+
+на имя пользователя Linux.
+
+---
+
+# ⚙️ Установка systemd service
+
+Создай:
 
 ```bash
-cd scripts
+sudo nano /etc/systemd/system/localspotify.service
+```
+
+Вставь конфигурацию выше.
+
+После этого:
+
+```bash
+sudo systemctl daemon-reload
 ```
 
 Запусти:
 
 ```bash
-python youtube_links.py
+sudo systemctl enable --now localspotify
 ```
 
-Скрипт:
+Проверь:
 
-* читает список Spotify-треков;
-* создаёт запрос `Artist - Title`;
-* выполняет поиск через `yt-dlp`;
-* выбирает первый результат;
-* сохраняет найденный YouTube URL.
-
-Результат:
-
-```text
-spotify_tracks_youtube.csv
+```bash
+systemctl status localspotify
 ```
 
 ---
 
-## 3. Download and normalize
+# 📋 Логи systemd
 
-Запусти `migrate_playlist.py` — этот скрипт выполняет полную обработку треков:
+Последние логи:
 
 ```bash
-python migrate_playlist.py
+journalctl -u localspotify -n 100
 ```
 
-Скрипт автоматически:
+Следить в реальном времени:
 
-1. скачивает `.m4a` через `yt-dlp`;
-2. извлекает исполнителя;
-3. извлекает название;
-4. ищет обложку;
-5. встраивает metadata;
-6. встраивает artwork;
-7. перемещает файл в нормализованную библиотеку.
+```bash
+journalctl -u localspotify -f
+```
 
-> **Важно:** `migrate_playlist.py` — единый инструмент для миграции плейлистов. Отдельного скрипта `normalize_library.py` не существует.
+Перезапуск:
 
----
+```bash
+sudo systemctl restart localspotify
+```
 
-# 🗂️ Library structure
+Остановка:
 
-Итоговая структура:
-
-```text
-~/Music/Normalized Library/
-├── Artist A/
-│   └── Singles/
-│       ├── Track 1.m4a
-│       └── Track 2.m4a
-│
-├── Artist B/
-│   └── Singles/
-│       └── Track 3.m4a
-│
-└── Artist C/
-    └── Singles/
-        └── Track 4.m4a
+```bash
+sudo systemctl stop localspotify
 ```
 
 ---
 
-# 🖼️ Artwork
+# 🔄 Обновление проекта
 
-Основной источник обложек:
-
-```text
-iTunes API
-```
-
-Fallback:
-
-```text
-YouTube thumbnail
-```
-
-Если часть обложек не загрузилась из-за rate-limit:
+Перед обновлением желательно проверить состояние Git:
 
 ```bash
-python fix_covers.py
+cd ~/local-Spotify
+git status
 ```
 
-Скрипт:
-
-* находит `.m4a` без `covr`;
-* ищет обложку через Deezer API;
-* повторяет неудачные запросы;
-* делает паузы;
-* встраивает artwork непосредственно в файл.
-
-Операция идемпотентна: уже обработанные файлы повторно менять не требуется.
-
----
-
-# ⚙️ Systemd
-
-## music-adder
-
-Основной сервис:
-
-```text
-music-adder.service
-```
-
-Проверить состояние:
+Если рабочая директория чистая:
 
 ```bash
-systemctl --user status music-adder
+git switch main
+git pull --ff-only origin main
 ```
 
-Запустить:
+После обновления:
 
 ```bash
-systemctl --user start music-adder
+source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
-Остановить:
+Проверить тесты:
 
 ```bash
-systemctl --user stop music-adder
+PYTHONPATH="$PWD" pytest -q
 ```
 
-Перезапустить:
+Если всё успешно:
 
 ```bash
-systemctl --user restart music-adder
-```
-
-Логи:
-
-```bash
-journalctl --user -u music-adder -f
-```
-
-Для запуска user service после выхода пользователя:
-
-```bash
-loginctl enable-linger $USER
-```
-
----
-
-# 🔥 UFW
-
-Если используется UFW, рекомендуется разрешить доступ только из локальной сети.
-
-Пример для `192.168.1.0/24`:
-
-```bash
-sudo ufw allow from 192.168.1.0/24 \
-    to any port 4533 proto tcp \
-    comment "Navidrome"
-
-sudo ufw allow from 192.168.1.0/24 \
-    to any port 8787 proto tcp \
-    comment "Adder"
-
-sudo ufw reload
+sudo systemctl restart localspotify
 ```
 
 Проверить:
 
 ```bash
-sudo ufw status
+systemctl status localspotify
 ```
-
-> `192.168.1.0/24` необходимо заменить на свою локальную подсеть.
 
 ---
 
-# 📁 Project structure
+# 🧪 Production Smoke Test
+
+После запуска рекомендуется проверить основные компоненты.
+
+## 1. Health
+
+```bash
+curl -sS http://127.0.0.1:8787/health
+```
+
+## 2. Authentication
+
+```bash
+TOKEN="$(grep '^API_TOKEN=' adder/.env | cut -d= -f2-)"
+```
+
+## 3. Tasks API
+
+```bash
+curl -sS \
+  -H "Authorization: Bearer $TOKEN" \
+  http://127.0.0.1:8787/api/tasks
+```
+
+## 4. Add test track
+
+```bash
+curl -sS \
+  -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  --data '{"links":["https://www.youtube.com/watch?v=dQw4w9WgXcQ"]}' \
+  http://127.0.0.1:8787/api/add
+```
+
+## 5. Check processing
+
+```bash
+curl -sS \
+  -H "Authorization: Bearer $TOKEN" \
+  http://127.0.0.1:8787/api/tasks
+```
+
+## 6. Check output library
+
+```bash
+find "$HOME/Music/Normalized Library" \
+  -type f \
+  -name '*.m4a' \
+  -printf '%T@ %p\n' |
+sort -nr |
+head
+```
+
+---
+
+# 🔍 Проверка FFmpeg
+
+```bash
+ffmpeg -version
+```
+
+Проверка конкретного файла:
+
+```bash
+ffprobe \
+  -v error \
+  -show_entries format=duration,size \
+  -of default=noprint_wrappers=1 \
+  "PATH_TO_FILE.m4a"
+```
+
+---
+
+# 🔍 Проверка yt-dlp
+
+```bash
+yt-dlp --version
+```
+
+Проверка:
+
+```bash
+yt-dlp \
+  --simulate \
+  "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+```
+
+---
+
+# 🗄️ SQLite
+
+Основная база данных используется для хранения задач.
+
+Типичная база:
 
 ```text
-local-Spotify/
-├── README.md
-├── .gitignore
-├── .env.example
-│
-├── adder/
-│   ├── app.py
-│   ├── config.py
-│   ├── fix_covers.py
-│   ├── requirements.txt
-│   ├── .env
-│   └── tmp/
-│
-├── scripts/
-│   ├── youtube_links.py
-│   └── migrate_playlist.py
-│
-└── deploy/
-    ├── install.sh
-    ├── music-adder.service.template
-    └── navidrome-override.conf
+adder.db
 ```
 
-### Main files
+В ней хранится состояние очереди.
 
-| File                           | Purpose                                       |
-| ------------------------------ | --------------------------------------------- |
-| `adder/app.py`                 | FastAPI application and workers               |
-| `adder/config.py`              | Unified configuration module                  |
-| `adder/fix_covers.py`          | Artwork recovery                              |
-| `scripts/youtube_links.py`     | Spotify → YouTube URL matching                |
-| `scripts/migrate_playlist.py`  | Download, tag, artwork, library organization  |
-| `deploy/install.sh`            | Automated deployment                          |
-| `deploy/music-adder.service.template` | systemd service template (generated by install.sh) |
-| `adder/tmp/`                   | Temporary download files                      |
-
----
-
-# 🛠️ Troubleshooting
-
-## `adder` returns `000` / does not respond
-
-Check service status:
-
-```bash
-systemctl --user status music-adder --no-pager
-```
-
-Check recent logs:
-
-```bash
-journalctl --user -u music-adder -n 30 --no-pager
-```
-
-### `Start-limit-hit`
-
-The service has crashed too many times.
-
-Reset the failure state:
-
-```bash
-systemctl --user reset-failed music-adder
-```
-
-Then:
-
-```bash
-systemctl --user restart music-adder
-```
-
-### `No such file or directory` in `ExecStart`
-
-Check that the paths inside the systemd service match the actual repository location:
-
-```bash
-pwd
-```
-
-and:
-
-```bash
-systemctl --user cat music-adder
-```
-
----
-
-# ❌ Navidrome: `permission denied`
-
-There are two common causes.
-
-## 1. `ProtectHome`
-
-Check the service:
-
-```bash
-systemctl cat navidrome
-```
-
-If `ProtectHome` prevents access to the music directory, create an override:
-
-```bash
-sudo systemctl edit navidrome
-```
-
-Example:
-
-```ini
-[Service]
-ProtectHome=read-only
-PrivateUsers=no
-```
-
-Then restart:
-
-```bash
-sudo systemctl restart navidrome
-```
-
----
-
-## 2. Directory traversal permissions
-
-The Navidrome user needs permission to traverse the parent directories.
-
-For example:
-
-```bash
-chmod o+x ~
-chmod o+x ~/Music
-```
-
-Then allow group read/traverse access to the library:
-
-```bash
-chmod -R g+rX ~/Music/Normalized\ Library
-```
-
-After changing permissions:
-
-```bash
-sudo systemctl restart navidrome
-```
-
----
-
-# 🖼️ Covers are missing
-
-If many covers are missing, the most common reason is API rate limiting.
-
-Run:
-
-```bash
-python fix_covers.py
-```
-
-The script intentionally adds delays between requests.
-
-If necessary, run it again:
-
-```bash
-python fix_covers.py
-```
-
-Check the log:
-
-```bash
-tail fix_covers.log
-```
-
----
-
-# 📱 iPhone cannot connect
-
-Check the following:
-
-### 1. Use HTTP
-
-Correct:
+Пример информации о задаче:
 
 ```text
-http://192.168.1.42:4533
+id
+url
+status
+artist
+title
+error
+error_type
+retry_count
+updated_at
 ```
 
-Not:
+База данных является частью runtime-состояния и **не должна коммититься в Git**, если это локальная production-база.
+
+---
+
+# 🔒 Безопасность
+
+Проект рассчитан на использование в домашней сети.
+
+API защищён:
 
 ```text
-https://192.168.1.42:4533
+Authorization: Bearer API_TOKEN
 ```
 
-### 2. Same Wi-Fi
+Не публикуй API напрямую в Интернет без дополнительной защиты.
 
-The iPhone and ThinkPad must be on the same local network.
+Особенно важно:
 
-### 3. Check server IP
+* не коммитить `.env`;
+* не публиковать API token;
+* не публиковать production database;
+* не открывать порт `8787` наружу без необходимости;
+* использовать firewall;
+* использовать reverse proxy/VPN при удалённом доступе.
 
-```bash
-ip route get 1.1.1.1 | awk '{print $7; exit}'
+---
+
+# 🌐 Доступ из Интернета
+
+Проект не предполагает прямого публичного доступа к API.
+
+Для удалённого доступа рекомендуется использовать VPN, например:
+
+```text
+WireGuard
 ```
 
-### 4. Check UFW
+или другой защищённый VPN.
 
-```bash
-sudo ufw status
+Не рекомендуется просто пробрасывать:
+
+```text
+8787
 ```
 
-### 5. Check Navidrome
-
-```bash
-sudo systemctl status navidrome
-```
+на Internet.
 
 ---
 
 # 💾 Backup
 
-Минимальный backup должен включать:
+Рекомендуется регулярно резервировать:
 
-* музыкальную библиотеку;
-* Navidrome configuration;
-* systemd service;
-* project source code.
-
-Создать архив:
-
-```bash
-tar -czf local-spotify-backup-$(date +%Y%m%d).tar.gz \
-    ~/Music/Normalized\ Library \
-    /etc/navidrome/navidrome.toml \
-    ~/.config/systemd/user/music-adder.service \
-    ~/local-Spotify
+```text
+~/Music/Normalized Library/
 ```
 
-> `*.db` и `*.session` отдельно сохранять не требуется: они могут быть пересозданы.
+а также:
 
-Для полноценного backup также рекомендуется хранить копию `.env`, если он содержит необходимые настройки.
+```text
+adder.db
+```
+
+Конфигурацию:
+
+```text
+adder/.env
+```
+
+следует сохранять отдельно и безопасно.
+
+Пример:
+
+```bash
+tar \
+  -czf localspotify-backup.tar.gz \
+  "$HOME/Music/Normalized Library" \
+  adder.db
+```
+
+Не добавляй `.env` в публичный backup без шифрования.
 
 ---
 
-# 🔄 Update
+# 🚨 Troubleshooting
 
-Получить последнюю версию проекта:
+## API не запускается
+
+Проверь:
 
 ```bash
-cd ~/local-Spotify
-git pull
+systemctl status localspotify
 ```
 
-Перезапустить сервис:
+и:
 
 ```bash
-systemctl --user restart music-adder
+journalctl -u localspotify -n 100
 ```
 
-Если изменились Python dependencies:
+При ручном запуске:
 
 ```bash
-cd adder
-
 source .venv/bin/activate
-pip install -r requirements.txt
-deactivate
-
-systemctl --user restart music-adder
-```
-
-Проверить:
-
-```bash
-systemctl --user status music-adder
+python -m adder.server
 ```
 
 ---
 
-# 🗑️ Uninstall
+## `/health` не отвечает
 
-Если необходимо полностью удалить систему:
-
-## 1. Stop services
+Проверь процесс:
 
 ```bash
-systemctl --user stop music-adder
-systemctl --user disable music-adder
-
-sudo systemctl stop navidrome
-sudo systemctl disable navidrome
+pgrep -af uvicorn
 ```
 
-## 2. Remove packages
+Проверь порт:
 
 ```bash
-sudo pacman -R navidrome
-```
-
-## 3. Remove project and library
-
-```bash
-rm -rf ~/local-Spotify
-rm -rf ~/Music/Normalized\ Library
-```
-
-## 4. Remove Navidrome data and configuration
-
-```bash
-sudo rm -rf /var/lib/navidrome
-sudo rm -f /etc/navidrome/navidrome.toml
-```
-
-Remove the user service:
-
-```bash
-rm -f ~/.config/systemd/user/music-adder.service
-```
-
-Reload user systemd:
-
-```bash
-systemctl --user daemon-reload
-```
-
-## 5. Remove UFW rules
-
-```bash
-sudo ufw delete allow 4533
-sudo ufw delete allow 8787
+ss -ltnp | grep 8787
 ```
 
 ---
 
-# 🧩 Technology Stack
+## Задачи зависли
+
+Проверь:
+
+```bash
+curl \
+  -H "Authorization: Bearer $TOKEN" \
+  http://127.0.0.1:8787/api/tasks
+```
+
+Затем:
+
+```bash
+journalctl -u localspotify -n 200
+```
+
+---
+
+## yt-dlp не загружает видео
+
+Проверь:
+
+```bash
+yt-dlp --version
+```
+
+и попробуй:
+
+```bash
+yt-dlp --simulate "YOUTUBE_URL"
+```
+
+Некоторые YouTube видео могут быть:
+
+* удалены;
+* приватными;
+* недоступными в регионе;
+* ограниченными автором;
+* недоступными без авторизации.
+
+Такие ошибки не обязательно означают проблему самого приложения.
+
+---
+
+## FFmpeg не найден
+
+Проверь:
+
+```bash
+which ffmpeg
+```
+
+Если отсутствует:
+
+```bash
+sudo pacman -S ffmpeg
+```
+
+---
+
+## Файл появился, но Navidrome его не видит
+
+Проверь путь музыкальной библиотеки в Navidrome.
+
+Затем выполни rescan библиотеки.
+
+Также проверь права:
+
+```bash
+ls -lah "$HOME/Music/Normalized Library"
+```
+
+Пользователь, под которым работает Navidrome, должен иметь доступ к музыкальной библиотеке.
+
+---
+
+# 🧹 Очистка development artifacts
+
+Перед commit рекомендуется:
+
+```bash
+git status
+```
+
+Не должны попадать в Git:
 
 ```text
-Operating System
-└── Arch Linux
+.venv/
+__pycache__/
+*.pyc
+adder.db
+adder/.env
+adder/tmp/
+```
 
-Backend
-├── Python 3.10+
-├── FastAPI
-└── systemd
+Проверь:
 
-Music Server
-└── Navidrome
-
-Media
-├── yt-dlp
-├── FFmpeg
-└── M4A / AAC
-
-Metadata
-├── iTunes API
-└── Deezer API
-
-Protocol
-└── Subsonic API
-
-Client
-└── iOS / Amperfy
-
-Security
-└── UFW / Local LAN
+```bash
+git status --short
 ```
 
 ---
 
-# 🎯 Project workflow
+# 🌿 Git Workflow
 
-Весь проект построен вокруг максимально простого сценария:
+Основная production ветка:
 
 ```text
-                    ┌───────────────┐
-                    │    YouTube    │
-                    └───────┬───────┘
-                            │
-                            ▼
-                    ┌───────────────┐
-                    │     adder     │
-                    │    :8787      │
-                    └───────┬───────┘
-                            │
-                            ▼
-                    ┌───────────────┐
-                    │    yt-dlp     │
-                    │      ↓        │
-                    │      M4A      │
-                    └───────┬───────┘
-                            │
-                            ▼
-                 ┌─────────────────────┐
-                 │      Metadata       │
-                 │                     │
-                 │ Artist / Title      │
-                 │ Artwork / Tags      │
-                 └──────────┬──────────┘
-                            │
-                            ▼
-                 ┌─────────────────────┐
-                 │ Normalized Library  │
-                 └──────────┬──────────┘
-                            │
-                            ▼
-                 ┌─────────────────────┐
-                 │      Navidrome      │
-                 │       :4533         │
-                 └──────────┬──────────┘
-                            │
-                       Subsonic API
-                            │
-                            ▼
-                 ┌─────────────────────┐
-                 │       Amperfy       │
-                 │        iOS          │
-                 └─────────────────────┘
+main
 ```
+
+Для изменений рекомендуется создавать отдельную ветку:
+
+```bash
+git switch main
+git pull --ff-only origin main
+git switch -c fix/my-change
+```
+
+После изменений:
+
+```bash
+git diff --check
+```
+
+Запусти тесты:
+
+```bash
+source .venv/bin/activate
+PYTHONPATH="$PWD" pytest -q
+```
+
+Commit:
+
+```bash
+git add .
+git commit -m "fix: description"
+```
+
+Push:
+
+```bash
+git push -u origin fix/my-change
+```
+
+После проверки изменения можно объединить с `main`.
 
 ---
 
-# 🔐 Privacy
+# 🧪 CI / Quality Gate
 
-Музыкальная библиотека хранится локально.
-
-После загрузки и обработки трека воспроизведение происходит непосредственно с собственного сервера:
+Перед слиянием изменений рекомендуется пройти:
 
 ```text
-iPhone
-   │
-   │ LAN
-   ▼
-ThinkPad
-   │
-   ▼
-Navidrome
-   │
-   ▼
-Local Music Library
+Git diff
+     │
+     ▼
+git diff --check
+     │
+     ▼
+pytest
+     │
+     ▼
+manual smoke test
+     │
+     ▼
+production verification
 ```
 
-Внешние API используются только для вспомогательных задач:
+Минимальная команда:
 
-* поиск YouTube-контента;
-* поиск метаданных;
-* получение обложек.
-
----
-
-# 📌 Status
-
-**Status:** 🟢 Personal / Self-hosted
-
-Проект предназначен для личного домашнего использования и находится в активной разработке.
+```bash
+PYTHONPATH="$PWD" pytest -q
+```
 
 ---
 
-# 📄 License
+# 📊 Текущий статус
 
-Private project for personal use.
+**Project:** localSpotify
 
-Проект не предназначен для коммерческого предоставления публичного музыкального сервиса.
+**Type:** Self-hosted personal music system
+
+**Platform:** Linux / Arch Linux
+
+**API:** FastAPI
+
+**Database:** SQLite
+
+**Downloader:** yt-dlp
+
+**Audio processing:** FFmpeg
+
+**Music server:** Navidrome
+
+**Mobile client:** Subsonic-compatible clients / Amperfy
+
+**Process manager:** systemd
+
+**Status:** 🟢 Production-ready for personal self-hosted use
+
+Проект прошёл функциональную проверку основных компонентов:
+
+* FastAPI startup;
+* `/health`;
+* API authentication;
+* YouTube URL validation;
+* YouTube URL canonicalization;
+* task creation;
+* SQLite persistence;
+* background workers;
+* queue processing;
+* `yt-dlp`;
+* FFmpeg;
+* metadata processing;
+* retry handling;
+* task recovery;
+* temporary file cleanup;
+* graceful shutdown;
+* duplicate URL handling;
+* title cleaning;
+* output library creation.
+
+Автоматический тестовый набор:
+
+```text
+47 passed
+```
+
+---
+
+# ⚠️ Ограничения
+
+Проект является домашней self-hosted системой.
+
+Он не предназначен для:
+
+* публичного SaaS;
+* массового использования;
+* высоконагруженного production;
+* публичного музыкального streaming-сервиса;
+* обхода ограничений сторонних сервисов.
+
+Доступность конкретных YouTube видео зависит от самого YouTube и параметров конкретного контента.
+
+---
+
+# 🗺️ Roadmap
+
+Возможные дальнейшие улучшения:
+
+* [ ] Web UI для управления очередью
+* [ ] Просмотр прогресса загрузки
+* [ ] Удаление треков через API
+* [ ] Управление библиотекой
+* [ ] Album import
+* [ ] Playlist management
+* [ ] Улучшенный поиск metadata
+* [ ] Автоматический поиск лучшего audio source
+* [ ] Более подробная система retry
+* [ ] Structured logging
+* [ ] Metrics
+* [ ] Prometheus integration
+* [ ] Docker deployment
+* [ ] Backup automation
+* [ ] CI/CD
+* [ ] Автоматический production smoke test
+
+---
+
+# 📜 Лицензия
+
+Проект предназначен для личного self-hosted использования.
+
+Перед использованием стороннего контента убедитесь, что вы имеете соответствующие права или разрешение на его загрузку и хранение.
+
+---
+
+# 👤 Автор
+
+**Whyslab**
+
+GitHub:
+
+https://github.com/Whyslab
+
+Repository:
+
+https://github.com/Whyslab/local-Spotify
+
+---
+
+# ❤️ localSpotify
+
+```text
+YouTube
+   │
+   ▼
+localSpotify Adder
+   │
+   ├── yt-dlp
+   ├── FFmpeg
+   ├── Metadata
+   └── Workers
+          │
+          ▼
+   Normalized Library
+          │
+          ▼
+      Navidrome
+          │
+          ▼
+      Subsonic API
+          │
+          ▼
+       iPhone
+          │
+          ▼
+       Amperfy
+```
+
+**Own your music. Own your server. Own your library.**
