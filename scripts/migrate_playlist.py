@@ -19,8 +19,16 @@ from mutagen.mp4 import MP4, MP4Cover
 sys.path.insert(0, str(Path(__file__).parent.parent / "adder"))
 from config import LIBRARY, DELAY_BETWEEN_TRACKS, MIN_FREE_SPACE_MB
 
-CSV_PATH = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("spotify_tracks_youtube.csv")
-TMP_DIR = Path(__file__).resolve().parent / "tmp"
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parent
+
+CSV_PATH = (
+    Path(sys.argv[1]).expanduser().resolve()
+    if len(sys.argv) > 1
+    else PROJECT_ROOT / "spotify_tracks_youtube.csv"
+)
+
+TMP_DIR = SCRIPT_DIR / "tmp"
 DELAY = DELAY_BETWEEN_TRACKS
 
 
@@ -109,7 +117,11 @@ def download(url: str):
 
 
 def main():
+    if not CSV_PATH.is_file():
+        raise SystemExit(f"CSV input not found: {CSV_PATH}")
+
     TMP_DIR.mkdir(parents=True, exist_ok=True)
+
     with open(CSV_PATH, newline="", encoding="utf-8-sig") as f:
         rows = [r for r in csv.DictReader(f) if (r.get("youtube_url") or "").strip()]
 
