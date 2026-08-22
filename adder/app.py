@@ -3,6 +3,7 @@ import logging
 import os
 import signal
 import json
+import hashlib
 import queue
 import re
 import shutil
@@ -18,7 +19,7 @@ from urllib.parse import urlparse
 
 import requests
 import uvicorn
-from fastapi import FastAPI, HTTPException, Depends, Security
+from fastapi import FastAPI, HTTPException, Depends, Security, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import HTMLResponse
 from mutagen.mp4 import MP4, MP4Cover
@@ -639,6 +640,63 @@ def fetch_cover(artist: str, title: str, thumb_url: str | None):
             pass
     return None, None
 
+def file_sha256(filepath: Path, chunk_size: int = 1024 * 1024) -> str:
+    """Return the SHA-256 digest of a file."""
+    digest = hashlib.sha256()
+
+    with filepath.open("rb") as f:
+        while True:
+            chunk = f.read(chunk_size)
+            if not chunk:
+                break
+            digest.update(chunk)
+
+    return digest.hexdigest()
+
+
+def find_duplicate_library_file(filepath: Path) -> Path | None:
+    """Find an existing library M4A file with identical content.
+
+    This is content-based duplicate detection. Filename differences,
+    metadata differences, and directory differences do not matter.
+    """
+    if not filepath.exists():
+        return None
+
+    try:
+        source_size = filepath.stat().st_size
+    except OSError:
+        return None
+
+    source_hash = file_sha256(filepath)
+
+    if not LIBRARY.exists():
+        return None
+
+    for candidate in LIBRARY.rglob("*.m4a"):
+        try:
+            if not candidate.is_file():
+                continue
+
+            if candidate == filepath:
+                continue
+
+            # Avoid hashing files with different sizes.
+            if candidate.stat().st_size != source_size:
+                continue
+
+            if file_sha256(candidate) == source_hash:
+                return candidate
+
+        except (OSError, PermissionError) as exc:
+            logger.warning(
+                f"Could not inspect library file {candidate}: {exc}",
+                extra={"task_id": "system"},
+            )
+
+    return None
+
+
 def unique_path(base: Path) -> Path:
     p, n = base, 1
     while p.exists():
@@ -774,13 +832,37 @@ def process(tid: int, url: str):
             if not is_valid:
                 raise RuntimeError(f"Final validation failed: {error_msg}")
             
-            # Problem #7 & #8: Atomic move to library ONLY after successful processing
+            # Content-based duplicate detection must happen while
+            # holding the same lock as the final move. This prevents
+            # concurrent workers from both accepting identical audio.
             with FILE_LOCK:
+                duplicate = find_duplicate_library_file(tmp_file)
+
+                if duplicate is not None:
+                    logger.info(
+                        f"Duplicate content detected; keeping existing file "
+                        f"{duplicate} and discarding temporary file {tmp_file}",
+                        extra={"task_id": tid},
+                    )
+
+                    tmp_file.unlink()
+                    tmp_file = None
+
+                    task_update(
+                        tid,
+                        status="done",
+                        error="",
+                        error_type="",
+                    )
+                    return
+
+                # Same filename + different content is allowed.
+                # Preserve the existing collision-safe naming behavior.
                 final_target = unique_path(base_target)
                 shutil.move(str(tmp_file), str(final_target))
-            
+
             tmp_file = None  # Successfully moved, don't cleanup in finally
-            
+
             # Problem #24: Clear error fields on success
             task_update(tid, status="done", error="", error_type="")
             return  # Success, exit retry loop
@@ -1046,15 +1128,26 @@ def health():
     # Queue stats
     queue_size = TASK_QUEUE.qsize()
     
-    return {
-        "status": "healthy" if db_status == "ok" and library_status == "ok" else "unhealthy",
+    healthy = db_status == "ok" and library_status == "ok"
+
+    payload = {
+        "status": "healthy" if healthy else "unhealthy",
         "database": db_status,
         "library": library_status,
         "library_path": str(LIBRARY),
         "workers": MAX_WORKERS,
         "queue_size": queue_size,
-        "max_queue_size": MAX_QUEUE_SIZE
+        "max_queue_size": MAX_QUEUE_SIZE,
     }
+
+    if not healthy:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content=payload,
+        )
+
+    return payload
 
 @app.get("/", response_class=HTMLResponse)
 def index():

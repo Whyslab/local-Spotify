@@ -4,12 +4,29 @@ import re
 import sqlite3
 import subprocess
 import sys
+import os
 import time
 from difflib import SequenceMatcher
+from pathlib import Path
 
-CSV_IN = "Monday.txt"
-CSV_OUT = "spotify_tracks_youtube.csv"
-DB_PATH = "links_state.db"
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parent
+
+CSV_IN = Path(os.environ.get("CSV_IN", str(PROJECT_ROOT / "Monday.txt")))
+CSV_OUT = Path(os.environ.get(
+    "CSV_OUT",
+    str(PROJECT_ROOT / "spotify_tracks_youtube.csv"),
+))
+DB_PATH = Path(os.environ.get(
+    "DB_PATH",
+    str(PROJECT_ROOT / "links_state.db"),
+))
+
+SEARCH_COUNT = int(os.environ.get("YT_SEARCH_COUNT", "5"))
+MIN_MATCH_SCORE = float(os.environ.get("YT_MATCH_MIN_SCORE", "0.55"))
+SEARCH_TIMEOUT = int(os.environ.get("YT_SEARCH_TIMEOUT", "60"))
+SEARCH_RETRIES = int(os.environ.get("YT_SEARCH_RETRIES", "3"))
+SEARCH_BACKOFF_BASE = float(os.environ.get("YT_SEARCH_BACKOFF_BASE", "2.0"))
 
 NAME_KEYS = ["name", "track name", "title", "track", "song", "название"]
 ARTIST_KEYS = ["artists", "artist", "artist name(s)", "artist(s)", "artist name", "исполнитель"]
@@ -66,6 +83,7 @@ def load_tracks(path: str) -> list[dict]:
 
 
 def init_db():
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.execute(
         """
@@ -134,22 +152,37 @@ def yt_search_candidates(query: str) -> list[dict]:
         "-j",
         f"ytsearch{SEARCH_COUNT}:{query}",
     ]
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-        if result.returncode != 0 or not result.stdout.strip():
-            return []
 
-        candidates = []
-        for line in result.stdout.splitlines():
-            try:
-                data = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if data.get("url") or data.get("webpage_url"):
-                candidates.append(data)
-        return candidates
-    except (OSError, subprocess.SubprocessError):
-        return []
+    for attempt in range(SEARCH_RETRIES + 1):
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=SEARCH_TIMEOUT,
+            )
+
+            if result.returncode == 0 and result.stdout.strip():
+                candidates = []
+                for line in result.stdout.splitlines():
+                    try:
+                        data = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+
+                    if data.get("url") or data.get("webpage_url"):
+                        candidates.append(data)
+
+                if candidates:
+                    return candidates
+
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+        if attempt < SEARCH_RETRIES:
+            time.sleep(SEARCH_BACKOFF_BASE * (2 ** attempt))
+
+    return []
 
 
 def yt_search_url(artist: str, title: str):
@@ -217,6 +250,11 @@ def main():
             print(f"[{idx}/{total}] OK   score={score:.2f} {query}")
         else:
             print(f"[{idx}/{total}] MISS score={score:.2f} {query}")
+
+    if not out_rows:
+        raise SystemExit("Не найдено ни одной строки для экспорта")
+
+    CSV_OUT.parent.mkdir(parents=True, exist_ok=True)
 
     with open(CSV_OUT, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=out_rows[0].keys())

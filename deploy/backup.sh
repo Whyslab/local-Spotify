@@ -2,7 +2,8 @@
 # Problem #20: Backup script for adder.db and configuration
 # Safe backup policy - never deletes original database
 
-set -e
+set -euo pipefail
+umask 077
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
@@ -19,7 +20,8 @@ mkdir -p "$BACKUP_DIR"
 
 # Backup SQLite database (Problem #20)
 if [ -f "$ADDER_DIR/adder.db" ]; then
-    cp "$ADDER_DIR/adder.db" "$BACKUP_DIR/adder_$TIMESTAMP.db"
+    sqlite3 "$ADDER_DIR/adder.db" ".backup '$BACKUP_DIR/adder_$TIMESTAMP.db'"
+    chmod 600 "$BACKUP_DIR/adder_$TIMESTAMP.db"
     echo "✓ Database backed up: adder_$TIMESTAMP.db"
 else
     echo "⚠ Database not found at $ADDER_DIR/adder.db"
