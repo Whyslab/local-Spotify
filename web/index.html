@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="ru">
+
+<head>
+
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+
+<title>localSpotify</title>
+
+<link rel="stylesheet" href="/static/style.css">
+
+</head>
+
+
+<body>
+
+
+<div class="app">
+
+
+<header class="topbar">
+
+<div>
+<h1>🎵 localSpotify</h1>
+<p>Self-hosted YouTube Music Library</p>
+</div>
+
+
+<button onclick="logout()">
+Change Token
+</button>
+
+
+</header>
+
+
+
+
+<section id="loginBox" class="panel">
+
+<h2>🔐 API Token</h2>
+
+<p>
+Введите API_TOKEN из adder/.env
+</p>
+
+<input
+id="tokenInput"
+placeholder="API_TOKEN"
+/>
+
+
+<button onclick="saveToken()">
+Connect
+</button>
+
+
+</section>
+
+
+
+
+
+<section class="panel">
+
+<h2>➕ Add Music</h2>
+
+
+<textarea
+id="links"
+placeholder="YouTube ссылки (каждая с новой строки)">
+</textarea>
+
+
+<div class="actions">
+
+<button onclick="addTracks()">
+Add Track
+</button>
+
+
+<button onclick="clearInput()" class="secondary">
+Clear
+</button>
+
+
+</div>
+
+
+<div id="addResult"></div>
+
+
+</section>
+
+
+
+
+
+<section class="panel">
+
+<h2>🟢 System</h2>
+
+
+<div id="health">
+
+Loading...
+
+</div>
+
+
+</section>
+
+
+
+
+
+<section class="panel">
+
+
+<div class="section-title">
+
+<h2>
+🎧 Queue
+</h2>
+
+
+<span id="queueCount">
+</span>
+
+
+</div>
+
+
+
+<div id="tasks" class="tracks">
+
+</div>
+
+
+</section>
+
+
+
+</div>
+
+
+
+<script src="/static/app.js"></script>
+
+
+</body>
+
+</html>

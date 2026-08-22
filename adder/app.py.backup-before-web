@@ -22,7 +22,6 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Depends, Security, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import HTMLResponse
-from fastapi.staticfiles import StaticFiles
 from mutagen.mp4 import MP4, MP4Cover
 from pydantic import BaseModel
 
@@ -1071,13 +1070,6 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-app.mount(
-    "/static",
-    StaticFiles(directory="web"),
-    name="static",
-)
-
-
 class AddRequest(BaseModel):
     links: list[str]
 
@@ -1209,4 +1201,145 @@ def health():
 
 @app.get("/", response_class=HTMLResponse)
 def index():
-    return (PROJECT.parent / "web" / "index.html").read_text()
+    return HTML
+
+HTML = """<!doctype html><html><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1"><title>Music Adder</title>
+<style>
+body{font-family:-apple-system,system-ui,sans-serif;background:#111;color:#eee;max-width:760px;margin:0 auto;padding:16px}
+textarea{width:100%;height:120px;background:#222;color:#eee;border:1px solid #444;border-radius:8px;padding:8px}
+button{background:#2f7df6;color:#fff;border:0;border-radius:8px;padding:10px 18px;font-size:15px;margin-top:8px}
+table{width:100%;border-collapse:collapse;margin-top:16px;font-size:14px}
+td,th{padding:6px 4px;border-bottom:1px solid #333;text-align:left;vertical-align:top}
+.done{color:#4caf50}.error{color:#f44336}.queued,.downloading,.tagging{color:#ffb300}
+</style></head><body>
+<h2>YouTube → Navidrome</h2>
+<div id=authbox style="margin-bottom:12px">
+  <input id=token type=password placeholder="API Token" autocomplete="off"
+         style="width:70%;box-sizing:border-box;background:#222;color:#eee;border:1px solid #444;border-radius:8px;padding:9px">
+  <button onclick=saveToken() style="margin-left:4px">Сохранить</button>
+  <button onclick=clearToken() style="margin-left:4px;background:#555">Очистить</button>
+</div>
+<textarea id=links placeholder="https://www.youtube.com/watch?v=...&#10;https://youtu.be/..."></textarea>
+<button onclick=add()>Добавить</button>
+<table><thead><tr><th>Статус</th><th>Трек</th><th>URL</th></tr></thead><tbody id=tb></tbody></table>
+<script>
+const TOKEN_KEY = 'localSpotifyApiToken';
+
+function getToken(){
+  return sessionStorage.getItem(TOKEN_KEY) || '';
+}
+
+function saveToken(){
+  const value = document.getElementById('token').value.trim();
+  if(value) sessionStorage.setItem(TOKEN_KEY, value);
+  else sessionStorage.removeItem(TOKEN_KEY);
+  poll();
+}
+
+function clearToken(){
+  sessionStorage.removeItem(TOKEN_KEY);
+  document.getElementById('token').value = '';
+  poll();
+}
+
+document.getElementById('token').value = getToken();
+
+async function add(){
+  const links=document.getElementById('links').value.split('\\n').map(s=>s.trim()).filter(Boolean);
+  if(!links.length)return;
+
+  const token = sessionStorage.getItem('localSpotifyApiToken') || '';
+  const headers = {'Content-Type':'application/json'};
+  if (token) headers['Authorization'] = 'Bearer ' + token;
+
+  try {
+    const r = await fetch('/api/add',{
+      method:'POST',
+      headers,
+      body:JSON.stringify({links})
+    });
+
+    if (!r.ok) {
+      let message = 'Request failed: HTTP ' + r.status;
+      try {
+        const data = await r.json();
+        if (data.detail) message = data.detail;
+      } catch (_) {}
+      alert(message);
+      return;
+    }
+
+    document.getElementById('links').value='';
+    poll();
+  } catch (error) {
+    alert('Network error: ' + error.message);
+  }
+}
+async function poll(){
+  const token = sessionStorage.getItem('localSpotifyApiToken') || '';
+  const headers = {};
+  if (token) headers['Authorization'] = 'Bearer ' + token;
+
+  try {
+    const r = await fetch('/api/tasks', {headers});
+
+    if (!r.ok) {
+      if (r.status === 401) {
+        console.warn('API authentication required or token is invalid');
+      } else {
+        console.warn('Task polling failed:', r.status);
+      }
+      return;
+    }
+
+    const tasks = await r.json();
+    const tbody = document.getElementById('tb');
+
+    tbody.replaceChildren();
+
+    for (const task of tasks) {
+      const row = document.createElement('tr');
+
+      const statusCell = document.createElement('td');
+      statusCell.className = task.status || '';
+      statusCell.textContent = task.status || '';
+
+      const trackCell = document.createElement('td');
+
+      if (task.artist) {
+        const artist = document.createElement('span');
+        artist.textContent = task.artist + ' — ';
+        trackCell.appendChild(artist);
+      }
+
+      if (task.title) {
+        const title = document.createElement('span');
+        title.textContent = task.title;
+        trackCell.appendChild(title);
+      }
+
+      if (task.error) {
+        const error = document.createElement('small');
+        error.textContent = task.error;
+        error.style.display = 'block';
+        trackCell.appendChild(error);
+      }
+
+      const urlCell = document.createElement('td');
+      const url = document.createElement('small');
+      url.textContent = task.url || '';
+      urlCell.appendChild(url);
+
+      row.appendChild(statusCell);
+      row.appendChild(trackCell);
+      row.appendChild(urlCell);
+
+      tbody.appendChild(row);
+    }
+  } catch (error) {
+    console.error('Failed to fetch tasks:', error);
+  }
+}
+setInterval(poll,2000);poll();
+</script></body></html>"""

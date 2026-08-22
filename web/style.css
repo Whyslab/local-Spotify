@@ -1,0 +1,368 @@
+* {
+    box-sizing: border-box;
+}
+
+
+body {
+
+    margin:0;
+    min-height:100vh;
+
+    background:
+    radial-gradient(circle at top,#1db95440,transparent 35%),
+    #090909;
+
+    color:#fff;
+
+    font-family:
+    Inter,
+    system-ui,
+    sans-serif;
+
+}
+
+
+
+.app {
+
+    max-width:1100px;
+
+    margin:auto;
+
+    padding:30px;
+
+}
+
+
+
+.topbar {
+
+    display:flex;
+
+    justify-content:space-between;
+
+    align-items:center;
+
+    margin-bottom:30px;
+
+}
+
+
+
+.topbar h1 {
+
+    font-size:42px;
+
+    margin:0;
+
+}
+
+
+
+.topbar p {
+
+    color:#999;
+
+    margin-top:5px;
+
+}
+
+
+
+.panel {
+
+    background:#151515;
+
+    border-radius:24px;
+
+    padding:25px;
+
+    margin-bottom:25px;
+
+    box-shadow:
+    0 15px 40px rgba(0,0,0,.45);
+
+}
+
+
+
+h2 {
+
+    margin-top:0;
+
+}
+
+
+
+input,
+textarea {
+
+
+    width:100%;
+
+    background:#222;
+
+    color:white;
+
+    border:1px solid #333;
+
+    border-radius:14px;
+
+    padding:15px;
+
+    font-size:15px;
+
+}
+
+
+
+textarea {
+
+    min-height:130px;
+
+    resize:none;
+
+}
+
+
+
+button {
+
+    background:#1ed760;
+
+    color:#000;
+
+    border:none;
+
+    border-radius:30px;
+
+    padding:13px 28px;
+
+    font-weight:700;
+
+    cursor:pointer;
+
+    transition:.2s;
+
+}
+
+
+
+button:hover {
+
+    transform:translateY(-2px);
+
+}
+
+
+
+.secondary {
+
+    background:#333;
+
+    color:white;
+
+}
+
+
+
+.actions {
+
+    display:flex;
+
+    gap:15px;
+
+    margin-top:15px;
+
+}
+
+
+
+.section-title {
+
+    display:flex;
+
+    justify-content:space-between;
+
+    align-items:center;
+
+}
+
+
+
+#health {
+
+    display:flex;
+
+    flex-wrap:wrap;
+
+    gap:10px;
+
+}
+
+
+
+.status {
+
+    background:#222;
+
+    padding:8px 15px;
+
+    border-radius:20px;
+
+}
+
+
+
+.tracks {
+
+    display:flex;
+
+    flex-direction:column;
+
+    gap:12px;
+
+}
+
+
+
+.track {
+
+    display:flex;
+
+    align-items:center;
+
+    gap:20px;
+
+    background:#202020;
+
+    padding:18px;
+
+    border-radius:18px;
+
+}
+
+
+
+.cover {
+
+    width:60px;
+
+    height:60px;
+
+    border-radius:12px;
+
+    background:#333;
+
+}
+
+
+
+.track-info {
+
+    flex:1;
+
+}
+
+
+
+.track-title {
+
+    font-size:17px;
+
+    font-weight:700;
+
+}
+
+
+
+.track-artist {
+
+    color:#aaa;
+
+    margin-top:5px;
+
+}
+
+
+
+.track-status {
+
+    padding:7px 14px;
+
+    border-radius:20px;
+
+    background:#333;
+
+}
+
+
+
+.done {
+
+    color:#1ed760;
+
+}
+
+
+
+.error {
+
+    color:#ff5555;
+
+}
+
+
+
+.downloading {
+
+    color:#ffd166;
+
+}
+
+
+
+small {
+
+    color:#888;
+
+}
+
+
+
+@media(max-width:700px){
+
+.app {
+
+    padding:15px;
+
+}
+
+
+.topbar {
+
+    flex-direction:column;
+
+    align-items:flex-start;
+
+    gap:15px;
+
+}
+
+
+.topbar h1 {
+
+    font-size:32px;
+
+}
+
+
+.track {
+
+    flex-direction:column;
+
+    align-items:flex-start;
+
+}
+
+}

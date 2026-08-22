@@ -1,0 +1,279 @@
+
+function saveToken(){
+
+    const value =
+    document.getElementById("tokenInput").value.trim();
+
+    if(!value)
+        return;
+
+    localStorage.setItem(
+        "token",
+        value
+    );
+
+    document.getElementById("loginBox").style.display="none";
+
+    tasks();
+}
+
+
+
+function logout(){
+
+    localStorage.removeItem("token");
+
+    document.getElementById("loginBox").style.display="block";
+
+}
+
+
+
+function checkLogin(){
+
+    if(localStorage.getItem("token")){
+
+        document.getElementById("loginBox").style.display="none";
+
+    }
+
+}
+
+
+const API = "";
+
+
+function token(){
+
+    return localStorage.getItem("token") || "";
+
+}
+
+
+
+function authHeaders(){
+
+    return {
+
+        "Authorization":
+        "Bearer " + token(),
+
+        "Content-Type":
+        "application/json"
+
+    };
+
+}
+
+
+
+async function addTracks(){
+
+    const text =
+    document.getElementById("links").value;
+
+
+    const links =
+    text
+    .split("\n")
+    .map(x=>x.trim())
+    .filter(Boolean);
+
+
+
+    const result =
+    document.getElementById("addResult");
+
+
+    try{
+
+
+        const r =
+        await fetch("/api/add",{
+
+            method:"POST",
+
+            headers:authHeaders(),
+
+            body:JSON.stringify({
+                links
+            })
+
+        });
+
+
+        const data =
+        await r.json();
+
+
+        result.innerHTML =
+        JSON.stringify(data);
+
+
+
+    }catch(e){
+
+        result.innerHTML=e;
+
+    }
+
+}
+
+
+
+
+async function health(){
+
+try{
+
+
+const r =
+await fetch("/health");
+
+
+const data =
+await r.json();
+
+
+
+document.getElementById("health").innerHTML = `
+
+<div class="status">
+Status: ${data.status}
+</div>
+
+<div class="status">
+Database: ${data.database}
+</div>
+
+<div class="status">
+Library: ${data.library}
+</div>
+
+<div class="status">
+Workers: ${data.workers}
+</div>
+
+<div class="status">
+Queue: ${data.queue_size}
+</div>
+
+`;
+
+
+
+}catch(e){
+
+document.getElementById("health").innerHTML =
+"Offline";
+
+}
+
+}
+
+
+
+
+async function tasks(){
+
+try{
+
+
+const r =
+await fetch("/api/tasks",{
+
+headers:authHeaders()
+
+});
+
+
+if(!r.ok){
+
+throw Error();
+
+}
+
+
+const data =
+await r.json();
+
+
+
+const tbody =
+document.getElementById("tasks");
+
+
+tbody.innerHTML="";
+
+
+
+for(const t of data){
+
+
+const tr =
+document.createElement("tr");
+
+
+tr.innerHTML=`
+
+<td class="${t.status}">
+${t.status}
+</td>
+
+
+<td>
+
+${t.artist || ""}
+
+${t.title || ""}
+
+<br>
+
+<small>
+${t.error || ""}
+</small>
+
+</td>
+
+
+<td>
+<small>
+${t.url}
+</small>
+</td>
+
+`;
+
+
+tbody.appendChild(tr);
+
+
+}
+
+
+}catch(e){
+
+
+}
+
+}
+
+
+
+
+
+setInterval(()=>{
+
+health();
+
+tasks();
+
+},3000);
+
+
+
+checkLogin();
+
+health();
+tasks();
+

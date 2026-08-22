@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+
+<title>localSpotify</title>
+
+<link rel="stylesheet" href="/static/style.css">
+</head>
+
+<body>
+
+<div class="container">
+
+
+<header>
+
+<h1>🎵 localSpotify</h1>
+
+<p>
+Self-hosted Music Server
+</p>
+
+<button onclick="logout()">
+🔐 Change Token
+</button>
+
+</header>
+
+
+<div id="loginBox" class="card">
+
+<h2>🔐 API Token</h2>
+
+<p>
+Введите API_TOKEN из adder/.env
+</p>
+
+<input
+id="tokenInput"
+placeholder="API_TOKEN"
+/>
+
+<button onclick="saveToken()">
+Save
+</button>
+
+</div>
+
+
+
+<section class="card add-box">
+
+<h2>➕ Add YouTube Track</h2>
+
+<textarea 
+id="links"
+placeholder="Вставь YouTube URL. Можно несколько ссылок, каждая с новой строки"></textarea>
+
+<button onclick="addTracks()">
+Добавить
+</button>
+
+<div id="addResult"></div>
+
+</section>
+
+
+
+<section class="card">
+
+<h2>❤️ System Status</h2>
+
+<div id="health">
+Loading...
+</div>
+
+</section>
+
+
+
+<section class="card">
+
+<h2>📚 Queue</h2>
+
+<table>
+
+<thead>
+<tr>
+<th>Status</th>
+<th>Track</th>
+<th>URL</th>
+</tr>
+</thead>
+
+<tbody id="tasks">
+</tbody>
+
+</table>
+
+</section>
+
+
+</div>
+
+
+<script src="/static/app.js"></script>
+
+</body>
+</html>
