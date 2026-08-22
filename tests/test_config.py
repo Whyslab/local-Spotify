@@ -22,10 +22,21 @@ def test_config_loads():
     assert isinstance(MAX_WORKERS, int)
 
 def test_default_library_path():
-    """Test default library path is ~/Music/Normalized Library."""
+    """Test LIBRARY resolves LIBRARY_PATH when set, else ~/Music/Normalized Library.
+
+    The previous version of this assertion (str(LIBRARY) == str(expected)
+    or LIBRARY.exists()) only passed if LIBRARY_PATH was unset, or if it
+    happened to point at a directory that already existed on whatever
+    machine ran the tests. ci.yml sets LIBRARY_PATH to a workspace
+    subfolder it never creates, so this failed in the real GitHub Actions
+    run even after test_health_does_not_require_auth and the XSS
+    regression test were fixed. Test the documented precedence directly
+    instead of depending on the filesystem.
+    """
     from config import LIBRARY
-    expected = Path.home() / "Music" / "Normalized Library"
-    assert str(LIBRARY) == str(expected) or LIBRARY.exists()
+    override = os.environ.get("LIBRARY_PATH")
+    expected = Path(override) if override else Path.home() / "Music" / "Normalized Library"
+    assert LIBRARY == expected
 
 def test_delay_between_tracks():
     """Test DELAY_BETWEEN_TRACKS is configurable."""
