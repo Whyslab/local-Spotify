@@ -41,3 +41,12 @@ htmlcov/
 *.so
 .Python
 adder/adder.db
+
+# Runtime / migration state
+links_state.db
+*.db-shm
+*.db-wal
+spotify_tracks_youtube.csv
+Monday.txt
+adder/tmp/
+scripts/tmp/

@@ -87,6 +87,10 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Security(security))
 shutdown_event = threading.Event()
 active_workers = []
 
+
+class ShutdownRequested(Exception):
+    """Raised when a task is interrupted because the service is shutting down."""
+
 # ---------------- SQLite ----------------
 def db_exec(sql: str, params=()):
     con = sqlite3.connect(DB_PATH)
@@ -438,6 +442,14 @@ def run_yt_dlp(cmd: list[str], timeout: float) -> subprocess.CompletedProcess:
 
             if process.poll() is not None:
                 drain_pipes()
+
+                # systemd sends SIGTERM to the whole service cgroup, so
+                # yt-dlp may be terminated before the worker observes
+                # shutdown_event itself. Treat that subprocess termination
+                # as an intentional shutdown, not as a task failure.
+                if shutdown_event.is_set():
+                    raise ShutdownRequested()
+
                 break
 
             if shutdown_event.is_set():
@@ -447,7 +459,7 @@ def run_yt_dlp(cmd: list[str], timeout: float) -> subprocess.CompletedProcess:
                 )
                 terminate_process()
                 drain_pipes()
-                raise RuntimeError("Shutdown requested while yt-dlp was running")
+                raise ShutdownRequested()
 
             if time.monotonic() - start_time >= timeout:
                 terminate_process()
@@ -867,6 +879,34 @@ def process(tid: int, url: str):
             task_update(tid, status="done", error="", error_type="")
             return  # Success, exit retry loop
             
+        except ShutdownRequested:
+            logger.info(
+                "Task interrupted by shutdown; returning task to queued state",
+                extra={"task_id": tid},
+            )
+
+            task_update(
+                tid,
+                status="queued",
+                error="",
+                error_type="",
+                retry_count=retry_count,
+            )
+
+            if tmp_file and tmp_file.exists():
+                try:
+                    tmp_file.unlink()
+                except OSError as cleanup_error:
+                    logger.warning(
+                        f"Could not remove temporary file {tmp_file}: {cleanup_error}",
+                        extra={"task_id": tid},
+                    )
+
+            with FILE_LOCK:
+                PROCESSING_URLS.discard(url)
+
+            return
+
         except Exception as e:
             error_str = str(e)[:300]
             last_error_msg = error_str
@@ -949,6 +989,16 @@ def worker():
 
         try:
             if shutdown_event.is_set():
+                task_update(
+                    tid,
+                    status="queued",
+                    error="",
+                    error_type="",
+                )
+
+                with FILE_LOCK:
+                    PROCESSING_URLS.discard(url)
+
                 return
 
             process(tid, url)
@@ -963,16 +1013,16 @@ async def lifespan(app: FastAPI):
     TMP_DIR.mkdir(parents=True, exist_ok=True)
     db_init()
 
+    # Start background workers.
+    # Each worker consumes tasks from the shared queue and processes them.
+    shutdown_event.clear()
+    active_workers.clear()
+
     # Recover tasks left unfinished by a previous process.
     recover_queued_tasks()
 
     # Remove stale temporary files from previous runs.
     cleanup_old_temp_files()
-
-    # Start background workers.
-    # Each worker consumes tasks from the shared queue and processes them.
-    shutdown_event.clear()
-    active_workers.clear()
 
     for i in range(MAX_WORKERS):
         worker_thread = threading.Thread(
@@ -1198,11 +1248,33 @@ document.getElementById('token').value = getToken();
 async function add(){
   const links=document.getElementById('links').value.split('\\n').map(s=>s.trim()).filter(Boolean);
   if(!links.length)return;
+
   const token = sessionStorage.getItem('localSpotifyApiToken') || '';
   const headers = {'Content-Type':'application/json'};
   if (token) headers['Authorization'] = 'Bearer ' + token;
-  await fetch('/api/add',{method:'POST',headers,body:JSON.stringify({links})});
-  document.getElementById('links').value='';poll();
+
+  try {
+    const r = await fetch('/api/add',{
+      method:'POST',
+      headers,
+      body:JSON.stringify({links})
+    });
+
+    if (!r.ok) {
+      let message = 'Request failed: HTTP ' + r.status;
+      try {
+        const data = await r.json();
+        if (data.detail) message = data.detail;
+      } catch (_) {}
+      alert(message);
+      return;
+    }
+
+    document.getElementById('links').value='';
+    poll();
+  } catch (error) {
+    alert('Network error: ' + error.message);
+  }
 }
 async function poll(){
   const token = sessionStorage.getItem('localSpotifyApiToken') || '';
@@ -1213,6 +1285,11 @@ async function poll(){
     const r = await fetch('/api/tasks', {headers});
 
     if (!r.ok) {
+      if (r.status === 401) {
+        console.warn('API authentication required or token is invalid');
+      } else {
+        console.warn('Task polling failed:', r.status);
+      }
       return;
     }
 

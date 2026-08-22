@@ -342,7 +342,7 @@ python -m pip install --upgrade pip
 Установить зависимости:
 
 ```bash
-pip install -r requirements.txt
+pip install -r adder/requirements.txt
 ```
 
 Проверить:
@@ -880,7 +880,7 @@ git pull --ff-only origin main
 
 ```bash
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r adder/requirements.txt
 ```
 
 Проверить тесты:
