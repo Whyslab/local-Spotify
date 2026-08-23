@@ -1,4 +1,18 @@
 import os
+import sys
+from pathlib import Path
+
+# from adder.app import ... below is a package-qualified import, which
+# needs the project root (parent of tests/) on sys.path. This file used
+# to rely entirely on an external PYTHONPATH being set - true when run
+# via the README's documented `PYTHONPATH="$PWD" pytest -q`, but ci.yml's
+# "Run tests" step never sets PYTHONPATH, so a bare `pytest -q` (exactly
+# what CI runs) failed collection with "ModuleNotFoundError: No module
+# named 'adder'" before a single test could execute. Every other file in
+# this suite already does its own sys.path bootstrap (see test_app.py,
+# test_config.py) - this makes the import self-contained the same way,
+# instead of depending on how the caller invokes pytest.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 os.environ.setdefault("API_TOKEN", "test-secret")
 

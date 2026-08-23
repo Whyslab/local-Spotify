@@ -28,4 +28,5 @@ jobs:
         env:
           API_TOKEN: ci-test-token
           LIBRARY_PATH: ${{ github.workspace }}/test-library
+          PYTHONPATH: ${{ github.workspace }}
         run: pytest -q
