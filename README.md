@@ -1,1481 +1,294 @@
-# 🎵 localSpotify
+# 🎵 local-Spotify
 
-> **Self-hosted музыкальная система для локального хранения, обработки и воспроизведения музыки.**
+[![CI](https://github.com/Whyslab/local-Spotify/actions/workflows/ci.yml/badge.svg)](https://github.com/Whyslab/local-Spotify/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](adder/requirements.txt)
 
-`localSpotify` — домашняя музыкальная система, которая позволяет хранить собственную музыкальную библиотеку на сервере, добавлять треки через YouTube, автоматически загружать и обрабатывать их, нормализовать метаданные и воспроизводить музыку через **Navidrome** с iPhone или других устройств.
+**Self-hosted музыкальная библиотека: закидываешь ссылку на YouTube — на выходе трек с обложкой и метаданными в личной медиатеке, доступной с телефона через Navidrome.**
 
-Проект рассчитан прежде всего на **личное self-hosted использование в домашней сети**.
+`local-Spotify` — это небольшой сервис для дома/домашней сети, который забирает аудио с YouTube, приводит его к единому виду (нормализованные имена, ID3/MP4-теги, обложка в HD) и складывает в библиотеку, которую раздаёт [Navidrome](https://www.navidrome.org/) по Subsonic API. С телефона это выглядит как собственный Spotify: [Amperfy](https://github.com/BLL-Games/Amperfy), play\:Sub, DSub и любой другой Subsonic-клиент подключаются к нему как к обычному стриминговому сервису.
+
+Проект не предназначен для публичного SaaS или обхода ограничений YouTube — это инструмент для личного использования одним человеком/семьёй в доверенной сети.
+
+---
+
+## Содержание
+
+* [Возможности](#-возможности)
+* [Архитектура](#️-архитектура)
+* [Быстрый старт](#-быстрый-старт)
+* [Конфигурация](#️-конфигурация)
+* [API](#-api)
+* [Production: systemd](#-production-systemd)
+* [Тесты](#-тесты)
+* [Безопасность](#-безопасность)
+* [Структура проекта](#-структура-проекта)
+* [Ограничения](#️-ограничения)
+* [Roadmap](#️-roadmap)
+* [Лицензия](#-лицензия)
 
 ---
 
 ## ✨ Возможности
 
-* 🎵 Локальная музыкальная библиотека
-* ▶️ Добавление музыки через YouTube URL
-* ⚡ Фоновая очередь обработки
-* 👷 Несколько worker-потоков для обработки задач
-* 📥 Загрузка через `yt-dlp`
-* 🎚️ Конвертация и нормализация через FFmpeg
-* 🏷️ Автоматическая обработка метаданных
-* 🖼️ Работа с обложками
-* 🧹 Очистка названий треков и файлов
-* 🔄 Автоматические retry при временных ошибках
-* 💾 SQLite для хранения состояния задач
-* 🔐 Защита API через `API_TOKEN`
-* ❤️ Health endpoint
-* 🛑 Graceful shutdown
-* ♻️ Восстановление незавершённых задач после перезапуска
-* 🧹 Очистка старых временных файлов
-* 🎧 Navidrome как музыкальный сервер
-* 📱 Поддержка Subsonic API-клиентов
-* 🚀 Запуск через systemd
-* 🐧 Оптимизировано под Arch Linux
-* 🔒 Предназначено для использования в локальной сети
+* **Добавление музыки по ссылке** — POST-запрос со списком YouTube URL, остальное сервис делает сам.
+* **Фоновая очередь с несколькими воркерами** — загрузки не блокируют API и выполняются параллельно (`MAX_WORKERS`).
+* **Автоматическая очистка метаданных** — `Song (Official Video) [4K]` превращается в чистые `Artist / Song`, при этом версии вида `(Live)`/`(Remix)` сохраняются в тегах.
+* **HD-обложки** — iTunes Search API с фолбэком на превью YouTube; отдельный скрипт (`fix_covers.py`) добивает обложки постфактум через iTunes → Deezer.
+* **Дедупликация по содержимому** — перед сохранением трек хешируется (SHA-256) и сверяется с уже имеющимися файлами в библиотеке, а не только по имени.
+* **Retry с экспоненциальным backoff** — временные сетевые ошибки и сбои загрузки повторяются автоматически, постоянные — нет.
+* **Graceful shutdown и recovery** — `SIGTERM` останавливает воркеры корректно (включая дочерние процессы `yt-dlp`/`ffmpeg`); незавершённые задачи переживают перезапуск сервиса.
+* **Проверка целостности файлов** — каждый M4A валидируется до и после записи метаданных, битые файлы не попадают в библиотеку.
+* **Контроль ресурсов** — лимиты на размер очереди, число ссылок в запросе и свободное место на диске.
+* **API защищён Bearer-токеном**, health-check не требует авторизации.
+* **Веб-интерфейс** — минимальная SPA-страница для добавления ссылок и просмотра очереди (`web/`).
+* **Инструменты для аудита библиотеки** — офлайн-скрипты для поиска дублей, проверки метаданных и массовой миграции плейлиста из CSV.
 
 ---
 
-# 🏗️ Архитектура
-
-Система состоит из нескольких независимых компонентов.
+## 🏗️ Архитектура
 
 ```text
-                         ┌──────────────────────┐
-                         │        iPhone        │
-                         │                      │
-                         │       Amperfy        │
-                         │          │           │
-                         └──────────┼───────────┘
-                                    │
-                              Subsonic API
-                                    │
-                                    ▼
-                         ┌──────────────────────┐
-                         │      Navidrome       │
-                         │                      │
-                         │   Music Server       │
-                         └──────────┬───────────┘
-                                    │
-                                    ▼
-                         ┌──────────────────────┐
-                         │   Music Library      │
-                         │                      │
-                         │ Artist / Singles     │
-                         │ Albums / Tracks      │
-                         └──────────────────────┘
-
-
-                         Music ingestion
-                               │
-                               ▼
-                    ┌──────────────────────┐
-                    │      adder API       │
-                    │      FastAPI         │
-                    └──────────┬───────────┘
-                               │
-                         Task Queue
-                               │
-                               ▼
-                    ┌──────────────────────┐
-                    │       Workers        │
-                    │                      │
-                    │       yt-dlp         │
-                    │        FFmpeg        │
-                    └──────────┬───────────┘
-                               │
-                               ▼
-                    ┌──────────────────────┐
-                    │  Normalized Library  │
-                    └──────────────────────┘
+                    ┌──────────────┐
+                    │   iPhone /    │
+                    │   Android     │
+                    │   (Amperfy)   │
+                    └──────┬───────┘
+                           │ Subsonic API
+                           ▼
+                    ┌──────────────┐        читает файлы
+                    │  Navidrome   │───────────────────────┐
+                    └──────────────┘                       │
+                                                             ▼
+┌──────────┐   POST /api/add   ┌──────────────┐   ┌──────────────────┐
+│  клиент  │ ─────────────────▶│  adder API   │   │ Normalized Library│
+│ (curl/UI)│                   │  (FastAPI)   │   │  Artist/Singles/  │
+└──────────┘                   └──────┬───────┘   └────────▲──────────┘
+                                       │ task queue                 │
+                                       ▼                             │
+                              ┌──────────────────┐                   │
+                              │  N worker-потоков │───────────────────┘
+                              │  yt-dlp → ffmpeg  │   валидация + запись
+                              │  → mutagen (теги) │   после успешной проверки
+                              └──────────────────┘
 ```
+
+Ключевой принцип: файл никогда не попадает в библиотеку напрямую. Загрузка и обработка идут во временной директории (`adder/tmp/`), и только после успешной проверки метаданных, целостности и отсутствия дубликата происходит атомарное перемещение в `Normalized Library`.
 
 ---
 
-# 📁 Структура проекта
+## 🚀 Быстрый старт
 
-Основная структура репозитория:
-
-```text
-local-Spotify/
-├── adder/
-│   ├── app.py
-│   ├── server.py
-│   ├── fix_covers.py
-│   ├── config.py
-│   ├── requirements.txt
-│   ├── .env
-│   └── tmp/
-│
-├── web/
-│   ├── index.html
-│   ├── app.js
-│   └── style.css
-│
-├── tests/
-│   ├── test_app.py
-│   ├── test_config.py
-│   ├── test_title_cleaning.py
-│   ├── test_duplicates.py
-│   ├── test_duplicate_integration.py
-│   └── test_youtube_links.py
-│
-├── scripts/
-│   └── ...
-│
-├── deploy/
-│   ├── install.sh
-│   ├── backup.sh
-│   ├── music-adder.service.template
-│   └── ...
-│
-├── README.md
-└── ...
-```
-
----
-
-# 📂 Основные файлы
-
-## `adder/app.py`
-
-Главный файл приложения.
-
-В нём находятся:
-
-* FastAPI application;
-* API endpoints;
-* авторизация;
-* SQLite database;
-* task queue;
-* worker logic;
-* YouTube URL validation;
-* YouTube URL canonicalization;
-* загрузка через `yt-dlp`;
-* обработка через FFmpeg;
-* metadata processing;
-* retry logic;
-* cleanup;
-* graceful shutdown;
-* recovery незавершённых задач.
-
-Это **основная логика сервиса**.
-
----
-
-## `adder/server.py`
-
-Production launcher приложения.
-
-Файл специально оставлен максимально простым:
-
-```text
-adder/server.py
-        │
-        ▼
-uvicorn
-        │
-        ▼
-adder.app:app
-        │
-        ▼
-FastAPI lifespan
-        │
-        ▼
-worker startup
-```
-
-Worker'ы запускаются через lifecycle FastAPI, а не отдельно в launcher.
-
-Это предотвращает ситуацию, когда worker'ы запускаются дважды.
-
-Запуск:
+Требования: Linux, Python 3.12+, [FFmpeg](https://ffmpeg.org/), git.
 
 ```bash
-python -m adder.server
-```
-
----
-
-## `adder/.env`
-
-Локальная конфигурация приложения.
-
-Пример:
-
-```text
-API_TOKEN=change-this-token
-HOST=127.0.0.1
-PORT=8787
-```
-
-Файл содержит секреты и **не должен попадать в Git**.
-
-Добавь его в `.gitignore`:
-
-```text
-adder/.env
-```
-
----
-
-## `adder/tmp/`
-
-Временная директория.
-
-Используется во время:
-
-* загрузки;
-* конвертации;
-* обработки;
-* временного хранения файлов.
-
-После завершения обработки временные файлы удаляются.
-
-При запуске приложения также выполняется очистка устаревших временных файлов.
-
----
-
-# 🧪 Тесты
-
-Проект содержит автоматические тесты.
-
-Запуск:
-
-```bash
-source .venv/bin/activate
-PYTHONPATH="$PWD" pytest -q
-```
-
-Текущий проверенный результат:
-
-```text
-70 passed
-```
-
-Тесты покрывают:
-
-* `/health`;
-* API authentication;
-* API `/api/add`;
-* URL validation;
-* YouTube URL canonicalization;
-* duplicate detection;
-* SQLite;
-* task queue;
-* worker execution;
-* worker shutdown;
-* task recovery;
-* retry behavior;
-* temporary file cleanup;
-* title cleaning;
-* metadata behavior.
-
----
-
-# 🐍 Требования
-
-Минимально необходимы:
-
-| Компонент    | Назначение         |
-| ------------ | ------------------ |
-| Python 3.10+ | Runtime            |
-| FastAPI      | Web API            |
-| Uvicorn      | ASGI server        |
-| SQLite       | Database           |
-| yt-dlp       | YouTube downloader |
-| FFmpeg       | Audio processing   |
-| systemd      | Автозапуск         |
-| Navidrome    | Music server       |
-
-Для разработки дополнительно используется:
-
-```text
-pytest
-```
-
----
-
-# 🐧 Установка на Arch Linux
-
-## 1. Установка системных пакетов
-
-```bash
-sudo pacman -Syu
-sudo pacman -S git python python-pip ffmpeg
-```
-
-Проверь версии:
-
-```bash
-python --version
-ffmpeg -version
-```
-
----
-
-# 📥 Клонирование проекта
-
-```bash
-cd ~
+# 1. Клонировать репозиторий
 git clone https://github.com/Whyslab/local-Spotify.git
 cd local-Spotify
-```
 
-Проверить текущую ветку:
-
-```bash
-git branch --show-current
-```
-
-Для production рекомендуется использовать:
-
-```text
-main
-```
-
----
-
-# 🐍 Создание виртуального окружения
-
-```bash
+# 2. Виртуальное окружение и зависимости
 python -m venv .venv
-```
-
-Активировать:
-
-```bash
 source .venv/bin/activate
-```
-
-Обновить pip:
-
-```bash
-python -m pip install --upgrade pip
-```
-
-Установить зависимости:
-
-```bash
 pip install -r adder/requirements.txt
-```
 
-Проверить:
+# 3. Конфигурация
+cp .env.example adder/.env
+python -c 'import secrets; print(secrets.token_urlsafe(32))'   # вставить в API_TOKEN
+$EDITOR adder/.env
 
-```bash
-pip list
-```
-
----
-
-# 🔐 Настройка API_TOKEN
-
-API защищён Bearer Token.
-
-Создай:
-
-```text
-adder/.env
-```
-
-Пример:
-
-```text
-API_TOKEN=your-long-random-secret-token
-```
-
-Лучше использовать длинный случайный токен.
-
-Например:
-
-```bash
-python -c 'import secrets; print(secrets.token_urlsafe(32))'
-```
-
-Полученное значение вставь в:
-
-```text
-adder/.env
-```
-
-Например:
-
-```text
-API_TOKEN=XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
-```
-
-**Не публикуй настоящий токен в GitHub, README, Issues или скриншотах.**
-
----
-
-# ▶️ Запуск приложения вручную
-
-Активируй окружение:
-
-```bash
-cd ~/local-Spotify
-source .venv/bin/activate
-```
-
-Запусти:
-
-```bash
+# 4. Запуск
 python -m adder.server
 ```
 
-После запуска API будет доступен по адресу:
-
-```text
-http://127.0.0.1:8787
-```
-
----
-
-# ❤️ Проверка `/health`
-
-Endpoint health не требует авторизации.
+Сервис поднимется на `http://0.0.0.0:8787`. Проверка:
 
 ```bash
 curl http://127.0.0.1:8787/health
 ```
 
-Ожидаемый результат:
+```bash
+TOKEN=$(grep '^API_TOKEN=' adder/.env | cut -d= -f2-)
+
+curl -X POST http://127.0.0.1:8787/api/add \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"links": ["https://www.youtube.com/watch?v=dQw4w9WgXcQ"]}'
+```
+
+Веб-интерфейс доступен по адресу самого сервиса (`/`) — там же можно ввести токен и следить за очередью.
+
+---
+
+## ⚙️ Конфигурация
+
+Все настройки читаются из `adder/.env` (см. `.env.example`). Без валидного `API_TOKEN` сервис не запустится — это осознанное поведение, т.к. API доступен по всей локальной сети.
+
+| Переменная              | По умолчанию                    | Назначение                                             |
+| ------------------------ | -------------------------------- | ------------------------------------------------------- |
+| `API_TOKEN`               | *(обязательно)*                  | Bearer-токен для доступа к API                          |
+| `LIBRARY_PATH`             | `~/Music/Normalized Library`     | Путь к музыкальной библиотеке                           |
+| `PORT` / `HOST`            | `8787` / `0.0.0.0`               | Адрес, на котором слушает сервис                        |
+| `MAX_WORKERS`              | `2`                               | Число параллельных воркеров загрузки                    |
+| `MAX_LINKS_PER_REQUEST`    | `100`                             | Лимит ссылок в одном запросе `/api/add`                 |
+| `MAX_QUEUE_SIZE`           | `5000`                            | Максимальный размер очереди задач                       |
+| `PRESERVE_FEAT_ARTISTS`    | `true`                            | Сохранять `feat./ft.` в имени папки исполнителя         |
+| `MAX_RETRIES`              | `3`                               | Число попыток на задачу при временных ошибках           |
+| `RETRY_BACKOFF_BASE`       | `2.0`                             | База экспоненциального backoff (сек.)                   |
+| `SHUTDOWN_TIMEOUT`         | `30`                              | Таймаут graceful shutdown (сек.)                        |
+| `MIN_FREE_SPACE_MB`        | `2048`                            | Минимум свободного места на диске перед загрузкой        |
+| `TMP_TTL_HOURS`            | `24`                              | Через сколько часов удаляются зависшие временные файлы   |
+
+---
+
+## 🔌 API
+
+Авторизация — заголовок `Authorization: Bearer <API_TOKEN>`. `/health` авторизации не требует.
+
+| Метод  | Путь           | Описание                                    |
+| ------ | -------------- | -------------------------------------------- |
+| `GET`  | `/health`      | Статус сервиса, БД, библиотеки и очереди     |
+| `POST` | `/api/add`     | Добавить одну или несколько YouTube-ссылок   |
+| `GET`  | `/api/tasks`   | Последние 50 задач и их статус               |
+| `GET`  | `/`            | Веб-интерфейс                                |
+
+<details>
+<summary><code>POST /api/add</code> — пример</summary>
+
+```bash
+curl -X POST http://127.0.0.1:8787/api/add \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "links": [
+      "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+      "https://youtu.be/anotherVideoId"
+    ]
+  }'
+```
+
+```json
+{ "added": [12, 13] }
+```
+
+Принимаются только ссылки на `youtube.com`, `m.youtube.com`, `music.youtube.com` и `youtu.be`; разные формы одной и той же ссылки на один и тот же ролик приводятся к единому каноническому виду и не создают дубликат задачи. Повторная отправка ссылки с уже завершившейся или выполняющейся задачей игнорируется; ссылку с задачей в статусе `error` можно переотправить, чтобы поставить её в очередь заново.
+
+</details>
+
+<details>
+<summary><code>GET /health</code> — пример ответа</summary>
 
 ```json
 {
-  "status": "ok"
+  "status": "healthy",
+  "database": "ok",
+  "library": "ok",
+  "library_path": "/home/user/Music/Normalized Library",
+  "workers": 2,
+  "queue_size": 0,
+  "max_queue_size": 5000
 }
 ```
 
----
+При проблеме с БД или отсутствии директории библиотеки статус меняется на `unhealthy`, а HTTP-код ответа — на `503`.
 
-# 🔐 Проверка авторизации
-
-Получить token:
-
-```bash
-TOKEN="$(grep '^API_TOKEN=' adder/.env | cut -d= -f2-)"
-```
-
-Запрос без token:
-
-```bash
-curl http://127.0.0.1:8787/api/tasks
-```
-
-Должен быть отклонён.
-
-Запрос с token:
-
-```bash
-curl \
-  -H "Authorization: Bearer $TOKEN" \
-  http://127.0.0.1:8787/api/tasks
-```
+</details>
 
 ---
 
-# ▶️ Добавление YouTube трека
+## 🖥 Production: systemd
 
-Пример:
-
-```bash
-TOKEN="$(grep '^API_TOKEN=' adder/.env | cut -d= -f2-)"
-
-curl -sS \
-  -X POST \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  --data '{
-    "links": [
-      "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
-    ]
-  }' \
-  http://127.0.0.1:8787/api/add
-```
-
-Пример ответа:
-
-```json
-{
-  "added": [
-    123
-  ]
-}
-```
-
-ID означает номер задачи в SQLite.
-
----
-
-# 📚 Добавление нескольких треков
-
-Можно передать несколько ссылок:
+Для постоянной работы в фоне используется user-unit systemd. Установочный скрипт сам проверит наличие `.venv` и корректно заполненного `API_TOKEN`, сгенерирует юнит и (опционально) настроит Navidrome и правила `ufw` для LAN:
 
 ```bash
-curl -sS \
-  -X POST \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  --data '{
-    "links": [
-      "https://www.youtube.com/watch?v=VIDEO_ID_1",
-      "https://www.youtube.com/watch?v=VIDEO_ID_2",
-      "https://www.youtube.com/watch?v=VIDEO_ID_3"
-    ]
-  }' \
-  http://127.0.0.1:8787/api/add
+./deploy/install.sh
 ```
-
-Каждая ссылка становится отдельной задачей.
-
----
-
-# 📊 Проверка очереди
-
-Получить все задачи:
 
 ```bash
-curl \
-  -H "Authorization: Bearer $TOKEN" \
-  http://127.0.0.1:8787/api/tasks
+systemctl --user status music-adder
+journalctl --user -u music-adder -f
 ```
 
-Задача может находиться в состояниях:
+Юнит запускает сервис с `WorkingDirectory` в корне репозитория и ограничивает запись только каталогом `adder/` (БД + временные файлы) и путём библиотеки — `ProtectSystem=strict` не даёт процессу писать куда-либо ещё, даже в исходники или `.git`.
 
-```text
-queued
-downloading
-tagging
-done
-error
+Резервное копирование состояния (SQLite + `.env`):
+
+```bash
+./deploy/backup.sh
 ```
 
 ---
 
-# 🔄 Как работает обработка
-
-После добавления URL:
-
-```text
-YouTube URL
-     │
-     ▼
-Validation
-     │
-     ▼
-Canonicalization
-     │
-     ▼
-Duplicate check
-     │
-     ▼
-SQLite
-     │
-     ▼
-Task Queue
-     │
-     ▼
-Worker
-     │
-     ▼
-yt-dlp
-     │
-     ▼
-Downloaded audio
-     │
-     ▼
-FFmpeg
-     │
-     ▼
-Metadata
-     │
-     ▼
-Normalized Library
-     │
-     ▼
-Navidrome
-     │
-     ▼
-iPhone / Amperfy
-```
-
----
-
-# 👷 Worker System
-
-Приложение использует фоновые worker-потоки.
-
-Worker:
-
-1. получает задачу из очереди;
-2. запускает обработку;
-3. выполняет download;
-4. выполняет conversion;
-5. записывает metadata;
-6. перемещает готовый файл;
-7. отмечает задачу как `done`;
-8. при ошибке запускает retry;
-9. освобождает task lock.
-
-Количество worker'ов определяется настройкой:
-
-```text
-MAX_WORKERS
-```
-
-Worker'ы запускаются во время FastAPI lifespan.
-
-Это важно: приложение не должно запускать одну группу worker'ов из `server.py`, а вторую из `app.py`.
-
----
-
-# ♻️ Recovery после перезапуска
-
-Если сервер был остановлен во время обработки:
-
-```text
-downloading
-tagging
-```
-
-такие задачи могут быть восстановлены после следующего запуска.
-
-Механизм recovery возвращает незавершённые задачи в очередь.
-
-Это позволяет переживать:
-
-* reboot;
-* restart systemd;
-* crash процесса;
-* остановку сервера.
-
----
-
-# 🔁 Retry
-
-Временные ошибки обработки могут приводить к повторной попытке.
-
-Состояние retry хранится в задаче:
-
-```text
-retry_count
-```
-
-Если ошибка является окончательной, задача получает:
-
-```text
-status = error
-```
-
-и дополнительную информацию:
-
-```text
-error
-error_type
-```
-
----
-
-# 🧹 Temporary Files
-
-Временные файлы хранятся в:
-
-```text
-adder/tmp/
-```
-
-Сервис автоматически удаляет устаревшие временные файлы.
-
-После graceful shutdown выполняется дополнительная очистка.
-
----
-
-# 🎵 Music Library
-
-Готовая библиотека хранится отдельно от исходников проекта.
-
-Типичная структура:
-
-```text
-~/Music/
-└── Normalized Library/
-    ├── Artist A/
-    │   └── Singles/
-    │       └── Track.m4a
-    │
-    ├── Artist B/
-    │   └── Singles/
-    │       └── Track.m4a
-    │
-    └── Artist C/
-        └── Albums/
-            └── Album/
-                └── Track.m4a
-```
-
-Navidrome должен быть настроен на каталог:
-
-```text
-~/Music/Normalized Library
-```
-
-или соответствующий абсолютный путь на сервере.
-
----
-
-# 🎧 Navidrome
-
-Navidrome отвечает за:
-
-* индексацию музыки;
-* музыкальную библиотеку;
-* поиск;
-* playlists;
-* воспроизведение;
-* Subsonic API.
-
-`localSpotify` не является музыкальным streaming-сервером сам по себе.
-
-Архитектура разделена:
-
-```text
-localSpotify adder
-        │
-        ▼
-Music Library
-        │
-        ▼
-Navidrome
-        │
-        ▼
-Subsonic API
-        │
-        ▼
-Amperfy
-```
-
-Это позволяет заменить Navidrome другим совместимым сервером в будущем.
-
----
-
-# 📱 iPhone
-
-Для iPhone можно использовать Subsonic-совместимый клиент.
-
-Например:
-
-```text
-Amperfy
-```
-
-Подключение выполняется к Navidrome.
-
-В приложении указываются:
-
-```text
-Server URL
-Username
-Password
-```
-
-Конкретный URL зависит от конфигурации домашней сети.
-
----
-
-# 🖥️ systemd
-
-Для production использования рекомендуется запускать приложение через systemd.
-
-Пример service-файла:
-
-```ini
-[Unit]
-Description=localSpotify Music Adder
-After=network.target
-
-[Service]
-Type=simple
-User=YOUR_USER
-WorkingDirectory=/home/YOUR_USER/local-Spotify
-Environment="PATH=/home/YOUR_USER/local-Spotify/.venv/bin"
-ExecStart=/home/YOUR_USER/local-Spotify/.venv/bin/python -m adder.server
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Замени:
-
-```text
-YOUR_USER
-```
-
-на имя пользователя Linux.
-
----
-
-# ⚙️ Установка systemd service
-
-Создай:
-
-```bash
-sudo nano /etc/systemd/system/localspotify.service
-```
-
-Вставь конфигурацию выше.
-
-После этого:
-
-```bash
-sudo systemctl daemon-reload
-```
-
-Запусти:
-
-```bash
-sudo systemctl enable --now localspotify
-```
-
-Проверь:
-
-```bash
-systemctl status localspotify
-```
-
----
-
-# 📋 Логи systemd
-
-Последние логи:
-
-```bash
-journalctl -u localspotify -n 100
-```
-
-Следить в реальном времени:
-
-```bash
-journalctl -u localspotify -f
-```
-
-Перезапуск:
-
-```bash
-sudo systemctl restart localspotify
-```
-
-Остановка:
-
-```bash
-sudo systemctl stop localspotify
-```
-
----
-
-# 🔄 Обновление проекта
-
-Перед обновлением желательно проверить состояние Git:
-
-```bash
-cd ~/local-Spotify
-git status
-```
-
-Если рабочая директория чистая:
-
-```bash
-git switch main
-git pull --ff-only origin main
-```
-
-После обновления:
-
-```bash
-source .venv/bin/activate
-pip install -r adder/requirements.txt
-```
-
-Проверить тесты:
+## 🧪 Тесты
 
 ```bash
 PYTHONPATH="$PWD" pytest -q
 ```
 
-Если всё успешно:
+70 тестов покрывают: авторизацию API, валидацию и канонизацию YouTube-ссылок, дедупликацию по содержимому файла, retry-логику и её взаимодействие с graceful shutdown, восстановление задач после рестарта, очистку временных файлов, очистку названий треков и XSS-регрессию во фронтенде (проверка, что данные из недоверенных источников — метаданные YouTube-видео — никогда не попадают в DOM через `innerHTML`).
 
-```bash
-sudo systemctl restart localspotify
-```
-
-Проверить:
-
-```bash
-systemctl status localspotify
-```
+CI (`.github/workflows/ci.yml`) на каждый push/PR прогоняет `compileall` и полный набор тестов на чистом окружении.
 
 ---
 
-# 🧪 Production Smoke Test
+## 🔒 Безопасность
 
-После запуска рекомендуется проверить основные компоненты.
+* API закрыт Bearer-токеном, сравнение — через `secrets.compare_digest` (защита от timing-атак); без токена сервис не запускается.
+* Заголовки/данные из YouTube (заголовок видео, автор) — недоверенные данные: во фронтенде они рендерятся только через `textContent`/`replaceChildren`, никогда через `innerHTML`.
+* Принимаются только YouTube-URL с точным совпадением хоста (защита от обхода вида `youtube.com.evil.example`).
+* systemd-юнит: `ProtectSystem=strict`, `NoNewPrivileges`, `PrivateTmp`, запись разрешена только в каталог `adder/` и путь библиотеки.
+* Токен и `.env` никогда не коммитятся (`.gitignore`); в README и issue не публикуйте реальный `API_TOKEN`.
 
-## 1. Health
-
-```bash
-curl -sS http://127.0.0.1:8787/health
-```
-
-## 2. Authentication
-
-```bash
-TOKEN="$(grep '^API_TOKEN=' adder/.env | cut -d= -f2-)"
-```
-
-## 3. Tasks API
-
-```bash
-curl -sS \
-  -H "Authorization: Bearer $TOKEN" \
-  http://127.0.0.1:8787/api/tasks
-```
-
-## 4. Add test track
-
-```bash
-curl -sS \
-  -X POST \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  --data '{"links":["https://www.youtube.com/watch?v=dQw4w9WgXcQ"]}' \
-  http://127.0.0.1:8787/api/add
-```
-
-## 5. Check processing
-
-```bash
-curl -sS \
-  -H "Authorization: Bearer $TOKEN" \
-  http://127.0.0.1:8787/api/tasks
-```
-
-## 6. Check output library
-
-```bash
-find "$HOME/Music/Normalized Library" \
-  -type f \
-  -name '*.m4a' \
-  -printf '%T@ %p\n' |
-sort -nr |
-head
-```
+Нашли уязвимость — заведите приватный security advisory в репозитории, а не публичный issue.
 
 ---
 
-# 🔍 Проверка FFmpeg
-
-```bash
-ffmpeg -version
-```
-
-Проверка конкретного файла:
-
-```bash
-ffprobe \
-  -v error \
-  -show_entries format=duration,size \
-  -of default=noprint_wrappers=1 \
-  "PATH_TO_FILE.m4a"
-```
-
----
-
-# 🔍 Проверка yt-dlp
-
-```bash
-yt-dlp --version
-```
-
-Проверка:
-
-```bash
-yt-dlp \
-  --simulate \
-  "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
-```
-
----
-
-# 🗄️ SQLite
-
-Основная база данных используется для хранения задач.
-
-Типичная база:
+## 📁 Структура проекта
 
 ```text
-adder.db
-```
-
-В ней хранится состояние очереди.
-
-Пример информации о задаче:
-
-```text
-id
-url
-status
-artist
-title
-error
-error_type
-retry_count
-updated_at
-```
-
-База данных является частью runtime-состояния и **не должна коммититься в Git**, если это локальная production-база.
-
----
-
-# 🔒 Безопасность
-
-Проект рассчитан на использование в домашней сети.
-
-API защищён:
-
-```text
-Authorization: Bearer API_TOKEN
-```
-
-Не публикуй API напрямую в Интернет без дополнительной защиты.
-
-Особенно важно:
-
-* не коммитить `.env`;
-* не публиковать API token;
-* не публиковать production database;
-* не открывать порт `8787` наружу без необходимости;
-* использовать firewall;
-* использовать reverse proxy/VPN при удалённом доступе.
-
----
-
-# 🌐 Доступ из Интернета
-
-Проект не предполагает прямого публичного доступа к API.
-
-Для удалённого доступа рекомендуется использовать VPN, например:
-
-```text
-WireGuard
-```
-
-или другой защищённый VPN.
-
-Не рекомендуется просто пробрасывать:
-
-```text
-8787
-```
-
-на Internet.
-
----
-
-# 💾 Backup
-
-Рекомендуется регулярно резервировать:
-
-```text
-~/Music/Normalized Library/
-```
-
-а также:
-
-```text
-adder.db
-```
-
-Конфигурацию:
-
-```text
-adder/.env
-```
-
-следует сохранять отдельно и безопасно.
-
-Пример:
-
-```bash
-tar \
-  -czf localspotify-backup.tar.gz \
-  "$HOME/Music/Normalized Library" \
-  adder.db
-```
-
-Не добавляй `.env` в публичный backup без шифрования.
-
----
-
-# 🚨 Troubleshooting
-
-## API не запускается
-
-Проверь:
-
-```bash
-systemctl status localspotify
-```
-
-и:
-
-```bash
-journalctl -u localspotify -n 100
-```
-
-При ручном запуске:
-
-```bash
-source .venv/bin/activate
-python -m adder.server
+local-Spotify/
+├── adder/                  # Сервис приёма и обработки треков
+│   ├── app.py               # FastAPI-приложение, воркеры, вся бизнес-логика
+│   ├── config.py             # Загрузка и валидация конфигурации из .env
+│   ├── server.py              # Точка входа (uvicorn)
+│   ├── fix_covers.py           # Офлайн-добивка отсутствующих обложек
+│   └── requirements.txt
+├── web/                     # Статический веб-интерфейс (vanilla JS)
+├── scripts/                 # Офлайн-инструменты: аудит библиотеки, поиск дублей, миграция плейлиста
+├── tests/                   # pytest, 70 тестов
+├── deploy/                   # systemd unit, install/backup-скрипты, конфиг Navidrome
+└── .env.example
 ```
 
 ---
 
-## `/health` не отвечает
+## ⚠️ Ограничения
 
-Проверь процесс:
+Это домашний self-hosted проект, не рассчитанный на:
 
-```bash
-pgrep -af uvicorn
-```
+* публичный SaaS или высоконагруженный production;
+* массовое/коммерческое использование;
+* обход региональных или иных ограничений YouTube.
 
-Проверь порт:
-
-```bash
-ss -ltnp | grep 8787
-```
+Перед загрузкой стороннего контента убедитесь, что у вас есть на это право.
 
 ---
 
-## Задачи зависли
+## 🗺️ Roadmap
 
-Проверь:
-
-```bash
-curl \
-  -H "Authorization: Bearer $TOKEN" \
-  http://127.0.0.1:8787/api/tasks
-```
-
-Затем:
-
-```bash
-journalctl -u localspotify -n 200
-```
+* [ ] Удаление и переорганизация треков через API
+* [ ] Импорт целых альбомов и плейлистов, а не только отдельных ссылок
+* [ ] Docker-образ для развёртывания без systemd
+* [ ] Метрики (Prometheus) поверх текущего `/health`
 
 ---
 
-## yt-dlp не загружает видео
+## 📜 Лицензия
 
-Проверь:
-
-```bash
-yt-dlp --version
-```
-
-и попробуй:
-
-```bash
-yt-dlp --simulate "YOUTUBE_URL"
-```
-
-Некоторые YouTube видео могут быть:
-
-* удалены;
-* приватными;
-* недоступными в регионе;
-* ограниченными автором;
-* недоступными без авторизации.
-
-Такие ошибки не обязательно означают проблему самого приложения.
+[MIT](LICENSE). Убедитесь, что у вас есть право на загрузку и хранение стороннего контента, который вы добавляете в библиотеку.
 
 ---
 
-## FFmpeg не найден
-
-Проверь:
-
-```bash
-which ffmpeg
-```
-
-Если отсутствует:
-
-```bash
-sudo pacman -S ffmpeg
-```
-
----
-
-## Файл появился, но Navidrome его не видит
-
-Проверь путь музыкальной библиотеки в Navidrome.
-
-Затем выполни rescan библиотеки.
-
-Также проверь права:
-
-```bash
-ls -lah "$HOME/Music/Normalized Library"
-```
-
-Пользователь, под которым работает Navidrome, должен иметь доступ к музыкальной библиотеке.
-
----
-
-# 🧹 Очистка development artifacts
-
-Перед commit рекомендуется:
-
-```bash
-git status
-```
-
-Не должны попадать в Git:
-
-```text
-.venv/
-__pycache__/
-*.pyc
-adder.db
-adder/.env
-adder/tmp/
-```
-
-Проверь:
-
-```bash
-git status --short
-```
-
----
-
-# 🌿 Git Workflow
-
-Основная production ветка:
-
-```text
-main
-```
-
-Для изменений рекомендуется создавать отдельную ветку:
-
-```bash
-git switch main
-git pull --ff-only origin main
-git switch -c fix/my-change
-```
-
-После изменений:
-
-```bash
-git diff --check
-```
-
-Запусти тесты:
-
-```bash
-source .venv/bin/activate
-PYTHONPATH="$PWD" pytest -q
-```
-
-Commit:
-
-```bash
-git add .
-git commit -m "fix: description"
-```
-
-Push:
-
-```bash
-git push -u origin fix/my-change
-```
-
-После проверки изменения можно объединить с `main`.
-
----
-
-# 🧪 CI / Quality Gate
-
-Перед слиянием изменений рекомендуется пройти:
-
-```text
-Git diff
-     │
-     ▼
-git diff --check
-     │
-     ▼
-pytest
-     │
-     ▼
-manual smoke test
-     │
-     ▼
-production verification
-```
-
-Минимальная команда:
-
-```bash
-PYTHONPATH="$PWD" pytest -q
-```
-
----
-
-# 📊 Текущий статус
-
-**Project:** localSpotify
-
-**Type:** Self-hosted personal music system
-
-**Platform:** Linux / Arch Linux
-
-**API:** FastAPI
-
-**Database:** SQLite
-
-**Downloader:** yt-dlp
-
-**Audio processing:** FFmpeg
-
-**Music server:** Navidrome
-
-**Mobile client:** Subsonic-compatible clients / Amperfy
-
-**Process manager:** systemd
-
-**Status:** 🟢 Production-ready for personal self-hosted use
-
-Проект прошёл функциональную проверку основных компонентов:
-
-* FastAPI startup;
-* `/health`;
-* API authentication;
-* YouTube URL validation;
-* YouTube URL canonicalization;
-* task creation;
-* SQLite persistence;
-* background workers;
-* queue processing;
-* `yt-dlp`;
-* FFmpeg;
-* metadata processing;
-* retry handling;
-* task recovery;
-* temporary file cleanup;
-* graceful shutdown;
-* duplicate URL handling;
-* title cleaning;
-* output library creation.
-
-Автоматический тестовый набор:
-
-```text
-70 passed
-```
-
----
-
-# ⚠️ Ограничения
-
-Проект является домашней self-hosted системой.
-
-Он не предназначен для:
-
-* публичного SaaS;
-* массового использования;
-* высоконагруженного production;
-* публичного музыкального streaming-сервиса;
-* обхода ограничений сторонних сервисов.
-
-Доступность конкретных YouTube видео зависит от самого YouTube и параметров конкретного контента.
-
----
-
-# 🗺️ Roadmap
-
-Возможные дальнейшие улучшения:
-
-* [ ] Web UI для управления очередью
-* [ ] Просмотр прогресса загрузки
-* [ ] Удаление треков через API
-* [ ] Управление библиотекой
-* [ ] Album import
-* [ ] Playlist management
-* [ ] Улучшенный поиск metadata
-* [ ] Автоматический поиск лучшего audio source
-* [ ] Более подробная система retry
-* [ ] Structured logging
-* [ ] Metrics
-* [ ] Prometheus integration
-* [ ] Docker deployment
-* [ ] Backup automation
-* [ ] CI/CD
-* [ ] Автоматический production smoke test
-
----
-
-# 📜 Лицензия
-
-Проект предназначен для личного self-hosted использования.
-
-Перед использованием стороннего контента убедитесь, что вы имеете соответствующие права или разрешение на его загрузку и хранение.
-
----
-
-# 👤 Автор
-
-**Whyslab**
-
-GitHub:
-
-https://github.com/Whyslab
-
-Repository:
-
-https://github.com/Whyslab/local-Spotify
-
----
-
-# ❤️ localSpotify
-
-```text
-YouTube
-   │
-   ▼
-localSpotify Adder
-   │
-   ├── yt-dlp
-   ├── FFmpeg
-   ├── Metadata
-   └── Workers
-          │
-          ▼
-   Normalized Library
-          │
-          ▼
-      Navidrome
-          │
-          ▼
-      Subsonic API
-          │
-          ▼
-       iPhone
-          │
-          ▼
-       Amperfy
-```
-
-**Own your music. Own your server. Own your library.**
+<p align="center">
+  <a href="https://github.com/Whyslab">Whyslab</a> ·
+  <a href="https://github.com/Whyslab/local-Spotify">local-Spotify</a>
+</p>
