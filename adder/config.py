@@ -52,10 +52,6 @@ DELAY_BETWEEN_TRACKS = _positive_float("DELAY_BETWEEN_TRACKS", "1.1")
 MAX_LINKS_PER_REQUEST = _positive_int("MAX_LINKS_PER_REQUEST", "100")
 MAX_QUEUE_SIZE = _positive_int("MAX_QUEUE_SIZE", "5000")
 
-# YouTube matching settings (Problem #11)
-YT_SEARCH_COUNT = _positive_int("YT_SEARCH_COUNT", "5")
-YT_MATCH_MIN_SCORE = _positive_float("YT_MATCH_MIN_SCORE", "0.5")
-
 # Metadata settings (Problems #12, #13)
 PRESERVE_FEAT_ARTISTS = os.environ.get("PRESERVE_FEAT_ARTISTS", "true").lower() == "true"
 

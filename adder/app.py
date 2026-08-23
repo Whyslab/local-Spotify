@@ -30,7 +30,7 @@ from pydantic import BaseModel
 # Import unified configuration
 from .config import (
     LIBRARY, PORT, HOST, MAX_WORKERS, DELAY_BETWEEN_TRACKS,
-    MAX_LINKS_PER_REQUEST, MAX_QUEUE_SIZE, YT_SEARCH_COUNT, YT_MATCH_MIN_SCORE,
+    MAX_LINKS_PER_REQUEST, MAX_QUEUE_SIZE,
     PRESERVE_FEAT_ARTISTS, API_TOKEN, MAX_RETRIES, RETRY_BACKOFF_BASE, SHUTDOWN_TIMEOUT,
     MIN_FREE_SPACE_MB, TMP_TTL_HOURS
 )
@@ -495,113 +495,6 @@ def yt_meta(url: str) -> dict:
         raise RuntimeError(p.stderr.strip()[-300:])
     return json.loads(p.stdout)
 
-def yt_search_candidates(query: str, count: int = None) -> list[dict]:
-    """Search YouTube for multiple candidates and return scored results (Problem #11)."""
-    if count is None:
-        count = YT_SEARCH_COUNT
-    
-    cmd = [
-        sys.executable, "-m", "yt_dlp",
-        "--flat-playlist",
-        "--no-download",
-        "--no-warnings",
-        "-j",
-        f"ytsearch{count}:{query}"
-    ]
-    
-    try:
-        result = run_yt_dlp(cmd, timeout=60)
-        if result.returncode != 0 or not result.stdout.strip():
-            return []
-        
-        candidates = []
-        for line in result.stdout.strip().splitlines():
-            try:
-                data = json.loads(line)
-                candidates.append(data)
-            except json.JSONDecodeError:
-                continue
-        return candidates
-    except Exception:
-        return []
-
-def score_candidate(candidate: dict, query_artist: str, query_title: str, query_duration: float = None) -> float:
-    """Score a YouTube candidate based on similarity to query (Problem #11).
-    
-    Returns:
-        Score between 0.0 and 1.0
-    """
-    candidate_title = (candidate.get('title') or '').lower()
-    candidate_uploader = (candidate.get('uploader') or candidate.get('channel') or '').lower()
-    candidate_duration = candidate.get('duration', 0)
-    
-    query_artist_lower = query_artist.lower()
-    query_title_lower = query_title.lower()
-    
-    # Title similarity (45% weight)
-    title_words = set(query_title_lower.split())
-    candidate_title_words = set(candidate_title.split())
-    title_overlap = len(title_words & candidate_title_words) / max(len(title_words), 1)
-    title_score = title_overlap * 0.45
-    
-    # Artist similarity (35% weight)
-    artist_words = set(query_artist_lower.split())
-    candidate_artist_words = set(candidate_uploader.split())
-    artist_overlap = len(artist_words & candidate_artist_words) / max(len(artist_words), 1)
-    artist_score = artist_overlap * 0.35
-    
-    # Duration similarity (20% weight)
-    duration_score = 0.0
-    if query_duration and candidate_duration:
-        duration_diff = abs(candidate_duration - query_duration) / max(query_duration, 1)
-        if duration_diff < 0.1:
-            duration_score = 0.20
-        elif duration_diff < 0.2:
-            duration_score = 0.15
-        elif duration_diff < 0.3:
-            duration_score = 0.10
-        else:
-            duration_score = 0.05
-    else:
-        duration_score = 0.10  # Neutral if no duration info
-    
-    total_score = title_score + artist_score + duration_score
-    
-    # Penalty for obvious non-matches
-    penalty_keywords = ['lyrics', 'karaoke', 'slowed', 'sped', 'remix', 'live', 'cover']
-    for kw in penalty_keywords:
-        if kw in candidate_title and kw not in query_title_lower:
-            total_score *= 0.8
-    
-    return min(total_score, 1.0)
-
-def find_best_youtube_match(artist: str, title: str, duration: float = None) -> tuple[str | None, float]:
-    """Find the best YouTube match for a track (Problem #11).
-    
-    Returns:
-        (best_url, confidence_score) or (None, 0.0) if no good match found
-    """
-    query = f"{artist} - {title}"
-    candidates = yt_search_candidates(query, YT_SEARCH_COUNT)
-    
-    if not candidates:
-        return None, 0.0
-    
-    best_candidate = None
-    best_score = 0.0
-    
-    for candidate in candidates:
-        score = score_candidate(candidate, artist, title, duration)
-        if score > best_score:
-            best_score = score
-            best_candidate = candidate
-    
-    if best_score >= YT_MATCH_MIN_SCORE and best_candidate:
-        url = best_candidate.get('url') or best_candidate.get('webpage_url')
-        return url, best_score
-    
-    return None, best_score
-
 def yt_download(url: str, vid: str) -> Path:
     p = run_yt_dlp(
         [
@@ -791,7 +684,7 @@ def process(tid: int, url: str):
     last_error_type = None
     last_error_msg = ""
     
-    while retry_count < MAX_RETRIES:
+    while retry_count == 0 or retry_count < MAX_RETRIES:
         try:
             # Problem #30: Check disk space before download
             has_space, free_mb = check_disk_space()
@@ -1077,7 +970,7 @@ app = FastAPI(lifespan=lifespan)
 
 app.mount(
     "/static",
-    StaticFiles(directory="web"),
+    StaticFiles(directory=str(PROJECT.parent / "web")),
     name="static",
 )
 
