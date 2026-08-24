@@ -19,7 +19,12 @@ jobs:
           cache-dependency-path: adder/requirements.txt
 
       - name: Install dependencies
-        run: python -m pip install -r adder/requirements.txt
+        run: python -m pip install -r adder/requirements.txt ruff
+
+      - name: Lint
+        run: |
+          ruff check .
+          ruff format --check adder scripts tests
 
       - name: Compile Python sources
         run: python -m compileall -q adder scripts tests

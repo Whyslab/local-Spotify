@@ -4,6 +4,7 @@
 успешной metadata/artwork/M4A validation. Это делает миграцию безопасной при
 ошибках и повторном запуске.
 """
+
 import csv
 import json
 import re
@@ -17,7 +18,9 @@ import requests
 from mutagen.mp4 import MP4, MP4Cover
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "adder"))
-from config import LIBRARY, DELAY_BETWEEN_TRACKS, MIN_FREE_SPACE_MB
+import contextlib
+
+from config import DELAY_BETWEEN_TRACKS, LIBRARY, MIN_FREE_SPACE_MB
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
@@ -60,8 +63,10 @@ def itunes_cover(artist: str, title: str):
                 time.sleep(30)
                 continue
             if r.ok and r.json().get("resultCount", 0) > 0:
-                art = r.json()["results"][0].get("artworkUrl100", "").replace(
-                    "100x100bb", "3000x3000bb"
+                art = (
+                    r.json()["results"][0]
+                    .get("artworkUrl100", "")
+                    .replace("100x100bb", "3000x3000bb")
                 )
                 img = requests.get(art, timeout=15)
                 if img.ok:
@@ -97,9 +102,20 @@ def unique_path(base: Path) -> Path:
 def download(url: str):
     p = subprocess.run(
         [
-            sys.executable, "-m", "yt_dlp", "-x", "--audio-format", "m4a",
-            "--audio-quality", "0", "--no-playlist", "--print-json", "-q",
-            "-o", str(TMP_DIR / "%(id)s.%(ext)s"), url,
+            sys.executable,
+            "-m",
+            "yt_dlp",
+            "-x",
+            "--audio-format",
+            "m4a",
+            "--audio-quality",
+            "0",
+            "--no-playlist",
+            "--print-json",
+            "-q",
+            "-o",
+            str(TMP_DIR / "%(id)s.%(ext)s"),
+            url,
         ],
         capture_output=True,
         text=True,
@@ -186,10 +202,8 @@ def main():
             print(f"[{i}/{len(rows)}] FAIL {artist} - {title}: {str(e)[:200]}")
         finally:
             if temp_file and temp_file.exists():
-                try:
+                with contextlib.suppress(OSError):
                     temp_file.unlink()
-                except OSError:
-                    pass
         time.sleep(DELAY)
 
     print(f"\nГотово: ok={ok} skip={skip} fail={fail}")

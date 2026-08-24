@@ -1,8 +1,6 @@
-import csv
 import importlib.util
 import json
 from pathlib import Path
-
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -23,9 +21,7 @@ def test_load_tracks_supports_named_columns(tmp_path):
 
     path = tmp_path / "tracks.csv"
     path.write_text(
-        "position,track name,artists\n"
-        "1,Track One,Artist One\n"
-        "2,Track Two,Artist Two\n",
+        "position,track name,artists\n1,Track One,Artist One\n2,Track Two,Artist Two\n",
         encoding="utf-8",
     )
 
@@ -42,8 +38,7 @@ def test_load_tracks_supports_bom(tmp_path):
 
     path = tmp_path / "tracks.csv"
     path.write_text(
-        "\ufeffposition,name,artists\n"
-        "1,Track,Artist\n",
+        "\ufeffposition,name,artists\n1,Track,Artist\n",
         encoding="utf-8",
     )
 
@@ -56,10 +51,13 @@ def test_load_tracks_supports_bom(tmp_path):
 def test_similarity_normalizes_common_youtube_words():
     parser = load_parser()
 
-    assert parser.similarity(
-        "Artist - Track (Official Video)",
-        "Artist - Track",
-    ) == 1.0
+    assert (
+        parser.similarity(
+            "Artist - Track (Official Video)",
+            "Artist - Track",
+        )
+        == 1.0
+    )
 
 
 def test_score_candidate_penalizes_cover():
@@ -87,11 +85,13 @@ def test_search_retries_after_failure(monkeypatch):
 
     class Result:
         returncode = 0
-        stdout = json.dumps({
-            "url": "abc123",
-            "title": "Track",
-            "uploader": "Artist",
-        })
+        stdout = json.dumps(
+            {
+                "url": "abc123",
+                "title": "Track",
+                "uploader": "Artist",
+            }
+        )
 
     def fake_run(*args, **kwargs):
         calls["count"] += 1

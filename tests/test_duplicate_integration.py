@@ -1,5 +1,4 @@
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -8,8 +7,8 @@ import pytest
 def app_module(tmp_path, monkeypatch):
     monkeypatch.setenv("API_TOKEN", "test-secret")
 
-    import sys
     import importlib
+    import sys
 
     project_root = str(Path(__file__).resolve().parents[1])
     if project_root not in sys.path:
@@ -61,10 +60,7 @@ def create_fake_download(app, payload: bytes):
     def fake_download(url, video_id):
         counter["value"] += 1
 
-        source = (
-            app.TMP_DIR
-            / f"download-{counter['value']}-{video_id}.m4a"
-        )
+        source = app.TMP_DIR / f"download-{counter['value']}-{video_id}.m4a"
         source.write_bytes(payload)
         return source
 
@@ -288,12 +284,7 @@ def test_identical_content_with_different_filename_is_deduplicated(
 ):
     app = app_module
 
-    existing = (
-        app.LIBRARY
-        / "Existing Artist"
-        / "Singles"
-        / "Original Name.m4a"
-    )
+    existing = app.LIBRARY / "Existing Artist" / "Singles" / "Original Name.m4a"
 
     existing.parent.mkdir(parents=True)
     existing.write_bytes(b"SAME AUDIO")
@@ -316,12 +307,7 @@ def test_different_content_is_not_deduplicated(
 ):
     app = app_module
 
-    existing = (
-        app.LIBRARY
-        / "Artist"
-        / "Singles"
-        / "Track.m4a"
-    )
+    existing = app.LIBRARY / "Artist" / "Singles" / "Track.m4a"
 
     existing.parent.mkdir(parents=True)
     existing.write_bytes(b"CONTENT A")
@@ -342,12 +328,7 @@ def test_duplicate_removes_temporary_file(
 ):
     app = app_module
 
-    existing = (
-        app.LIBRARY
-        / "Artist"
-        / "Singles"
-        / "Track.m4a"
-    )
+    existing = app.LIBRARY / "Artist" / "Singles" / "Track.m4a"
 
     existing.parent.mkdir(parents=True)
     existing.write_bytes(b"SAME AUDIO")
@@ -410,12 +391,7 @@ def test_duplicate_check_works_under_file_lock(
 ):
     app = app_module
 
-    existing = (
-        app.LIBRARY
-        / "Artist"
-        / "Singles"
-        / "Track.m4a"
-    )
+    existing = app.LIBRARY / "Artist" / "Singles" / "Track.m4a"
 
     existing.parent.mkdir(parents=True)
     existing.write_bytes(b"SAME")
@@ -492,10 +468,7 @@ def test_canonical_youtube_urls_match(
         "https://music.youtube.com/watch?v=abc123",
     ]
 
-    canonical = {
-        app.canonicalize_youtube_url(url)
-        for url in variants
-    }
+    canonical = {app.canonicalize_youtube_url(url) for url in variants}
 
     assert len(canonical) == 1
 
@@ -510,12 +483,7 @@ def test_duplicate_does_not_create_collision_filename(
 ):
     app = app_module
 
-    existing = (
-        app.LIBRARY
-        / "Artist"
-        / "Singles"
-        / "Track.m4a"
-    )
+    existing = app.LIBRARY / "Artist" / "Singles" / "Track.m4a"
 
     existing.parent.mkdir(parents=True)
     existing.write_bytes(b"EXACT CONTENT")
@@ -530,8 +498,6 @@ def test_duplicate_does_not_create_collision_filename(
     # Simulate final duplicate handling.
     incoming.unlink()
 
-    files = list(
-        (app.LIBRARY / "Artist" / "Singles").glob("*.m4a")
-    )
+    files = list((app.LIBRARY / "Artist" / "Singles").glob("*.m4a"))
 
     assert [f.name for f in files] == ["Track.m4a"]

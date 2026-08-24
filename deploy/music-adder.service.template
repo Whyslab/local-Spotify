@@ -6,6 +6,12 @@ WorkingDirectory=%REPO%
 ExecStart=%REPO%/.venv/bin/python -m adder.server
 Restart=on-failure
 
+# Send SIGTERM to the main process only. The workers terminate their own
+# yt-dlp/ffmpeg children via os.killpg (see terminate_process in adder/app.py),
+# so letting systemd signal the whole cgroup would kill those subprocesses
+# out from under the shutdown path instead of through it.
+KillMode=mixed
+
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict

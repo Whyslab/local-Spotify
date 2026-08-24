@@ -7,8 +7,8 @@ import pytest
 def duplicate_module(tmp_path, monkeypatch):
     monkeypatch.setenv("API_TOKEN", "test-secret")
 
-    import sys
     import importlib
+    import sys
 
     project_root = str(Path(__file__).resolve().parents[1])
     if project_root not in sys.path:

@@ -2,7 +2,9 @@
 
 import uvicorn
 
-from .app import HOST, PORT
+# Import from config, not via app: app does not use HOST/PORT itself, so a
+# linter's unused-import pass will happily delete them from there.
+from .config import HOST, PORT
 
 
 def main() -> None:

@@ -1,0 +1,15 @@
+line-length = 100
+target-version = "py312"
+
+exclude = [".venv", "adder/tmp"]
+
+[lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "C4"]
+
+[lint.per-file-ignores]
+# FastAPI's dependency injection is expressed as a call in the default argument
+# (Depends/Security); that is the documented idiom, not a mistake.
+"adder/app.py" = ["B008"]
+
+# Tests lean on long literal fixtures and deliberate edge-case values.
+"tests/*" = ["E501"]

@@ -78,6 +78,7 @@ def auth_headers():
 # Authentication
 # ---------------------------------------------------------------------------
 
+
 def test_tasks_requires_auth(client):
     response = client.get("/api/tasks")
 
@@ -106,11 +107,7 @@ def test_tasks_accepts_correct_token(client):
 def test_add_requires_auth(client):
     response = client.post(
         "/api/add",
-        json={
-            "links": [
-                "https://www.youtube.com/watch?v=test-auth"
-            ]
-        },
+        json={"links": ["https://www.youtube.com/watch?v=test-auth"]},
     )
 
     assert response.status_code == 401
@@ -119,11 +116,7 @@ def test_add_requires_auth(client):
 def test_add_rejects_wrong_token(client):
     response = client.post(
         "/api/add",
-        json={
-            "links": [
-                "https://www.youtube.com/watch?v=test-auth"
-            ]
-        },
+        json={"links": ["https://www.youtube.com/watch?v=test-auth"]},
         headers={"Authorization": "Bearer wrong-token"},
     )
 
@@ -134,14 +127,11 @@ def test_add_rejects_wrong_token(client):
 # API
 # ---------------------------------------------------------------------------
 
+
 def test_add_accepts_valid_youtube_url(client):
     response = client.post(
         "/api/add",
-        json={
-            "links": [
-                "https://www.youtube.com/watch?v=test-valid"
-            ]
-        },
+        json={"links": ["https://www.youtube.com/watch?v=test-valid"]},
         headers=auth_headers(),
     )
 
@@ -157,11 +147,7 @@ def test_add_accepts_valid_youtube_url(client):
 def test_tasks_returns_added_task(client):
     add_response = client.post(
         "/api/add",
-        json={
-            "links": [
-                "https://www.youtube.com/watch?v=test-task"
-            ]
-        },
+        json={"links": ["https://www.youtube.com/watch?v=test-task"]},
         headers=auth_headers(),
     )
 
@@ -206,11 +192,7 @@ def test_duplicate_url_is_not_added_twice(client):
 def test_invalid_url_is_rejected(client):
     response = client.post(
         "/api/add",
-        json={
-            "links": [
-                "https://example.com/not-youtube"
-            ]
-        },
+        json={"links": ["https://example.com/not-youtube"]},
         headers=auth_headers(),
     )
 
@@ -226,6 +208,7 @@ def test_health_does_not_require_auth(client):
 # ---------------------------------------------------------------------------
 # URL validation
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.parametrize(
     "url",
@@ -270,6 +253,7 @@ def test_non_youtube_urls_are_rejected(client, url):
 # ---------------------------------------------------------------------------
 # Security: XSS regression
 # ---------------------------------------------------------------------------
+
 
 def test_static_app_js_does_not_render_api_data_with_innerhtml(client):
     # The previous version of this test checked GET / (index.html), but
@@ -392,10 +376,7 @@ def test_failed_url_can_be_requeued_without_duplicate(client, app_module):
 
     assert tasks.status_code == 200
 
-    matching = [
-        task for task in tasks.json()
-        if task["url"] == url
-    ]
+    matching = [task for task in tasks.json() if task["url"] == url]
 
     assert len(matching) == 1
 
@@ -448,9 +429,11 @@ def test_shutdown_during_retry_releases_processing_lock(app_module, monkeypatch)
     assert attempts == ["attempt"]
     assert url not in app_module.PROCESSING_URLS
 
+
 # ---------------------------------------------------------------------------
 # Worker / startup lifecycle
 # ---------------------------------------------------------------------------
+
 
 def test_recover_queued_tasks_requeues_interrupted_tasks(app_module):
     app_module.db_init()
@@ -490,9 +473,7 @@ def test_recover_queued_tasks_requeues_interrupted_tasks(app_module):
 
     app_module.recover_queued_tasks()
 
-    tasks = app_module.db_query(
-        "SELECT id, url, status FROM tasks ORDER BY id"
-    )
+    tasks = app_module.db_query("SELECT id, url, status FROM tasks ORDER BY id")
 
     assert len(tasks) == 3
     assert tasks[0]["id"] == queued_id
@@ -559,7 +540,6 @@ def test_recover_queued_tasks_does_not_duplicate_processing_urls(app_module):
 
 
 def test_cleanup_old_temp_files_removes_only_expired_files(app_module):
-    import os
     import time
 
     app_module.TMP_DIR.mkdir(parents=True, exist_ok=True)
@@ -651,6 +631,7 @@ def test_worker_stops_without_processing_when_shutdown_is_set(
 # YouTube URL canonicalization
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.parametrize(
     "url",
     [
@@ -670,9 +651,7 @@ def test_youtube_urls_are_canonicalized(app_module, url):
 
 def test_youtube_canonicalization_rejects_invalid_video_id(app_module):
     with pytest.raises(ValueError):
-        app_module.canonicalize_youtube_url(
-            "https://www.youtube.com/watch?v=invalid%20video%21"
-        )
+        app_module.canonicalize_youtube_url("https://www.youtube.com/watch?v=invalid%20video%21")
 
 
 def test_equivalent_youtube_urls_are_not_added_twice(
@@ -692,16 +671,12 @@ def test_equivalent_youtube_urls_are_not_added_twice(
     youtube_id = "CCHdMIEGaaM"
 
     first = app_module.add(
-        app_module.AddRequest(
-            links=[f"https://youtu.be/{youtube_id}"]
-        ),
+        app_module.AddRequest(links=[f"https://youtu.be/{youtube_id}"]),
         authenticated=True,
     )
 
     second = app_module.add(
-        app_module.AddRequest(
-            links=[f"https://www.youtube.com/watch?v={youtube_id}"]
-        ),
+        app_module.AddRequest(links=[f"https://www.youtube.com/watch?v={youtube_id}"]),
         authenticated=True,
     )
 

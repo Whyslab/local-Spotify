@@ -1,8 +1,10 @@
 """Добивает обложки для всех треков без covr-тега. iTunes (throttled) -> Deezer fallback."""
+
 import sys
 import time
-import requests
 from pathlib import Path
+
+import requests
 from mutagen.mp4 import MP4, MP4Cover
 
 # Explicitly add this file's own directory to sys.path so "import config"
@@ -13,9 +15,10 @@ from mutagen.mp4 import MP4, MP4Cover
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 # Import unified configuration
-from config import LIBRARY, DELAY_BETWEEN_TRACKS
+from config import DELAY_BETWEEN_TRACKS, LIBRARY
 
 DELAY = DELAY_BETWEEN_TRACKS  # защита от rate-limit iTunes
+
 
 def itunes_cover(artist: str, title: str):
     params = {"term": f"{artist} {title}", "limit": 1, "entity": "song"}
@@ -25,21 +28,27 @@ def itunes_cover(artist: str, title: str):
         except Exception:
             time.sleep(5)
             continue
-        if r.status_code in (403, 429):      # rate-limit: ждём и повторяем
+        if r.status_code in (403, 429):  # rate-limit: ждём и повторяем
             time.sleep(30)
             continue
         if r.ok and r.json().get("resultCount", 0) > 0:
-            art = r.json()["results"][0].get("artworkUrl100", "").replace("100x100bb", "3000x3000bb")
+            art = (
+                r.json()["results"][0].get("artworkUrl100", "").replace("100x100bb", "3000x3000bb")
+            )
             img = requests.get(art, timeout=15)
             if img.ok:
                 return img.content, "jpg"
         return None  # найдено не было — ретраи бессмысленны
     return None
 
+
 def deezer_cover(artist: str, title: str):
     try:
-        r = requests.get("https://api.deezer.com/search",
-                         params={"q": f"{artist} {title}", "limit": 1}, timeout=10)
+        r = requests.get(
+            "https://api.deezer.com/search",
+            params={"q": f"{artist} {title}", "limit": 1},
+            timeout=10,
+        )
         if r.ok and r.json().get("data"):
             url = r.json()["data"][0].get("album", {}).get("cover_xl")
             if url:
@@ -49,6 +58,7 @@ def deezer_cover(artist: str, title: str):
     except Exception:
         pass
     return None
+
 
 def main():
     files = sorted(LIBRARY.rglob("*.m4a"))
@@ -85,6 +95,7 @@ def main():
         time.sleep(DELAY)
 
     print(f"\nГотово: обложек добавлено {ok}, не найдено {miss}")
+
 
 if __name__ == "__main__":
     main()

@@ -3,6 +3,7 @@
 Loads environment variables from .env file and provides type-safe access
 to configuration values with sensible defaults.
 """
+
 import os
 from pathlib import Path
 
@@ -35,10 +36,8 @@ def _positive_float(name: str, default: str) -> float:
         raise RuntimeError(f"{name} must be greater than zero")
     return value
 
-LIBRARY = Path(os.environ.get(
-    "LIBRARY_PATH",
-    str(Path.home() / "Music" / "Normalized Library")
-))
+
+LIBRARY = Path(os.environ.get("LIBRARY_PATH", str(Path.home() / "Music" / "Normalized Library")))
 
 PORT = _positive_int("PORT", "8787")
 

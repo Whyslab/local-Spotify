@@ -1,10 +1,10 @@
 import csv
 import json
+import os
 import re
 import sqlite3
 import subprocess
 import sys
-import os
 import time
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -13,14 +13,18 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent
 
 CSV_IN = Path(os.environ.get("CSV_IN", str(PROJECT_ROOT / "Monday.txt")))
-CSV_OUT = Path(os.environ.get(
-    "CSV_OUT",
-    str(PROJECT_ROOT / "spotify_tracks_youtube.csv"),
-))
-DB_PATH = Path(os.environ.get(
-    "DB_PATH",
-    str(PROJECT_ROOT / "links_state.db"),
-))
+CSV_OUT = Path(
+    os.environ.get(
+        "CSV_OUT",
+        str(PROJECT_ROOT / "spotify_tracks_youtube.csv"),
+    )
+)
+DB_PATH = Path(
+    os.environ.get(
+        "DB_PATH",
+        str(PROJECT_ROOT / "links_state.db"),
+    )
+)
 
 SEARCH_COUNT = int(os.environ.get("YT_SEARCH_COUNT", "5"))
 MIN_MATCH_SCORE = float(os.environ.get("YT_MATCH_MIN_SCORE", "0.55"))
@@ -33,9 +37,8 @@ ARTIST_KEYS = ["artists", "artist", "artist name(s)", "artist(s)", "artist name"
 POS_KEYS = ["position", "#", "index", "n", "no", "№"]
 
 
-
 def pick(row: dict, keys: list[str]) -> str:
-    lowered = {(k or "").strip().lower(): k for k in row.keys()}
+    lowered = {(k or "").strip().lower(): k for k in row}
     for key in keys:
         actual = lowered.get(key)
         if actual and row.get(actual):
@@ -178,7 +181,7 @@ def yt_search_candidates(query: str) -> list[dict]:
             pass
 
         if attempt < SEARCH_RETRIES:
-            time.sleep(SEARCH_BACKOFF_BASE * (2 ** attempt))
+            time.sleep(SEARCH_BACKOFF_BASE * (2**attempt))
 
     return []
 
@@ -230,19 +233,26 @@ def main():
             yt_url, score = yt_search_url(t["artists"], t["name"])
             yt_url = yt_url or ""
             conn.execute(
-                "INSERT OR REPLACE INTO links (position, youtube_url, status, updated_at) VALUES (?, ?, ?, ?)",
-                (position, yt_url, "found" if yt_url else "not_found",
-                 time.strftime("%Y-%m-%d %H:%M:%S")),
+                "INSERT OR REPLACE INTO links "
+                "(position, youtube_url, status, updated_at) VALUES (?, ?, ?, ?)",
+                (
+                    position,
+                    yt_url,
+                    "found" if yt_url else "not_found",
+                    time.strftime("%Y-%m-%d %H:%M:%S"),
+                ),
             )
             conn.commit()
             time.sleep(1)
 
-        out_rows.append({
-            "position": position,
-            "name": t["name"],
-            "artists": t["artists"],
-            "youtube_url": yt_url,
-        })
+        out_rows.append(
+            {
+                "position": position,
+                "name": t["name"],
+                "artists": t["artists"],
+                "youtube_url": yt_url,
+            }
+        )
 
         if yt_url:
             print(f"[{idx}/{total}] OK   score={score:.2f} {query}")
