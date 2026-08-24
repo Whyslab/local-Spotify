@@ -909,6 +909,7 @@ async def lifespan(app: FastAPI):
     """Initialize runtime state and gracefully stop workers."""
     PROJECT.mkdir(parents=True, exist_ok=True)
     TMP_DIR.mkdir(parents=True, exist_ok=True)
+    LIBRARY.mkdir(parents=True, exist_ok=True)
     db_init()
 
     # Start background workers.
