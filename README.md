@@ -226,7 +226,7 @@ Back up state (SQLite plus `.env`):
 PYTHONPATH="$PWD" pytest -q
 ```
 
-93 tests cover API authorisation, YouTube link validation and canonicalisation, content-based deduplication, error classification and which failures are worth retrying, the retry logic and how it interacts with graceful shutdown, task recovery after a restart, temp-file cleanup, track title cleaning, and an XSS regression in the frontend — asserting that data from untrusted sources (YouTube video metadata) never reaches the DOM through `innerHTML`.
+96 tests cover API authorisation, YouTube link validation and canonicalisation, content-based deduplication, error classification and which failures are worth retrying, the retry logic and how it interacts with graceful shutdown, task recovery after a restart, temp-file cleanup, track title cleaning, and an XSS regression in the frontend — asserting that data from untrusted sources (YouTube video metadata) never reaches the DOM through `innerHTML`.
 
 CI (`.github/workflows/ci.yml`) runs `ruff check`, `ruff format --check`, `compileall` and the full suite on a clean environment for every push and pull request.
 
@@ -256,7 +256,7 @@ local-Spotify/
 │   └── requirements.txt
 ├── web/                    # Static web interface (vanilla JS)
 ├── scripts/                # Offline tools: library audit, duplicate finder, playlist migration
-├── tests/                  # pytest, 70 tests
+├── tests/                  # pytest, 96 tests
 ├── deploy/                 # systemd unit, install/backup scripts, Navidrome config
 └── .env.example
 ```
