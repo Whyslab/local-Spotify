@@ -75,3 +75,11 @@ MIN_FREE_SPACE_MB = _positive_int("MIN_FREE_SPACE_MB", "2048")
 
 # Temporary file TTL in hours (Problem #29)
 TMP_TTL_HOURS = _positive_int("TMP_TTL_HOURS", "24")
+
+# yt-dlp cookie source (optional).
+# YouTube sometimes demands proof that a request is not a bot, and refuses the
+# download outright. Passing a logged-in browser's cookies satisfies that check.
+# Format is yt-dlp's own: "firefox", "chrome", or "firefox:/path/to/profile"
+# (needed here because this machine keeps Firefox profiles under ~/.config).
+# Empty means no cookies, which is the right default for anyone not hitting it.
+COOKIES_FROM_BROWSER = os.environ.get("COOKIES_FROM_BROWSER", "").strip()
