@@ -58,3 +58,6 @@ spotify_tracks_youtube.csv
 Monday.txt
 adder/tmp/
 scripts/tmp/
+
+# Deleted tracks land here instead of being unlinked
+trash/

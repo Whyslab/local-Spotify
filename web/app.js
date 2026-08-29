@@ -156,3 +156,87 @@ setInterval(() => {
 checkLogin();
 health();
 tasks();
+setTimeout(() => library(), 0);
+
+// ---------- Library: search and delete ----------
+// Deleting is the one destructive thing this UI can do, so it asks first and
+// the server moves the file to a trash folder rather than unlinking it.
+
+let librarySearchTimer = null;
+
+function scheduleLibrarySearch() {
+    clearTimeout(librarySearchTimer);
+    librarySearchTimer = setTimeout(library, 300);
+}
+
+async function library() {
+    const box = document.getElementById("library");
+    const count = document.getElementById("libraryCount");
+    const q = document.getElementById("librarySearch").value.trim();
+    try {
+        const r = await fetch("/api/library?q=" + encodeURIComponent(q), { headers: headers() });
+        if (!r.ok) return;
+        const data = await r.json();
+        count.textContent = data.length + (data.length === 200 ? "+" : "");
+        box.replaceChildren();
+
+        for (const t of data) {
+            const card = document.createElement("div");
+            card.className = "track";
+
+            const info = document.createElement("div");
+            info.className = "track-info";
+
+            const title = document.createElement("div");
+            title.className = "track-title";
+            title.textContent = (t.track ? t.track + ". " : "") + t.title;
+
+            const artist = document.createElement("div");
+            artist.className = "track-artist";
+            artist.textContent = t.artist;
+
+            const album = document.createElement("small");
+            album.textContent = t.album;
+
+            info.appendChild(title);
+            info.appendChild(artist);
+            info.appendChild(album);
+
+            const del = document.createElement("button");
+            del.className = "secondary";
+            del.textContent = "Delete";
+            del.onclick = () => removeTrack(t, del);
+
+            card.appendChild(info);
+            card.appendChild(del);
+            box.appendChild(card);
+        }
+    } catch (e) {
+        // Transient network hiccup - the next search will retry.
+    }
+}
+
+async function removeTrack(track, button) {
+    if (!confirm(`Delete "${track.title}" by ${track.artist}?\n\nThe file moves to the trash folder on the laptop.`)) return;
+    button.disabled = true;
+    button.textContent = "…";
+    try {
+        const r = await fetch("/api/library", {
+            method: "DELETE",
+            headers: { ...headers(), "Content-Type": "application/json" },
+            body: JSON.stringify({ path: track.path }),
+        });
+        if (r.ok) {
+            button.closest(".track").remove();
+        } else {
+            const err = await r.json().catch(() => ({}));
+            button.disabled = false;
+            button.textContent = "Delete";
+            alert("Could not delete: " + (err.detail || r.status));
+        }
+    } catch (e) {
+        button.disabled = false;
+        button.textContent = "Delete";
+        alert("Could not delete: " + e.message);
+    }
+}
