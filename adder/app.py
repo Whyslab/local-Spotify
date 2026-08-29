@@ -884,6 +884,7 @@ def process(tid: int, url: str):
                 shutil.move(str(tmp_file), str(final_target))
 
             tmp_file = None  # Successfully moved, don't cleanup in finally
+            invalidate_library_index()  # a new track must show up in search now
 
             # Problem #24: Clear error fields on success
             task_update(tid, status="done", error="", error_type="")
@@ -1184,30 +1185,61 @@ def library_track(rel_path: str) -> Path:
     return candidate
 
 
+LIBRARY_INDEX_TTL = 60
+_LIBRARY_INDEX: dict[str, object] = {"at": 0.0, "rows": []}
+_LIBRARY_INDEX_LOCK = threading.Lock()
+
+
+def library_index() -> list[dict]:
+    """Every track in the library with the tags the panel displays.
+
+    Reading a thousand files takes the better part of a second, and the panel
+    searches on every keystroke, so the parsed result is cached. The TTL covers
+    changes made outside this process; anything this process does to the
+    library calls invalidate_library_index() and takes effect at once.
+    """
+    with _LIBRARY_INDEX_LOCK:
+        if time.time() - float(_LIBRARY_INDEX["at"]) < LIBRARY_INDEX_TTL:
+            return list(_LIBRARY_INDEX["rows"])
+
+        root = LIBRARY.resolve()
+        rows = []
+        for f in sorted(root.rglob("*.m4a")):
+            try:
+                tags = MP4(f).tags or {}
+            except Exception:
+                continue
+            artist = " • ".join(tags.get("\xa9ART") or [])
+            title = (tags.get("\xa9nam") or [f.stem])[0]
+            album = (tags.get("\xa9alb") or [""])[0]
+            track = tags.get("trkn") or []
+            rows.append({
+                "path": str(f.relative_to(root)),
+                "artist": artist,
+                "title": title,
+                "album": album,
+                "track": track[0][0] if track else None,
+                "albumartist": (tags.get("aART") or [""])[0],
+                "haystack": f"{artist} {title} {album}".lower(),
+            })
+
+        _LIBRARY_INDEX.update({"at": time.time(), "rows": rows})
+        return list(rows)
+
+
+def invalidate_library_index() -> None:
+    _LIBRARY_INDEX["at"] = 0.0
+
+
 @app.get("/api/library")
 def library(q: str = "", limit: int = 200, authenticated: bool = Depends(verify_token)):
     """List library tracks, optionally filtered by a substring of artist/title/album."""
     needle = q.strip().lower()
-    root = LIBRARY.resolve()
     out = []
-    for f in sorted(root.rglob("*.m4a")):
-        try:
-            tags = MP4(f).tags or {}
-        except Exception:
+    for row in library_index():
+        if needle and needle not in row["haystack"]:
             continue
-        artist = " • ".join(tags.get("\xa9ART") or [])
-        title = (tags.get("\xa9nam") or [f.stem])[0]
-        album = (tags.get("\xa9alb") or [""])[0]
-        if needle and needle not in f"{artist} {title} {album}".lower():
-            continue
-        track = tags.get("trkn") or []
-        out.append({
-            "path": str(f.relative_to(root)),
-            "artist": artist,
-            "title": title,
-            "album": album,
-            "track": track[0][0] if track else None,
-        })
+        out.append({k: row[k] for k in ("path", "artist", "title", "album", "track")})
         if len(out) >= limit:
             break
     return out
@@ -1237,8 +1269,19 @@ def delete_track(req: DeleteRequest, authenticated: bool = Depends(verify_token)
         else:
             break
 
+    invalidate_library_index()
     logger.info("Deleted %s -> %s", req.path, destination)
     return {"deleted": req.path, "trash": str(destination)}
+
+
+def library_counts() -> tuple[int, int]:
+    """Track and album totals for the panel header, off the shared index."""
+    try:
+        rows = library_index()
+    except Exception:
+        return 0, 0
+    albums = {(r["album"], r["albumartist"]) for r in rows if r["album"]}
+    return len(rows), len(albums)
 
 
 @app.get("/health")
@@ -1258,6 +1301,7 @@ def health():
     queue_size = TASK_QUEUE.qsize()
 
     healthy = db_status == "ok" and library_status == "ok"
+    tracks, albums = library_counts() if library_status == "ok" else (0, 0)
 
     payload = {
         "status": "healthy" if healthy else "unhealthy",
@@ -1267,6 +1311,8 @@ def health():
         "workers": MAX_WORKERS,
         "queue_size": queue_size,
         "max_queue_size": MAX_QUEUE_SIZE,
+        "tracks": tracks,
+        "albums": albums,
     }
 
     if not healthy:

@@ -1,183 +1,115 @@
-<!doctype html>
-<html lang="ru">
-
-<head>
-
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1.0">
-
-<title>localSpotify</title>
-
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#090909">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Фонотека — local-Spotify</title>
 <link rel="stylesheet" href="/static/style.css">
-
-</head>
-
-
-<body>
-
 
 <div class="app">
 
+  <header class="topbar">
+    <div class="brand">
+      <h1>Фонотека</h1>
+      <p id="libraryStats">загружаю…</p>
+    </div>
+    <div id="statusPill" class="pill pill-idle">
+      <span class="dot"></span>
+      <span id="statusText">проверяю</span>
+    </div>
+  </header>
 
-<header class="topbar">
+  <!-- Shown only until a token is stored; it is a one-time step, not a panel. -->
+  <section id="loginBox" class="gate" hidden>
+    <h2>Ключ доступа</h2>
+    <p class="muted">Значение <code>API_TOKEN</code> из <code>adder/.env</code>. Сохранится в этом браузере.</p>
+    <input id="tokenInput" type="password" placeholder="API_TOKEN" autocomplete="off" spellcheck="false">
+    <button class="primary block" onclick="saveToken()">Подключиться</button>
+  </section>
 
-<div>
-<h1>🎵 localSpotify</h1>
-<p>Self-hosted YouTube Music Library</p>
-</div>
+  <main id="views">
 
+    <!-- ---------------- Добавить ---------------- -->
+    <section id="viewAdd" class="view">
 
-<button onclick="logout()">
-Change Token
-</button>
+      <div class="card">
+        <div class="card-head">
+          <svg class="icon accent" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+          <h2>Добавить трек</h2>
+        </div>
+        <textarea id="links" rows="3" placeholder="Ссылка на YouTube&#10;по одной в строке" spellcheck="false"></textarea>
+        <div class="row">
+          <button class="primary grow" onclick="addTracks()">Добавить</button>
+          <button class="ghost square" onclick="clearInput()" aria-label="Очистить">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+          </button>
+        </div>
+        <p id="addResult" class="note"></p>
+      </div>
 
+      <div class="list-head">
+        <span>Очередь</span>
+        <span id="queueCount" class="muted"></span>
+      </div>
+      <div id="tasks" class="rows"></div>
+      <p id="tasksEmpty" class="empty">Пока пусто. Вставь ссылку — задача появится здесь.</p>
 
-</header>
+    </section>
 
+    <!-- ---------------- Фонотека ---------------- -->
+    <section id="viewLibrary" class="view" hidden>
 
+      <div class="search">
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <input id="librarySearch" type="search" placeholder="Артист, трек или альбом"
+               oninput="scheduleLibrarySearch()" autocomplete="off" spellcheck="false">
+        <span id="libraryCount" class="muted"></span>
+      </div>
 
+      <div id="library" class="rows"></div>
+      <p id="libraryEmpty" class="empty">Ничего не нашлось.</p>
 
-<section id="loginBox" class="panel">
+    </section>
 
-<h2>🔐 API Token</h2>
+    <!-- ---------------- Сервис ---------------- -->
+    <section id="viewService" class="view" hidden>
 
-<p>
-Введите API_TOKEN из adder/.env
-</p>
+      <div class="card">
+        <div class="card-head">
+          <svg class="icon accent" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg>
+          <h2>Состояние</h2>
+        </div>
+        <div id="health" class="facts"></div>
+      </div>
 
-<input
-id="tokenInput"
-placeholder="API_TOKEN"
-/>
+      <div class="card">
+        <div class="card-head">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><path d="M10 17 5 12l5-5M5 12h12"/></svg>
+          <h2>Доступ</h2>
+        </div>
+        <p class="muted">Ключ хранится только в этом браузере.</p>
+        <button class="ghost block" onclick="logout()">Забыть ключ</button>
+      </div>
 
+    </section>
 
-<button onclick="saveToken()">
-Connect
-</button>
+  </main>
 
-
-</section>
-
-
-
-
-
-<section class="panel">
-
-<h2>➕ Add Music</h2>
-
-
-<textarea
-id="links"
-placeholder="YouTube ссылки (каждая с новой строки)">
-</textarea>
-
-
-<div class="actions">
-
-<button onclick="addTracks()">
-Add Track
-</button>
-
-
-<button onclick="clearInput()" class="secondary">
-Clear
-</button>
-
-
-</div>
-
-
-<div id="addResult"></div>
-
-
-</section>
-
-
-
-
-
-<section class="panel">
-
-<h2>🟢 System</h2>
-
-
-<div id="health">
-
-Loading...
-
-</div>
-
-
-</section>
-
-
-
-
-
-<section class="panel">
-
-
-<div class="section-title">
-
-<h2>
-🎧 Queue
-</h2>
-
-
-<span id="queueCount">
-</span>
-
+  <nav class="tabbar">
+    <button class="tab is-active" data-view="viewAdd" onclick="switchView('viewAdd')">
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+      <span>Добавить</span>
+    </button>
+    <button class="tab" data-view="viewLibrary" onclick="switchView('viewLibrary')">
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+      <span>Фонотека</span>
+    </button>
+    <button class="tab" data-view="viewService" onclick="switchView('viewService')">
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg>
+      <span>Сервис</span>
+    </button>
+  </nav>
 
 </div>
-
-
-
-<div id="tasks" class="tracks">
-
-</div>
-
-
-</section>
-
-
-<section class="panel">
-
-
-<div class="section-title">
-
-<h2>
-🗑 Library
-</h2>
-
-
-<span id="libraryCount">
-</span>
-
-
-</div>
-
-
-<input id="librarySearch" type="search" placeholder="Artist, title or album…"
-       oninput="scheduleLibrarySearch()" autocomplete="off">
-
-
-<div id="library" class="tracks">
-
-</div>
-
-
-</section>
-
-
-
-</div>
-
-
 
 <script src="/static/app.js"></script>
-
-
-</body>
-
-</html>
