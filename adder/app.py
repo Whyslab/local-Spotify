@@ -30,6 +30,7 @@ from pydantic import BaseModel
 from . import enrich
 from .config import (
     API_TOKEN,
+    COOKIES_FROM_BROWSER,
     LIBRARY,
     MAX_LINKS_PER_REQUEST,
     MAX_QUEUE_SIZE,
@@ -519,23 +520,23 @@ def yt_meta(url: str) -> dict:
 
 
 def yt_download(url: str, vid: str) -> Path:
-    p = run_yt_dlp(
-        [
-            sys.executable,
-            "-m",
-            "yt_dlp",
-            "-x",
-            "--audio-format",
-            "m4a",
-            "--audio-quality",
-            "0",
-            "--no-playlist",
-            "-o",
-            str(TMP_DIR / f"{vid}.%(ext)s"),
-            url,
-        ],
-        timeout=600,
-    )
+    command = [
+        sys.executable,
+        "-m",
+        "yt_dlp",
+        "-x",
+        "--audio-format",
+        "m4a",
+        "--audio-quality",
+        "0",
+        "--no-playlist",
+    ]
+    # Without cookies YouTube refuses some videos as suspected bot traffic.
+    if COOKIES_FROM_BROWSER:
+        command += ["--cookies-from-browser", COOKIES_FROM_BROWSER]
+    command += ["-o", str(TMP_DIR / f"{vid}.%(ext)s"), url]
+
+    p = run_yt_dlp(command, timeout=600)
     if p.returncode != 0:
         raise RuntimeError(p.stderr.strip()[-300:])
     target = TMP_DIR / f"{vid}.m4a"
