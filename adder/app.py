@@ -509,9 +509,22 @@ def run_yt_dlp(cmd: list[str], timeout: float) -> subprocess.CompletedProcess:
         selector.close()
 
 
+def ytdlp_base() -> list[str]:
+    """The yt-dlp invocation every call starts from.
+
+    The cookies belong here rather than on the download alone: YouTube applies
+    its bot check to the metadata request too, and that one runs first, so a
+    gated video never reaches the download step to benefit from them.
+    """
+    command = [sys.executable, "-m", "yt_dlp"]
+    if COOKIES_FROM_BROWSER:
+        command += ["--cookies-from-browser", COOKIES_FROM_BROWSER]
+    return command
+
+
 def yt_meta(url: str) -> dict:
     p = run_yt_dlp(
-        [sys.executable, "-m", "yt_dlp", "-J", "--no-playlist", url],
+        [*ytdlp_base(), "-J", "--no-playlist", url],
         timeout=120,
     )
     if p.returncode != 0:
@@ -521,20 +534,17 @@ def yt_meta(url: str) -> dict:
 
 def yt_download(url: str, vid: str) -> Path:
     command = [
-        sys.executable,
-        "-m",
-        "yt_dlp",
+        *ytdlp_base(),
         "-x",
         "--audio-format",
         "m4a",
         "--audio-quality",
         "0",
         "--no-playlist",
+        "-o",
+        str(TMP_DIR / f"{vid}.%(ext)s"),
+        url,
     ]
-    # Without cookies YouTube refuses some videos as suspected bot traffic.
-    if COOKIES_FROM_BROWSER:
-        command += ["--cookies-from-browser", COOKIES_FROM_BROWSER]
-    command += ["-o", str(TMP_DIR / f"{vid}.%(ext)s"), url]
 
     p = run_yt_dlp(command, timeout=600)
     if p.returncode != 0:
