@@ -1,368 +1,460 @@
-* {
-    box-sizing: border-box;
+/* local-Spotify control panel.
+   Built phone-first: this is opened from Safari on an iPhone far more often
+   than from the laptop that runs the service. Hit targets stay at 44px, the
+   primary actions sit within thumb reach, and the desktop layout is the
+   phone layout given room to breathe. */
+
+* { box-sizing: border-box; }
+
+:root {
+    --bg: #090909;
+    --surface: #141414;
+    --surface-2: #1c1c1c;
+    --line: #1f1f1f;
+    --line-2: #2a2a2a;
+
+    --text: #ffffff;
+    --text-2: #8a8a8a;
+    --text-3: #6d6d6d;
+
+    --accent: #1ed760;
+    --accent-ink: #06120a;
+    --accent-dim: #1db954;
+
+    --warn: #ffd166;
+    --danger: #ff5555;
+
+    --r-card: 20px;
+    --r-row: 15px;
+    --r-control: 13px;
+
+    --tabbar: 78px;
 }
 
+html { -webkit-text-size-adjust: 100%; }
 
 body {
-
-    margin:0;
-    min-height:100vh;
-
-    background:
-    radial-gradient(circle at top,#1db95440,transparent 35%),
-    #090909;
-
-    color:#fff;
-
-    font-family:
-    Inter,
-    system-ui,
-    sans-serif;
-
+    margin: 0;
+    min-height: 100vh;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, system-ui, "Helvetica Neue", sans-serif;
+    font-size: 15px;
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
 }
 
-
+/* One soft wash behind the header, echoing the accent. Not a full-page
+   gradient: those read as decoration rather than structure. */
+body::before {
+    content: "";
+    position: fixed;
+    top: -180px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 520px;
+    height: 380px;
+    background: radial-gradient(circle, #1db95430, transparent 62%);
+    pointer-events: none;
+    z-index: 0;
+}
 
 .app {
-
-    max-width:1100px;
-
-    margin:auto;
-
-    padding:30px;
-
+    position: relative;
+    z-index: 1;
+    max-width: 640px;
+    margin: 0 auto;
+    padding: 14px 16px calc(var(--tabbar) + env(safe-area-inset-bottom, 0px) + 16px);
 }
 
-
+/* ---------------- Header ---------------- */
 
 .topbar {
-
-    display:flex;
-
-    justify-content:space-between;
-
-    align-items:center;
-
-    margin-bottom:30px;
-
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 0 4px 14px;
 }
 
-
-
-.topbar h1 {
-
-    font-size:42px;
-
-    margin:0;
-
+.brand h1 {
+    margin: 0;
+    font-size: 19px;
+    font-weight: 700;
+    letter-spacing: -0.4px;
 }
 
-
-
-.topbar p {
-
-    color:#999;
-
-    margin-top:5px;
-
+.brand p {
+    margin: 2px 0 0;
+    font-size: 12px;
+    color: var(--text-2);
 }
 
-
-
-.panel {
-
-    background:#151515;
-
-    border-radius:24px;
-
-    padding:25px;
-
-    margin-bottom:25px;
-
-    box-shadow:
-    0 15px 40px rgba(0,0,0,.45);
-
+.pill {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 6px 11px 6px 9px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
 }
 
-
-
-h2 {
-
-    margin-top:0;
-
+.pill .dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 999px;
+    background: currentColor;
 }
 
+.pill-ok    { color: var(--accent); background: #16211a; border: 1px solid #1db95433; }
+.pill-idle  { color: var(--text-3); background: var(--surface-2); border: 1px solid var(--line-2); }
+.pill-error { color: var(--danger); background: #241315; border: 1px solid #ff555533; }
 
+/* ---------------- Blocks ---------------- */
 
-input,
-textarea {
-
-
-    width:100%;
-
-    background:#222;
-
-    color:white;
-
-    border:1px solid #333;
-
-    border-radius:14px;
-
-    padding:15px;
-
-    font-size:15px;
-
+.card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--r-card);
+    padding: 16px;
+    margin-bottom: 14px;
 }
 
-
-
-textarea {
-
-    min-height:130px;
-
-    resize:none;
-
+.card-head {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    margin-bottom: 12px;
 }
 
+.card-head h2 {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 650;
+    letter-spacing: -0.2px;
+}
 
+.gate {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--r-card);
+    padding: 16px;
+    margin-bottom: 14px;
+}
+
+.gate h2 { margin: 0 0 6px; font-size: 15px; font-weight: 650; }
+
+.list-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 4px 9px;
+    font-size: 13px;
+    font-weight: 650;
+    letter-spacing: 0.3px;
+    text-transform: uppercase;
+    color: var(--text-2);
+}
+
+/* ---------------- Icons ---------------- */
+
+.icon {
+    width: 17px;
+    height: 17px;
+    flex-shrink: 0;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+.icon.accent { color: var(--accent); }
+
+/* ---------------- Controls ---------------- */
+
+input, textarea {
+    width: 100%;
+    background: var(--surface-2);
+    color: var(--text);
+    border: 1px solid var(--line-2);
+    border-radius: var(--r-control);
+    padding: 12px 14px;
+    font: inherit;
+    font-size: 15px;   /* iOS zooms the page when a focused field is under 16px */
+}
+
+input::placeholder, textarea::placeholder { color: var(--text-3); }
+
+input:focus, textarea:focus {
+    outline: none;
+    border-color: var(--accent-dim);
+}
+
+textarea { resize: none; line-height: 1.5; }
 
 button {
-
-    background:#1ed760;
-
-    color:#000;
-
-    border:none;
-
-    border-radius:30px;
-
-    padding:13px 28px;
-
-    font-weight:700;
-
-    cursor:pointer;
-
-    transition:.2s;
-
+    min-height: 46px;
+    border: 1px solid transparent;
+    border-radius: var(--r-control);
+    padding: 0 18px;
+    font: inherit;
+    font-size: 15px;
+    font-weight: 650;
+    cursor: pointer;
+    transition: opacity .15s, transform .1s;
 }
 
+button:active { transform: scale(.98); }
+button:disabled { opacity: .5; cursor: default; }
 
+.primary { background: var(--accent); color: var(--accent-ink); font-weight: 700; }
+.ghost   { background: var(--surface-2); color: #d4d4d4; border-color: var(--line-2); }
+.danger  { background: var(--danger); color: #1a0d0e; font-weight: 700; }
 
-button:hover {
+.block { width: 100%; margin-top: 12px; }
+.grow  { flex-grow: 1; }
 
-    transform:translateY(-2px);
-
+.square {
+    width: 46px;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-2);
 }
 
+.row { display: flex; gap: 10px; margin-top: 12px; }
 
-
-.secondary {
-
-    background:#333;
-
-    color:white;
-
+.search {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: var(--surface-2);
+    border: 1px solid var(--line-2);
+    border-radius: var(--r-control);
+    padding: 0 13px;
+    height: 46px;
+    margin-bottom: 12px;
+    color: var(--text-3);
 }
 
-
-
-.actions {
-
-    display:flex;
-
-    gap:15px;
-
-    margin-top:15px;
-
+.search input {
+    background: none;
+    border: none;
+    padding: 0;
+    height: 100%;
+    flex-grow: 1;
 }
 
+.search input:focus { border: none; }
+.search input::-webkit-search-cancel-button { filter: invert(.6); }
 
+/* ---------------- Rows ---------------- */
 
-.section-title {
-
-    display:flex;
-
-    justify-content:space-between;
-
-    align-items:center;
-
-}
-
-
-
-#health {
-
-    display:flex;
-
-    flex-wrap:wrap;
-
-    gap:10px;
-
-}
-
-
-
-.status {
-
-    background:#222;
-
-    padding:8px 15px;
-
-    border-radius:20px;
-
-}
-
-
-
-.tracks {
-
-    display:flex;
-
-    flex-direction:column;
-
-    gap:12px;
-
-}
-
-
+.rows { display: flex; flex-direction: column; gap: 8px; }
 
 .track {
-
-    display:flex;
-
-    align-items:center;
-
-    gap:20px;
-
-    background:#202020;
-
-    padding:18px;
-
-    border-radius:18px;
-
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--r-row);
+    padding: 11px 12px;
 }
-
-
 
 .cover {
-
-    width:60px;
-
-    height:60px;
-
-    border-radius:12px;
-
-    background:#333;
-
+    width: 42px;
+    height: 42px;
+    border-radius: 9px;
+    background: linear-gradient(140deg, #2b2b2b, #1a1a1a);
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text-3);
 }
 
+.track-info { flex-grow: 1; min-width: 0; }
 
-
-.track-info {
-
-    flex:1;
-
-}
-
-
-
+/* Explicit line-heights: these lines are clipped to one line each, so they
+   must not depend on the inherited leading to keep their descenders. */
 .track-title {
-
-    font-size:17px;
-
-    font-weight:700;
-
+    font-size: 14px;
+    line-height: 19px;
+    font-weight: 600;
+    letter-spacing: -0.1px;
 }
-
-
 
 .track-artist {
-
-    color:#aaa;
-
-    margin-top:5px;
-
+    font-size: 12px;
+    line-height: 17px;
+    color: var(--text-2);
+    margin-top: 2px;
 }
 
+.track-album {
+    font-size: 11px;
+    line-height: 16px;
+    color: #5c5c5c;
+    margin-top: 1px;
+}
 
+/* Long Cyrillic titles must not push the status or the delete button out. */
+.track-title, .track-artist, .track-album {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
 
 .track-status {
-
-    padding:7px 14px;
-
-    border-radius:20px;
-
-    background:#333;
-
+    flex-shrink: 0;
+    font-size: 11px;
+    font-weight: 650;
+    padding: 5px 9px;
+    border-radius: 999px;
+    background: var(--surface-2);
+    border: 1px solid var(--line-2);
+    color: var(--text-2);
 }
 
+.track-status.done        { color: var(--accent); background: #102016; border-color: #1ed76033; }
+.track-status.downloading,
+.track-status.tagging     { color: var(--warn);   background: #241f12; border-color: #ffd16633; }
+.track-status.error       { color: var(--danger); background: #241315; border-color: #ff555533; }
 
-
-.done {
-
-    color:#1ed760;
-
+.icon-button {
+    width: 38px;
+    min-height: 38px;
+    height: 38px;
+    padding: 0;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 10px;
+    background: #1c1416;
+    border: 1px solid #ff555529;
+    color: var(--danger);
 }
 
+/* ---------------- Confirm ---------------- */
 
-
-.error {
-
-    color:#ff5555;
-
+.confirm {
+    background: var(--surface);
+    border: 1px solid #ff555533;
+    border-radius: 17px;
+    padding: 15px;
 }
 
+.confirm h3 { margin: 0; font-size: 14px; font-weight: 650; letter-spacing: -0.2px; }
+.confirm p  { margin: 6px 0 0; font-size: 12px; color: var(--text-2); }
 
+/* ---------------- Service ---------------- */
 
-.downloading {
+.facts { display: flex; flex-direction: column; gap: 1px; }
 
-    color:#ffd166;
-
+.fact {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--line);
+    font-size: 14px;
 }
 
+.fact:last-child { border-bottom: none; }
+.fact-label { color: var(--text-2); }
+.fact-value { font-weight: 600; }
+.fact-value.bad { color: var(--danger); }
 
+/* ---------------- Misc ---------------- */
 
-small {
+.muted { color: var(--text-2); font-size: 13px; margin: 0; }
+.note  { color: var(--text-2); font-size: 12px; margin: 10px 0 0; word-break: break-word; }
+.empty { color: var(--text-3); font-size: 13px; text-align: center; padding: 26px 16px; margin: 0; }
 
-    color:#888;
-
+code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+    background: var(--surface-2);
+    border-radius: 5px;
+    padding: 1px 5px;
 }
 
+[hidden] { display: none !important; }
 
+/* ---------------- Tab bar ---------------- */
 
-@media(max-width:700px){
-
-.app {
-
-    padding:15px;
-
+.tabbar {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 2;
+    display: flex;
+    gap: 4px;
+    padding: 8px 12px calc(8px + env(safe-area-inset-bottom, 0px));
+    /* Opaque by default: where backdrop-filter is unsupported a translucent
+       bar lets the list read straight through it. Browsers that do support it
+       get the blur on top of the solid fill, not instead of it. */
+    background: #0d0d0d;
+    border-top: 1px solid #1c1c1c;
 }
 
-
-.topbar {
-
-    flex-direction:column;
-
-    align-items:flex-start;
-
-    gap:15px;
-
+@supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) {
+    .tabbar {
+        background: #0d0d0dd9;
+        backdrop-filter: blur(18px);
+        -webkit-backdrop-filter: blur(18px);
+    }
 }
 
-
-.topbar h1 {
-
-    font-size:32px;
-
+/* A short fade above the bar so rows dissolve into it instead of being cut. */
+.tabbar::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 100%;
+    height: 24px;
+    background: linear-gradient(transparent, var(--bg));
+    pointer-events: none;
 }
 
-
-.track {
-
-    flex-direction:column;
-
-    align-items:flex-start;
-
+.tab {
+    flex-grow: 1;
+    min-height: 52px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    padding: 0;
+    background: none;
+    border: none;
+    border-radius: 12px;
+    color: var(--text-3);
+    font-size: 10px;
+    font-weight: 650;
 }
 
+.tab .icon { width: 21px; height: 21px; }
+.tab.is-active { color: var(--accent); }
+
+@media (min-width: 700px) {
+    .tabbar {
+        position: sticky;
+        max-width: 640px;
+        margin: 0 auto;
+        border-radius: 16px;
+        border: 1px solid #1c1c1c;
+    }
+    .app { padding-bottom: 20px; }
 }

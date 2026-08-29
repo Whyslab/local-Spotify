@@ -61,3 +61,11 @@ scripts/tmp/
 
 # Deleted tracks land here instead of being unlinked
 trash/
+
+# Working files from the playlist backfill
+missing_tracks.csv
+missing_youtube.csv
+missing_links.db
+
+# Seeded design canvas (2 MB of editor payload); the .dc.html sources are kept
+design/*.html
