@@ -27,6 +27,7 @@ from mutagen.mp4 import MP4, MP4Cover
 from pydantic import BaseModel
 
 # Import unified configuration
+from . import enrich
 from .config import (
     API_TOKEN,
     LIBRARY,
@@ -563,6 +564,17 @@ def get_hd_cover(artist: str, title: str):
     return None, None
 
 
+def fetch_cover_url(url: str):
+    """Download album art from a known-good URL (Deezer gives us one per album)."""
+    try:
+        img = requests.get(url, timeout=15)
+        if img.ok and img.content:
+            return img.content, ("png" if img.content.startswith(b"\x89PNG") else "jpg")
+    except Exception:
+        pass
+    return None, None
+
+
 def fetch_cover(artist: str, title: str, thumb_url: str | None):
     data, fmt = get_hd_cover(artist, title)
     if data:
@@ -793,19 +805,41 @@ def process(tid: int, url: str):
 
             # Problem #12: Write full metadata
             task_update(tid, status="tagging", artist=full_artist, title=meta_title)
-            cover, fmt = fetch_cover(fs_artist, fs_title, meta.get("thumbnail"))
 
-            # Determine final destination
+            # YouTube gives us a title and an uploader; Deezer gives us the album,
+            # the track number and the real list of artists. Without this the track
+            # lands in a nameless bucket with no position, which is what made every
+            # album in the library read "Singles" in the first place.
+            info, from_deezer = enrich.describe(full_artist, meta_title)
+            logger.info(
+                "Metadata for %r by %r: album=%r track=%s source=%s",
+                meta_title, full_artist, info.album, info.track_number,
+                "deezer" if from_deezer else "fallback",
+            )
+
+            cover, fmt = None, None
+            if info.cover_url:
+                cover, fmt = fetch_cover_url(info.cover_url)
+            if not cover:
+                cover, fmt = fetch_cover(fs_artist, fs_title, meta.get("thumbnail"))
+
+            # Folder layout is left alone on purpose: Navidrome groups albums by
+            # tags, not by directory, so moving files would buy nothing.
             target_dir = LIBRARY / fs_artist / "Singles"
             target_dir.mkdir(parents=True, exist_ok=True)
             base_target = target_dir / f"{fs_title}.m4a"
 
             # Problem #8: Process metadata on temp file BEFORE moving to library
             audio = MP4(tmp_file)
-            audio["\xa9nam"] = meta_title  # Full title with version info
-            audio["\xa9ART"] = full_artist  # Full artist metadata
-            audio["aART"] = full_artist
-            audio["\xa9alb"] = "Singles"
+            audio["\xa9nam"] = [meta_title]  # Full title with version info
+            audio["\xa9ART"] = info.artists  # one value per artist, so feats link to both
+            audio["aART"] = [info.artists[0]]
+            audio["\xa9alb"] = [info.album]
+            if info.date:
+                audio["\xa9day"] = [info.date]
+            if info.track_number:
+                audio["trkn"] = [(info.track_number, info.track_total)]
+                audio["disk"] = [(info.disc_number, 1)]
             if cover:
                 fmt_const = MP4Cover.FORMAT_PNG if fmt == "png" else MP4Cover.FORMAT_JPEG
                 audio["covr"] = [MP4Cover(cover, imageformat=fmt_const)]
@@ -1126,6 +1160,85 @@ def add(req: AddRequest, authenticated: bool = Depends(verify_token)):
 @app.get("/api/tasks")
 def tasks(authenticated: bool = Depends(verify_token)):
     return db_query("SELECT * FROM tasks ORDER BY id DESC LIMIT 50")
+
+
+TRASH_DIR = PROJECT.parent / "trash"
+
+
+class DeleteRequest(BaseModel):
+    path: str
+
+
+def library_track(rel_path: str) -> Path:
+    """Resolve a library-relative path, refusing anything that escapes the library.
+
+    The API listens on the LAN, so a caller must never be able to reach a file
+    outside the music folder by sending ``../`` or an absolute path.
+    """
+    candidate = (LIBRARY / rel_path).resolve()
+    root = LIBRARY.resolve()
+    if not candidate.is_relative_to(root):
+        raise HTTPException(status_code=400, detail="Path is outside the library")
+    if not candidate.is_file() or candidate.suffix.lower() != ".m4a":
+        raise HTTPException(status_code=404, detail="Track not found")
+    return candidate
+
+
+@app.get("/api/library")
+def library(q: str = "", limit: int = 200, authenticated: bool = Depends(verify_token)):
+    """List library tracks, optionally filtered by a substring of artist/title/album."""
+    needle = q.strip().lower()
+    root = LIBRARY.resolve()
+    out = []
+    for f in sorted(root.rglob("*.m4a")):
+        try:
+            tags = MP4(f).tags or {}
+        except Exception:
+            continue
+        artist = " • ".join(tags.get("\xa9ART") or [])
+        title = (tags.get("\xa9nam") or [f.stem])[0]
+        album = (tags.get("\xa9alb") or [""])[0]
+        if needle and needle not in f"{artist} {title} {album}".lower():
+            continue
+        track = tags.get("trkn") or []
+        out.append({
+            "path": str(f.relative_to(root)),
+            "artist": artist,
+            "title": title,
+            "album": album,
+            "track": track[0][0] if track else None,
+        })
+        if len(out) >= limit:
+            break
+    return out
+
+
+@app.delete("/api/library")
+def delete_track(req: DeleteRequest, authenticated: bool = Depends(verify_token)):
+    """Remove a track from the library.
+
+    The file is moved to a trash folder rather than unlinked, so a mistaken tap
+    on a phone stays recoverable. Navidrome's watcher notices the file is gone
+    and drops it from the library on its own.
+    """
+    target = library_track(req.path)
+    destination = TRASH_DIR / req.path
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists():
+        destination = destination.with_name(f"{destination.stem}-{int(time.time())}.m4a")
+    shutil.move(str(target), str(destination))
+
+    # Leave no empty artist/album folders behind.
+    for parent in target.parents:
+        if parent == LIBRARY.resolve():
+            break
+        if parent.is_dir() and not any(parent.iterdir()):
+            parent.rmdir()
+        else:
+            break
+
+    logger.info("Deleted %s -> %s", req.path, destination)
+    return {"deleted": req.path, "trash": str(destination)}
 
 
 @app.get("/health")
