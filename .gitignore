@@ -69,3 +69,6 @@ missing_links.db
 
 # Seeded design canvas (2 MB of editor payload); the .dc.html sources are kept
 design/*.html
+
+# graphify knowledge graph (regenerate with: graphify update .)
+graphify-out/
