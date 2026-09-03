@@ -11,8 +11,8 @@ import threading
 import time
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, HTTPException, Security, status
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import Depends, FastAPI, File, HTTPException, Security, UploadFile, status
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -373,6 +373,47 @@ def _sync_navidrome(op: str, name: str) -> str:
         logger.warning("Navidrome %s for %r deferred: %s", op, name, exc)
         navidrome.enqueue(op, name)
         return "queued"
+
+
+@app.post("/api/playlists/{name}/cover")
+async def upload_playlist_cover(
+    name: str,
+    image: UploadFile = File(...),
+    authenticated: bool = Depends(verify_token),
+):
+    """Give a playlist its own picture.
+
+    Stored locally first and replicated to Navidrome second. Navidrome is where
+    a Subsonic client reads the cover from, but it ties one to a playlist id,
+    and an id is born from a file -- rename the .m3u and the cover stays with
+    the playlist that no longer exists. Keeping the original here makes that a
+    re-upload rather than a loss, and lets the phone see the new cover straight
+    away instead of waiting for a round trip through Navidrome.
+    """
+    playlists.read(name)  # 404 for a playlist that does not exist
+    data = await image.read()
+    media = covers.store(name, data)
+    return {
+        "playlist": name,
+        "media_type": media,
+        "bytes": len(data),
+        "navidrome": _sync_navidrome("cover", name),
+    }
+
+
+@app.get("/api/playlists/{name}/cover")
+def get_playlist_cover(name: str, authenticated: bool = Depends(verify_token)):
+    """Serve the stored cover, so the panel can show it without Navidrome."""
+    image = covers.read_cover(name)
+    if image is None:
+        raise HTTPException(status_code=404, detail="No cover for this playlist")
+    return Response(content=image[0], media_type=covers.media_type(name))
+
+
+@app.delete("/api/playlists/{name}/cover")
+def delete_playlist_cover(name: str, authenticated: bool = Depends(verify_token)):
+    covers.delete(name)
+    return {"playlist": name, "cover": "removed"}
 
 
 # ---------------------------------------------------------------------------
