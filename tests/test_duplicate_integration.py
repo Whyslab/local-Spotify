@@ -104,15 +104,21 @@ def configure_fake_processing(monkeypatch, payload):
         create_fake_download(payload),
     )
 
+    # The payloads here are short byte strings, not real audio, so the real
+    # integrity check would reject them before the duplicate logic under test
+    # ever runs. Patch the check the pipeline actually calls -- both of them,
+    # since the write is verified by reading the tags back.
     monkeypatch.setattr(
         ingest,
-        "validate_m4a_integrity",
+        "validate_audio_integrity",
         lambda filepath: (
             (True, "")
             if filepath.exists() and filepath.stat().st_size > 0
             else (False, "invalid file")
         ),
     )
+
+    monkeypatch.setattr(ingest, "verify_tags_written", lambda path, title: True)
 
     monkeypatch.setattr(
         ingest,
@@ -231,9 +237,11 @@ def test_same_filename_different_content_is_preserved(
 
     monkeypatch.setattr(
         ingest,
-        "validate_m4a_integrity",
+        "validate_audio_integrity",
         lambda filepath: (True, ""),
     )
+
+    monkeypatch.setattr(ingest, "verify_tags_written", lambda path, title: True)
 
     class FakeMP4:
         _metadata = {}

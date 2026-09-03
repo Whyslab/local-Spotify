@@ -53,7 +53,15 @@ def process(tid: int, url: str):
 
     while retry_count == 0 or retry_count < config.MAX_RETRIES:
         try:
-            downloaded = ingest.download_to_temp(tid, url)
+            if url.startswith("file:"):
+                # An uploaded file: a different way of obtaining the bytes,
+                # handing over to exactly the same library half below.
+                source = ingest.stashed_upload(url)
+                if source is None:
+                    raise RuntimeError("Uploaded file is no longer in the import folder")
+                downloaded = ingest.import_local_file(tid, source, source.name)
+            else:
+                downloaded = ingest.download_to_temp(tid, url)
             temp_path = downloaded.temp_path
 
             outcome = ingest.ingest_temp_file(

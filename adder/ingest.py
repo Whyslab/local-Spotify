@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
+import mutagen
 import requests
 from mutagen.mp4 import MP4, MP4Cover
 
@@ -490,7 +491,9 @@ def find_duplicate_library_file(filepath: Path) -> Path | None:
     if not config.LIBRARY.exists():
         return None
 
-    for candidate in config.LIBRARY.rglob("*.m4a"):
+    for candidate in (
+        p for suffix in library.AUDIO_SUFFIXES for p in config.LIBRARY.rglob(f"*{suffix}")
+    ):
         try:
             if not candidate.is_file():
                 continue
@@ -558,6 +561,114 @@ def validate_m4a_integrity(filepath: Path) -> tuple[bool, str]:
         return True, ""
     except Exception as e:
         return False, f"M4A validation failed: {str(e)[:100]}"
+
+
+# ffmpeg complains about plenty of things that do not make a file unplayable:
+# junk in the tags, a ragged VBR frame, a stray byte before the first header.
+# Requiring silence would reject legitimate mp3s, so the test is the exit code
+# plus this list -- the messages that mean the audio itself is broken.
+FATAL_DECODE_PATTERNS = (
+    "invalid data found",
+    "moov atom not found",
+    "error while decoding",
+    "truncated",
+    "could not find codec parameters",
+    "end of file",
+)
+
+
+def decodes_cleanly(filepath: Path, timeout: float = 120) -> tuple[bool, str, float | None]:
+    """Read the whole stream through ffmpeg and report how far it got.
+
+    Parsing the header only proves the file starts like audio. This decodes it
+    to the end, and returns the number of seconds that actually came out --
+    which is the only way to see the failure that matters. A download cut off
+    halfway keeps a perfectly good header: an mp3 truncated to a third still
+    claims its original length, ffmpeg still exits 0, and it still says
+    nothing. It just stops early. The caller compares the two numbers.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "nice",
+                "-n",
+                "10",
+                "ffmpeg",
+                "-v",
+                "error",
+                "-stats",
+                "-i",
+                str(filepath),
+                "-f",
+                "null",
+                "-",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return False, "ffmpeg timed out reading the file", None
+    except FileNotFoundError:
+        # No ffmpeg means no second opinion; the header check still ran.
+        return True, "", None
+
+    if result.returncode != 0:
+        return False, f"ffmpeg refused the file: {result.stderr.strip()[-160:]}", None
+
+    lowered = (result.stderr or "").lower()
+    for pattern in FATAL_DECODE_PATTERNS:
+        if pattern in lowered:
+            return False, f"ffmpeg reported a fatal problem: {result.stderr.strip()[-160:]}", None
+
+    decoded = None
+    for match in re.finditer(r"time=(\d+):(\d\d):(\d\d(?:\.\d+)?)", result.stderr or ""):
+        hours, minutes, seconds = match.groups()
+        decoded = int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+    return True, "", decoded
+
+
+# How much shorter than advertised a file may decode before it is treated as
+# cut off. A little slack for encoder padding and for the last partial frame;
+# a third of the file missing is not slack.
+TRUNCATION_TOLERANCE = 0.9
+
+
+def validate_audio_integrity(filepath: Path) -> tuple[bool, str]:
+    """Integrity check for any format the library accepts.
+
+    .m4a keeps the header-only check it has always had -- every one of those
+    arrives through the pipeline that produced it moments earlier. A file
+    imported from disk has no such provenance, so it is decoded in full.
+    """
+    if not filepath.exists():
+        return False, "File does not exist"
+    if filepath.stat().st_size == 0:
+        return False, "File is empty"
+
+    if filepath.suffix.lower() == ".m4a":
+        return validate_m4a_integrity(filepath)
+
+    try:
+        parsed = mutagen.File(filepath)
+    except Exception as exc:
+        return False, f"Could not parse the file: {str(exc)[:100]}"
+    if parsed is None:
+        return False, "Not an audio file this library understands"
+    declared = getattr(getattr(parsed, "info", None), "length", 0) or 0
+    if declared <= 0:
+        return False, "No valid audio stream found"
+
+    ok, message, decoded = decodes_cleanly(filepath)
+    if not ok:
+        return False, message
+
+    if decoded is not None and decoded < declared * TRUNCATION_TOLERANCE:
+        return False, (
+            f"File looks truncated: the header claims {declared:.1f}s "
+            f"but only {decoded:.1f}s decode"
+        )
+    return True, ""
 
 
 def cleanup_old_temp_files():
@@ -633,6 +744,109 @@ def classify_error(message: str) -> str:
     return "unknown_error"
 
 
+def write_tags(path: Path, info, title: str, cover: bytes | None, cover_fmt: str | None) -> None:
+    """Write artist, title, album, track number and cover, whatever the container.
+
+    Each format keeps pictures somewhere different -- an MP4 atom, an ID3 APIC
+    frame, a FLAC picture block, a base64 block in an Ogg comment -- so this is
+    four small cases rather than one clever one.
+    """
+    suffix = path.suffix.lower()
+
+    if suffix == ".m4a":
+        audio = MP4(path)
+        audio["\xa9nam"] = [title]
+        audio["\xa9ART"] = info.artists
+        audio["aART"] = [info.artists[0]]
+        audio["\xa9alb"] = [info.album]
+        if info.date:
+            audio["\xa9day"] = [info.date]
+        if info.track_number:
+            audio["trkn"] = [(info.track_number, info.track_total)]
+            audio["disk"] = [(info.disc_number, 1)]
+        if cover:
+            fmt_const = MP4Cover.FORMAT_PNG if cover_fmt == "png" else MP4Cover.FORMAT_JPEG
+            audio["covr"] = [MP4Cover(cover, imageformat=fmt_const)]
+        audio.save()
+        return
+
+    mime = "image/png" if cover_fmt == "png" else "image/jpeg"
+
+    if suffix == ".mp3":
+        from mutagen.id3 import APIC, TALB, TDRC, TIT2, TPE1, TPE2, TRCK
+        from mutagen.mp3 import MP3
+
+        audio = MP3(path)
+        if audio.tags is None:
+            audio.add_tags()
+        tags = audio.tags
+        tags.setall("TIT2", [TIT2(encoding=3, text=[title])])
+        tags.setall("TPE1", [TPE1(encoding=3, text=info.artists)])
+        tags.setall("TPE2", [TPE2(encoding=3, text=[info.artists[0]])])
+        tags.setall("TALB", [TALB(encoding=3, text=[info.album])])
+        if info.date:
+            tags.setall("TDRC", [TDRC(encoding=3, text=[info.date])])
+        if info.track_number:
+            numbering = f"{info.track_number}/{info.track_total}"
+            tags.setall("TRCK", [TRCK(encoding=3, text=[numbering])])
+        if cover:
+            tags.delall("APIC")
+            tags.add(APIC(encoding=3, mime=mime, type=3, desc="Cover", data=cover))
+        audio.save()
+        return
+
+    if suffix == ".flac":
+        from mutagen.flac import FLAC, Picture
+
+        audio = FLAC(path)
+        audio["title"] = [title]
+        audio["artist"] = info.artists
+        audio["albumartist"] = [info.artists[0]]
+        audio["album"] = [info.album]
+        if info.date:
+            audio["date"] = [info.date]
+        if info.track_number:
+            audio["tracknumber"] = [str(info.track_number)]
+        if cover:
+            picture = Picture()
+            picture.type, picture.mime, picture.data = 3, mime, cover
+            audio.clear_pictures()
+            audio.add_picture(picture)
+        audio.save()
+        return
+
+    # Ogg and Opus: text tags are plain comments, the cover is a base64 FLAC
+    # picture block, which is the convention every player expects here.
+    audio = mutagen.File(path)
+    if audio is None:
+        raise RuntimeError(f"Cannot tag {path.name}: unrecognised format")
+    audio["title"] = [title]
+    audio["artist"] = list(info.artists)
+    audio["albumartist"] = [info.artists[0]]
+    audio["album"] = [info.album]
+    if info.date:
+        audio["date"] = [info.date]
+    if info.track_number:
+        audio["tracknumber"] = [str(info.track_number)]
+    if cover:
+        import base64
+
+        from mutagen.flac import Picture
+
+        picture = Picture()
+        picture.type, picture.mime, picture.data = 3, mime, cover
+        audio["metadata_block_picture"] = [base64.b64encode(picture.write()).decode("ascii")]
+    audio.save()
+
+
+def verify_tags_written(path: Path, expected_title: str) -> bool:
+    """Read the title back out. A save that silently did nothing is a real failure mode."""
+    try:
+        return bool(library.read_tags(path).get("title"))
+    except Exception:
+        return False
+
+
 @dataclass(frozen=True)
 class TrackNames:
     """What a track should be called, once the source has been interrogated.
@@ -658,10 +872,13 @@ def stage_into_temp(source: Path, key: str) -> Path:
     """Move an already-obtained audio file into the processing directory.
 
     Nothing reaches the library from here; this only gets the bytes to the one
-    place where tagging and duplicate checks are allowed to happen.
+    place where tagging and duplicate checks are allowed to happen. The suffix
+    is carried over: a downloaded track is always .m4a, an imported one keeps
+    whatever it arrived as.
     """
     runtime.TMP_DIR.mkdir(parents=True, exist_ok=True)
-    temp_path = runtime.TMP_DIR / f"{key}_processing.m4a"
+    suffix = source.suffix.lower() or ".m4a"
+    temp_path = runtime.TMP_DIR / f"{key}_processing{suffix}"
     shutil.move(str(source), str(temp_path))
     return temp_path
 
@@ -687,7 +904,7 @@ def download_to_temp(tid: int, url: str) -> Downloaded:
     if not downloaded.exists():
         raise RuntimeError("Downloaded file not found")
 
-    is_valid, error_msg = validate_m4a_integrity(downloaded)
+    is_valid, error_msg = validate_audio_integrity(downloaded)
     if not is_valid:
         raise RuntimeError(error_msg)
 
@@ -696,6 +913,89 @@ def download_to_temp(tid: int, url: str) -> Downloaded:
         names=TrackNames(fs_artist, fs_title, full_artist, meta_title),
         thumbnail=meta.get("thumbnail"),
     )
+
+
+IMPORT_DIR_NAME = "import"
+
+
+def import_dir() -> Path:
+    """Where an uploaded file waits between the request and its turn in the queue."""
+    path = runtime.TMP_DIR / IMPORT_DIR_NAME
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def stash_upload(data: bytes, original_name: str) -> tuple[str, Path]:
+    """Save an uploaded file and return the source key it will be queued under.
+
+    Tasks are keyed by URL and the column is unique, which is what makes
+    resubmitting a link idempotent. A local file has no URL, so it gets a
+    synthetic one built from its own content: uploading the same bytes twice is
+    the same task, exactly as pasting the same link twice is.
+    """
+    suffix = Path(original_name).suffix.lower() or ".mp3"
+    digest = hashlib.sha256(data).hexdigest()
+    target = import_dir() / f"{digest}{suffix}"
+    target.write_bytes(data)
+    return f"file:{digest}", target
+
+
+def stashed_upload(source_key: str) -> Path | None:
+    matches = sorted(import_dir().glob(f"{source_key.removeprefix('file:')}.*"))
+    return matches[0] if matches else None
+
+
+def import_local_file(tid: int, source: Path, original_name: str) -> Downloaded:
+    """Take a file the user dropped in and get it ready for the library half.
+
+    The counterpart to download_to_temp: a different way of obtaining bytes,
+    handing over the same thing. Names come from the file's own tags where it
+    has them -- a file that arrives already tagged knows better than its
+    filename does -- and from the filename where it does not.
+    """
+    has_space, free_mb = check_disk_space()
+    if not has_space:
+        raise RuntimeError(
+            f"Insufficient disk space: {free_mb}MB free, {config.MIN_FREE_SPACE_MB}MB required"
+        )
+
+    db.task_update(tid, status="downloading")
+
+    is_valid, error_msg = validate_audio_integrity(source)
+    if not is_valid:
+        raise RuntimeError(error_msg)
+
+    try:
+        tags = library.read_tags(source)
+    except Exception:
+        tags = {}
+
+    artist = (tags.get("artist") or "").strip()
+    title = (tags.get("title") or "").strip()
+    # read_tags falls back to the file stem so the panel always has something
+    # to show. Here that fallback is in the way: a stem is not a title, and
+    # treating it as one would leave "Кино - Группа крови" as the track name
+    # with no artist ever split out of it.
+    if title == source.stem or title == Path(original_name).stem:
+        title = ""
+    if not artist or not title:
+        # "Artist - Title.mp3" is the one filename convention worth reading.
+        stem = Path(original_name).stem
+        if " - " in stem:
+            guessed_artist, guessed_title = stem.split(" - ", 1)
+        else:
+            guessed_artist, guessed_title = artist or "Unknown Artist", stem
+        artist = artist or guessed_artist.strip()
+        title = title or guessed_title.strip()
+
+    names = TrackNames(
+        fs_artist=sanitize_filename(artist),
+        fs_title=sanitize_filename(clean_title(title, for_filename=True)),
+        full_artist=artist,
+        meta_title=clean_title(title, for_filename=False),
+    )
+    key = file_sha256(source)[:16]
+    return Downloaded(temp_path=stage_into_temp(source, key), names=names, thumbnail=None)
 
 
 def ingest_temp_file(tid: int, temp_path: Path, names: TrackNames, thumbnail: str | None) -> str:
@@ -731,28 +1031,16 @@ def ingest_temp_file(tid: int, temp_path: Path, names: TrackNames, thumbnail: st
     # tags, not by directory, so moving files would buy nothing.
     target_dir = config.LIBRARY / names.fs_artist / "Singles"
     target_dir.mkdir(parents=True, exist_ok=True)
-    base_target = target_dir / f"{names.fs_title}.m4a"
+    # An imported file keeps its own container; nothing is re-encoded to make
+    # the folder uniform, because that would cost quality for tidiness.
+    base_target = target_dir / f"{names.fs_title}{temp_path.suffix.lower()}"
 
-    audio = MP4(temp_path)
-    audio["\xa9nam"] = [names.meta_title]  # Full title with version info
-    audio["\xa9ART"] = info.artists  # one value per artist, so feats link to both
-    audio["aART"] = [info.artists[0]]
-    audio["\xa9alb"] = [info.album]
-    if info.date:
-        audio["\xa9day"] = [info.date]
-    if info.track_number:
-        audio["trkn"] = [(info.track_number, info.track_total)]
-        audio["disk"] = [(info.disc_number, 1)]
-    if cover:
-        fmt_const = MP4Cover.FORMAT_PNG if fmt == "png" else MP4Cover.FORMAT_JPEG
-        audio["covr"] = [MP4Cover(cover, imageformat=fmt_const)]
-    audio.save()
+    write_tags(temp_path, info, names.meta_title, cover, fmt)
 
-    audio_verify = MP4(temp_path)
-    if not audio_verify.get("\xa9nam"):
+    if not verify_tags_written(temp_path, names.meta_title):
         raise RuntimeError("Metadata write failed verification")
 
-    is_valid, error_msg = validate_m4a_integrity(temp_path)
+    is_valid, error_msg = validate_audio_integrity(temp_path)
     if not is_valid:
         raise RuntimeError(f"Final validation failed: {error_msg}")
 

@@ -37,7 +37,7 @@
           <svg class="icon accent" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
           <h2>Добавить трек</h2>
         </div>
-        <textarea id="links" rows="3" placeholder="Ссылка на YouTube&#10;по одной в строке" spellcheck="false"></textarea>
+        <textarea id="links" rows="4" placeholder="Ссылка на YouTube&#10;по одной в строке&#10;или ссылка на плейлист YouTube / Spotify" spellcheck="false"></textarea>
         <div class="row">
           <button class="primary grow" onclick="addTracks()">Добавить</button>
           <button class="ghost square" onclick="clearInput()" aria-label="Очистить">
@@ -45,6 +45,33 @@
           </button>
         </div>
         <p id="addResult" class="note"></p>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <svg class="icon accent" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          <h2>Найти по названию</h2>
+        </div>
+        <div class="row">
+          <input id="searchQuery" class="grow" type="text" placeholder="Артист — название"
+                 autocomplete="off" onkeydown="if(event.key==='Enter')runSearch()">
+          <button class="primary" onclick="runSearch()">Искать</button>
+        </div>
+        <p id="searchNote" class="note"></p>
+        <div id="searchResults" class="rows"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <svg class="icon accent" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12M8 11l4 4 4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+          <h2>Файлы с диска</h2>
+        </div>
+        <p class="muted">Перетащи сюда или выбери. Форматы: mp3, m4a, flac, opus, ogg. Ничего не перекодируется.</p>
+        <label id="dropZone" class="drop-zone">
+          <span id="dropLabel">Перетащить или выбрать файлы</span>
+          <input type="file" accept=".mp3,.m4a,.flac,.opus,.ogg" multiple onchange="importFiles(this.files)" hidden>
+        </label>
+        <p id="importNote" class="note"></p>
       </div>
 
       <div class="list-head">

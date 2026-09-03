@@ -10,6 +10,7 @@ import secrets
 import threading
 import time
 from contextlib import asynccontextmanager, suppress
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, HTTPException, Security, UploadFile, status
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
@@ -17,7 +18,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import config, covers, db, ingest, library, navidrome, playlists, runtime, signing
+from . import config, covers, db, ingest, library, navidrome, playlists, runtime, signing, sources
 from . import queue as task_queue
 
 logger = logging.getLogger(__name__)
@@ -273,6 +274,170 @@ def list_library(q: str = "", limit: int = 200, authenticated: bool = Depends(ve
 def delete_track(req: DeleteRequest, authenticated: bool = Depends(verify_token)):
     """Remove a track from the library, moving it to trash rather than unlinking."""
     return library.delete_track(req.path)
+
+
+# ---------------------------------------------------------------------------
+# Getting music in
+# ---------------------------------------------------------------------------
+
+
+def _queue_source(source_key: str) -> int | None:
+    """Put one source key in the queue, or skip it if it is already there.
+
+    Same rules as a pasted link: an active or finished task is left alone, a
+    failed one is reset and tried again.
+    """
+    with runtime.FILE_LOCK:
+        if source_key in runtime.PROCESSING_URLS:
+            return None
+        existing = db.db_query("SELECT id, status FROM tasks WHERE url = ?", (source_key,))
+        if existing:
+            task = existing[0]
+            if task["status"] != "error":
+                return None
+            tid = task["id"]
+            db.task_update(
+                tid,
+                status="queued",
+                artist=None,
+                title=None,
+                error=None,
+                error_type=None,
+                retry_count=0,
+            )
+        else:
+            cur = db.db_exec("INSERT INTO tasks(url, status) VALUES(?, 'queued')", (source_key,))
+            tid = cur.lastrowid
+        runtime.TASK_QUEUE.put((tid, source_key))
+        runtime.PROCESSING_URLS.add(source_key)
+        return tid
+
+
+@app.post("/api/import")
+async def import_files(
+    files: list[UploadFile] = File(...),
+    authenticated: bool = Depends(verify_token),
+):
+    """Take audio files from the machine and put them through the same pipeline.
+
+    Nothing is re-encoded: a file keeps the container it arrived in. Turning an
+    mp3 into an m4a to make the folder uniform would cost a generation of
+    quality for tidiness, and Navidrome serves all of these already.
+    """
+    if len(files) > config.MAX_LINKS_PER_REQUEST:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Too many files. Maximum {config.MAX_LINKS_PER_REQUEST} per request.",
+        )
+
+    accepted, skipped = [], []
+    for upload in files:
+        suffix = Path(upload.filename or "").suffix.lower()
+        if suffix not in library.AUDIO_SUFFIXES:
+            skipped.append(
+                {
+                    "file": upload.filename,
+                    "reason": f"unsupported format {suffix or '(none)'}",
+                }
+            )
+            continue
+        data = await upload.read()
+        if not data:
+            skipped.append({"file": upload.filename, "reason": "empty file"})
+            continue
+        source_key, _ = ingest.stash_upload(data, upload.filename or "track" + suffix)
+        tid = _queue_source(source_key)
+        if tid is None:
+            skipped.append({"file": upload.filename, "reason": "already in the library or queued"})
+        else:
+            accepted.append({"file": upload.filename, "task": tid})
+
+    return {"accepted": accepted, "skipped": skipped}
+
+
+@app.get("/api/search")
+def search(q: str, limit: int = 8, authenticated: bool = Depends(verify_token)):
+    """Look for a track on YouTube without downloading anything.
+
+    The results are shown so a person can choose between them. Two uploads of
+    the same song differ in length and in channel, and picking automatically is
+    what filled the library with live versions the last time it was tried.
+    """
+    try:
+        return {"results": sources.search_youtube(q, limit=limit)}
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)[:300]) from exc
+
+
+class PlaylistImportRequest(BaseModel):
+    url: str
+
+
+@app.post("/api/import-playlist")
+def import_playlist(req: PlaylistImportRequest, authenticated: bool = Depends(verify_token)):
+    """Queue a whole playlist from one link, YouTube or Spotify.
+
+    YouTube is direct: the links are already the thing to download. Spotify is
+    not -- it names tracks, and each one has to be found on YouTube first.
+    A track is only accepted when the artist, the title and the length all
+    agree; anything else is reported rather than guessed at, because guessing
+    is what produced a shelf of live takes and other people's covers.
+    """
+    url = (req.url or "").strip()
+
+    if sources.spotify_playlist_id(url):
+        try:
+            candidates, truncated = sources.spotify_playlist(url)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=str(exc)[:300]) from exc
+
+        queued, unmatched = [], []
+        for candidate in candidates:
+            match = sources.best_youtube_match(candidate)
+            if match is None:
+                unmatched.append({"artist": candidate.artist, "title": candidate.title})
+                continue
+            tid = _queue_source(ingest.canonicalize_youtube_url(match["url"]))
+            if tid is not None:
+                queued.append(tid)
+
+        return {
+            "source": "spotify",
+            "read": len(candidates),
+            "queued": len(queued),
+            "unmatched": unmatched,
+            # The embed page carries no total, so this cannot be "100 of N" --
+            # only "this is as far as the source goes".
+            "truncated": truncated,
+            "note": (
+                f"Spotify отдаёт не больше {sources.SPOTIFY_EMBED_LIMIT} треков по ссылке "
+                "и не сообщает, сколько их всего. Полный список — импортом из CSV."
+                if truncated
+                else ""
+            ),
+        }
+
+    is_valid, error_msg = ingest.validate_url(url)
+    if not is_valid:
+        raise HTTPException(status_code=400, detail=f"Invalid URL: {error_msg}")
+    try:
+        video_urls = sources.youtube_playlist(url)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)[:300]) from exc
+
+    queued = []
+    for video_url in video_urls:
+        tid = _queue_source(video_url)
+        if tid is not None:
+            queued.append(tid)
+    return {
+        "source": "youtube",
+        "read": len(video_urls),
+        "queued": len(queued),
+        "unmatched": [],
+        "truncated": False,
+        "note": "",
+    }
 
 
 # ---------------------------------------------------------------------------

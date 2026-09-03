@@ -164,7 +164,15 @@ def _archive(path: Path) -> None:
         return
     folder = HISTORY_DIR / path.stem
     folder.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(path, folder / f"{int(time.time() * 1000)}{SUFFIX}")
+    # Nanoseconds, and still checked for collision: two edits inside the same
+    # millisecond used to land on the same name and the older one was lost --
+    # exactly the version you would want back after a bad double-click.
+    stamp = time.time_ns()
+    destination = folder / f"{stamp}{SUFFIX}"
+    while destination.exists():
+        stamp += 1
+        destination = folder / f"{stamp}{SUFFIX}"
+    shutil.copy2(path, destination)
     versions = sorted(folder.glob(f"*{SUFFIX}"), reverse=True)
     for stale in versions[HISTORY_KEEP:]:
         stale.unlink(missing_ok=True)

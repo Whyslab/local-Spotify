@@ -720,3 +720,30 @@ button.danger {
 
     .playlist-cover { flex-basis: 128px; width: 128px; height: 128px; }
 }
+
+/* ---------------- Getting music in ---------------- */
+
+.drop-zone {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 84px;
+    margin-top: 10px;
+    padding: 14px;
+    border: 1px dashed var(--line-2);
+    border-radius: var(--r-control);
+    background: var(--surface-2);
+    color: var(--text-2);
+    text-align: center;
+    cursor: pointer;
+}
+
+.drop-zone.is-over {
+    border-color: var(--accent);
+    color: var(--text);
+}
+
+.result-meta {
+    color: var(--text-3);
+    font-size: 12px;
+}

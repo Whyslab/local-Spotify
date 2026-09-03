@@ -10,6 +10,7 @@ import threading
 import time
 from pathlib import Path
 
+import mutagen
 from fastapi import HTTPException
 from mutagen.mp4 import MP4
 
@@ -17,10 +18,58 @@ from . import config, runtime
 
 logger = logging.getLogger(__name__)
 
-# Every track in the library arrives through yt-dlp and is normalised to .m4a,
-# so tags can be read with the MP4 parser directly. Accepting files from disk
-# will widen this, and that needs a format-aware tag reader alongside it.
-AUDIO_SUFFIXES = (".m4a",)
+# Anything arriving through yt-dlp is normalised to .m4a. Files imported from
+# disk are kept in the format they came in: re-encoding lossy audio into
+# another lossy format to make the folder tidy costs quality and buys nothing,
+# since Navidrome serves all of these already.
+AUDIO_SUFFIXES = (".m4a", ".mp3", ".flac", ".opus", ".ogg")
+
+
+def read_tags(path: Path) -> dict:
+    """Artist, title, album, track number and duration, whatever the container.
+
+    MP4 keys are atoms (\xa9nam and friends); everything else answers to the
+    common names mutagen exposes with easy=True. One function so callers do not
+    have to care which one they are holding.
+    """
+    suffix = path.suffix.lower()
+    if suffix == ".m4a":
+        parsed = MP4(path)
+        tags = parsed.tags or {}
+        track = tags.get("trkn") or []
+        return {
+            "artist": " \u2022 ".join(tags.get("\xa9ART") or []),
+            "title": (tags.get("\xa9nam") or [path.stem])[0],
+            "album": (tags.get("\xa9alb") or [""])[0],
+            "albumartist": (tags.get("aART") or [""])[0],
+            "track": track[0][0] if track else None,
+            "duration": getattr(getattr(parsed, "info", None), "length", None),
+        }
+
+    parsed = mutagen.File(path, easy=True)
+    if parsed is None:
+        raise ValueError(f"unreadable audio file: {path}")
+    tags = parsed.tags or {}
+
+    def first(key: str) -> str:
+        value = tags.get(key) or []
+        return value[0] if value else ""
+
+    number = first("tracknumber")
+    try:
+        # "7" and "7/12" both mean track seven.
+        track_number = int(str(number).split("/")[0]) if number else None
+    except ValueError:
+        track_number = None
+
+    return {
+        "artist": " \u2022 ".join(tags.get("artist") or []),
+        "title": first("title") or path.stem,
+        "album": first("album"),
+        "albumartist": first("albumartist"),
+        "track": track_number,
+        "duration": getattr(getattr(parsed, "info", None), "length", None),
+    }
 
 
 def library_track(rel_path: str) -> Path:
@@ -57,31 +106,28 @@ def library_index() -> list[dict]:
 
         root = config.LIBRARY.resolve()
         rows = []
-        for f in sorted(root.rglob("*.m4a")):
+        files = sorted(p for suffix in AUDIO_SUFFIXES for p in root.rglob(f"*{suffix}"))
+        for f in files:
             try:
-                parsed = MP4(f)
+                # Duration comes from here too. Three things need it -- the
+                # #EXTINF line of a playlist, the search results that let you
+                # choose between two uploads of the same song, and the duration
+                # window that matches a playlist entry to a YouTube result --
+                # and reading it now costs one already-open file rather than a
+                # second pass over the library.
+                meta = read_tags(f)
             except Exception:
                 continue
-            tags = parsed.tags or {}
-            # Duration is needed by three separate things: the #EXTINF line of a
-            # playlist, the search results that let you pick between two uploads
-            # of the same song, and the duration window that matches a playlist
-            # entry to a YouTube result. Reading it here costs one already-open
-            # file rather than a second pass over the library.
-            duration = getattr(getattr(parsed, "info", None), "length", None)
-            artist = " • ".join(tags.get("\xa9ART") or [])
-            title = (tags.get("\xa9nam") or [f.stem])[0]
-            album = (tags.get("\xa9alb") or [""])[0]
-            track = tags.get("trkn") or []
+            artist, title, album = meta["artist"], meta["title"], meta["album"]
             rows.append(
                 {
                     "path": str(f.relative_to(root)),
                     "artist": artist,
                     "title": title,
                     "album": album,
-                    "track": track[0][0] if track else None,
-                    "albumartist": (tags.get("aART") or [""])[0],
-                    "duration": round(duration, 3) if duration else None,
+                    "track": meta["track"],
+                    "albumartist": meta["albumartist"],
+                    "duration": round(meta["duration"], 3) if meta["duration"] else None,
                     "haystack": f"{artist} {title} {album}".lower(),
                 }
             )

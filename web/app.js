@@ -74,6 +74,12 @@ function clearInput() {
     document.getElementById("addResult").textContent = "";
 }
 
+/* A playlist link is not a track link: it names many, and Spotify names them
+ * without giving anything downloadable at all. Both go to their own endpoint. */
+function isPlaylistLink(link) {
+    return /open\.spotify\.com\/playlist\//.test(link) || /[?&]list=/.test(link);
+}
+
 async function addTracks() {
     const field = document.getElementById("links");
     const links = field.value.split("\n").map(x => x.trim()).filter(Boolean);
@@ -81,6 +87,15 @@ async function addTracks() {
 
     if (!links.length) {
         result.textContent = "Вставь хотя бы одну ссылку.";
+        return;
+    }
+
+    const playlists = links.filter(isPlaylistLink);
+    if (playlists.length) {
+        await importPlaylists(playlists, result);
+        const rest = links.filter(l => !isPlaylistLink(l));
+        if (!rest.length) { field.value = ""; tasks(); return; }
+        field.value = rest.join("\n");
         return;
     }
 
@@ -407,3 +422,140 @@ async function removeTrack(t) {
 applyLoginState();
 refresh();
 setInterval(refresh, POLL_MS);
+
+
+/* ---------------- Playlist links ---------------- */
+
+async function importPlaylists(links, result) {
+    for (const url of links) {
+        result.textContent = "Читаю плейлист…";
+        try {
+            const r = await fetch("/api/import-playlist", {
+                method: "POST",
+                headers: { ...headers(), "Content-Type": "application/json" },
+                body: JSON.stringify({ url }),
+            });
+            const data = await r.json();
+            if (!r.ok) { result.textContent = data.detail || ("Ошибка " + r.status); continue; }
+
+            const parts = [`Прочитано ${data.read}, в очередь ${data.queued}`];
+            if (data.unmatched && data.unmatched.length) {
+                /* Not silently dropped: a track that could not be matched is
+                 * named, because the alternative is discovering the gap months
+                 * later with no way to tell what is missing. */
+                parts.push(`не нашлось ${data.unmatched.length}: ` +
+                    data.unmatched.slice(0, 3).map(t => `${t.artist} — ${t.title}`).join("; ") +
+                    (data.unmatched.length > 3 ? " и другие" : ""));
+            }
+            if (data.note) parts.push(data.note);
+            result.textContent = parts.join(". ");
+        } catch (e) {
+            result.textContent = e.message;
+        }
+    }
+    tasks();
+}
+
+/* ---------------- Search ---------------- */
+
+async function runSearch() {
+    const query = document.getElementById("searchQuery").value.trim();
+    const note = document.getElementById("searchNote");
+    const box = document.getElementById("searchResults");
+    box.replaceChildren();
+    if (!query) return;
+
+    note.textContent = "Ищу…";
+    try {
+        const r = await fetch("/api/search?q=" + encodeURIComponent(query), { headers: headers() });
+        const data = await r.json();
+        if (!r.ok) { note.textContent = data.detail || ("Ошибка " + r.status); return; }
+        note.textContent = data.results.length ? "" : "Ничего не нашлось.";
+        for (const item of data.results) box.appendChild(searchRow(item));
+    } catch (e) {
+        note.textContent = e.message;
+    }
+}
+
+/* The choice is deliberately the user's: two uploads of one song differ in
+ * length and in channel, and picking automatically is what filled the library
+ * with live versions the last time. */
+function searchRow(item) {
+    const row = document.createElement("div");
+    row.className = "track";
+
+    const info = document.createElement("div");
+    info.className = "track-info";
+    const title = document.createElement("div");
+    title.className = "track-title";
+    title.textContent = item.title;
+    const meta = document.createElement("div");
+    meta.className = "result-meta";
+    meta.textContent = [item.channel, item.duration ? formatTime(item.duration) : null]
+        .filter(Boolean).join(" · ");
+    info.append(title, meta);
+
+    const add = document.createElement("button");
+    add.className = "ghost";
+    add.textContent = "Добавить";
+    add.onclick = async () => {
+        add.disabled = true;
+        add.textContent = "…";
+        const r = await fetch("/api/add", {
+            method: "POST",
+            headers: { ...headers(), "Content-Type": "application/json" },
+            body: JSON.stringify({ links: [item.url] }),
+        });
+        add.textContent = r.ok ? "В очереди" : "Ошибка";
+        tasks();
+    };
+
+    row.append(info, add);
+    return row;
+}
+
+/* ---------------- Files from disk ---------------- */
+
+async function importFiles(fileList) {
+    const note = document.getElementById("importNote");
+    const files = Array.from(fileList || []);
+    if (!files.length) return;
+
+    note.textContent = `Отправляю ${files.length}…`;
+    const body = new FormData();
+    for (const file of files) body.append("files", file);
+
+    try {
+        const r = await fetch("/api/import", { method: "POST", headers: headers(), body });
+        const data = await r.json();
+        if (!r.ok) { note.textContent = data.detail || ("Ошибка " + r.status); return; }
+
+        const parts = [`Принято: ${data.accepted.length}`];
+        if (data.skipped.length) {
+            parts.push("пропущено: " + data.skipped
+                .map(s => `${s.file} (${s.reason})`).slice(0, 3).join("; "));
+        }
+        note.textContent = parts.join(", ");
+        tasks();
+    } catch (e) {
+        note.textContent = e.message;
+    }
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+    const zone = document.getElementById("dropZone");
+    if (!zone) return;
+    for (const event of ["dragenter", "dragover"]) {
+        zone.addEventListener(event, e => {
+            e.preventDefault();
+            zone.classList.add("is-over");
+        });
+    }
+    for (const event of ["dragleave", "drop"]) {
+        zone.addEventListener(event, () => zone.classList.remove("is-over"));
+    }
+    zone.addEventListener("drop", e => {
+        e.preventDefault();
+        importFiles(e.dataTransfer.files);
+    });
+});
