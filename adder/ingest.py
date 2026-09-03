@@ -492,7 +492,11 @@ def find_duplicate_library_file(filepath: Path) -> Path | None:
         return None
 
     for candidate in (
-        p for suffix in library.AUDIO_SUFFIXES for p in config.LIBRARY.rglob(f"*{suffix}")
+        p
+        for suffix in library.AUDIO_SUFFIXES
+        for p in config.LIBRARY.rglob(f"*{suffix}")
+        # An artist folder can be named like a file -- see "nyan.mp3".
+        if p.is_file()
     ):
         try:
             if not candidate.is_file():
@@ -1065,4 +1069,11 @@ def ingest_temp_file(tid: int, temp_path: Path, names: TrackNames, thumbnail: st
         shutil.move(str(temp_path), str(final_target))
 
     library.invalidate_library_index()  # a new track must show up in search now
+
+    # Measure it now rather than waiting for the next full pass, so a track
+    # added today can be placed by tempo tonight. It runs in its own bounded
+    # scope, not in this process.
+    from . import analysis
+
+    analysis.analyse_track(str(final_target))
     return "stored"

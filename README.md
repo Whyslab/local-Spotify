@@ -50,6 +50,7 @@ It is not built to be a public SaaS or to work around YouTube's restrictions —
 * **Playlist covers** — stored locally and replicated to Navidrome, so a rename is a re-upload rather than a loss. The type is decided by the bytes, not by the file name.
 * **A player** — the same page in two widths, with playback served through short-lived signed URLs, so an `<audio>` element can seek without the API token ever entering a URL.
 * **Play journal** — Navidrome keeps a play count and a last-played date, not a log. This one records track, time, how far it got and whether it was skipped.
+* **Shuffling that has a shape** — the library has no genre or BPM tags at all, so `scripts/analyze_audio.py` measures tempo, energy, brightness and key from the audio itself, and queues are walked rather than sampled: neighbours are close in tempo, the same artist does not follow itself, and a track heard recently is unlikely to come back. See `scripts/README.md`.
 * **Library audit tooling** — offline scripts for finding duplicates, checking metadata, and bulk-migrating a playlist from CSV.
 
 ---
@@ -168,7 +169,14 @@ Authorise with an `Authorization: Bearer <API_TOKEN>` header. `/health` needs no
 | `GET` | `/api/stream-url` | Mint a short-lived signed URL for one track |
 | `GET` | `/api/stream` | Serve a track to `<audio>`; authorised by that signature, not the token |
 | `POST` | `/api/plays` | Record a finished or abandoned track |
-| `GET` | `/api/plays/stats` | Skip rate and journal size |
+| `GET` | `/api/plays/stats` | Skip rate overall and per queue kind |
+| `POST` | `/api/import` | Take audio files from disk through the same pipeline |
+| `GET` | `/api/search` | Look for a track on YouTube without downloading |
+| `POST` | `/api/import-playlist` | Queue a whole playlist from one link, YouTube or Spotify |
+| `GET` | `/api/shuffle` | Build a queue (`mode=smart` or `plain`) |
+| `POST` | `/api/shuffle/blind` | Two queues, one of each kind, unlabelled |
+| `POST` | `/api/shuffle/blind/{id}` | Record which one was preferred |
+| `GET` | `/api/shuffle/blind/results` | How the comparison stands |
 
 <details>
 <summary><code>POST /api/add</code> — example</summary>

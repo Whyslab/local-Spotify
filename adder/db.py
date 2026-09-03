@@ -6,6 +6,7 @@ across threads anyway.
 """
 
 import sqlite3
+from contextlib import suppress
 
 from . import runtime
 
@@ -77,8 +78,31 @@ def db_init():
         played_seconds REAL,
         duration REAL,
         skipped INTEGER DEFAULT 0,
-        source TEXT)""")
+        source TEXT,
+        mode TEXT DEFAULT 'manual')""")
+    # Older databases predate the column; adding it here keeps an upgrade from
+    # needing a migration step anyone has to remember to run.
+    with suppress(sqlite3.OperationalError):
+        db_exec("ALTER TABLE plays ADD COLUMN mode TEXT DEFAULT 'manual'")
     db_exec("CREATE INDEX IF NOT EXISTS idx_plays_played_at ON plays(played_at)")
+
+    # Measured by scripts/analyze_audio.py. Kept in the same database as the
+    # journal so a queue can be built from one connection.
+    db_exec("""CREATE TABLE IF NOT EXISTS audio_features(
+        path TEXT PRIMARY KEY,
+        sha256 TEXT NOT NULL,
+        tempo REAL, energy REAL, brightness REAL,
+        music_key TEXT, mode TEXT,
+        analyzed_at TEXT DEFAULT (datetime('now','localtime')))""")
+
+    # Blind comparisons: two queues, one of each kind, and which one was
+    # preferred without knowing which was which.
+    db_exec("""CREATE TABLE IF NOT EXISTS blind_trials(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        created_at TEXT DEFAULT (datetime('now','localtime')),
+        smart_side TEXT NOT NULL,
+        choice TEXT,
+        decided_at TEXT)""")
 
     try:
         db_exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_url ON tasks(url)")

@@ -106,7 +106,11 @@ def library_index() -> list[dict]:
 
         root = config.LIBRARY.resolve()
         rows = []
-        files = sorted(p for suffix in AUDIO_SUFFIXES for p in root.rglob(f"*{suffix}"))
+        # is_file() matters here: an artist folder can be named after a file.
+        # This library has one called "nyan.mp3", and a glob for *.mp3 finds it.
+        files = sorted(
+            p for suffix in AUDIO_SUFFIXES for p in root.rglob(f"*{suffix}") if p.is_file()
+        )
         for f in files:
             try:
                 # Duration comes from here too. Three things need it -- the

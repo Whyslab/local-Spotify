@@ -747,3 +747,6 @@ button.danger {
     color: var(--text-3);
     font-size: 12px;
 }
+
+.shuffle-row { margin-bottom: 12px; align-items: center; }
+.shuffle-row .muted { font-size: 12px; }

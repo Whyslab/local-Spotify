@@ -19,6 +19,7 @@ const player = {
     index: -1,
     playlist: null,      // {name, revision, entries}
     reported: false,     // one journal entry per track, not one per pause
+    queueMode: "manual", // "smart", "plain" or "manual" -- see reportPlay
 };
 
 /* ---------------- Journal ---------------- */
@@ -40,6 +41,10 @@ function reportPlay(finished) {
             duration: player.audio.duration || current.duration || null,
             skipped: !finished && played < SKIP_THRESHOLD_SECONDS,
             source: "player",
+            /* Which kind of queue this came out of. The comparison of skip
+             * rates cannot be reconstructed later, so the label has to travel
+             * with the play. */
+            mode: player.queueMode,
         }),
     }).catch(() => { /* the journal is not worth interrupting playback for */ });
 }
@@ -71,10 +76,43 @@ async function playAt(position) {
     markPlayingRow();
 }
 
-function playQueue(tracks, startAt = 0) {
+function playQueue(tracks, startAt = 0, mode = "manual") {
     player.queue = tracks;
+    player.queueMode = mode;
     playAt(startAt);
 }
+
+/* ---------------- Shuffling ---------------- */
+
+async function loadShuffle(mode) {
+    const note = document.getElementById("shuffleNote");
+    note.textContent = "Собираю очередь…";
+    try {
+        const r = await fetch(`/api/shuffle?size=50&mode=${mode}`, { headers: headers() });
+        const data = await r.json();
+        if (!r.ok) { note.textContent = data.detail || ("Ошибка " + r.status); return; }
+        if (!data.queue.length) { note.textContent = "Нечего играть."; return; }
+
+        playQueue(data.queue, 0, mode);
+
+        if (mode === "smart") {
+            const report = data.report || {};
+            /* Said plainly, because it is the difference between "it works"
+             * and "it has nothing to work with yet": tempo cannot order a
+             * library that has not been measured. */
+            note.textContent = data.analysed < data.total
+                ? `Измерено ${data.analysed} из ${data.total} — остальные ставятся без учёта темпа`
+                : `Разброс темпа до ${report.max_tempo_jump ?? "—"} BPM, артистов ${report.distinct_artists}`;
+        } else {
+            note.textContent = "";
+        }
+    } catch (e) {
+        note.textContent = e.message;
+    }
+}
+
+function playSmartShuffle() { loadShuffle("smart"); }
+function playPlainShuffle() { loadShuffle("plain"); }
 
 function togglePlay() {
     if (!player.queue.length) return;
@@ -270,7 +308,7 @@ function playlistTrackRow(entry, position) {
 
     const info = document.createElement("div");
     info.className = "track-info";
-    info.onclick = () => playQueue(player.playlist.entries, position);
+    info.onclick = () => playQueue(player.playlist.entries, position, "manual");
     const title = document.createElement("div");
     title.className = "track-title";
     title.textContent = entry.title;
@@ -348,7 +386,7 @@ function setPlaylistNote(text) {
 
 function playPlaylist() {
     if (player.playlist && player.playlist.entries.length) {
-        playQueue(player.playlist.entries, 0);
+        playQueue(player.playlist.entries, 0, "manual");
     }
 }
 
@@ -417,7 +455,7 @@ async function uploadCover(input) {
 /* Playing a track straight from the library screen queues what is on screen,
  * so "next" continues down the list instead of stopping. */
 function playFromLibrary(track, rows) {
-    playQueue(rows, rows.findIndex(r => r.path === track.path));
+    playQueue(rows, rows.findIndex(r => r.path === track.path), "manual");
 }
 
 /* ---------------- Desktop shell bridge ---------------- */

@@ -86,6 +86,12 @@
     <!-- ---------------- Фонотека ---------------- -->
     <section id="viewLibrary" class="view" hidden>
 
+      <div class="row wrap shuffle-row">
+        <button class="primary" onclick="playSmartShuffle()">Умное перемешивание</button>
+        <button class="ghost" onclick="playPlainShuffle()">Обычное</button>
+        <span id="shuffleNote" class="muted"></span>
+      </div>
+
       <div class="search">
         <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
         <input id="librarySearch" type="search" placeholder="Артист, трек или альбом"

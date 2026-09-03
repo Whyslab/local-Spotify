@@ -18,7 +18,19 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import config, covers, db, ingest, library, navidrome, playlists, runtime, signing, sources
+from . import (
+    config,
+    covers,
+    db,
+    ingest,
+    library,
+    navidrome,
+    playlists,
+    runtime,
+    shuffle,
+    signing,
+    sources,
+)
 from . import queue as task_queue
 
 logger = logging.getLogger(__name__)
@@ -166,6 +178,10 @@ class PlayRequest(BaseModel):
     duration: float | None = None
     skipped: bool = False
     source: str = "player"
+    # Which kind of queue this track came out of. Criterion 26 is a comparison
+    # of skip rates between the two, and that comparison needs the label at the
+    # moment the track is played -- it cannot be reconstructed afterwards.
+    mode: str = "manual"
 
 
 @app.post("/api/add")
@@ -625,6 +641,135 @@ def delete_playlist_cover(name: str, authenticated: bool = Depends(verify_token)
 
 
 # ---------------------------------------------------------------------------
+# Shuffling
+# ---------------------------------------------------------------------------
+
+
+def _shuffle_tracks() -> list[shuffle.Track]:
+    """Everything the queue builder needs, out of the three tables that hold it."""
+    features = db.db_query("SELECT path, tempo, energy, brightness, music_key FROM audio_features")
+    plays = db.db_query(
+        "SELECT path, CAST(strftime('%H', played_at) AS INTEGER) AS hour "
+        "FROM plays ORDER BY id DESC LIMIT 2000"
+    )
+    return shuffle.tracks_from_rows(
+        library.library_index(), features, plays, int(time.strftime("%H"))
+    )
+
+
+def _queue_payload(queue: list[shuffle.Track]) -> list[dict]:
+    by_path = {row["path"]: row for row in library.library_index()}
+    out = []
+    for track in queue:
+        row = by_path.get(track.path, {})
+        out.append(
+            {
+                "path": track.path,
+                "artist": row.get("artist") or track.artist,
+                "title": row.get("title") or track.path,
+                "duration": row.get("duration"),
+                "tempo": track.tempo,
+            }
+        )
+    return out
+
+
+@app.get("/api/shuffle")
+def smart_shuffle(
+    size: int = 50,
+    mode: str = "smart",
+    authenticated: bool = Depends(verify_token),
+):
+    """Build a queue: neighbours that follow each other, and the shelf covered.
+
+    ``mode=plain`` is uniform random, kept as the thing the smart one is
+    measured against rather than as a feature.
+    """
+    tracks = _shuffle_tracks()
+    if not tracks:
+        return {"mode": mode, "queue": [], "report": {}, "analysed": 0}
+
+    queue = (
+        shuffle.plain_shuffle(tracks, size=size)
+        if mode == "plain"
+        else shuffle.build_queue(tracks, size=size)
+    )
+    analysed = sum(1 for track in tracks if track.tempo)
+    return {
+        "mode": mode,
+        "queue": _queue_payload(queue),
+        "report": shuffle.queue_report(queue),
+        "analysed": analysed,
+        "total": len(tracks),
+    }
+
+
+@app.post("/api/shuffle/blind")
+def start_blind_trial(size: int = 30, authenticated: bool = Depends(verify_token)):
+    """Two queues, one of each kind, without saying which is which.
+
+    The only honest way to answer "is it actually better". Which side got the
+    smart queue is recorded here and not returned, so the answer cannot be
+    read off the response.
+    """
+    tracks = _shuffle_tracks()
+    if len(tracks) < 4:
+        raise HTTPException(status_code=400, detail="Not enough tracks to compare")
+
+    smart = shuffle.build_queue(tracks, size=size)
+    plain = shuffle.plain_shuffle(tracks, size=size)
+    smart_side = secrets.choice(["A", "B"])
+
+    cur = db.db_exec("INSERT INTO blind_trials(smart_side) VALUES(?)", (smart_side,))
+    return {
+        "trial": cur.lastrowid,
+        "A": _queue_payload(smart if smart_side == "A" else plain),
+        "B": _queue_payload(plain if smart_side == "A" else smart),
+    }
+
+
+class BlindChoiceRequest(BaseModel):
+    choice: str
+
+
+@app.post("/api/shuffle/blind/{trial_id}")
+def finish_blind_trial(
+    trial_id: int,
+    req: BlindChoiceRequest,
+    authenticated: bool = Depends(verify_token),
+):
+    choice = (req.choice or "").strip().upper()
+    if choice not in {"A", "B"}:
+        raise HTTPException(status_code=400, detail="Choice must be A or B")
+
+    rows = db.db_query("SELECT smart_side, choice FROM blind_trials WHERE id = ?", (trial_id,))
+    if not rows:
+        raise HTTPException(status_code=404, detail="No such trial")
+    if rows[0]["choice"]:
+        raise HTTPException(status_code=409, detail="This trial already has an answer")
+
+    db.db_exec(
+        "UPDATE blind_trials SET choice = ?, decided_at = datetime('now','localtime') WHERE id = ?",
+        (choice, trial_id),
+    )
+    return {"trial": trial_id, "recorded": choice}
+
+
+@app.get("/api/shuffle/blind/results")
+def blind_results(authenticated: bool = Depends(verify_token)):
+    """How the comparison stands. Acceptance is 7 of 10 or better."""
+    rows = db.db_query("SELECT smart_side, choice FROM blind_trials WHERE choice IS NOT NULL")
+    decided = len(rows)
+    smart_chosen = sum(1 for row in rows if row["choice"] == row["smart_side"])
+    return {
+        "decided": decided,
+        "smart_chosen": smart_chosen,
+        "share": round(smart_chosen / decided, 3) if decided else None,
+        "passes": decided >= 10 and smart_chosen / decided >= 0.7,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Play journal
 # ---------------------------------------------------------------------------
 
@@ -654,27 +799,67 @@ def record_play(req: PlayRequest, authenticated: bool = Depends(verify_token)):
         _PLAYS_WINDOW["all"] = window
 
     db.db_exec(
-        "INSERT INTO plays(path, played_at, played_seconds, duration, skipped, source) "
-        "VALUES(?, datetime('now','localtime'), ?, ?, ?, ?)",
-        (req.path, req.played_seconds, req.duration, 1 if req.skipped else 0, req.source),
+        "INSERT INTO plays(path, played_at, played_seconds, duration, skipped, source, mode) "
+        "VALUES(?, datetime('now','localtime'), ?, ?, ?, ?, ?)",
+        (
+            req.path,
+            req.played_seconds,
+            req.duration,
+            1 if req.skipped else 0,
+            req.source,
+            req.mode,
+        ),
     )
     return {"recorded": req.path}
 
 
 @app.get("/api/plays/stats")
 def play_stats(authenticated: bool = Depends(verify_token)):
-    """Skip rate and journal size -- the numbers acceptance criterion 26 needs."""
-    rows = db.db_query(
+    """Skip rate overall and per queue kind -- the numbers criterion 26 is stated in.
+
+    ``ready`` says whether there is enough of a journal to read anything into
+    the difference: 200 plays on each side, or a fortnight. Below that the two
+    numbers are noise, and reporting them as a result would be worse than
+    reporting nothing.
+    """
+    overall = db.db_query(
         "SELECT COUNT(*) AS total, SUM(skipped) AS skipped, "
         "COUNT(DISTINCT path) AS distinct_tracks FROM plays"
     )[0]
-    total = rows["total"] or 0
-    skipped = rows["skipped"] or 0
+    total = overall["total"] or 0
+    skipped = overall["skipped"] or 0
+
+    by_mode = {}
+    for row in db.db_query(
+        "SELECT mode, COUNT(*) AS total, SUM(skipped) AS skipped FROM plays GROUP BY mode"
+    ):
+        mode_total = row["total"] or 0
+        mode_skipped = row["skipped"] or 0
+        by_mode[row["mode"] or "manual"] = {
+            "plays": mode_total,
+            "skipped": mode_skipped,
+            "skip_rate": round(mode_skipped / mode_total, 4) if mode_total else None,
+        }
+
+    smart, plain = by_mode.get("smart", {}), by_mode.get("plain", {})
+    ready = min(smart.get("plays", 0), plain.get("plays", 0)) >= 200
+    difference = None
+    if smart.get("skip_rate") is not None and plain.get("skip_rate") is not None:
+        difference = round(plain["skip_rate"] - smart["skip_rate"], 4)
+
     return {
         "plays": total,
         "skipped": skipped,
         "skip_rate": round(skipped / total, 4) if total else None,
-        "distinct_tracks": rows["distinct_tracks"] or 0,
+        "distinct_tracks": overall["distinct_tracks"] or 0,
+        "by_mode": by_mode,
+        "comparison": {
+            "ready": ready,
+            "difference": difference,
+            # Criterion 26: five percentage points, on one listener, so
+            # indicative rather than significant.
+            "passes": bool(ready and difference is not None and difference >= 0.05),
+        },
     }
 
 
