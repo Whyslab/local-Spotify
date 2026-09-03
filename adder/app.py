@@ -17,7 +17,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import config, db, ingest, library, runtime
+from . import config, covers, db, ingest, library, navidrome, playlists, runtime
 from . import queue as task_queue
 
 logger = logging.getLogger(__name__)
@@ -56,6 +56,24 @@ async def lifespan(app: FastAPI):
 
     # Remove stale temporary files from previous runs.
     ingest.cleanup_old_temp_files()
+
+    # Trim the play journal, then settle up with Navidrome: deliver whatever
+    # was queued while it was unreachable, and look for playlists it is still
+    # showing after their .m3u went away. Neither is allowed to stop startup --
+    # the service has to come up with Navidrome switched off.
+    try:
+        removed = db.prune_play_history(config.PLAY_HISTORY_DAYS)
+        if removed:
+            logger.info("Pruned %d play journal entries", removed, extra={"task_id": "system"})
+    except Exception as exc:
+        logger.warning("Could not prune the play journal: %s", exc, extra={"task_id": "system"})
+
+    if navidrome.configured():
+        try:
+            navidrome.drain()
+            navidrome.reconcile()
+        except Exception as exc:
+            logger.info("Navidrome not reachable at startup: %s", exc, extra={"task_id": "system"})
 
     for i in range(config.MAX_WORKERS):
         worker_thread = threading.Thread(
@@ -116,6 +134,37 @@ class AddRequest(BaseModel):
 
 class DeleteRequest(BaseModel):
     path: str
+
+
+class PlaylistCreateRequest(BaseModel):
+    name: str
+    paths: list[str] = []
+
+
+class PlaylistRenameRequest(BaseModel):
+    name: str
+
+
+class PlaylistTracksRequest(BaseModel):
+    """A whole new order in one request.
+
+    Sending the complete list rather than a move instruction is what makes the
+    write atomic: the file is replaced in one go, so a reader never sees a
+    half-applied reorder. ``revision`` is the hash handed out by the matching
+    GET, and it is what stops an edit made on the laptop from silently
+    overwriting one just made on the phone.
+    """
+
+    paths: list[str]
+    revision: str | None = None
+
+
+class PlayRequest(BaseModel):
+    path: str
+    played_seconds: float
+    duration: float | None = None
+    skipped: bool = False
+    source: str = "player"
 
 
 @app.post("/api/add")
@@ -226,6 +275,160 @@ def delete_track(req: DeleteRequest, authenticated: bool = Depends(verify_token)
     return library.delete_track(req.path)
 
 
+# ---------------------------------------------------------------------------
+# Playlists
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/playlists")
+def get_playlists(authenticated: bool = Depends(verify_token)):
+    return playlists.listing()
+
+
+@app.post("/api/playlists")
+def create_playlist(req: PlaylistCreateRequest, authenticated: bool = Depends(verify_token)):
+    playlist = playlists.create(req.name, req.paths)
+    return _playlist_payload(playlist)
+
+
+@app.get("/api/playlists/{name}/tracks")
+def get_playlist_tracks(name: str, authenticated: bool = Depends(verify_token)):
+    return _playlist_payload(playlists.read(name))
+
+
+@app.put("/api/playlists/{name}/tracks")
+def put_playlist_tracks(
+    name: str,
+    req: PlaylistTracksRequest,
+    authenticated: bool = Depends(verify_token),
+):
+    """Replace the order and contents of a playlist."""
+    playlist = playlists.write(name, req.paths, req.revision)
+    return _playlist_payload(playlist)
+
+
+@app.patch("/api/playlists/{name}")
+def rename_playlist(
+    name: str,
+    req: PlaylistRenameRequest,
+    authenticated: bool = Depends(verify_token),
+):
+    """Rename a playlist, and clean up after Navidrome.
+
+    Navidrome does not follow a rename: it adds the new file as a second
+    playlist and keeps the first one, cover and all. So the old one is deleted
+    through its API and the cover is re-uploaded onto the new one.
+    """
+    playlist = playlists.rename(name, req.name)
+    covers.rename(name, req.name)
+    _sync_navidrome("delete", name)
+    if covers.cover_file(req.name) is not None:
+        _sync_navidrome("cover", req.name)
+    return _playlist_payload(playlist)
+
+
+@app.delete("/api/playlists/{name}")
+def delete_playlist(name: str, authenticated: bool = Depends(verify_token)):
+    """Delete a playlist here and in Navidrome.
+
+    Removing the file is not enough: Navidrome keeps showing a playlist whose
+    .m3u is gone, so without the second half this leaves a corpse behind.
+    """
+    result = playlists.delete(name)
+    covers.delete(name)
+    result["navidrome"] = _sync_navidrome("delete", name)
+    return result
+
+
+def _playlist_payload(playlist: playlists.Playlist) -> dict:
+    return {
+        "name": playlist.name,
+        "revision": playlist.revision,
+        "cover": covers.media_type(playlist.name) is not None,
+        "entries": [
+            {
+                "index": entry.index,
+                "path": entry.path,
+                "title": entry.title,
+                "duration": entry.duration,
+            }
+            for entry in playlist.entries
+        ],
+    }
+
+
+def _sync_navidrome(op: str, name: str) -> str:
+    """Do the Navidrome half now, or queue it for when Navidrome is back."""
+    if not navidrome.configured():
+        return "not configured"
+    try:
+        if op == "delete":
+            navidrome.delete_playlist(name)
+        elif op == "cover":
+            image = covers.read_cover(name)
+            if image is not None:
+                navidrome.upload_cover(name, image[0], image[1])
+        return "done"
+    except Exception as exc:
+        logger.warning("Navidrome %s for %r deferred: %s", op, name, exc)
+        navidrome.enqueue(op, name)
+        return "queued"
+
+
+# ---------------------------------------------------------------------------
+# Play journal
+# ---------------------------------------------------------------------------
+
+_PLAYS_WINDOW: dict[str, list[float]] = {}
+_PLAYS_LOCK = threading.Lock()
+PLAYS_PER_MINUTE = 60
+
+
+@app.post("/api/plays")
+def record_play(req: PlayRequest, authenticated: bool = Depends(verify_token)):
+    """Record one finished or abandoned track.
+
+    Navidrome stores a play count and the date of the last play, not a log, so
+    "what was playing at this hour" cannot be asked of it. This is where that
+    question gets its data -- which also means it only ever sees the laptop,
+    since the phone plays through Amperfy.
+    """
+    now = time.monotonic()
+    with _PLAYS_LOCK:
+        window = [t for t in _PLAYS_WINDOW.get("all", []) if now - t < 60]
+        if len(window) >= PLAYS_PER_MINUTE:
+            raise HTTPException(
+                status_code=429,
+                detail="Too many play events; a played track cannot arrive that often",
+            )
+        window.append(now)
+        _PLAYS_WINDOW["all"] = window
+
+    db.db_exec(
+        "INSERT INTO plays(path, played_at, played_seconds, duration, skipped, source) "
+        "VALUES(?, datetime('now','localtime'), ?, ?, ?, ?)",
+        (req.path, req.played_seconds, req.duration, 1 if req.skipped else 0, req.source),
+    )
+    return {"recorded": req.path}
+
+
+@app.get("/api/plays/stats")
+def play_stats(authenticated: bool = Depends(verify_token)):
+    """Skip rate and journal size -- the numbers acceptance criterion 26 needs."""
+    rows = db.db_query(
+        "SELECT COUNT(*) AS total, SUM(skipped) AS skipped, "
+        "COUNT(DISTINCT path) AS distinct_tracks FROM plays"
+    )[0]
+    total = rows["total"] or 0
+    skipped = rows["skipped"] or 0
+    return {
+        "plays": total,
+        "skipped": skipped,
+        "skip_rate": round(skipped / total, 4) if total else None,
+        "distinct_tracks": rows["distinct_tracks"] or 0,
+    }
+
+
 @app.get("/health")
 def health():
     """Health endpoint (Problem #21)."""
@@ -255,6 +458,12 @@ def health():
         "max_queue_size": config.MAX_QUEUE_SIZE,
         "tracks": tracks,
         "albums": albums,
+        "playlists": len(playlists.listing()) if library_status == "ok" else 0,
+        "navidrome": "configured" if navidrome.configured() else "not configured",
+        "navidrome_pending": navidrome.pending_count(),
+        "plays_logged": (
+            db.db_query("SELECT COUNT(*) AS n FROM plays")[0]["n"] if db_status == "ok" else 0
+        ),
     }
 
     if not healthy:

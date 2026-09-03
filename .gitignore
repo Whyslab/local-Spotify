@@ -72,3 +72,7 @@ design/*.html
 
 # graphify knowledge graph (regenerate with: graphify update .)
 graphify-out/
+
+# Runtime data: previous versions of playlists and the covers uploaded for them.
+adder/playlist-history/
+adder/playlist-covers/

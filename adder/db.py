@@ -54,6 +54,32 @@ def db_init():
     # The unique index is what makes a resubmitted link idempotent. Local file
     # imports have no URL, so they are keyed by a synthetic "file:<sha256>"
     # source key that fits the same column and the same uniqueness rule.
+    # Small key/value store for things that must outlive a restart but do not
+    # deserve a table of their own -- e.g. "the reconciliation sweep has run
+    # once, it may now delete rather than only report".
+    db_exec("CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT)")
+
+    # Work owed to Navidrome. A cover upload or a playlist deletion cannot be
+    # made atomic with the file operation it accompanies, and Navidrome may be
+    # down, so failures land here and are retried instead of being lost.
+    db_exec("""CREATE TABLE IF NOT EXISTS navidrome_ops(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        op TEXT NOT NULL, name TEXT NOT NULL, payload TEXT,
+        created_at TEXT, attempts INTEGER DEFAULT 0, last_error TEXT)""")
+
+    # The play journal. Navidrome keeps a play count and the date of the last
+    # play, not a log, so "what was playing on Wednesday evenings" cannot be
+    # asked of it at all. Anything that wants to know has to record its own.
+    db_exec("""CREATE TABLE IF NOT EXISTS plays(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        path TEXT NOT NULL,
+        played_at TEXT NOT NULL,
+        played_seconds REAL,
+        duration REAL,
+        skipped INTEGER DEFAULT 0,
+        source TEXT)""")
+    db_exec("CREATE INDEX IF NOT EXISTS idx_plays_played_at ON plays(played_at)")
+
     try:
         db_exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_url ON tasks(url)")
     except sqlite3.Error as e:
@@ -69,3 +95,12 @@ def task_update(tid: int, **fields):
         f"UPDATE tasks SET {sets}, updated_at = datetime('now','localtime') WHERE id = ?",
         (*fields.values(), tid),
     )
+
+
+def prune_play_history(days: int) -> int:
+    """Drop journal entries older than ``days``. Returns how many went."""
+    cur = db_exec(
+        "DELETE FROM plays WHERE played_at < datetime('now', 'localtime', ?)",
+        (f"-{int(days)} days",),
+    )
+    return cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0

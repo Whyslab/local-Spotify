@@ -83,3 +83,23 @@ TMP_TTL_HOURS = _positive_int("TMP_TTL_HOURS", "24")
 # (needed here because this machine keeps Firefox profiles under ~/.config).
 # Empty means no cookies, which is the right default for anyone not hitting it.
 COOKIES_FROM_BROWSER = os.environ.get("COOKIES_FROM_BROWSER", "").strip()
+
+# Navidrome, for the things only it can hold.
+#
+# Playlist covers live in its database -- there is nowhere else to put them
+# that a Subsonic client will read -- and a playlist whose .m3u disappears has
+# to be deleted through its API, because it does not notice the file is gone.
+# Both are optional: without credentials the service still runs, playlists
+# still work, and the Navidrome side of the work is queued until it can be
+# delivered. Losing covers is not a reason to refuse to start.
+NAVIDROME_URL = os.environ.get("NAVIDROME_URL", "http://127.0.0.1:4533").rstrip("/")
+NAVIDROME_USER = os.environ.get("NAVIDROME_USER", "").strip()
+NAVIDROME_PASSWORD = os.environ.get("NAVIDROME_PASSWORD", "")
+
+# Playlist cover uploads. 8 MB clears a phone photo comfortably, and Navidrome
+# re-encodes anyway under its own coverArtQuality setting.
+MAX_COVER_BYTES = _positive_int("MAX_COVER_BYTES", str(8 * 1024 * 1024))
+
+# How long the play journal is kept. A year plus a margin, so a year-on-year
+# comparison still has both ends.
+PLAY_HISTORY_DAYS = _positive_int("PLAY_HISTORY_DAYS", "400")
