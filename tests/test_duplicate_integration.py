@@ -2,6 +2,9 @@ from pathlib import Path
 
 import pytest
 
+from adder import config, db, ingest, runtime
+from adder import queue as adder_queue
+
 
 @pytest.fixture()
 def app_module(tmp_path, monkeypatch):
@@ -16,18 +19,18 @@ def app_module(tmp_path, monkeypatch):
 
     app_module = importlib.import_module("adder.app")
 
-    monkeypatch.setattr(app_module, "API_TOKEN", "test-secret")
-    monkeypatch.setattr(app_module, "LIBRARY", tmp_path / "library")
-    monkeypatch.setattr(app_module, "TMP_DIR", tmp_path / "tmp")
-    monkeypatch.setattr(app_module, "DB_PATH", tmp_path / "tasks.db")
-    monkeypatch.setattr(app_module, "MAX_WORKERS", 0)
+    monkeypatch.setattr(config, "API_TOKEN", "test-secret")
+    monkeypatch.setattr(config, "LIBRARY", tmp_path / "library")
+    monkeypatch.setattr(runtime, "TMP_DIR", tmp_path / "tmp")
+    monkeypatch.setattr(runtime, "DB_PATH", tmp_path / "tasks.db")
+    monkeypatch.setattr(config, "MAX_WORKERS", 0)
 
-    app_module.LIBRARY.mkdir(parents=True)
-    app_module.TMP_DIR.mkdir(parents=True)
+    config.LIBRARY.mkdir(parents=True)
+    runtime.TMP_DIR.mkdir(parents=True)
 
-    app_module.PROCESSING_URLS.clear()
+    runtime.PROCESSING_URLS.clear()
 
-    app_module.db_init()
+    db.db_init()
 
     return app_module
 
@@ -39,7 +42,7 @@ def fake_mp4_processing(app, tmp_file, artist, title):
     We don't need a real M4A container here because the purpose of these
     tests is to verify duplicate/final-move behavior.
     """
-    original_validate = app.validate_m4a_integrity
+    original_validate = ingest.validate_m4a_integrity
 
     def fake_validate(filepath):
         if filepath.exists() and filepath.stat().st_size > 0:
@@ -49,7 +52,7 @@ def fake_mp4_processing(app, tmp_file, artist, title):
     return original_validate, fake_validate
 
 
-def create_fake_download(app, payload: bytes):
+def create_fake_download(payload: bytes):
     """
     Return a fake yt_download() implementation.
 
@@ -60,20 +63,22 @@ def create_fake_download(app, payload: bytes):
     def fake_download(url, video_id):
         counter["value"] += 1
 
-        source = app.TMP_DIR / f"download-{counter['value']}-{video_id}.m4a"
+        source = runtime.TMP_DIR / f"download-{counter['value']}-{video_id}.m4a"
         source.write_bytes(payload)
         return source
 
     return fake_download
 
 
-def configure_fake_processing(app, monkeypatch, payload):
-    """
-    Patch all external/media operations required by process().
+def configure_fake_processing(monkeypatch, payload):
+    """Patch every external/media operation the pipeline reaches for.
+
+    The patches land on adder.ingest, which is where the functions actually
+    live. Patching a re-export would look identical and quietly do nothing.
     """
 
     monkeypatch.setattr(
-        app,
+        ingest,
         "yt_meta",
         lambda url: {
             "id": "same-video-id",
@@ -83,7 +88,7 @@ def configure_fake_processing(app, monkeypatch, payload):
     )
 
     monkeypatch.setattr(
-        app,
+        ingest,
         "split_artist_title",
         lambda meta: (
             "Test Artist",
@@ -94,13 +99,13 @@ def configure_fake_processing(app, monkeypatch, payload):
     )
 
     monkeypatch.setattr(
-        app,
+        ingest,
         "yt_download",
-        create_fake_download(app, payload),
+        create_fake_download(payload),
     )
 
     monkeypatch.setattr(
-        app,
+        ingest,
         "validate_m4a_integrity",
         lambda filepath: (
             (True, "")
@@ -110,7 +115,7 @@ def configure_fake_processing(app, monkeypatch, payload):
     )
 
     monkeypatch.setattr(
-        app,
+        ingest,
         "fetch_cover",
         lambda *args, **kwargs: (None, None),
     )
@@ -136,7 +141,7 @@ def configure_fake_processing(app, monkeypatch, payload):
             # Simulate metadata persistence across MP4 instances.
             self._metadata[str(self.filepath)] = dict(self.data)
 
-    monkeypatch.setattr(app, "MP4", FakeMP4)
+    monkeypatch.setattr(ingest, "MP4", FakeMP4)
 
 
 # ---------------------------------------------------------------------------
@@ -148,25 +153,23 @@ def test_same_content_is_not_stored_twice(
     app_module,
     monkeypatch,
 ):
-    app = app_module
 
     configure_fake_processing(
-        app,
         monkeypatch,
         b"IDENTICAL AUDIO CONTENT",
     )
 
-    app.process(
+    adder_queue.process(
         1,
         "https://www.youtube.com/watch?v=track-one",
     )
 
-    app.process(
+    adder_queue.process(
         2,
         "https://www.youtube.com/watch?v=track-two",
     )
 
-    files = list(app.LIBRARY.rglob("*.m4a"))
+    files = list(config.LIBRARY.rglob("*.m4a"))
 
     assert len(files) == 1
     assert files[0].read_bytes() == b"IDENTICAL AUDIO CONTENT"
@@ -181,7 +184,6 @@ def test_same_filename_different_content_is_preserved(
     app_module,
     monkeypatch,
 ):
-    app = app_module
 
     payloads = [
         b"AUDIO VERSION A",
@@ -191,7 +193,7 @@ def test_same_filename_different_content_is_preserved(
     counter = {"value": 0}
 
     monkeypatch.setattr(
-        app,
+        ingest,
         "yt_meta",
         lambda url: {
             "id": f"video-{counter['value']}",
@@ -204,14 +206,14 @@ def test_same_filename_different_content_is_preserved(
         payload = payloads[counter["value"]]
         counter["value"] += 1
 
-        source = app.TMP_DIR / f"{video_id}.m4a"
+        source = runtime.TMP_DIR / f"{video_id}.m4a"
         source.write_bytes(payload)
         return source
 
-    monkeypatch.setattr(app, "yt_download", fake_download)
+    monkeypatch.setattr(ingest, "yt_download", fake_download)
 
     monkeypatch.setattr(
-        app,
+        ingest,
         "split_artist_title",
         lambda meta: (
             "Test Artist",
@@ -222,13 +224,13 @@ def test_same_filename_different_content_is_preserved(
     )
 
     monkeypatch.setattr(
-        app,
+        ingest,
         "fetch_cover",
         lambda *args, **kwargs: (None, None),
     )
 
     monkeypatch.setattr(
-        app,
+        ingest,
         "validate_m4a_integrity",
         lambda filepath: (True, ""),
     )
@@ -254,12 +256,12 @@ def test_same_filename_different_content_is_preserved(
             # Simulate metadata persistence across MP4 instances.
             self._metadata[str(self.filepath)] = dict(self.data)
 
-    monkeypatch.setattr(app, "MP4", FakeMP4)
+    monkeypatch.setattr(ingest, "MP4", FakeMP4)
 
-    app.process(1, "https://www.youtube.com/watch?v=a")
-    app.process(2, "https://www.youtube.com/watch?v=b")
+    adder_queue.process(1, "https://www.youtube.com/watch?v=a")
+    adder_queue.process(2, "https://www.youtube.com/watch?v=b")
 
-    files = sorted(app.LIBRARY.rglob("*.m4a"))
+    files = sorted(config.LIBRARY.rglob("*.m4a"))
 
     assert len(files) == 2
     assert files[0].name == "Test Track (1).m4a"
@@ -282,17 +284,16 @@ def test_identical_content_with_different_filename_is_deduplicated(
     app_module,
     monkeypatch,
 ):
-    app = app_module
 
-    existing = app.LIBRARY / "Existing Artist" / "Singles" / "Original Name.m4a"
+    existing = config.LIBRARY / "Existing Artist" / "Singles" / "Original Name.m4a"
 
     existing.parent.mkdir(parents=True)
     existing.write_bytes(b"SAME AUDIO")
 
-    incoming = app.TMP_DIR / "incoming.m4a"
+    incoming = runtime.TMP_DIR / "incoming.m4a"
     incoming.write_bytes(b"SAME AUDIO")
 
-    duplicate = app.find_duplicate_library_file(incoming)
+    duplicate = ingest.find_duplicate_library_file(incoming)
 
     assert duplicate == existing
 
@@ -305,17 +306,16 @@ def test_identical_content_with_different_filename_is_deduplicated(
 def test_different_content_is_not_deduplicated(
     app_module,
 ):
-    app = app_module
 
-    existing = app.LIBRARY / "Artist" / "Singles" / "Track.m4a"
+    existing = config.LIBRARY / "Artist" / "Singles" / "Track.m4a"
 
     existing.parent.mkdir(parents=True)
     existing.write_bytes(b"CONTENT A")
 
-    incoming = app.TMP_DIR / "incoming.m4a"
+    incoming = runtime.TMP_DIR / "incoming.m4a"
     incoming.write_bytes(b"CONTENT B")
 
-    assert app.find_duplicate_library_file(incoming) is None
+    assert ingest.find_duplicate_library_file(incoming) is None
 
 
 # ---------------------------------------------------------------------------
@@ -326,17 +326,16 @@ def test_different_content_is_not_deduplicated(
 def test_duplicate_removes_temporary_file(
     app_module,
 ):
-    app = app_module
 
-    existing = app.LIBRARY / "Artist" / "Singles" / "Track.m4a"
+    existing = config.LIBRARY / "Artist" / "Singles" / "Track.m4a"
 
     existing.parent.mkdir(parents=True)
     existing.write_bytes(b"SAME AUDIO")
 
-    incoming = app.TMP_DIR / "incoming.m4a"
+    incoming = runtime.TMP_DIR / "incoming.m4a"
     incoming.write_bytes(b"SAME AUDIO")
 
-    duplicate = app.find_duplicate_library_file(incoming)
+    duplicate = ingest.find_duplicate_library_file(incoming)
 
     assert duplicate == existing
 
@@ -355,7 +354,6 @@ def test_sha256_is_deterministic(
     app_module,
     tmp_path,
 ):
-    app = app_module
 
     first = tmp_path / "first.bin"
     second = tmp_path / "second.bin"
@@ -363,14 +361,13 @@ def test_sha256_is_deterministic(
     first.write_bytes(b"hello world")
     second.write_bytes(b"hello world")
 
-    assert app.file_sha256(first) == app.file_sha256(second)
+    assert ingest.file_sha256(first) == ingest.file_sha256(second)
 
 
 def test_sha256_detects_content_change(
     app_module,
     tmp_path,
 ):
-    app = app_module
 
     first = tmp_path / "first.bin"
     second = tmp_path / "second.bin"
@@ -378,7 +375,7 @@ def test_sha256_detects_content_change(
     first.write_bytes(b"hello world")
     second.write_bytes(b"hello WORLD")
 
-    assert app.file_sha256(first) != app.file_sha256(second)
+    assert ingest.file_sha256(first) != ingest.file_sha256(second)
 
 
 # ---------------------------------------------------------------------------
@@ -389,18 +386,17 @@ def test_sha256_detects_content_change(
 def test_duplicate_check_works_under_file_lock(
     app_module,
 ):
-    app = app_module
 
-    existing = app.LIBRARY / "Artist" / "Singles" / "Track.m4a"
+    existing = config.LIBRARY / "Artist" / "Singles" / "Track.m4a"
 
     existing.parent.mkdir(parents=True)
     existing.write_bytes(b"SAME")
 
-    incoming = app.TMP_DIR / "incoming.m4a"
+    incoming = runtime.TMP_DIR / "incoming.m4a"
     incoming.write_bytes(b"SAME")
 
-    with app.FILE_LOCK:
-        duplicate = app.find_duplicate_library_file(incoming)
+    with runtime.FILE_LOCK:
+        duplicate = ingest.find_duplicate_library_file(incoming)
 
     assert duplicate == existing
 
@@ -413,9 +409,8 @@ def test_duplicate_check_works_under_file_lock(
 def test_failed_task_can_be_reused(
     app_module,
 ):
-    app = app_module
 
-    task = app.db_exec(
+    task = db.db_exec(
         "INSERT INTO tasks(url, status) VALUES(?, ?)",
         (
             "https://www.youtube.com/watch?v=retry-test",
@@ -425,7 +420,7 @@ def test_failed_task_can_be_reused(
 
     task_id = task.lastrowid
 
-    existing = app.db_query(
+    existing = db.db_query(
         "SELECT id, status FROM tasks WHERE url = ?",
         ("https://www.youtube.com/watch?v=retry-test",),
     )
@@ -434,7 +429,7 @@ def test_failed_task_can_be_reused(
     assert existing[0]["id"] == task_id
     assert existing[0]["status"] == "error"
 
-    app.task_update(
+    db.task_update(
         task_id,
         status="queued",
         error=None,
@@ -442,7 +437,7 @@ def test_failed_task_can_be_reused(
         retry_count=0,
     )
 
-    updated = app.db_query(
+    updated = db.db_query(
         "SELECT id, status, retry_count FROM tasks WHERE id = ?",
         (task_id,),
     )
@@ -459,7 +454,6 @@ def test_failed_task_can_be_reused(
 def test_canonical_youtube_urls_match(
     app_module,
 ):
-    app = app_module
 
     variants = [
         "https://www.youtube.com/watch?v=abc123",
@@ -468,7 +462,7 @@ def test_canonical_youtube_urls_match(
         "https://music.youtube.com/watch?v=abc123",
     ]
 
-    canonical = {app.canonicalize_youtube_url(url) for url in variants}
+    canonical = {ingest.canonicalize_youtube_url(url) for url in variants}
 
     assert len(canonical) == 1
 
@@ -481,23 +475,22 @@ def test_canonical_youtube_urls_match(
 def test_duplicate_does_not_create_collision_filename(
     app_module,
 ):
-    app = app_module
 
-    existing = app.LIBRARY / "Artist" / "Singles" / "Track.m4a"
+    existing = config.LIBRARY / "Artist" / "Singles" / "Track.m4a"
 
     existing.parent.mkdir(parents=True)
     existing.write_bytes(b"EXACT CONTENT")
 
-    incoming = app.TMP_DIR / "incoming.m4a"
+    incoming = runtime.TMP_DIR / "incoming.m4a"
     incoming.write_bytes(b"EXACT CONTENT")
 
-    duplicate = app.find_duplicate_library_file(incoming)
+    duplicate = ingest.find_duplicate_library_file(incoming)
 
     assert duplicate is not None
 
     # Simulate final duplicate handling.
     incoming.unlink()
 
-    files = list((app.LIBRARY / "Artist" / "Singles").glob("*.m4a"))
+    files = list((config.LIBRARY / "Artist" / "Singles").glob("*.m4a"))
 
     assert [f.name for f in files] == ["Track.m4a"]

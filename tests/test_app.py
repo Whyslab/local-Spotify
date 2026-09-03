@@ -5,6 +5,9 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from adder import config, db, ingest, runtime
+from adder import queue as adder_queue
+
 
 @pytest.fixture()
 def app_module(tmp_path, monkeypatch):
@@ -25,22 +28,22 @@ def app_module(tmp_path, monkeypatch):
     app_module = importlib.import_module("adder.app")
 
     # Isolate authentication from the real production token in adder/.env.
-    monkeypatch.setattr(app_module, "API_TOKEN", "test-secret")
+    monkeypatch.setattr(config, "API_TOKEN", "test-secret")
 
     # Disable background workers for API unit tests.
     # Worker execution is covered by dedicated worker tests below.
-    monkeypatch.setattr(app_module, "MAX_WORKERS", 0)
+    monkeypatch.setattr(config, "MAX_WORKERS", 0)
 
     # Isolate database from the real project database.
     monkeypatch.setattr(
-        app_module,
+        runtime,
         "DB_PATH",
         tmp_path / "test.db",
     )
 
     # Isolate temporary files.
     monkeypatch.setattr(
-        app_module,
+        runtime,
         "TMP_DIR",
         tmp_path / "tmp",
     )
@@ -52,14 +55,14 @@ def app_module(tmp_path, monkeypatch):
     # (see ci.yml, which points LIBRARY_PATH at a directory that is never
     # created). That made this fixture non-hermetic.
     monkeypatch.setattr(
-        app_module,
+        config,
         "LIBRARY",
         tmp_path / "library",
     )
 
-    app_module.PROJECT.mkdir(parents=True, exist_ok=True)
-    app_module.TMP_DIR.mkdir(parents=True, exist_ok=True)
-    app_module.LIBRARY.mkdir(parents=True, exist_ok=True)
+    runtime.PROJECT.mkdir(parents=True, exist_ok=True)
+    runtime.TMP_DIR.mkdir(parents=True, exist_ok=True)
+    config.LIBRARY.mkdir(parents=True, exist_ok=True)
 
     return app_module
 
@@ -284,8 +287,8 @@ def test_processing_url_remains_locked_during_retry(app_module, monkeypatch):
     url = "https://www.youtube.com/watch?v=retry-lock-test"
     task_id = 1
 
-    app_module.PROCESSING_URLS.clear()
-    app_module.shutdown_event.clear()
+    runtime.PROCESSING_URLS.clear()
+    runtime.shutdown_event.clear()
 
     calls = []
 
@@ -305,26 +308,26 @@ def test_processing_url_remains_locked_during_retry(app_module, monkeypatch):
     def fake_yt_download(*args, **kwargs):
         raise RuntimeError("stop after retry")
 
-    monkeypatch.setattr(app_module, "yt_meta", fake_yt_meta)
-    monkeypatch.setattr(app_module, "task_update", fake_task_update)
-    monkeypatch.setattr(app_module, "yt_download", fake_yt_download)
-    monkeypatch.setattr(app_module, "MAX_RETRIES", 2)
-    monkeypatch.setattr(app_module, "RETRY_BACKOFF_BASE", 1)
+    monkeypatch.setattr(ingest, "yt_meta", fake_yt_meta)
+    monkeypatch.setattr(db, "task_update", fake_task_update)
+    monkeypatch.setattr(ingest, "yt_download", fake_yt_download)
+    monkeypatch.setattr(config, "MAX_RETRIES", 2)
+    monkeypatch.setattr(config, "RETRY_BACKOFF_BASE", 1)
 
-    original_wait = app_module.shutdown_event.wait
+    original_wait = runtime.shutdown_event.wait
 
     def check_lock_during_backoff(timeout):
-        assert url in app_module.PROCESSING_URLS
+        assert url in runtime.PROCESSING_URLS
         return original_wait(0)
 
-    monkeypatch.setattr(app_module.shutdown_event, "wait", check_lock_during_backoff)
+    monkeypatch.setattr(runtime.shutdown_event, "wait", check_lock_during_backoff)
 
-    app_module.PROCESSING_URLS.add(url)
+    runtime.PROCESSING_URLS.add(url)
 
-    app_module.process(task_id, url)
+    adder_queue.process(task_id, url)
 
     assert len(calls) == 2
-    assert url not in app_module.PROCESSING_URLS
+    assert url not in runtime.PROCESSING_URLS
 
 
 def test_failed_url_can_be_requeued_without_duplicate(client, app_module):
@@ -341,7 +344,7 @@ def test_failed_url_can_be_requeued_without_duplicate(client, app_module):
     first_id = first.json()["added"][0]
 
     # Simulate a permanently failed task.
-    app_module.task_update(
+    db.task_update(
         first_id,
         status="error",
         artist="Old Artist",
@@ -353,8 +356,8 @@ def test_failed_url_can_be_requeued_without_duplicate(client, app_module):
 
     # Remove the simulated task from the in-memory processing lock so the
     # API follows the database retry path.
-    with app_module.FILE_LOCK:
-        app_module.PROCESSING_URLS.discard(url)
+    with runtime.FILE_LOCK:
+        runtime.PROCESSING_URLS.discard(url)
 
     # Re-submit the same URL.
     second = client.post(
@@ -395,8 +398,8 @@ def test_shutdown_during_retry_releases_processing_lock(app_module, monkeypatch)
     url = "https://www.youtube.com/watch?v=shutdown-cleanup-test"
     task_id = 1
 
-    app_module.PROCESSING_URLS.clear()
-    app_module.shutdown_event.clear()
+    runtime.PROCESSING_URLS.clear()
+    runtime.shutdown_event.clear()
 
     attempts = []
 
@@ -407,27 +410,27 @@ def test_shutdown_during_retry_releases_processing_lock(app_module, monkeypatch)
     def fake_task_update(*args, **kwargs):
         pass
 
-    monkeypatch.setattr(app_module, "yt_meta", fake_yt_meta)
-    monkeypatch.setattr(app_module, "task_update", fake_task_update)
-    monkeypatch.setattr(app_module, "MAX_RETRIES", 3)
-    monkeypatch.setattr(app_module, "RETRY_BACKOFF_BASE", 1)
+    monkeypatch.setattr(ingest, "yt_meta", fake_yt_meta)
+    monkeypatch.setattr(db, "task_update", fake_task_update)
+    monkeypatch.setattr(config, "MAX_RETRIES", 3)
+    monkeypatch.setattr(config, "RETRY_BACKOFF_BASE", 1)
 
-    app_module.PROCESSING_URLS.add(url)
+    runtime.PROCESSING_URLS.add(url)
 
     def trigger_shutdown(timeout):
-        app_module.shutdown_event.set()
+        runtime.shutdown_event.set()
         return True
 
     monkeypatch.setattr(
-        app_module.shutdown_event,
+        runtime.shutdown_event,
         "wait",
         trigger_shutdown,
     )
 
-    app_module.process(task_id, url)
+    adder_queue.process(task_id, url)
 
     assert attempts == ["attempt"]
-    assert url not in app_module.PROCESSING_URLS
+    assert url not in runtime.PROCESSING_URLS
 
 
 # ---------------------------------------------------------------------------
@@ -436,9 +439,9 @@ def test_shutdown_during_retry_releases_processing_lock(app_module, monkeypatch)
 
 
 def test_recover_queued_tasks_requeues_interrupted_tasks(app_module):
-    app_module.db_init()
+    db.db_init()
 
-    queued_id = app_module.db_exec(
+    queued_id = db.db_exec(
         """
         INSERT INTO tasks(url, status)
         VALUES (?, ?)
@@ -446,7 +449,7 @@ def test_recover_queued_tasks_requeues_interrupted_tasks(app_module):
         ("https://www.youtube.com/watch?v=queued-recovery", "queued"),
     ).lastrowid
 
-    downloading_id = app_module.db_exec(
+    downloading_id = db.db_exec(
         """
         INSERT INTO tasks(url, status)
         VALUES (?, ?)
@@ -454,7 +457,7 @@ def test_recover_queued_tasks_requeues_interrupted_tasks(app_module):
         ("https://www.youtube.com/watch?v=downloading-recovery", "downloading"),
     ).lastrowid
 
-    tagging_id = app_module.db_exec(
+    tagging_id = db.db_exec(
         """
         INSERT INTO tasks(url, status)
         VALUES (?, ?)
@@ -462,18 +465,18 @@ def test_recover_queued_tasks_requeues_interrupted_tasks(app_module):
         ("https://www.youtube.com/watch?v=tagging-recovery", "tagging"),
     ).lastrowid
 
-    app_module.PROCESSING_URLS.clear()
+    runtime.PROCESSING_URLS.clear()
 
-    while not app_module.TASK_QUEUE.empty():
+    while not runtime.TASK_QUEUE.empty():
         try:
-            app_module.TASK_QUEUE.get_nowait()
-            app_module.TASK_QUEUE.task_done()
+            runtime.TASK_QUEUE.get_nowait()
+            runtime.TASK_QUEUE.task_done()
         except Exception:
             break
 
-    app_module.recover_queued_tasks()
+    adder_queue.recover_queued_tasks()
 
-    tasks = app_module.db_query("SELECT id, url, status FROM tasks ORDER BY id")
+    tasks = db.db_query("SELECT id, url, status FROM tasks ORDER BY id")
 
     assert len(tasks) == 3
     assert tasks[0]["id"] == queued_id
@@ -487,12 +490,12 @@ def test_recover_queued_tasks_requeues_interrupted_tasks(app_module):
 
     while True:
         try:
-            item = app_module.TASK_QUEUE.get_nowait()
+            item = runtime.TASK_QUEUE.get_nowait()
         except Exception:
             break
 
         recovered.append(item)
-        app_module.TASK_QUEUE.task_done()
+        runtime.TASK_QUEUE.task_done()
 
     assert len(recovered) == 3
     assert {item[0] for item in recovered} == {
@@ -509,11 +512,11 @@ def test_recover_queued_tasks_requeues_interrupted_tasks(app_module):
 
 
 def test_recover_queued_tasks_does_not_duplicate_processing_urls(app_module):
-    app_module.db_init()
+    db.db_init()
 
     url = "https://www.youtube.com/watch?v=recovery-duplicate"
 
-    task_id = app_module.db_exec(
+    task_id = db.db_exec(
         """
         INSERT INTO tasks(url, status)
         VALUES (?, ?)
@@ -521,41 +524,41 @@ def test_recover_queued_tasks_does_not_duplicate_processing_urls(app_module):
         (url, "queued"),
     ).lastrowid
 
-    app_module.PROCESSING_URLS.clear()
+    runtime.PROCESSING_URLS.clear()
 
-    while not app_module.TASK_QUEUE.empty():
+    while not runtime.TASK_QUEUE.empty():
         try:
-            app_module.TASK_QUEUE.get_nowait()
-            app_module.TASK_QUEUE.task_done()
+            runtime.TASK_QUEUE.get_nowait()
+            runtime.TASK_QUEUE.task_done()
         except Exception:
             break
 
-    app_module.PROCESSING_URLS.add(url)
+    runtime.PROCESSING_URLS.add(url)
 
-    app_module.recover_queued_tasks()
+    adder_queue.recover_queued_tasks()
 
-    assert app_module.TASK_QUEUE.empty()
-    assert url in app_module.PROCESSING_URLS
+    assert runtime.TASK_QUEUE.empty()
+    assert url in runtime.PROCESSING_URLS
     assert task_id > 0
 
 
 def test_cleanup_old_temp_files_removes_only_expired_files(app_module):
     import time
 
-    app_module.TMP_DIR.mkdir(parents=True, exist_ok=True)
+    runtime.TMP_DIR.mkdir(parents=True, exist_ok=True)
 
-    old_file = app_module.TMP_DIR / "old_processing.m4a"
-    fresh_file = app_module.TMP_DIR / "fresh_processing.m4a"
+    old_file = runtime.TMP_DIR / "old_processing.m4a"
+    fresh_file = runtime.TMP_DIR / "fresh_processing.m4a"
 
     old_file.write_bytes(b"old")
     fresh_file.write_bytes(b"fresh")
 
     now = time.time()
-    old_timestamp = now - (app_module.TMP_TTL_SECONDS + 60)
+    old_timestamp = now - (runtime.TMP_TTL_SECONDS + 60)
 
     os.utime(old_file, (old_timestamp, old_timestamp))
 
-    app_module.cleanup_old_temp_files()
+    ingest.cleanup_old_temp_files()
 
     assert not old_file.exists()
     assert fresh_file.exists()
@@ -571,23 +574,23 @@ def test_worker_processes_queue_and_calls_task_done(app_module, monkeypatch):
 
     def fake_process(tid, task_url):
         processed.append((tid, task_url))
-        app_module.shutdown_event.set()
+        runtime.shutdown_event.set()
 
-    monkeypatch.setattr(app_module, "process", fake_process)
+    monkeypatch.setattr(adder_queue, "process", fake_process)
 
-    app_module.shutdown_event.clear()
+    runtime.shutdown_event.clear()
 
-    while not app_module.TASK_QUEUE.empty():
+    while not runtime.TASK_QUEUE.empty():
         try:
-            app_module.TASK_QUEUE.get_nowait()
-            app_module.TASK_QUEUE.task_done()
+            runtime.TASK_QUEUE.get_nowait()
+            runtime.TASK_QUEUE.task_done()
         except Exception:
             break
 
-    app_module.TASK_QUEUE.put((task_id, url))
+    runtime.TASK_QUEUE.put((task_id, url))
 
     worker_thread = threading.Thread(
-        target=app_module.worker,
+        target=adder_queue.worker,
         daemon=True,
     )
     worker_thread.start()
@@ -596,7 +599,7 @@ def test_worker_processes_queue_and_calls_task_done(app_module, monkeypatch):
     assert not worker_thread.is_alive()
     assert processed == [(task_id, url)]
 
-    app_module.TASK_QUEUE.join()
+    runtime.TASK_QUEUE.join()
 
 
 def test_worker_stops_without_processing_when_shutdown_is_set(
@@ -608,23 +611,23 @@ def test_worker_stops_without_processing_when_shutdown_is_set(
     def fake_process(*args):
         processed.append(args)
 
-    monkeypatch.setattr(app_module, "process", fake_process)
+    monkeypatch.setattr(adder_queue, "process", fake_process)
 
-    app_module.shutdown_event.set()
+    runtime.shutdown_event.set()
 
-    app_module.TASK_QUEUE.put(
+    runtime.TASK_QUEUE.put(
         (
             999,
             "https://www.youtube.com/watch?v=should-not-run",
         )
     )
 
-    app_module.worker()
+    adder_queue.worker()
 
     assert processed == []
 
-    app_module.TASK_QUEUE.task_done()
-    app_module.shutdown_event.clear()
+    runtime.TASK_QUEUE.task_done()
+    runtime.shutdown_event.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -644,27 +647,25 @@ def test_worker_stops_without_processing_when_shutdown_is_set(
     ],
 )
 def test_youtube_urls_are_canonicalized(app_module, url):
-    assert app_module.canonicalize_youtube_url(url) == (
-        "https://www.youtube.com/watch?v=abc12345678"
-    )
+    assert ingest.canonicalize_youtube_url(url) == ("https://www.youtube.com/watch?v=abc12345678")
 
 
 def test_youtube_canonicalization_rejects_invalid_video_id(app_module):
     with pytest.raises(ValueError):
-        app_module.canonicalize_youtube_url("https://www.youtube.com/watch?v=invalid%20video%21")
+        ingest.canonicalize_youtube_url("https://www.youtube.com/watch?v=invalid%20video%21")
 
 
 def test_equivalent_youtube_urls_are_not_added_twice(
     app_module,
     monkeypatch,
 ):
-    app_module.db_init()
-    app_module.PROCESSING_URLS.clear()
+    db.db_init()
+    runtime.PROCESSING_URLS.clear()
 
-    while not app_module.TASK_QUEUE.empty():
+    while not runtime.TASK_QUEUE.empty():
         try:
-            app_module.TASK_QUEUE.get_nowait()
-            app_module.TASK_QUEUE.task_done()
+            runtime.TASK_QUEUE.get_nowait()
+            runtime.TASK_QUEUE.task_done()
         except Exception:
             break
 
@@ -683,7 +684,7 @@ def test_equivalent_youtube_urls_are_not_added_twice(
     assert len(first["added"]) == 1
     assert second["added"] == []
 
-    rows = app_module.db_query(
+    rows = db.db_query(
         "SELECT url FROM tasks WHERE url = ?",
         (f"https://www.youtube.com/watch?v={youtube_id}",),
     )
