@@ -210,7 +210,7 @@ systemctl --user status music-adder
 journalctl --user -u music-adder -f
 ```
 
-Юнит запускает сервис с `WorkingDirectory` в корне репозитория и ограничивает запись только каталогом `adder/` (БД + временные файлы) и путём библиотеки — `ProtectSystem=strict` не даёт процессу писать куда-либо ещё, даже в исходники или `.git`.
+Юнит запускает сервис с `WorkingDirectory` в корне репозитория и разрешает запись только в `adder/` (БД и временные файлы), `trash/` (удалённые треки) и путь библиотеки. Одного `ProtectSystem=strict` для этого мало: он монтирует `/` только для чтения, но `/home` — отдельная точка монтирования и остаётся доступной на запись. Закрывает её `ProtectHome=read-only`, а нужные каталоги возвращаются через `ReadWritePaths`.
 
 Резервное копирование состояния (SQLite + `.env`):
 
@@ -237,7 +237,7 @@ CI (`.github/workflows/ci.yml`) на каждый push/PR прогоняет `ru
 * API закрыт Bearer-токеном, сравнение — через `secrets.compare_digest` (защита от timing-атак); без токена сервис не запускается.
 * Заголовки/данные из YouTube (заголовок видео, автор) — недоверенные данные: во фронтенде они рендерятся только через `textContent`/`replaceChildren`, никогда через `innerHTML`.
 * Принимаются только YouTube-URL с точным совпадением хоста (защита от обхода вида `youtube.com.evil.example`).
-* systemd-юнит: `ProtectSystem=strict`, `NoNewPrivileges`, `PrivateTmp`, запись разрешена только в каталог `adder/` и путь библиотеки.
+* systemd-юнит: `ProtectSystem=strict`, `ProtectHome=read-only`, `NoNewPrivileges`, `PrivateTmp`, запись разрешена только в `adder/`, `trash/` и путь библиотеки. Ограничивает процесс именно `ProtectHome`: `ProtectSystem=strict` не покрывает `/home`, и без него сервис мог бы писать в собственные исходники.
 * Токен и `.env` никогда не коммитятся (`.gitignore`); в README и issue не публикуйте реальный `API_TOKEN`.
 
 Нашли уязвимость — заведите приватный security advisory в репозитории, а не публичный issue.

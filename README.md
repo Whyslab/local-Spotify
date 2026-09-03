@@ -210,7 +210,7 @@ systemctl --user status music-adder
 journalctl --user -u music-adder -f
 ```
 
-The unit runs with `WorkingDirectory` at the repository root and permits writes only to `adder/` (database and temp files) and the library path — `ProtectSystem=strict` prevents the process from writing anywhere else, including the source tree and `.git`.
+The unit runs with `WorkingDirectory` at the repository root and permits writes only to `adder/` (database and temp files), `trash/` (deleted tracks) and the library path. `ProtectSystem=strict` alone is not enough for that: it mounts `/` read-only but leaves `/home` writable, since `/home` is a separate mount point. `ProtectHome=read-only` closes it, and the paths above are carved back out with `ReadWritePaths`.
 
 Back up state (SQLite plus `.env`):
 
@@ -237,7 +237,7 @@ CI (`.github/workflows/ci.yml`) runs `ruff check`, `ruff format --check`, `compi
 * The API is protected by a Bearer token compared with `secrets.compare_digest` (timing-attack resistant); the service will not start without one.
 * Data from YouTube (video title, uploader) is treated as untrusted: the frontend renders it only through `textContent`/`replaceChildren`, never `innerHTML`.
 * Only YouTube URLs with an exact host match are accepted, which blocks bypasses of the `youtube.com.evil.example` variety.
-* The systemd unit sets `ProtectSystem=strict`, `NoNewPrivileges` and `PrivateTmp`, and permits writes only to `adder/` and the library path.
+* The systemd unit sets `ProtectSystem=strict`, `ProtectHome=read-only`, `NoNewPrivileges` and `PrivateTmp`, and permits writes only to `adder/`, `trash/` and the library path. `ProtectHome` is what actually confines the process: `ProtectSystem=strict` does not cover `/home`, so without it the service could write to its own source tree.
 * The token and `.env` are never committed (`.gitignore`). Do not paste a real `API_TOKEN` into a README or an issue.
 
 Found a vulnerability? Please open a private security advisory on the repository rather than a public issue.
