@@ -258,7 +258,8 @@ def test_non_youtube_urls_are_rejected(client, url):
 # ---------------------------------------------------------------------------
 
 
-def test_static_app_js_does_not_render_api_data_with_innerhtml(client):
+@pytest.mark.parametrize("script", ["app.js", "player.js"])
+def test_static_scripts_do_not_render_api_data_with_innerhtml(client, script):
     # The previous version of this test checked GET / (index.html), but
     # index.html only contains a <script src="/static/app.js"> tag - the
     # code that actually renders task.title/task.artist/task.url (all
@@ -266,8 +267,10 @@ def test_static_app_js_does_not_render_api_data_with_innerhtml(client):
     # separately served app.js and was never inspected here. That let a
     # real stored-XSS regression (innerHTML template interpolation of
     # task fields, capable of exfiltrating the API token from
-    # localStorage) ship silently. Check the file that matters.
-    response = client.get("/static/app.js")
+    # localStorage) ship silently. Check the files that matter -- player.js
+    # renders playlist names and track titles from the same untrusted
+    # sources, so it is under the same rule.
+    response = client.get(f"/static/{script}")
 
     assert response.status_code == 200
 

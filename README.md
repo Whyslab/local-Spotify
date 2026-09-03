@@ -44,6 +44,12 @@ It is not built to be a public SaaS or to work around YouTube's restrictions —
 * **Resource limits** — caps on queue size, links per request, and free disk space required before a download starts.
 * **Bearer-token auth on the API**; the health check needs no authorisation.
 * **Web interface** — a minimal single-page UI for adding links and watching the queue (`web/`).
+* **Playlists as files** — every playlist is an `.m3u` in the library root, edited by rewriting it. Navidrome silently ignores a reorder made through its API on a file-backed playlist; rewriting the file works, and it re-reads within about ten seconds.
+* **Reordering that survives duplicates** — a line is identified by its index, not its path. `Monday.m3u` holds nineteen tracks that appear twice.
+* **Concurrent edits are refused, not merged** — every read hands out a hash of the file and every write must present it; a stale edit gets `409` instead of quietly overwriting one made from the phone.
+* **Playlist covers** — stored locally and replicated to Navidrome, so a rename is a re-upload rather than a loss. The type is decided by the bytes, not by the file name.
+* **A player** — the same page in two widths, with playback served through short-lived signed URLs, so an `<audio>` element can seek without the API token ever entering a URL.
+* **Play journal** — Navidrome keeps a play count and a last-played date, not a log. This one records track, time, how far it got and whether it was skipped.
 * **Library audit tooling** — offline scripts for finding duplicates, checking metadata, and bulk-migrating a playlist from CSV.
 
 ---
@@ -152,6 +158,17 @@ Authorise with an `Authorization: Bearer <API_TOKEN>` header. `/health` needs no
 | `POST` | `/api/add` | Add one or more YouTube links |
 | `GET` | `/api/tasks` | The 50 most recent tasks and their status |
 | `GET` | `/` | Web interface |
+| `GET` | `/api/playlists` | List playlists |
+| `POST` | `/api/playlists` | Create a playlist |
+| `PATCH` | `/api/playlists/{name}` | Rename a playlist |
+| `DELETE` | `/api/playlists/{name}` | Delete a playlist (file to `trash/`, and removed from Navidrome) |
+| `GET` | `/api/playlists/{name}/tracks` | A playlist's tracks, with the revision needed to edit it |
+| `PUT` | `/api/playlists/{name}/tracks` | Replace order and contents; `409` if the revision is stale |
+| `POST` `GET` `DELETE` | `/api/playlists/{name}/cover` | Upload, fetch or remove a playlist cover |
+| `GET` | `/api/stream-url` | Mint a short-lived signed URL for one track |
+| `GET` | `/api/stream` | Serve a track to `<audio>`; authorised by that signature, not the token |
+| `POST` | `/api/plays` | Record a finished or abandoned track |
+| `GET` | `/api/plays/stats` | Skip rate and journal size |
 
 <details>
 <summary><code>POST /api/add</code> — example</summary>

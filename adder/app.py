@@ -9,15 +9,15 @@ import logging
 import secrets
 import threading
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import Depends, FastAPI, File, HTTPException, Security, UploadFile, status
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import config, covers, db, ingest, library, navidrome, playlists, runtime
+from . import config, covers, db, ingest, library, navidrome, playlists, runtime, signing
 from . import queue as task_queue
 
 logger = logging.getLogger(__name__)
@@ -273,6 +273,49 @@ def list_library(q: str = "", limit: int = 200, authenticated: bool = Depends(ve
 def delete_track(req: DeleteRequest, authenticated: bool = Depends(verify_token)):
     """Remove a track from the library, moving it to trash rather than unlinking."""
     return library.delete_track(req.path)
+
+
+# ---------------------------------------------------------------------------
+# Playback
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/stream-url")
+def get_stream_url(path: str, authenticated: bool = Depends(verify_token)):
+    """Mint a short-lived playable URL for one track.
+
+    Issued when playback is about to start rather than when a list is rendered,
+    so the lifetime is spent on the track rather than on the browsing that
+    preceded it.
+    """
+    track = library.library_track(path)
+    duration = None
+    for row in library.library_index():
+        if row["path"] == path:
+            duration = row.get("duration")
+            break
+    if duration is None:
+        from mutagen.mp4 import MP4
+
+        with suppress(Exception):
+            duration = MP4(track).info.length
+    return signing.stream_url(path, duration)
+
+
+@app.get("/api/stream")
+def stream(path: str, exp: str = "", sig: str = ""):
+    """Serve one track to an <audio> element.
+
+    Deliberately outside verify_token: an <audio> element sends no headers, and
+    the signature is what stands in for the bearer token here. A missing or
+    stale signature is refused; it is not a way around the token.
+    """
+    if not signing.verify(path, exp, sig):
+        raise HTTPException(status_code=403, detail="Stream link is invalid or has expired")
+    track = library.library_track(path)
+    # FileResponse handles Range itself, which is what makes seeking work:
+    # starlette parses the header, answers 206, and returns 416 on a bad range.
+    return FileResponse(track, media_type="audio/mp4", filename=track.name)
 
 
 # ---------------------------------------------------------------------------

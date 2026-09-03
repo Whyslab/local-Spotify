@@ -64,6 +64,7 @@ function refresh() {
     health();
     if (activeView === "viewAdd") tasks();
     if (activeView === "viewLibrary") library();
+    if (activeView === "viewPlaylists") playlists();
 }
 
 /* ---------------- Adding ---------------- */
@@ -268,17 +269,21 @@ async function library() {
         empty.hidden = data.length > 0;
         box.replaceChildren();
 
+        /* Keep the rendered list around: playing one row queues the rest, so
+         * "next" carries on down the screen instead of stopping at one track. */
         for (const t of data) {
-            box.appendChild(libraryRow(t));
+            box.appendChild(libraryRow(t, data));
         }
+        markPlayingRow();
     } catch (e) {
         // Same reasoning as tasks(): the next keystroke or poll retries.
     }
 }
 
-function libraryRow(t) {
+function libraryRow(t, rows) {
     const card = document.createElement("div");
     card.className = "track";
+    card.dataset.trackPath = t.path;
 
     const cover = document.createElement("div");
     cover.className = "cover";
@@ -306,8 +311,22 @@ function libraryRow(t) {
         info.appendChild(albumEl);
     }
 
+    info.onclick = () => playFromLibrary(t, rows);
+
+    const play = document.createElement("button");
+    play.className = "icon-button";
+    play.setAttribute("aria-label", "Играть");
+    play.onclick = () => playFromLibrary(t, rows);
+    const playSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    playSvg.setAttribute("class", "icon");
+    playSvg.setAttribute("viewBox", "0 0 24 24");
+    const playPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    playPath.setAttribute("d", "M8 5v14l11-7z");
+    playSvg.appendChild(playPath);
+    play.appendChild(playSvg);
+
     const del = document.createElement("button");
-    del.className = "icon-button";
+    del.className = "icon-button danger";
     del.setAttribute("aria-label", "Удалить");
     del.onclick = () => askRemove(card, t);
 
@@ -319,7 +338,7 @@ function libraryRow(t) {
     svg.appendChild(path);
     del.appendChild(svg);
 
-    card.append(cover, info, del);
+    card.append(cover, info, play, del);
     return card;
 }
 
