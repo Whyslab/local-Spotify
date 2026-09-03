@@ -24,10 +24,10 @@ jobs:
       - name: Lint
         run: |
           ruff check .
-          ruff format --check adder scripts tests
+          ruff format --check adder scripts tests desktop
 
       - name: Compile Python sources
-        run: python -m compileall -q adder scripts tests
+        run: python -m compileall -q adder scripts tests desktop
 
       - name: Run tests
         env:

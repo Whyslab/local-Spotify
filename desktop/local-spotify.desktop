@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=local-Spotify
+Comment=Своя фонотека: слушать, править подборки, добавлять треки
+Exec=/home/bogdan/Projects/local-Spotify/desktop/local-spotify.py
+Icon=local-spotify
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+StartupWMClass=local-spotify.py

@@ -419,3 +419,28 @@ async function uploadCover(input) {
 function playFromLibrary(track, rows) {
     playQueue(rows, rows.findIndex(r => r.path === track.path));
 }
+
+/* ---------------- Desktop shell bridge ---------------- */
+
+/* The GTK shell registers a "mpris" message handler and mirrors whatever
+ * arrives here onto the session bus, which is what makes the laptop's media
+ * keys work. In a plain browser tab window.webkit is absent and every call
+ * below is a no-op, so the page behaves identically either way. */
+function notifyShell() {
+    const handler = window.webkit && window.webkit.messageHandlers
+        && window.webkit.messageHandlers.mpris;
+    if (!handler) return;
+    const track = player.queue[player.index];
+    handler.postMessage(JSON.stringify({
+        status: !track ? "stopped" : (player.audio.paused ? "paused" : "playing"),
+        path: track ? track.path : "",
+        title: track ? (track.title || track.path) : "",
+        artist: track ? (track.artist || "") : "",
+        position: player.audio.currentTime || 0,
+        duration: player.audio.duration || (track ? track.duration : 0) || 0,
+    }));
+}
+
+for (const event of ["play", "pause", "ended", "loadedmetadata"]) {
+    player.audio.addEventListener(event, notifyShell);
+}
