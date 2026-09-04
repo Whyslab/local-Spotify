@@ -3,7 +3,7 @@
 <meta name="theme-color" content="#090909">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<title>Фонотека — local-Spotify</title>
+<title>local-Spotify</title>
 <link rel="stylesheet" href="/static/style.css">
 
 <div class="app">
@@ -13,6 +13,14 @@
       <h1>Фонотека</h1>
       <p id="libraryStats">загружаю…</p>
     </div>
+
+    <div class="search">
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      <input id="librarySearch" type="search" placeholder="Артист, трек или альбом"
+             oninput="scheduleLibrarySearch()" autocomplete="off" spellcheck="false">
+      <span id="libraryCount" class="muted"></span>
+    </div>
+
     <div id="statusPill" class="pill pill-idle">
       <span class="dot"></span>
       <span id="statusText">проверяю</span>
@@ -37,7 +45,7 @@
           <svg class="icon accent" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
           <h2>Добавить трек</h2>
         </div>
-        <textarea id="links" rows="3" placeholder="Ссылка на YouTube&#10;по одной в строке" spellcheck="false"></textarea>
+        <textarea id="links" rows="4" placeholder="Ссылка на YouTube&#10;по одной в строке&#10;или ссылка на плейлист YouTube / Spotify" spellcheck="false"></textarea>
         <div class="row">
           <button class="primary grow" onclick="addTracks()">Добавить</button>
           <button class="ghost square" onclick="clearInput()" aria-label="Очистить">
@@ -45,6 +53,33 @@
           </button>
         </div>
         <p id="addResult" class="note"></p>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <svg class="icon accent" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          <h2>Найти по названию</h2>
+        </div>
+        <div class="row">
+          <input id="searchQuery" class="grow" type="text" placeholder="Артист — название"
+                 autocomplete="off" onkeydown="if(event.key==='Enter')runSearch()">
+          <button class="primary" onclick="runSearch()">Искать</button>
+        </div>
+        <p id="searchNote" class="note"></p>
+        <div id="searchResults" class="rows"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <svg class="icon accent" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12M8 11l4 4 4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+          <h2>Файлы с диска</h2>
+        </div>
+        <p class="muted">Перетащи сюда или выбери. Форматы: mp3, m4a, flac, opus, ogg. Ничего не перекодируется.</p>
+        <label id="dropZone" class="drop-zone">
+          <span id="dropLabel">Перетащить или выбрать файлы</span>
+          <input type="file" accept=".mp3,.m4a,.flac,.opus,.ogg" multiple onchange="importFiles(this.files)" hidden>
+        </label>
+        <p id="importNote" class="note"></p>
       </div>
 
       <div class="list-head">
@@ -59,15 +94,72 @@
     <!-- ---------------- Фонотека ---------------- -->
     <section id="viewLibrary" class="view" hidden>
 
-      <div class="search">
-        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
-        <input id="librarySearch" type="search" placeholder="Артист, трек или альбом"
-               oninput="scheduleLibrarySearch()" autocomplete="off" spellcheck="false">
-        <span id="libraryCount" class="muted"></span>
+      <div class="row wrap shuffle-row">
+        <button class="primary" onclick="playSmartShuffle()">Умное перемешивание</button>
+        <button class="ghost" onclick="playPlainShuffle()">Обычное</button>
+        <span id="shuffleNote" class="muted"></span>
       </div>
 
       <div id="library" class="rows"></div>
       <p id="libraryEmpty" class="empty">Ничего не нашлось.</p>
+
+    </section>
+
+
+    <!-- ---------------- Подборки ---------------- -->
+    <section id="viewPlaylists" class="view" hidden>
+
+      <div class="card">
+        <div class="card-head">
+          <svg class="icon accent" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/><path d="M18 15v6M15 18h6"/></svg>
+          <h2>Новая подборка</h2>
+        </div>
+        <div class="row">
+          <input id="newPlaylist" class="grow" type="text" placeholder="Ночь, зал, за работой" autocomplete="off">
+          <button class="primary" onclick="createPlaylist()">Создать</button>
+        </div>
+        <p id="playlistsNote" class="note"></p>
+      </div>
+
+      <div class="list-head"><span>Подборки</span></div>
+      <div id="playlists" class="rows"></div>
+      <p id="playlistsEmpty" class="empty">Пока ни одной. Создай первую — она станет файлом .m3u в фонотеке.</p>
+
+    </section>
+
+    <!-- ---------------- Одна подборка ---------------- -->
+    <section id="viewPlaylist" class="view" hidden>
+
+      <div class="playlist-head">
+        <div id="playlistCover" class="playlist-cover"></div>
+        <div class="playlist-meta">
+          <h2 id="playlistName"></h2>
+          <p id="playlistCount" class="muted"></p>
+          <div class="row wrap">
+            <button class="primary" onclick="playPlaylist()">Слушать</button>
+            <label class="ghost file-button">
+              Обложка
+              <input type="file" accept="image/jpeg,image/png,image/webp" onchange="uploadCover(this)" hidden>
+            </label>
+            <button class="ghost" onclick="switchView('viewPlaylists')">Назад</button>
+          </div>
+        </div>
+      </div>
+
+      <p id="playlistNote" class="note"></p>
+      <div id="playlistTracks" class="rows"></div>
+
+      <div class="card">
+        <div class="card-head">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+          <h2>Переименовать или удалить</h2>
+        </div>
+        <div class="row">
+          <input id="playlistRename" class="grow" type="text" placeholder="Новое название" autocomplete="off">
+          <button class="ghost" onclick="renamePlaylist()">Переименовать</button>
+        </div>
+        <button class="danger block" onclick="deletePlaylist()">Удалить подборку</button>
+      </div>
 
     </section>
 
@@ -95,6 +187,36 @@
 
   </main>
 
+  <!-- Sits above the tab bar and stays put while the views change underneath. -->
+  <div id="player" class="player" hidden>
+    <div class="player-track">
+      <div id="playerTitle" class="player-title"></div>
+      <div id="playerArtist" class="player-artist"></div>
+      <div id="playerNote" class="player-note"></div>
+    </div>
+    <div class="player-controls">
+      <button class="icon-button" onclick="prevTrack()" aria-label="Предыдущий">
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 20 9 12l10-8zM5 4v16"/></svg>
+      </button>
+      <button id="playerToggle" class="icon-button primary-round" onclick="togglePlay()" aria-label="Играть">
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path id="playerToggleIcon" d="M8 5v14l11-7z"/></svg>
+      </button>
+      <button class="icon-button" onclick="nextTrack()" aria-label="Следующий">
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4l10 8-10 8zM19 4v16"/></svg>
+      </button>
+    </div>
+    <div class="player-progress">
+      <span id="playerElapsed" class="player-time">0:00</span>
+      <div class="player-track-bar" onclick="seekFromClick(event)"><div id="playerFill"></div></div>
+      <span id="playerTotal" class="player-time">0:00</span>
+    </div>
+  </div>
+
+  <!-- The rail exists only where there is room for one. On a phone this
+       wrapper is display:contents, so the tab bar goes back to being what it
+       has always been there: a fixed bar at the bottom edge. -->
+  <div class="rail">
+
   <nav class="tabbar">
     <button class="tab is-active" data-view="viewAdd" onclick="switchView('viewAdd')">
       <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
@@ -104,12 +226,45 @@
       <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
       <span>Фонотека</span>
     </button>
+    <button class="tab" data-view="viewPlaylists" onclick="switchView('viewPlaylists')">
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/><path d="M18 15v6M15 18h6"/></svg>
+      <span>Подборки</span>
+    </button>
     <button class="tab" data-view="viewService" onclick="switchView('viewService')">
       <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg>
       <span>Сервис</span>
     </button>
   </nav>
 
+  <!-- The rest of the rail. Only ever visible where there is a rail to put it
+       in; on a phone the tab bar is the whole of navigation and this would be
+       a second copy of the Подборки tab. -->
+  <aside class="rail-extra">
+    <div class="rail-head">Подборки</div>
+    <div id="railPlaylists" class="rail-list"></div>
+    <button class="rail-new" onclick="switchView('viewPlaylists')">
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+      <span>Новая подборка</span>
+    </button>
+    <div class="rail-foot">
+      <div id="railCounts"></div>
+      <div id="railWork" class="muted"></div>
+    </div>
+  </aside>
+
+  </div>
+
+  <!-- What is playing, in full: cover, tags, and the three measured numbers.
+       The bar at the bottom has room for none of that. -->
+  <aside id="nowPanel" class="now" hidden>
+    <div id="nowCover" class="now-cover"></div>
+    <div id="nowTitle" class="now-title"></div>
+    <div id="nowArtist" class="now-artist"></div>
+    <div id="nowAlbum" class="now-album"></div>
+    <div id="nowFacts" class="now-facts"></div>
+  </aside>
+
 </div>
 
 <script src="/static/app.js"></script>
+<script src="/static/player.js"></script>

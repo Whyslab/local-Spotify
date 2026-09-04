@@ -44,12 +44,19 @@ function applyLoginState() {
     document.getElementById("loginBox").hidden = signedIn;
     document.getElementById("views").hidden = !signedIn;
     document.querySelector(".tabbar").hidden = !signedIn;
+    document.querySelector(".rail").hidden = !signedIn;
+    // Nothing to search until there is a key; the wide header shows the field
+    // unconditionally otherwise.
+    document.querySelector(".topbar .search").hidden = !signedIn;
 }
 
 /* ---------------- Views ---------------- */
 
 function switchView(id) {
     activeView = id;
+    /* The rail layout keys off this: on a phone the search band belongs to the
+     * library and appears with it, on a desktop it is always the top band. */
+    document.querySelector(".app").dataset.view = id;
     for (const section of document.querySelectorAll(".view")) {
         section.hidden = section.id !== id;
     }
@@ -62,6 +69,11 @@ function switchView(id) {
 function refresh() {
     if (!token()) return;
     health();
+    /* The playlists are in the rail now, which is on screen whatever section
+     * you are in -- so they cannot be fetched only while their own tab is
+     * open. On a phone the rail is not rendered and this is one small request
+     * that costs a list nobody sees; it is the same request the tab made. */
+    playlists();
     if (activeView === "viewAdd") tasks();
     if (activeView === "viewLibrary") library();
 }
@@ -73,6 +85,12 @@ function clearInput() {
     document.getElementById("addResult").textContent = "";
 }
 
+/* A playlist link is not a track link: it names many, and Spotify names them
+ * without giving anything downloadable at all. Both go to their own endpoint. */
+function isPlaylistLink(link) {
+    return /open\.spotify\.com\/playlist\//.test(link) || /[?&]list=/.test(link);
+}
+
 async function addTracks() {
     const field = document.getElementById("links");
     const links = field.value.split("\n").map(x => x.trim()).filter(Boolean);
@@ -80,6 +98,15 @@ async function addTracks() {
 
     if (!links.length) {
         result.textContent = "Вставь хотя бы одну ссылку.";
+        return;
+    }
+
+    const playlists = links.filter(isPlaylistLink);
+    if (playlists.length) {
+        await importPlaylists(playlists, result);
+        const rest = links.filter(l => !isPlaylistLink(l));
+        if (!rest.length) { field.value = ""; tasks(); return; }
+        field.value = rest.join("\n");
         return;
     }
 
@@ -202,6 +229,19 @@ async function health() {
         if (typeof data.tracks === "number") {
             const albums = typeof data.albums === "number" ? ` · ${plural(data.albums, "альбом", "альбома", "альбомов")}` : "";
             stats.textContent = plural(data.tracks, "трек", "трека", "треков") + albums;
+            const counts = document.getElementById("railCounts");
+            if (counts) counts.textContent = stats.textContent;
+        }
+
+        /* The living numbers, which move while you watch: what is downloading
+         * and what is waiting to reach the phone. Kept apart from the counts
+         * above, which change about once a day. */
+        const work = document.getElementById("railWork");
+        if (work) {
+            const parts = [];
+            if (data.queue_size) parts.push(plural(data.queue_size, "задача", "задачи", "задач") + " в очереди");
+            if (data.navidrome_pending) parts.push(data.navidrome_pending + " ждёт Navidrome");
+            work.textContent = parts.length ? parts.join(" · ") : "очередь пуста";
         }
 
         box.replaceChildren();
@@ -268,17 +308,21 @@ async function library() {
         empty.hidden = data.length > 0;
         box.replaceChildren();
 
+        /* Keep the rendered list around: playing one row queues the rest, so
+         * "next" carries on down the screen instead of stopping at one track. */
         for (const t of data) {
-            box.appendChild(libraryRow(t));
+            box.appendChild(libraryRow(t, data));
         }
+        markPlayingRow();
     } catch (e) {
         // Same reasoning as tasks(): the next keystroke or poll retries.
     }
 }
 
-function libraryRow(t) {
+function libraryRow(t, rows) {
     const card = document.createElement("div");
     card.className = "track";
+    card.dataset.trackPath = t.path;
 
     const cover = document.createElement("div");
     cover.className = "cover";
@@ -306,8 +350,22 @@ function libraryRow(t) {
         info.appendChild(albumEl);
     }
 
+    info.onclick = () => playFromLibrary(t, rows);
+
+    const play = document.createElement("button");
+    play.className = "icon-button";
+    play.setAttribute("aria-label", "Играть");
+    play.onclick = () => playFromLibrary(t, rows);
+    const playSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    playSvg.setAttribute("class", "icon");
+    playSvg.setAttribute("viewBox", "0 0 24 24");
+    const playPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    playPath.setAttribute("d", "M8 5v14l11-7z");
+    playSvg.appendChild(playPath);
+    play.appendChild(playSvg);
+
     const del = document.createElement("button");
-    del.className = "icon-button";
+    del.className = "icon-button danger";
     del.setAttribute("aria-label", "Удалить");
     del.onclick = () => askRemove(card, t);
 
@@ -319,7 +377,7 @@ function libraryRow(t) {
     svg.appendChild(path);
     del.appendChild(svg);
 
-    card.append(cover, info, del);
+    card.append(cover, info, play, del);
     return card;
 }
 
@@ -385,6 +443,150 @@ async function removeTrack(t) {
 
 /* ---------------- Boot ---------------- */
 
-applyLoginState();
-refresh();
-setInterval(refresh, POLL_MS);
+/* Both scripts are at the end of the body, so this fires once player.js has
+ * run. It has to: refresh() reaches into playlists(), which lives there, and
+ * calling it a moment too early throws before the polling timer is ever set --
+ * leaving a page that renders once and then never updates again. */
+document.addEventListener("DOMContentLoaded", () => {
+    document.querySelector(".app").dataset.view = activeView;
+    applyLoginState();
+    refresh();
+    setInterval(refresh, POLL_MS);
+});
+
+
+/* ---------------- Playlist links ---------------- */
+
+async function importPlaylists(links, result) {
+    for (const url of links) {
+        result.textContent = "Читаю плейлист…";
+        try {
+            const r = await fetch("/api/import-playlist", {
+                method: "POST",
+                headers: { ...headers(), "Content-Type": "application/json" },
+                body: JSON.stringify({ url }),
+            });
+            const data = await r.json();
+            if (!r.ok) { result.textContent = data.detail || ("Ошибка " + r.status); continue; }
+
+            const parts = [`Прочитано ${data.read}, в очередь ${data.queued}`];
+            if (data.unmatched && data.unmatched.length) {
+                /* Not silently dropped: a track that could not be matched is
+                 * named, because the alternative is discovering the gap months
+                 * later with no way to tell what is missing. */
+                parts.push(`не нашлось ${data.unmatched.length}: ` +
+                    data.unmatched.slice(0, 3).map(t => `${t.artist} — ${t.title}`).join("; ") +
+                    (data.unmatched.length > 3 ? " и другие" : ""));
+            }
+            if (data.note) parts.push(data.note);
+            result.textContent = parts.join(". ");
+        } catch (e) {
+            result.textContent = e.message;
+        }
+    }
+    tasks();
+}
+
+/* ---------------- Search ---------------- */
+
+async function runSearch() {
+    const query = document.getElementById("searchQuery").value.trim();
+    const note = document.getElementById("searchNote");
+    const box = document.getElementById("searchResults");
+    box.replaceChildren();
+    if (!query) return;
+
+    note.textContent = "Ищу…";
+    try {
+        const r = await fetch("/api/search?q=" + encodeURIComponent(query), { headers: headers() });
+        const data = await r.json();
+        if (!r.ok) { note.textContent = data.detail || ("Ошибка " + r.status); return; }
+        note.textContent = data.results.length ? "" : "Ничего не нашлось.";
+        for (const item of data.results) box.appendChild(searchRow(item));
+    } catch (e) {
+        note.textContent = e.message;
+    }
+}
+
+/* The choice is deliberately the user's: two uploads of one song differ in
+ * length and in channel, and picking automatically is what filled the library
+ * with live versions the last time. */
+function searchRow(item) {
+    const row = document.createElement("div");
+    row.className = "track";
+
+    const info = document.createElement("div");
+    info.className = "track-info";
+    const title = document.createElement("div");
+    title.className = "track-title";
+    title.textContent = item.title;
+    const meta = document.createElement("div");
+    meta.className = "result-meta";
+    meta.textContent = [item.channel, item.duration ? formatTime(item.duration) : null]
+        .filter(Boolean).join(" · ");
+    info.append(title, meta);
+
+    const add = document.createElement("button");
+    add.className = "ghost";
+    add.textContent = "Добавить";
+    add.onclick = async () => {
+        add.disabled = true;
+        add.textContent = "…";
+        const r = await fetch("/api/add", {
+            method: "POST",
+            headers: { ...headers(), "Content-Type": "application/json" },
+            body: JSON.stringify({ links: [item.url] }),
+        });
+        add.textContent = r.ok ? "В очереди" : "Ошибка";
+        tasks();
+    };
+
+    row.append(info, add);
+    return row;
+}
+
+/* ---------------- Files from disk ---------------- */
+
+async function importFiles(fileList) {
+    const note = document.getElementById("importNote");
+    const files = Array.from(fileList || []);
+    if (!files.length) return;
+
+    note.textContent = `Отправляю ${files.length}…`;
+    const body = new FormData();
+    for (const file of files) body.append("files", file);
+
+    try {
+        const r = await fetch("/api/import", { method: "POST", headers: headers(), body });
+        const data = await r.json();
+        if (!r.ok) { note.textContent = data.detail || ("Ошибка " + r.status); return; }
+
+        const parts = [`Принято: ${data.accepted.length}`];
+        if (data.skipped.length) {
+            parts.push("пропущено: " + data.skipped
+                .map(s => `${s.file} (${s.reason})`).slice(0, 3).join("; "));
+        }
+        note.textContent = parts.join(", ");
+        tasks();
+    } catch (e) {
+        note.textContent = e.message;
+    }
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+    const zone = document.getElementById("dropZone");
+    if (!zone) return;
+    for (const event of ["dragenter", "dragover"]) {
+        zone.addEventListener(event, e => {
+            e.preventDefault();
+            zone.classList.add("is-over");
+        });
+    }
+    for (const event of ["dragleave", "drop"]) {
+        zone.addEventListener(event, () => zone.classList.remove("is-over"));
+    }
+    zone.addEventListener("drop", e => {
+        e.preventDefault();
+        importFiles(e.dataTransfer.files);
+    });
+});
