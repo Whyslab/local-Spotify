@@ -294,6 +294,58 @@ def list_library(q: str = "", limit: int = 200, authenticated: bool = Depends(ve
     return out
 
 
+@app.get("/api/track")
+def track_details(path: str, authenticated: bool = Depends(verify_token)):
+    """Everything known about one track, for the panel beside the list.
+
+    Tags come from the library index, the three measured numbers from the
+    analysis table. A track that has not been measured yet simply has none of
+    them -- the panel leaves that half blank rather than showing a zero, which
+    would read as "this track has no tempo" instead of "nobody has looked".
+    """
+    # library_track answers with an absolute path and, more to the point,
+    # refuses anything that escapes the library. The index is keyed on the
+    # relative form, so take it back from the resolved file rather than
+    # trusting the string that arrived.
+    absolute = library.library_track(path)
+    relative = str(absolute.relative_to(config.LIBRARY.resolve()))
+    row = next((r for r in library.library_index() if r["path"] == relative), None)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Track not found")
+    measured = db.db_query(
+        "SELECT tempo, energy, brightness, music_key, mode FROM audio_features WHERE path = ?",
+        (relative,),
+    )
+    # haystack is the lowercased blob the library search matches against. It is
+    # an implementation detail of that search and three times the size of
+    # everything else here.
+    return {
+        **{key: value for key, value in row.items() if key != "haystack"},
+        "features": measured[0] if measured else None,
+    }
+
+
+@app.get("/api/cover")
+def track_cover(path: str, authenticated: bool = Depends(verify_token)):
+    """The artwork inside a track, for the panel beside the list.
+
+    Served from the file rather than from Navidrome: the page already has a
+    token for this service and would need a second one for that, and the
+    picture is in the file either way. Cached hard -- the bytes only change
+    when the file is retagged, and then its path is the same but the panel is
+    re-rendered anyway.
+    """
+    absolute = library.library_track(path)
+    art = library.embedded_cover(absolute)
+    if art is None:
+        raise HTTPException(status_code=404, detail="This track has no artwork")
+    return Response(
+        content=art[0],
+        media_type=art[1],
+        headers={"Cache-Control": "private, max-age=86400"},
+    )
+
+
 @app.delete("/api/library")
 def delete_track(req: DeleteRequest, authenticated: bool = Depends(verify_token)):
     """Remove a track from the library, moving it to trash rather than unlinking."""

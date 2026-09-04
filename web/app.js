@@ -44,12 +44,19 @@ function applyLoginState() {
     document.getElementById("loginBox").hidden = signedIn;
     document.getElementById("views").hidden = !signedIn;
     document.querySelector(".tabbar").hidden = !signedIn;
+    document.querySelector(".rail").hidden = !signedIn;
+    // Nothing to search until there is a key; the wide header shows the field
+    // unconditionally otherwise.
+    document.querySelector(".topbar .search").hidden = !signedIn;
 }
 
 /* ---------------- Views ---------------- */
 
 function switchView(id) {
     activeView = id;
+    /* The rail layout keys off this: on a phone the search band belongs to the
+     * library and appears with it, on a desktop it is always the top band. */
+    document.querySelector(".app").dataset.view = id;
     for (const section of document.querySelectorAll(".view")) {
         section.hidden = section.id !== id;
     }
@@ -62,9 +69,13 @@ function switchView(id) {
 function refresh() {
     if (!token()) return;
     health();
+    /* The playlists are in the rail now, which is on screen whatever section
+     * you are in -- so they cannot be fetched only while their own tab is
+     * open. On a phone the rail is not rendered and this is one small request
+     * that costs a list nobody sees; it is the same request the tab made. */
+    playlists();
     if (activeView === "viewAdd") tasks();
     if (activeView === "viewLibrary") library();
-    if (activeView === "viewPlaylists") playlists();
 }
 
 /* ---------------- Adding ---------------- */
@@ -218,6 +229,19 @@ async function health() {
         if (typeof data.tracks === "number") {
             const albums = typeof data.albums === "number" ? ` · ${plural(data.albums, "альбом", "альбома", "альбомов")}` : "";
             stats.textContent = plural(data.tracks, "трек", "трека", "треков") + albums;
+            const counts = document.getElementById("railCounts");
+            if (counts) counts.textContent = stats.textContent;
+        }
+
+        /* The living numbers, which move while you watch: what is downloading
+         * and what is waiting to reach the phone. Kept apart from the counts
+         * above, which change about once a day. */
+        const work = document.getElementById("railWork");
+        if (work) {
+            const parts = [];
+            if (data.queue_size) parts.push(plural(data.queue_size, "задача", "задачи", "задач") + " в очереди");
+            if (data.navidrome_pending) parts.push(data.navidrome_pending + " ждёт Navidrome");
+            work.textContent = parts.length ? parts.join(" · ") : "очередь пуста";
         }
 
         box.replaceChildren();
@@ -419,9 +443,16 @@ async function removeTrack(t) {
 
 /* ---------------- Boot ---------------- */
 
-applyLoginState();
-refresh();
-setInterval(refresh, POLL_MS);
+/* Both scripts are at the end of the body, so this fires once player.js has
+ * run. It has to: refresh() reaches into playlists(), which lives there, and
+ * calling it a moment too early throws before the polling timer is ever set --
+ * leaving a page that renders once and then never updates again. */
+document.addEventListener("DOMContentLoaded", () => {
+    document.querySelector(".app").dataset.view = activeView;
+    applyLoginState();
+    refresh();
+    setInterval(refresh, POLL_MS);
+});
 
 
 /* ---------------- Playlist links ---------------- */

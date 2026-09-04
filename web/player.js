@@ -170,7 +170,10 @@ function renderPlayer() {
     const bar = document.getElementById("player");
     const track = player.queue[player.index];
     bar.hidden = !track;
+    document.getElementById("nowPanel").hidden = !track;
     if (!track) return;
+
+    renderNowPanel(track);
 
     document.getElementById("playerTitle").textContent = track.title || track.path;
     document.getElementById("playerArtist").textContent = track.artist || "";
@@ -180,6 +183,92 @@ function renderPlayer() {
         "d", player.audio.paused ? "M8 5v14l11-7z" : "M7 5h4v14H7zM13 5h4v14h-4z");
     setPlayerNote("");
     renderProgress();
+}
+
+/* The right-hand panel. Everything here also exists somewhere else -- the bar
+ * has the title, the list has the artist -- except the three measured numbers,
+ * which have had nowhere to live until now. It is only ever on screen at the
+ * width that has room for it, so the duplication costs nothing.
+ *
+ * The details arrive from their own request rather than from the queue row,
+ * because tempo and key are not in the queue: a playlist is a list of files,
+ * and nothing has measured them at the point the list is built. */
+let nowRequested = null;
+let nowCoverUrl = null;
+
+function renderNowPanel(track) {
+    const panel = document.getElementById("nowPanel");
+    if (!panel || panel.hidden) return;
+
+    document.getElementById("nowTitle").textContent = track.title || track.path;
+    document.getElementById("nowArtist").textContent = track.artist || "";
+
+    if (nowRequested === track.path) return;
+    nowRequested = track.path;
+    document.getElementById("nowAlbum").textContent = "";
+    document.getElementById("nowFacts").replaceChildren();
+    loadNowCover(track);
+
+    fetch("/api/track?path=" + encodeURIComponent(track.path), { headers: headers() })
+        .then(r => r.ok ? r.json() : null)
+        .then(data => {
+            // A slow answer for a track that is no longer playing must not
+            // overwrite the one that is.
+            if (!data || nowRequested !== track.path) return;
+            document.getElementById("nowAlbum").textContent = data.album || "";
+
+            const f = data.features || {};
+            const key = f.music_key ? f.music_key + (f.mode ? " " + f.mode : "") : null;
+            renderFacts([
+                [f.tempo ? Math.round(f.tempo) : null, "BPM"],
+                [key, "тональность"],
+                [typeof f.energy === "number" ? f.energy.toFixed(2) : null, "энергия"],
+            ]);
+        })
+        .catch(() => { /* the panel simply stays without numbers */ });
+}
+
+/* The picture cannot be an <img src>: /api/cover wants a bearer token and a
+ * src attribute carries no headers. The same wall the audio element ran into,
+ * with a cheaper way round it -- one fetch, one object URL, released as soon
+ * as the next track claims the panel. Signing this URL as well would widen the
+ * unauthenticated surface for a thumbnail. */
+function loadNowCover(track) {
+    const cover = document.getElementById("nowCover");
+    const wanted = track.path;
+
+    const release = () => {
+        if (nowCoverUrl) URL.revokeObjectURL(nowCoverUrl);
+        nowCoverUrl = null;
+    };
+
+    fetch("/api/cover?path=" + encodeURIComponent(wanted), { headers: headers() })
+        .then(r => r.ok ? r.blob() : null)
+        .then(blob => {
+            if (nowRequested !== wanted) return;
+            release();
+            if (!blob) { cover.style.backgroundImage = "none"; return; }
+            nowCoverUrl = URL.createObjectURL(blob);
+            cover.style.backgroundImage = `url("${nowCoverUrl}")`;
+        })
+        .catch(() => { if (nowRequested === wanted) cover.style.backgroundImage = "none"; });
+}
+
+function renderFacts(facts) {
+    const box = document.getElementById("nowFacts");
+    box.replaceChildren();
+    for (const [value, label] of facts) {
+        const cell = document.createElement("div");
+        cell.className = "now-fact" + (value === null ? " is-unknown" : "");
+        const big = document.createElement("b");
+        // Not measured yet. A dash says that; a zero would say the track has
+        // no tempo, which is a different and wrong claim.
+        big.textContent = value === null ? "—" : String(value);
+        const small = document.createElement("small");
+        small.textContent = label;
+        cell.append(big, small);
+        box.appendChild(cell);
+    }
 }
 
 function renderProgress() {
@@ -218,7 +307,29 @@ async function playlists() {
         empty.hidden = data.length > 0;
         box.replaceChildren();
         for (const p of data) box.appendChild(playlistRow(p));
+        renderRail(data);
     } catch (e) { /* the next poll retries */ }
+}
+
+/* The same playlists as one-line entries in the rail. Names and counts only:
+ * a rail 232px wide has no room for covers, and the point of it is to get to a
+ * playlist in one click from wherever you are. */
+function renderRail(data) {
+    const rail = document.getElementById("railPlaylists");
+    if (!rail) return;
+    const open = player.playlist ? player.playlist.name : null;
+    rail.replaceChildren();
+    for (const p of data) {
+        const item = document.createElement("button");
+        item.className = "rail-item" + (p.name === open ? " is-active" : "");
+        item.onclick = () => openPlaylist(p.name);
+        const name = document.createElement("b");
+        name.textContent = p.name;
+        const count = document.createElement("small");
+        count.textContent = p.tracks === 1 ? "1 трек" : `${p.tracks} треков`;
+        item.append(name, count);
+        rail.appendChild(item);
+    }
 }
 
 function playlistRow(p) {

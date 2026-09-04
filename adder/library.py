@@ -182,3 +182,61 @@ def delete_track(rel_path: str) -> dict:
     invalidate_library_index()
     logger.info("Deleted %s -> %s", rel_path, destination)
     return {"deleted": rel_path, "trash": str(destination)}
+
+
+def embedded_cover(path: Path) -> tuple[bytes, str] | None:
+    """The picture inside an audio file, if it has one.
+
+    Each format hides it somewhere different, exactly as adder.ingest.write_tags
+    puts it there: an MP4 ``covr`` atom, an ID3 APIC frame, a FLAC picture
+    block, a base64 block in an Ogg comment. Returns the bytes and their media
+    type, or None -- a track with no artwork is ordinary, not an error.
+    """
+    suffix = path.suffix.lower()
+    try:
+        if suffix == ".m4a":
+            from mutagen.mp4 import MP4, MP4Cover
+
+            covers = MP4(path).get("covr") or []
+            if covers:
+                art = covers[0]
+                fmt = getattr(art, "imageformat", MP4Cover.FORMAT_JPEG)
+                return bytes(art), "image/png" if fmt == MP4Cover.FORMAT_PNG else "image/jpeg"
+            return None
+
+        if suffix == ".mp3":
+            from mutagen.id3 import ID3, ID3NoHeaderError
+
+            try:
+                tags = ID3(path)
+            except ID3NoHeaderError:
+                return None
+            frames = tags.getall("APIC")
+            if frames:
+                return frames[0].data, frames[0].mime or "image/jpeg"
+            return None
+
+        if suffix == ".flac":
+            from mutagen.flac import FLAC
+
+            pictures = FLAC(path).pictures
+            if pictures:
+                return pictures[0].data, pictures[0].mime or "image/jpeg"
+            return None
+
+        if suffix in (".opus", ".ogg"):
+            import base64
+
+            from mutagen.flac import Picture
+            from mutagen.oggopus import OggOpus
+            from mutagen.oggvorbis import OggVorbis
+
+            audio = OggOpus(path) if suffix == ".opus" else OggVorbis(path)
+            blocks = audio.get("metadata_block_picture") or []
+            if blocks:
+                picture = Picture(base64.b64decode(blocks[0]))
+                return picture.data, picture.mime or "image/jpeg"
+            return None
+    except Exception as exc:  # noqa: BLE001 -- a broken tag is not a broken library
+        logger.debug("No cover read from %s: %s", path, exc)
+    return None

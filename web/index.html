@@ -13,6 +13,14 @@
       <h1>Фонотека</h1>
       <p id="libraryStats">загружаю…</p>
     </div>
+
+    <div class="search">
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      <input id="librarySearch" type="search" placeholder="Артист, трек или альбом"
+             oninput="scheduleLibrarySearch()" autocomplete="off" spellcheck="false">
+      <span id="libraryCount" class="muted"></span>
+    </div>
+
     <div id="statusPill" class="pill pill-idle">
       <span class="dot"></span>
       <span id="statusText">проверяю</span>
@@ -90,13 +98,6 @@
         <button class="primary" onclick="playSmartShuffle()">Умное перемешивание</button>
         <button class="ghost" onclick="playPlainShuffle()">Обычное</button>
         <span id="shuffleNote" class="muted"></span>
-      </div>
-
-      <div class="search">
-        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
-        <input id="librarySearch" type="search" placeholder="Артист, трек или альбом"
-               oninput="scheduleLibrarySearch()" autocomplete="off" spellcheck="false">
-        <span id="libraryCount" class="muted"></span>
       </div>
 
       <div id="library" class="rows"></div>
@@ -211,6 +212,11 @@
     </div>
   </div>
 
+  <!-- The rail exists only where there is room for one. On a phone this
+       wrapper is display:contents, so the tab bar goes back to being what it
+       has always been there: a fixed bar at the bottom edge. -->
+  <div class="rail">
+
   <nav class="tabbar">
     <button class="tab is-active" data-view="viewAdd" onclick="switchView('viewAdd')">
       <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
@@ -229,6 +235,34 @@
       <span>Сервис</span>
     </button>
   </nav>
+
+  <!-- The rest of the rail. Only ever visible where there is a rail to put it
+       in; on a phone the tab bar is the whole of navigation and this would be
+       a second copy of the Подборки tab. -->
+  <aside class="rail-extra">
+    <div class="rail-head">Подборки</div>
+    <div id="railPlaylists" class="rail-list"></div>
+    <button class="rail-new" onclick="switchView('viewPlaylists')">
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+      <span>Новая подборка</span>
+    </button>
+    <div class="rail-foot">
+      <div id="railCounts"></div>
+      <div id="railWork" class="muted"></div>
+    </div>
+  </aside>
+
+  </div>
+
+  <!-- What is playing, in full: cover, tags, and the three measured numbers.
+       The bar at the bottom has room for none of that. -->
+  <aside id="nowPanel" class="now" hidden>
+    <div id="nowCover" class="now-cover"></div>
+    <div id="nowTitle" class="now-title"></div>
+    <div id="nowArtist" class="now-artist"></div>
+    <div id="nowAlbum" class="now-album"></div>
+    <div id="nowFacts" class="now-facts"></div>
+  </aside>
 
 </div>
 
