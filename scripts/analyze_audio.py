@@ -234,7 +234,19 @@ def main() -> int:
     args = parser.parse_args()
 
     os.environ.setdefault("API_TOKEN", "analysis")
-    from adder import config, library
+    try:
+        from adder import config, library
+    except ModuleNotFoundError as exc:
+        # Everything this needs lives in the project's virtualenv, and the
+        # system python has none of it. A traceback about mutagen does not say
+        # that; the interpreter you reached for does.
+        raise SystemExit(
+            f"{exc.name} is not installed for {sys.executable}.\n"
+            f"Run it with the project's interpreter instead:\n"
+            f"    {REPO / '.venv/bin/python'} "
+            f"{Path(__file__).resolve().relative_to(REPO)} ...\n"
+            f"See scripts/README.md for the bounded form with a memory limit."
+        ) from exc
 
     root = (args.library or config.LIBRARY).resolve()
     con = connect(args.db)
