@@ -76,3 +76,10 @@ graphify-out/
 # Runtime data: previous versions of playlists and the covers uploaded for them.
 adder/playlist-history/
 adder/playlist-covers/
+
+# The design canvas is seeded from the .dc.html artboards beside it;
+# 2.7MB of editor code does not belong in the history.
+design/desktop/local-spotify-desktop.html
+
+# OMC session state, written wherever a session happens to start.
+.omc/
