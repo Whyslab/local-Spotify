@@ -44,7 +44,8 @@ It is not built to be a public SaaS or to work around YouTube's restrictions —
 * **Resource limits** — caps on queue size, links per request, and free disk space required before a download starts.
 * **Bearer-token auth on the API**; the health check needs no authorisation.
 * **Web interface** — a minimal single-page UI for adding links and watching the queue (`web/`).
-* **Playlists as files** — every playlist is an `.m3u` in the library root, edited by rewriting it. Navidrome silently ignores a reorder made through its API on a file-backed playlist; rewriting the file works, and it re-reads within about ten seconds.
+* **Playlists as files** — every playlist is an `.m3u` in the library root, edited by rewriting it; Navidrome re-reads it within about six seconds.
+* **An edit made on the phone is not lost** — Navidrome accepts a reorder sent by a client but never writes the `.m3u`, and its own watcher discards that edit the next time the file changes. Every thirty seconds the service looks for a playlist whose database was edited past its file and writes the order into the file. Measured: the edit reaches the `.m3u` in ten seconds.
 * **Reordering that survives duplicates** — a line is identified by its index, not its path. `Monday.m3u` holds nineteen tracks that appear twice.
 * **Concurrent edits are refused, not merged** — every read hands out a hash of the file and every write must present it; a stale edit gets `409` instead of quietly overwriting one made from the phone.
 * **Playlist covers** — stored locally and replicated to Navidrome, so a rename is a re-upload rather than a loss. The type is decided by the bytes, not by the file name.
@@ -177,6 +178,10 @@ Authorise with an `Authorization: Bearer <API_TOKEN>` header. `/health` needs no
 | `POST` | `/api/shuffle/blind` | Two queues, one of each kind, unlabelled |
 | `POST` | `/api/shuffle/blind/{id}` | Record which one was preferred |
 | `GET` | `/api/shuffle/blind/results` | How the comparison stands |
+| `GET` | `/api/sync` | What the last synchronisation pass found |
+| `POST` | `/api/sync` | Run a pass now; `?apply=false` reports only |
+| `GET` | `/api/track` | A track's tags plus its tempo, key and energy |
+| `GET` | `/api/cover` | The artwork inside the file |
 
 <details>
 <summary><code>POST /api/add</code> — example</summary>
@@ -297,6 +302,8 @@ This is a self-hosted home project. It is not intended for:
 * circumventing YouTube's regional or other restrictions.
 
 Before downloading third-party content, make sure you have the right to do so.
+
+One thing about the phone. Amperfy 2.1 **does not show a playlist's own cover**: its response parser does not read the `coverArt` field at all and draws a collage from the first tracks' album art instead. Verified against its source (`SsPlaylistParserDelegate`, `Playlist.updateArtworkItems`). A cover set here shows up in Navidrome's own web UI and in this player; it will not show up in Amperfy. Track order, by contrast, it re-reads every time a playlist is opened.
 
 ---
 

@@ -13,6 +13,14 @@ from adder import config as adder_config
 from adder import covers, library, navidrome, playlists, runtime, sync
 
 
+@pytest.fixture(autouse=True)
+def forget_reconciled():
+    """The seen-revisions cache is module state; tests must not inherit it."""
+    sync._SEEN.clear()
+    yield
+    sync._SEEN.clear()
+
+
 @pytest.fixture()
 def temp_library(tmp_path, monkeypatch):
     monkeypatch.setattr(adder_config, "LIBRARY", tmp_path / "library")
@@ -249,6 +257,62 @@ def test_a_dry_run_writes_nothing(temp_library, monkeypatch):
 
     assert report["playlists"][0]["changed"] is True
     assert playlists.playlist_path("p").read_bytes() == before
+
+
+def test_a_revision_already_reconciled_is_not_read_again(temp_library, monkeypatch):
+    """Navidrome moves updatedAt on its own.
+
+    Monday sat five days "ahead" of a file nobody had touched, so every pass
+    re-read all 1075 of its tracks to conclude nothing had changed. Once a
+    revision has been looked at, it is not looked at again until it moves.
+    """
+    monkeypatch.setattr(library, "library_index", lambda: _index("a.m4a", "b.m4a"))
+    playlists.create("p", ["a.m4a", "b.m4a"])
+    entry = _entry("p", playlists.playlist_path("p"), 2)
+    monkeypatch.setattr(navidrome, "configured", lambda: True)
+    monkeypatch.setattr(navidrome, "playlists", lambda: [entry])
+
+    reads = []
+
+    def counting(playlist_id, count):
+        reads.append(playlist_id)
+        return ["a.m4a", "b.m4a"]
+
+    monkeypatch.setattr(navidrome, "remote_tracks", counting)
+
+    sync.check(apply=True)
+    sync.check(apply=True)
+    sync.check(apply=True)
+    assert len(reads) == 1
+
+    # A new revision is a new question.
+    entry["updatedAt"] = entry["updatedAt"].replace(".123456789", ".987654321")
+    sync.check(apply=True)
+    assert len(reads) == 2
+
+
+def test_a_playlist_that_could_not_be_read_is_tried_again(temp_library, monkeypatch):
+    """A failure is not a reconciliation. Recording it would hide the playlist
+    until Navidrome happened to touch it again."""
+    monkeypatch.setattr(library, "library_index", lambda: _index("a.m4a", "b.m4a"))
+    playlists.create("p", ["a.m4a", "b.m4a"])
+    monkeypatch.setattr(navidrome, "configured", lambda: True)
+    monkeypatch.setattr(
+        navidrome, "playlists", lambda: [_entry("p", playlists.playlist_path("p"), 2)]
+    )
+
+    attempts = []
+
+    def failing(playlist_id, count):
+        attempts.append(playlist_id)
+        raise navidrome.NavidromeUnavailable("down")
+
+    monkeypatch.setattr(navidrome, "remote_tracks", failing)
+
+    sync.check(apply=True)
+    sync.check(apply=True)
+
+    assert len(attempts) == 2
 
 
 def test_check_without_navidrome_is_quiet(monkeypatch):

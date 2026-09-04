@@ -51,6 +51,13 @@ QUIET_SECONDS = 60
 # edited.
 POLL_SECONDS = 30
 
+# The last updatedAt each playlist was reconciled against. Navidrome moves
+# that stamp for reasons of its own -- Monday sat five days ahead of a file
+# nobody had touched -- so without this every pass would re-read all 1075 of
+# its tracks, forever, to conclude nothing had changed. In memory on purpose:
+# losing it after a restart costs one extra read.
+_SEEN: dict[str, str] = {}
+
 _LAST: dict[str, object] = {"at": 0.0, "result": None, "error": None}
 _LOCK = threading.Lock()
 _stop = threading.Event()
@@ -96,6 +103,8 @@ def _diverged(entry: dict) -> tuple[bool, str]:
         return False, "unreadable updatedAt"
     if updated - mtime <= QUIET_SECONDS:
         return False, "in step with the file"
+    if _SEEN.get(name) == str(entry.get("updatedAt")):
+        return False, "already reconciled at this revision"
     return True, f"Navidrome is {int(updated - mtime)}s ahead of the file"
 
 
@@ -173,6 +182,10 @@ def check(apply: bool = True) -> dict:
                 merged = remote + [path for path in local if path not in known]
                 row["changed"] = merged != local
                 row["tracks"] = len(merged)
+            # Only on success: a playlist that could not be read must be
+            # looked at again rather than written off as reconciled.
+            if not row.get("changed"):
+                _SEEN[name] = str(entry.get("updatedAt"))
         except Exception as exc:  # noqa: BLE001 -- reported, never raised into the loop
             row["error"] = str(exc)[:300]
             logger.warning("Could not pull %r back from Navidrome: %s", name, exc)
