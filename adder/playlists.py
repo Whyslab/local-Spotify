@@ -1,10 +1,11 @@
 """Playlists as .m3u files in the library root.
 
-The file is the source of truth, not Navidrome's database. That is not a
-preference: Navidrome silently ignores a reorder issued against a playlist it
-imported from a file -- the API answers 200 and nothing changes -- while it
-happily re-reads a rewritten file within about ten seconds. Writing the file is
-the only way to move a track.
+The file is the source of truth, not Navidrome's database. Navidrome will
+accept a reorder issued against a file-backed playlist through its API, but it
+does not write the .m3u, and its own watcher throws that edit away the next
+time the file's mtime changes. Rewriting the file is the only durable way to
+move a track; Navidrome mirrors the new file in about six seconds. An edit that
+did arrive through the API is picked up and written here by adder.sync.
 
 Two consequences shape this module.
 

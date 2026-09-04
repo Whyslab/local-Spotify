@@ -234,3 +234,48 @@ def reconcile(apply: bool | None = None) -> dict:
         )
 
     return {"orphans": orphans, "applied": bool(apply)}
+
+
+# ---------------------------------------------------------------------------
+# Reading a playlist back out of Navidrome
+# ---------------------------------------------------------------------------
+
+PAGE = 500
+
+
+def remote_tracks(playlist_id: str, expected: int) -> list[str]:
+    """The playlist's tracks, as library-relative paths, in Navidrome's order.
+
+    The internal API is the only one that gives a real path: Subsonic's is
+    built from tags and points at nothing on disk. ``id`` on these rows is the
+    position in the playlist, which is what sorting on it means here.
+
+    ``expected`` is the song count Navidrome itself reported. A short read --
+    a dropped connection, a page boundary handled wrongly -- would look exactly
+    like "the phone deleted the rest of the playlist", so a mismatch raises
+    instead of returning a truncated list that a caller would write to disk.
+    """
+    rows: list[dict] = []
+    start = 0
+    while True:
+        response = requests.get(
+            f"{config.NAVIDROME_URL}/api/playlist/{playlist_id}/tracks",
+            headers=_headers(),
+            params={"_start": start, "_end": start + PAGE, "_sort": "id", "_order": "ASC"},
+            timeout=TIMEOUT * 3,
+        )
+        response.raise_for_status()
+        page = response.json() or []
+        rows.extend(page)
+        if len(page) < PAGE:
+            break
+        start += PAGE
+        if start > expected + PAGE:
+            break
+
+    if len(rows) != expected:
+        raise NavidromeUnavailable(
+            f"Navidrome reported {expected} tracks for playlist {playlist_id} "
+            f"but returned {len(rows)}; refusing to treat that as the playlist"
+        )
+    return [str(row.get("path") or "") for row in rows]

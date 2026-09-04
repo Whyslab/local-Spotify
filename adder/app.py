@@ -30,6 +30,7 @@ from . import (
     shuffle,
     signing,
     sources,
+    sync,
 )
 from . import queue as task_queue
 
@@ -88,6 +89,12 @@ async def lifespan(app: FastAPI):
         except Exception as exc:
             logger.info("Navidrome not reachable at startup: %s", exc, extra={"task_id": "system"})
 
+    # Watch for playlist edits made anywhere but here. Navidrome accepts a
+    # reorder from a phone into its own database and never writes it to the
+    # .m3u, so the edit lives only until the next time this service touches
+    # that file. See adder/sync.py.
+    sync.start()
+
     for i in range(config.MAX_WORKERS):
         worker_thread = threading.Thread(
             target=task_queue.worker,
@@ -107,6 +114,7 @@ async def lifespan(app: FastAPI):
     # Uvicorn handles SIGTERM and enters the lifespan shutdown phase.
     # Stop workers without blocking indefinitely.
     runtime.shutdown_event.set()
+    sync.stop()
 
     if runtime.active_workers:
         deadline = time.monotonic() + config.SHUTDOWN_TIMEOUT
@@ -641,6 +649,33 @@ def delete_playlist_cover(name: str, authenticated: bool = Depends(verify_token)
 
 
 # ---------------------------------------------------------------------------
+# Two-way sync with the phone
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/sync")
+def sync_status(authenticated: bool = Depends(verify_token)):
+    """What the background pull-back loop last found.
+
+    The panel shows this so that "the phone and the laptop agree" is something
+    you can look at rather than hope for.
+    """
+    return sync.status()
+
+
+@app.post("/api/sync")
+def sync_now(apply: bool = True, authenticated: bool = Depends(verify_token)):
+    """Run a pass now instead of waiting for the timer.
+
+    ``apply=false`` reports what it would rewrite and rewrites nothing.
+    """
+    try:
+        return sync.check(apply=apply)
+    except navidrome.NavidromeUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
 # Shuffling
 # ---------------------------------------------------------------------------
 
@@ -895,6 +930,7 @@ def health():
         "playlists": len(playlists.listing()) if library_status == "ok" else 0,
         "navidrome": "configured" if navidrome.configured() else "not configured",
         "navidrome_pending": navidrome.pending_count(),
+        "sync_last_check_seconds_ago": sync.status()["last_check_seconds_ago"],
         "plays_logged": (
             db.db_query("SELECT COUNT(*) AS n FROM plays")[0]["n"] if db_status == "ok" else 0
         ),
