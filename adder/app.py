@@ -24,6 +24,7 @@ from . import (
     db,
     ingest,
     library,
+    lyrics,
     navidrome,
     playlists,
     runtime,
@@ -323,6 +324,17 @@ def track_details(path: str, authenticated: bool = Depends(verify_token)):
         **{key: value for key, value in row.items() if key != "haystack"},
         "features": measured[0] if measured else None,
     }
+
+
+@app.get("/api/lyrics")
+def track_lyrics(path: str, authenticated: bool = Depends(verify_token)):
+    """Текст играющего трека, по возможности с таймингами.
+
+    Спрашивается один раз на трек и кладётся в кэш на диск: каталог текстов
+    бесплатный и чужой, дёргать его при каждом воспроизведении незачем.
+    Промах тоже запоминается, но на две недели — текст может появиться позже.
+    """
+    return lyrics.for_track(path)
 
 
 @app.get("/api/cover")

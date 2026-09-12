@@ -134,6 +134,8 @@ player.audio.addEventListener("ended", () => {
     else renderPlayer();
 });
 player.audio.addEventListener("timeupdate", renderProgress);
+player.audio.addEventListener("timeupdate", () => highlightLyric(false));
+player.audio.addEventListener("seeked", () => highlightLyric(true));
 player.audio.addEventListener("play", renderPlayer);
 player.audio.addEventListener("pause", renderPlayer);
 
@@ -208,6 +210,7 @@ function renderNowPanel(track) {
     document.getElementById("nowAlbum").textContent = "";
     document.getElementById("nowFacts").replaceChildren();
     loadNowCover(track);
+    loadLyrics(track);
 
     fetch("/api/track?path=" + encodeURIComponent(track.path), { headers: headers() })
         .then(r => r.ok ? r.json() : null)
@@ -252,6 +255,87 @@ function loadNowCover(track) {
             cover.style.backgroundImage = `url("${nowCoverUrl}")`;
         })
         .catch(() => { if (nowRequested === wanted) cover.style.backgroundImage = "none"; });
+}
+
+/* Текст песни.
+ *
+ * Запрашивается один раз на трек — сервер сам держит кэш на диске, так что
+ * повторное включение того же трека стоит двенадцать миллисекунд.
+ *
+ * Подсветка строки идёт от времени воспроизведения. Индекс текущей строки
+ * помнится между вызовами: перебирать полсотни строк тридцать раз в секунду
+ * незачем, когда почти всегда нужна следующая по счёту.
+ */
+const lyrics = { path: null, lines: [], index: -1, box: null };
+
+function loadLyrics(track) {
+    const box = document.getElementById("nowLyrics");
+    if (!box) return;
+    lyrics.box = box;
+    lyrics.path = track.path;
+    lyrics.lines = [];
+    lyrics.index = -1;
+    box.replaceChildren();
+    box.classList.remove("has-lyrics");
+
+    fetch("/api/lyrics?path=" + encodeURIComponent(track.path), { headers: headers() })
+        .then(r => (r.ok ? r.json() : null))
+        .then(data => {
+            /* Медленный ответ для трека, который уже не играет, не должен
+             * затирать тот, что играет сейчас. */
+            if (!data || lyrics.path !== track.path) return;
+            if (!data.found) { renderNoLyrics(box, data.reason); return; }
+
+            if (data.synced && data.synced.length) {
+                lyrics.lines = data.synced;
+                box.classList.add("has-lyrics");
+                for (const item of data.synced) {
+                    const line = document.createElement("p");
+                    line.className = "lyric";
+                    line.textContent = item.line || "♪";
+                    box.appendChild(line);
+                }
+                highlightLyric(true);
+            } else if (data.plain) {
+                box.classList.add("has-lyrics");
+                for (const raw of data.plain.split("\n")) {
+                    const line = document.createElement("p");
+                    line.className = "lyric plain";
+                    line.textContent = raw;
+                    box.appendChild(line);
+                }
+            } else {
+                renderNoLyrics(box, "");
+            }
+        })
+        .catch(() => renderNoLyrics(box, "Не удалось получить текст"));
+}
+
+function renderNoLyrics(box, reason) {
+    const note = document.createElement("p");
+    note.className = "lyric-note";
+    note.textContent = reason || "Текста нет";
+    box.replaceChildren(note);
+}
+
+function highlightLyric(force) {
+    if (!lyrics.lines.length || !lyrics.box) return;
+    const at = player.audio.currentTime || 0;
+
+    let i = lyrics.index;
+    /* Перемотали назад — начинаем счёт заново. */
+    if (i >= 0 && lyrics.lines[i] && lyrics.lines[i].at > at) i = -1;
+    while (i + 1 < lyrics.lines.length && lyrics.lines[i + 1].at <= at) i += 1;
+    if (i === lyrics.index && !force) return;
+    lyrics.index = i;
+
+    const rows = lyrics.box.querySelectorAll(".lyric");
+    rows.forEach((row, n) => row.classList.toggle("now", n === i));
+    if (i >= 0 && rows[i]) {
+        const row = rows[i];
+        const wanted = row.offsetTop - lyrics.box.clientHeight / 2 + row.clientHeight / 2;
+        lyrics.box.scrollTo({ top: Math.max(0, wanted), behavior: "smooth" });
+    }
 }
 
 function renderFacts(facts) {
