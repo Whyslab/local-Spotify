@@ -771,6 +771,11 @@ function playlistTrackRow(entry, position) {
     handle.textContent = "⠿";
     handle.title = "Перетащить";
 
+    // Обложка — как во всех остальных списках.
+    const cover = document.createElement("div");
+    cover.className = "cover";
+    loadTrackCover(cover, entry.path);
+
     const info = document.createElement("div");
     info.className = "track-info";
     info.onclick = () => playQueue(player.playlist.entries, position, "manual");
@@ -801,7 +806,7 @@ function playlistTrackRow(entry, position) {
     if (position === 0) top.disabled = true;
     if (position === player.playlist.entries.length - 1) bottom.disabled = true;
 
-    row.append(handle, info, top, up, down, bottom, drop);
+    row.append(handle, cover, info, top, up, down, bottom, drop);
     return row;
 }
 

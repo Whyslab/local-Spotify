@@ -7,21 +7,29 @@
 * { box-sizing: border-box; }
 
 :root {
+    /* Палитра системы — «Monochrome Vivid». Ни одного цвета.
+       Взята из ~/.config/hypr/colors.conf и конфига панели, где белый стоит
+       190 раз, #090909 — 49, остальное серое. «Vivid» здесь значит не яркие
+       цвета, а яркий контраст чёрного с белым: состояния различаются
+       яркостью, а не оттенком. */
     --bg: #090909;
-    --surface: #141414;
-    --surface-2: #1c1c1c;
-    --line: #1f1f1f;
-    --line-2: #2a2a2a;
+    --surface: #111111;
+    --surface-2: #1a1a1a;
+    --line: #242424;
+    --line-2: #333333;
 
     --text: #ffffff;
-    --text-2: #8a8a8a;
-    --text-3: #6d6d6d;
+    --text-2: #b0b0b0;
+    --text-3: #737373;
 
-    --accent: #1ed760;
-    --accent-ink: #06120a;
-    --accent-dim: #1db954;
+    /* Главное действие — белое на чёрном, как кнопки питания в панели. */
+    --accent: #ffffff;
+    --accent-ink: #000000;
+    --accent-dim: #6a6a6a;
 
-    --warn: #ffd166;
+    --warn: #cfcfcf;
+    /* Единственный цвет во всей палитре, и он не про украшение: удаление
+       нельзя отличить от остального одной только яркостью. */
     --danger: #ff5555;
 
     --r-card: 20px;
@@ -39,14 +47,19 @@ body {
     min-height: 100vh;
     background: var(--bg);
     color: var(--text);
-    font-family: -apple-system, BlinkMacSystemFont, system-ui, "Helvetica Neue", sans-serif;
+    /* На айфоне выигрывает apple-system — сайт открывают оттуда чаще всего.
+       На ноутбуке эти два имени не разрешаются ни во что, и подхватывается
+       Adwaita Sans: тот же шрифт, что во всех остальных окнах системы. */
+    font-family: -apple-system, BlinkMacSystemFont, "Adwaita Sans", system-ui,
+                 "Noto Sans", sans-serif;
     font-size: 15px;
     line-height: 1.45;
     -webkit-font-smoothing: antialiased;
 }
 
-/* One soft wash behind the header, echoing the accent. Not a full-page
-   gradient: those read as decoration rather than structure. */
+/* Мягкая подсветка за шапкой. Была зелёной — единственное цветное пятно на
+   всей странице, и в чёрно-белой теме читалось как грязь на экране. Теперь
+   это белый свет почти в ноль: структура, а не украшение. */
 body::before {
     content: "";
     position: fixed;
@@ -55,7 +68,7 @@ body::before {
     transform: translateX(-50%);
     width: 520px;
     height: 380px;
-    background: radial-gradient(circle, #1db95430, transparent 62%);
+    background: radial-gradient(circle, #ffffff0f, transparent 62%);
     pointer-events: none;
     z-index: 0;
 }
@@ -115,7 +128,7 @@ body::before {
     background: currentColor;
 }
 
-.pill-ok    { color: var(--accent); background: #16211a; border: 1px solid #1db95433; }
+.pill-ok    { color: var(--text); background: var(--surface-2); border: 1px solid #ffffff33; }
 .pill-idle  { color: var(--text-3); background: var(--surface-2); border: 1px solid var(--line-2); }
 .pill-error { color: var(--danger); background: #241315; border: 1px solid #ff555533; }
 
@@ -218,7 +231,7 @@ button:active { transform: scale(.98); }
 button:disabled { opacity: .5; cursor: default; }
 
 .primary { background: var(--accent); color: var(--accent-ink); font-weight: 700; }
-.ghost   { background: var(--surface-2); color: #d4d4d4; border-color: var(--line-2); }
+.ghost   { background: var(--surface-2); color: var(--text-2); border-color: var(--line-2); }
 .danger  { background: var(--danger); color: #1a0d0e; font-weight: 700; }
 
 .block { width: 100%; margin-top: 12px; }
@@ -277,7 +290,8 @@ button:disabled { opacity: .5; cursor: default; }
     width: 42px;
     height: 42px;
     border-radius: 9px;
-    background: linear-gradient(140deg, #2b2b2b, #1a1a1a);
+    background: var(--surface-2);
+    overflow: hidden;
     flex-shrink: 0;
     display: flex;
     align-items: center;
@@ -330,9 +344,14 @@ button:disabled { opacity: .5; cursor: default; }
     color: var(--text-2);
 }
 
-.track-status.done        { color: var(--accent); background: #102016; border-color: #1ed76033; }
+/* Готово / в работе / ошибка — яркостью, а не цветом. Готовое светится,
+   идущее приглушено, и только ошибка остаётся красной.
+
+   Не белой заливкой: полсотни белых плашек столбиком по правому краю
+   перетягивают внимание на себя сильнее, чем сами названия. */
+.track-status.done        { color: var(--text);  background: var(--surface-2); border-color: var(--text); }
 .track-status.downloading,
-.track-status.tagging     { color: var(--warn);   background: #241f12; border-color: #ffd16633; }
+.track-status.tagging     { color: var(--warn);   background: var(--surface-2); border-color: #ffffff2e; }
 .track-status.error       { color: var(--danger); background: #241315; border-color: #ff555533; }
 
 .icon-button {
@@ -535,7 +554,10 @@ code {
 .playlist-track .track-info { cursor: pointer; }
 .playlist-track.is-dragging { opacity: 0.4; }
 .playlist-track.is-over { box-shadow: inset 0 2px 0 var(--accent); }
-.track.is-playing .track-title { color: var(--accent); }
+/* Играющая строка. Цветом её больше не выделить — белый и так везде, —
+   поэтому весом и светлым фоном: строка выступает из списка, а не красится. */
+.track.is-playing { background: var(--surface-2); border-color: var(--line-2); }
+.track.is-playing .track-title { font-weight: 750; }
 
 .icon-button.small {
     width: 34px;
@@ -623,19 +645,94 @@ button.danger {
 /* Уже сыгранное приглушено, играющее светится — список читается сверху вниз
    как дорога: позади бледное, под ногами яркое, впереди обычное. */
 .queue-row.is-played { opacity: .45; }
-.queue-row.is-playing .track-title { color: var(--accent); font-weight: 650; }
+.queue-row.is-playing .track-title { font-weight: 750; }
 
 /* Главная: полки-приглашения. Каждая показывает шесть строк из сорока —
    это приглашение, а не список; «Слушать» ставит в очередь всю полку. */
 .home-shelf .card-head { display: flex; align-items: center; gap: 12px; }
 .home-shelf .card-head h2 { margin: 0; font-size: 16px; }
 .home-shelf .card-head .muted { font-size: 12px; }
-.home-shelf .card-head .primary { margin-left: auto; padding: 6px 16px; font-size: 13px; }
+/* Кнопка полки — маленькая. Белая заливка в 46 пикселей высотой, повторённая
+   шесть раз вниз по странице, перетягивает внимание с обложек на себя. */
+.home-shelf .card-head .primary {
+    margin-left: auto;
+    min-height: 32px;
+    padding: 0 16px;
+    font-size: 13px;
+}
+
+/* Полка: ряд обложек, который листается вбок. Скроллбар убран — полка
+   листается пальцем и колесом, а полоса под каждой из шести полок была бы
+   шумом. */
+.shelf {
+    display: flex;
+    gap: 14px;
+    overflow-x: auto;
+    scroll-snap-type: x proximity;
+    overscroll-behavior-x: contain;
+    padding-bottom: 2px;
+    scrollbar-width: none;
+}
+.shelf::-webkit-scrollbar { display: none; }
+
+.shelf-tile {
+    flex: 0 0 138px;
+    width: 138px;
+    scroll-snap-align: start;
+}
+
+.shelf-art {
+    display: block;
+    width: 138px;
+    height: 138px;
+    padding: 0;
+    border: 0;
+    border-radius: 8px;
+    overflow: hidden;
+    background: var(--surface-2);
+    cursor: pointer;
+}
+.shelf-art img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+.shelf-name {
+    margin-top: 9px;
+    color: var(--text);
+    font-size: 13px;
+    font-weight: 550;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.shelf-tile:hover .album-play { opacity: 1; transform: none; }
+
+@media (max-width: 560px) {
+    .shelf-tile, .shelf-art { flex-basis: 122px; width: 122px; }
+    .shelf-art { height: 122px; }
+    /* На телефоне подпись полки («похоже на …») уезжала в пять строк и
+       сплющивала заголовок в две. Заголовок и кнопка остаются в одной
+       строке, подсказка уходит под них и обрезается. */
+    .home-shelf .card-head { flex-wrap: wrap; row-gap: 4px; }
+    .home-shelf .card-head h2 { flex: 1 1 auto; }
+    .home-shelf .card-head .muted {
+        order: 3;
+        flex: 1 0 100%;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    /* Кнопка на обложке: на касании она видна всегда, и в 38 пикселей
+       закрывает треть плитки шириной 122. */
+    .album-play { width: 32px; height: 32px; right: 6px; bottom: 6px; }
+    .album-play .icon { width: 15px; height: 15px; }
+}
 
 /* Переключатель «Треки · Альбомы · Синглы» и карточка альбома. */
 .library-modes { margin-bottom: 10px; }
 .library-modes .muted { margin-left: auto; font-size: 12px; }
-button.ghost.is-on { color: var(--accent); border-color: var(--accent-dim); }
+/* Выбранный переключатель. Раньше его выдавал зелёный цвет; теперь — белая
+   рамка и белый текст против серых у соседей. Разницы в одну ступень яркости
+   мало: рамка добавляет вторую. */
+button.ghost.is-on { color: var(--text); border-color: var(--text); font-weight: 700; }
 
 /* Альбомы плитками. Строкой это выглядело плохо не случайно: обложка в 34
    пикселя на ряду шириной в тысячу — девять десятых пустоты, а узнают альбом
@@ -1276,6 +1373,7 @@ button.ghost.is-on { color: var(--accent); border-color: var(--accent-dim); }
   border-radius: 999px;
   font-size: 11px;
   letter-spacing: .02em;
-  color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--text-2);
+  background: var(--surface-2);
+  border: 1px solid var(--line-2);
 }

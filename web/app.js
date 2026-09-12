@@ -177,9 +177,9 @@ function trackRow({ title, artist, status, error }) {
     const card = document.createElement("div");
     card.className = "track";
 
-    const cover = document.createElement("div");
-    cover.className = "cover";
-
+    /* У задачи обложки нет и быть не может: файла ещё нет на диске. Пустой
+     * серый квадрат в каждой из пятидесяти строк выглядел как ненагрузившаяся
+     * картинка, поэтому его тут просто нет. */
     const info = document.createElement("div");
     info.className = "track-info";
 
@@ -207,7 +207,7 @@ function trackRow({ title, artist, status, error }) {
     if (status) badge.classList.add(status);
     badge.textContent = STATUS_LABEL[status] || status || "";
 
-    card.append(cover, info, badge);
+    card.append(info, badge);
     return card;
 }
 
@@ -380,14 +380,49 @@ function homeShelf(title, hint, tracks, playAll) {
         head.appendChild(play);
     }
 
-    const rows = document.createElement("div");
-    rows.className = "rows";
-    /* Шесть строк, а не сорок: полка на главной — это приглашение, а не список.
-     * Нажал «Слушать» — играет всё, что в ней есть. */
-    for (const t of tracks.slice(0, 6)) rows.appendChild(libraryRow(t, tracks));
+    /* Полка — это ряд обложек, который листается вбок, а не список строк.
+     *
+     * Строками это занимало всю ширину экрана под четыреста пикселей текста
+     * и рядом с сеткой альбомов выглядело как список дел. Двенадцать плиток,
+     * а не сорок: полка на главной — приглашение, а не фонотека. Нажал
+     * «Слушать» — играет вся полка целиком. */
+    const shelf = document.createElement("div");
+    shelf.className = "shelf";
+    tracks.slice(0, 12).forEach((t, i) => shelf.appendChild(shelfTile(t, tracks, i)));
 
-    card.append(head, rows);
+    card.append(head, shelf);
     return card;
+}
+
+function shelfTile(track, tracks, index) {
+    const tile = document.createElement("div");
+    tile.className = "shelf-tile";
+
+    const art = document.createElement("button");
+    art.className = "shelf-art";
+    art.setAttribute("aria-label", "Играть «" + (track.title || track.path) + "»");
+    art.onclick = () => playQueue(tracks, index, "manual");
+    loadTrackCover(art, track.path);
+
+    const play = document.createElement("button");
+    play.className = "album-play";
+    play.setAttribute("aria-label", "Играть");
+    play.onclick = event => { event.stopPropagation(); playQueue(tracks, index, "manual"); };
+    play.appendChild(playIcon());
+
+    const box = document.createElement("div");
+    box.className = "album-artbox";
+    box.append(art, play);
+
+    const name = document.createElement("div");
+    name.className = "shelf-name";
+    name.textContent = track.title || track.path;
+    const who = document.createElement("div");
+    who.className = "album-artist";
+    who.textContent = track.artist || "";
+
+    tile.append(box, name, who);
+    return tile;
 }
 
 function renderHome(data) {
@@ -678,8 +713,15 @@ async function library() {
 
     /* Списком треков хватает первых двухсот: дальше всё равно ищут поиском.
      * Альбомы так собрать нельзя — издание может начинаться на любой букве,
-     * поэтому для группировки берём фонотеку целиком. */
-    const limit = libraryMode === "tracks" ? 200 : 5000;
+     * поэтому для группировки берём фонотеку целиком.
+     *
+     * Режим запоминается до запроса и сверяется после. Иначе так: фоновый
+     * опрос уходит за двумя сотнями треков, пока открыт список; человек
+     * жмёт «Альбомы»; ответ возвращается — и двести треков раскладываются
+     * в альбомы вместо всей фонотеки. Получалось 25 изданий вместо 121, и
+     * зависело это от того, попал ли клик между опросами. */
+    const mode = libraryMode;
+    const limit = mode === "tracks" ? 200 : 5000;
 
     try {
         const r = await fetch(
@@ -687,9 +729,10 @@ async function library() {
             { headers: headers() });
         if (!r.ok) return;
         const data = await r.json();
+        if (mode !== libraryMode) return;
         box.replaceChildren();
 
-        if (libraryMode === "tracks") {
+        if (mode === "tracks") {
             if (note) note.textContent = "";
             count.textContent = data.length ? data.length + (data.length === 200 ? "+" : "") : "";
             empty.hidden = data.length > 0;
@@ -701,7 +744,7 @@ async function library() {
         }
 
         const groups = groupIntoAlbums(data);
-        if (libraryMode === "albums") {
+        if (mode === "albums") {
             const albums = groups.filter(g => g.tracks.length > 1);
             count.textContent = albums.length || "";
             empty.hidden = albums.length > 0;
@@ -733,6 +776,10 @@ function libraryRow(t, rows) {
     const cover = document.createElement("div");
     cover.className = "cover";
     if (t.track) cover.textContent = String(t.track);
+    /* Обложка была только у альбомов и подборок, а в списках стоял пустой
+     * серый квадрат — шесть подряд на главной выглядели как незагрузившаяся
+     * страница. Запрос дешёвый: обложки кэшируются на весь сеанс. */
+    loadTrackCover(cover, t.path);
 
     const info = document.createElement("div");
     info.className = "track-info";
@@ -749,7 +796,9 @@ function libraryRow(t, rows) {
         info.appendChild(artistEl);
     }
 
-    if (t.album) {
+    /* У сингла издание называется так же, как трек, и третья строка просто
+     * повторяла первую. Печатаем альбом только когда он говорит новое. */
+    if (t.album && t.album !== t.title) {
         const albumEl = document.createElement("div");
         albumEl.className = "track-album";
         albumEl.textContent = t.album;
