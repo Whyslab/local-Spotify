@@ -332,6 +332,34 @@ function renderRail(data) {
     }
 }
 
+/* Обложка подборки — тоже не <img src>.
+ *
+ * Правило то же, что абзацем выше про обложку играющего трека: /api/…/cover
+ * требует токен, а атрибут src заголовков не несёт. Здесь это правило забыли
+ * применить, и обе обложки подборок молча получали 401: сначала срабатывал
+ * onerror, потом вместо картинки показывалась первая буква названия. Снаружи
+ * это выглядело как «обложка не ставится», хотя на сервере она лежала целая.
+ *
+ * Ссылка на объект освобождается сразу после отрисовки: картинка к этому
+ * моменту уже декодирована, держать ссылку дальше незачем.
+ */
+function loadPlaylistCover(host, name) {
+    const letter = () => { host.replaceChildren(); host.textContent = name.slice(0, 1).toUpperCase(); };
+    fetch("/api/playlists/" + encodeURIComponent(name) + "/cover", { headers: headers() })
+        .then(r => (r.ok ? r.blob() : null))
+        .then(blob => {
+            if (!blob) { letter(); return; }
+            const url = URL.createObjectURL(blob);
+            const img = document.createElement("img");
+            img.alt = "";
+            img.onload = () => URL.revokeObjectURL(url);
+            img.onerror = () => { URL.revokeObjectURL(url); letter(); };
+            img.src = url;
+            host.replaceChildren(img);
+        })
+        .catch(letter);
+}
+
 function playlistRow(p) {
     const row = document.createElement("button");
     row.className = "track playlist-row";
@@ -339,12 +367,8 @@ function playlistRow(p) {
 
     const cover = document.createElement("div");
     cover.className = "cover";
-    const img = document.createElement("img");
-    img.alt = "";
-    img.loading = "lazy";
-    img.src = "/api/playlists/" + encodeURIComponent(p.name) + "/cover";
-    img.onerror = () => { img.remove(); cover.textContent = p.name.slice(0, 1).toUpperCase(); };
-    cover.appendChild(img);
+    cover.textContent = p.name.slice(0, 1).toUpperCase();
+    loadPlaylistCover(cover, p.name);
 
     const info = document.createElement("div");
     info.className = "track-info";
@@ -378,11 +402,8 @@ function renderPlaylist() {
 
     const art = document.getElementById("playlistCover");
     art.replaceChildren();
-    const img = document.createElement("img");
-    img.alt = "";
-    img.src = "/api/playlists/" + encodeURIComponent(pl.name) + "/cover?t=" + Date.now();
-    img.onerror = () => { img.remove(); art.textContent = pl.name.slice(0, 1).toUpperCase(); };
-    art.appendChild(img);
+    art.textContent = pl.name.slice(0, 1).toUpperCase();
+    loadPlaylistCover(art, pl.name);
 
     const box = document.getElementById("playlistTracks");
     box.replaceChildren();
