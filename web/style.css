@@ -637,11 +637,120 @@ button.danger {
 .library-modes .muted { margin-left: auto; font-size: 12px; }
 button.ghost.is-on { color: var(--accent); border-color: var(--accent-dim); }
 
-.album-card { display: block; padding: 0; }
-.album-head { display: flex; align-items: center; gap: 12px; padding: 8px 10px; }
-.album-head .track-info { flex: 1 1 auto; min-width: 0; }
-/* Треки альбома с отступом: видно, что они принадлежат карточке над ними. */
-.album-tracks { padding: 0 10px 10px 62px; gap: 2px; }
+/* Альбомы плитками. Строкой это выглядело плохо не случайно: обложка в 34
+   пикселя на ряду шириной в тысячу — девять десятых пустоты, а узнают альбом
+   именно по обложке. */
+.album-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(152px, 1fr));
+    gap: 18px 14px;
+}
+
+.album-tile { min-width: 0; }
+
+.album-artbox { position: relative; }
+
+.album-art {
+    display: grid;
+    place-items: center;
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    padding: 0;
+    border: 0;
+    border-radius: 8px;
+    overflow: hidden;
+    background: var(--surface-2);
+    cursor: pointer;
+}
+.album-art img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.album-letter { color: var(--text-3); font-size: 28px; font-weight: 650; }
+
+/* Кнопка появляется на обложке при наведении — как везде, где обложка
+   крупная. На касании наведения нет, поэтому там она видна всегда. */
+.album-play {
+    position: absolute;
+    right: 8px;
+    bottom: 8px;
+    display: grid;
+    place-items: center;
+    width: 38px;
+    height: 38px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: var(--accent);
+    color: var(--accent-ink);
+    box-shadow: 0 6px 16px #0008;
+    cursor: pointer;
+    opacity: 0;
+    transform: translateY(6px);
+    transition: opacity .15s ease, transform .15s ease;
+}
+.album-play .icon { width: 18px; height: 18px; fill: currentColor; stroke: none; }
+.album-tile:hover .album-play,
+.album-play:focus-visible { opacity: 1; transform: none; }
+@media (hover: none) {
+    .album-play { opacity: 1; transform: none; }
+}
+
+.album-name {
+    display: block;
+    width: 100%;
+    margin-top: 9px;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--text);
+    font: inherit;
+    font-size: 13px;
+    font-weight: 550;
+    text-align: left;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: pointer;
+}
+.album-name:hover { text-decoration: underline; }
+.album-artist {
+    margin-top: 2px;
+    color: var(--text-3);
+    font-size: 11px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Один альбом целиком, на месте сетки. */
+.album-open {
+    display: flex;
+    align-items: flex-end;
+    gap: 18px;
+    margin-bottom: 16px;
+}
+.album-open-art {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 148px;
+    height: 148px;
+    border-radius: 10px;
+    overflow: hidden;
+    background: var(--surface-2);
+    color: var(--text-3);
+    font-size: 40px;
+    font-weight: 650;
+}
+.album-open-art img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.album-open-meta { min-width: 0; }
+.album-open-meta h2 { margin: 0 0 4px; font-size: 26px; }
+.album-open-meta p { margin: 0 0 12px; }
+
+@media (max-width: 560px) {
+    .album-grid { grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 14px 10px; }
+    .album-open { flex-direction: column; align-items: flex-start; gap: 12px; }
+    .album-open-art { width: 120px; height: 120px; }
+    .album-open-meta h2 { font-size: 20px; }
+}
 
 .player {
     position: fixed;
@@ -907,9 +1016,11 @@ button.ghost.is-on { color: var(--accent); border-color: var(--accent-dim); }
     }
 
     .rail-item {
-        display: block;
+        display: flex;
+        align-items: center;
+        gap: 9px;
         width: 100%;
-        padding: 7px 12px;
+        padding: 6px 10px;
         border: 0;
         border-radius: var(--r-control);
         background: none;
@@ -929,6 +1040,63 @@ button.ghost.is-on { color: var(--accent); border-color: var(--accent-dim); }
         text-overflow: ellipsis;
     }
     .rail-item small { color: var(--text-3); font-size: 11px; }
+
+    /* Обложка подборки в рельсе. Мелкая, но подборку по ней узнаёшь быстрее,
+       чем читаешь название. Пока обложка не пришла — первая буква. */
+    .rail-art {
+        flex: none;
+        display: grid;
+        place-items: center;
+        width: 34px;
+        height: 34px;
+        border-radius: 6px;
+        overflow: hidden;
+        background: var(--surface-2);
+        color: var(--text-3);
+        font-size: 13px;
+        font-weight: 650;
+    }
+    .rail-art img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .rail-text { min-width: 0; flex: 1 1 auto; }
+
+    /* Что играет — прямо в рельсе, с полоской времени. */
+    .rail-now b {
+        display: block;
+        color: var(--text);
+        font-weight: 550;
+        font-size: 12px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .rail-now small {
+        display: block;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .rail-bar {
+        height: 3px;
+        margin: 5px 0 4px;
+        border-radius: 999px;
+        background: var(--surface-2);
+        overflow: hidden;
+    }
+    .rail-bar i {
+        display: block;
+        height: 100%;
+        background: var(--accent);
+        transition: width .25s linear;
+    }
+    .rail-time { display: block; }
+    .rail-jobs {
+        margin-top: 6px;
+        padding-top: 6px;
+        border-top: 1px solid var(--line);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
 
     .rail-new {
         display: flex;

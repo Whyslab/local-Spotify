@@ -344,7 +344,7 @@ function renderPlayer() {
     const track = player.queue[player.index];
     bar.hidden = !track;
     document.getElementById("nowPanel").hidden = !track;
-    if (!track) return;
+    if (!track) { renderRailWork(); return; }
 
     renderNowPanel(track);
 
@@ -533,6 +533,72 @@ function renderProgress() {
     bar.style.width = total ? `${(done / total) * 100}%` : "0%";
     document.getElementById("playerElapsed").textContent = formatTime(done);
     document.getElementById("playerTotal").textContent = formatTime(total);
+    renderRailWork();
+}
+
+/* ---------------- Нижняя строка рельса ---------------- */
+
+/* Раньше здесь стояло «очередь пуста» — и это была правда про очередь
+ * загрузки, а читалось как «плеер ничего не играет». Надпись не менялась,
+ * когда трек уже играл, и выглядело это поломкой.
+ *
+ * Теперь строка говорит про обе очереди и различает их словами: сверху что
+ * играет и сколько осталось, снизу — что скачивается и на каком оно этапе.
+ */
+let railJobs = "";
+
+function setRailJobs(text) {
+    railJobs = text || "";
+    renderRailWork();
+}
+
+function renderRailWork() {
+    const box = document.getElementById("railWork");
+    if (!box) return;
+    box.replaceChildren();
+
+    const track = player.queue[player.index];
+    if (track) {
+        const line = document.createElement("div");
+        line.className = "rail-now";
+        const what = document.createElement("b");
+        what.textContent = track.title || track.path;
+        line.appendChild(what);
+        if (track.artist) {
+            const who = document.createElement("small");
+            who.textContent = track.artist;
+            line.appendChild(who);
+        }
+
+        const total = player.audio.duration || 0;
+        const done = player.audio.currentTime || 0;
+        const bar = document.createElement("div");
+        bar.className = "rail-bar";
+        const fill = document.createElement("i");
+        fill.style.width = total ? `${(done / total) * 100}%` : "0%";
+        bar.appendChild(fill);
+
+        const route = player.order.length ? player.order : player.queue.map((_, i) => i);
+        const at = route.indexOf(player.index);
+        const left = at >= 0 ? route.length - at - 1 : 0;
+        const time = document.createElement("small");
+        time.className = "rail-time";
+        time.textContent = `${formatTime(done)} / ${formatTime(total)}`
+            + (left ? ` · дальше ${left}` : " · последний в очереди");
+
+        box.append(line, bar, time);
+    } else {
+        const idle = document.createElement("div");
+        idle.textContent = "ничего не играет";
+        box.appendChild(idle);
+    }
+
+    if (railJobs) {
+        const jobs = document.createElement("div");
+        jobs.className = "rail-jobs";
+        jobs.textContent = railJobs;
+        box.appendChild(jobs);
+    }
 }
 
 function seekFromClick(event) {
@@ -552,6 +618,7 @@ function markPlayingRow() {
 /* ---------------- Playlists ---------------- */
 
 async function playlists() {
+    if (hasOpenChoice("playlists")) return;
     const box = document.getElementById("playlists");
     const empty = document.getElementById("playlistsEmpty");
     try {
@@ -566,9 +633,11 @@ async function playlists() {
     } catch (e) { /* the next poll retries */ }
 }
 
-/* The same playlists as one-line entries in the rail. Names and counts only:
- * a rail 232px wide has no room for covers, and the point of it is to get to a
- * playlist in one click from wherever you are. */
+/* Те же подборки строками в рельсе — с обложкой.
+ *
+ * Раньше здесь были только название и счётчик: считалось, что в 232 пикселя
+ * обложка не влезет. Влезает: 34 пикселя слева, текст рядом. Подборку узнаёшь
+ * по картинке быстрее, чем читаешь название. */
 function renderRail(data) {
     const rail = document.getElementById("railPlaylists");
     if (!rail) return;
@@ -578,11 +647,21 @@ function renderRail(data) {
         const item = document.createElement("button");
         item.className = "rail-item" + (p.name === open ? " is-active" : "");
         item.onclick = () => openPlaylist(p.name);
+
+        const art = document.createElement("span");
+        art.className = "rail-art";
+        art.textContent = p.name.slice(0, 1).toUpperCase();
+        loadPlaylistCover(art, p.name);
+
+        const text = document.createElement("span");
+        text.className = "rail-text";
         const name = document.createElement("b");
         name.textContent = p.name;
         const count = document.createElement("small");
         count.textContent = p.tracks === 1 ? "1 трек" : `${p.tracks} треков`;
-        item.append(name, count);
+        text.append(name, count);
+
+        item.append(art, text);
         rail.appendChild(item);
     }
 }
@@ -600,15 +679,14 @@ function renderRail(data) {
  */
 function loadPlaylistCover(host, name) {
     const letter = () => { host.replaceChildren(); host.textContent = name.slice(0, 1).toUpperCase(); };
-    fetch("/api/playlists/" + encodeURIComponent(name) + "/cover", { headers: headers() })
-        .then(r => (r.ok ? r.blob() : null))
-        .then(blob => {
-            if (!blob) { letter(); return; }
-            const url = URL.createObjectURL(blob);
+    /* Через общий кэш обложек: рельс перерисовывается каждым опросом, и без
+     * него обложка подборки мигала бы на букву несколько раз в минуту. */
+    coverUrl("playlist:" + name, "/api/playlists/" + encodeURIComponent(name) + "/cover")
+        .then(url => {
+            if (!url) { letter(); return; }
             const img = document.createElement("img");
             img.alt = "";
-            img.onload = () => URL.revokeObjectURL(url);
-            img.onerror = () => { URL.revokeObjectURL(url); letter(); };
+            img.onerror = letter;
             img.src = url;
             host.replaceChildren(img);
         })
@@ -846,8 +924,11 @@ async function uploadCover(input) {
     const data = await r.json();
     input.value = "";
     if (!r.ok) { setPlaylistNote(data.detail || "Не удалось загрузить обложку"); return; }
+    // Старую из кэша выкинуть, иначе новая не появится до перезагрузки.
+    forgetCover("playlist:" + player.playlist.name);
     setPlaylistNote("");
     renderPlaylist();
+    playlists();
 }
 
 /* Playing a track straight from the library screen queues what is on screen,
@@ -929,7 +1010,9 @@ async function addToPlaylist(box, card, note, cancel, name, track) {
             cancel.textContent = "Закрыть";
             return;
         }
-        paths.push(track.path);
+        /* В начало, а не в конец: только что добавленное — это то, что
+         * хочется услышать сейчас, а не через тысячу треков. */
+        paths.unshift(track.path);
 
         const put = await fetch(url, {
             method: "PUT",

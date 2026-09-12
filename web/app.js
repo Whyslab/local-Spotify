@@ -236,13 +236,17 @@ async function health() {
 
         /* The living numbers, which move while you watch: what is downloading
          * and what is waiting to reach the phone. Kept apart from the counts
-         * above, which change about once a day. */
-        const work = document.getElementById("railWork");
-        if (work) {
-            const parts = [];
-            if (data.queue_size) parts.push(plural(data.queue_size, "задача", "задачи", "задач") + " в очереди");
-            if (data.navidrome_pending) parts.push(data.navidrome_pending + " ждёт Navidrome");
-            work.textContent = parts.length ? parts.join(" · ") : "очередь пуста";
+         * above, which change about once a day.
+         *
+         * Строка про загрузки теперь живёт под строкой про то, что играет, и
+         * пишется через setRailJobs. Раньше они делили одно место, и «очередь
+         * пуста» (про загрузки) читалось как «плеер молчит». */
+        const parts = [];
+        if (data.navidrome_pending) parts.push(data.navidrome_pending + " ждёт Navidrome");
+        if (data.queue_size) {
+            jobStage(data.queue_size, parts);
+        } else {
+            setRailJobs(parts.join(" · "));
         }
 
         box.replaceChildren();
@@ -277,6 +281,28 @@ function fact(label, value, bad) {
 
     row.append(l, v);
     return row;
+}
+
+/* На каком этапе то, что качается прямо сейчас.
+ *
+ * Спрашиваем только когда в очереди что-то есть: в покое это был бы лишний
+ * запрос каждые несколько секунд ради строчки «ничего не качается». */
+async function jobStage(queued, parts) {
+    const stages = { queued: "ждёт очереди", downloading: "качается", tagging: "проставляю теги" };
+    let line = plural(queued, "задача", "задачи", "задач") + " в очереди";
+    try {
+        const r = await fetch("/api/tasks", { headers: headers() });
+        if (r.ok) {
+            const rows = await r.json();
+            const live = rows.find(t => t.status !== "done" && t.status !== "error");
+            if (live) {
+                const name = [live.artist, live.title].filter(Boolean).join(" — ");
+                line = (stages[live.status] || live.status) + ": " + (name || live.url);
+                if (queued > 1) line += " · и ещё " + (queued - 1);
+            }
+        }
+    } catch (e) { /* следующий опрос попробует снова */ }
+    setRailJobs([line, ...parts].join(" · "));
 }
 
 function plural(n, one, few, many) {
@@ -448,6 +474,7 @@ let libraryMode = "tracks";
 
 function setLibraryMode(mode) {
     libraryMode = mode;
+    openAlbumGroup = null;
     for (const [name, id] of [["tracks", "modeTracks"], ["albums", "modeAlbums"], ["singles", "modeSingles"]]) {
         const b = document.getElementById(id);
         if (b) b.classList.toggle("is-on", name === mode);
@@ -473,84 +500,176 @@ function groupIntoAlbums(rows) {
         a.artist.localeCompare(b.artist, "ru") || a.album.localeCompare(b.album, "ru"));
 }
 
-function albumRow(group) {
-    const card = document.createElement("div");
-    card.className = "track album-card";
+/* Карточка альбома — плитка, а не строка.
+ *
+ * Строкой это выглядело плохо не случайно: обложка 34 пикселя, название,
+ * артист и две кнопки в ряду шириной 1100 — девять десятых карточки пустые,
+ * а обложку, ради которой альбом и узнают, не разглядеть. Плитки кладутся
+ * сеткой, обложка в них квадратная и во всю ширину.
+ *
+ * Треки внутри карточки больше не разворачиваются: раскрытая плитка ломает
+ * сетку, да и читать список в колонке шириной 170 пикселей нечем. По нажатию
+ * альбом открывается целиком, со своим заголовком и кнопкой «Назад».
+ */
+function albumTile(group) {
+    const tile = document.createElement("div");
+    tile.className = "album-tile";
 
-    const head = document.createElement("div");
-    head.className = "album-head";
-
-    const cover = document.createElement("div");
-    cover.className = "cover";
-    cover.textContent = group.album.slice(0, 1).toUpperCase();
-    loadTrackCover(cover, group.tracks[0].path);
-
-    const info = document.createElement("div");
-    info.className = "track-info";
-    const name = document.createElement("div");
-    name.className = "track-title";
-    name.textContent = group.album;
-    const who = document.createElement("div");
-    who.className = "track-artist";
-    who.textContent = group.artist;
-    const count = document.createElement("div");
-    count.className = "track-album";
-    count.textContent = plural(group.tracks.length, "трек", "трека", "треков");
-    info.append(name, who, count);
+    const art = document.createElement("button");
+    art.className = "album-art";
+    art.setAttribute("aria-label", "Открыть «" + group.album + "»");
+    art.onclick = () => openAlbum(group);
+    const letter = document.createElement("span");
+    letter.className = "album-letter";
+    letter.textContent = group.album.slice(0, 1).toUpperCase();
+    art.appendChild(letter);
+    loadTrackCover(art, group.tracks[0].path);
 
     const play = document.createElement("button");
-    play.className = "icon-button";
+    play.className = "album-play";
     play.setAttribute("aria-label", "Играть альбом");
     play.title = "Играть альбом";
-    play.onclick = () => playQueue(group.tracks, 0, "manual");
-    const playSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    playSvg.setAttribute("class", "icon");
-    playSvg.setAttribute("viewBox", "0 0 24 24");
-    const playPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
-    playPath.setAttribute("d", "M8 5v14l11-7z");
-    playSvg.appendChild(playPath);
-    play.appendChild(playSvg);
+    play.onclick = event => { event.stopPropagation(); playQueue(group.tracks, 0, "manual"); };
+    play.appendChild(playIcon());
 
-    const list = document.createElement("div");
-    list.className = "rows album-tracks";
-    list.hidden = true;
+    const name = document.createElement("button");
+    name.className = "album-name";
+    name.textContent = group.album;
+    name.onclick = () => openAlbum(group);
 
-    const expand = document.createElement("button");
-    expand.className = "icon-button";
-    expand.setAttribute("aria-label", "Показать треки");
-    expand.title = "Показать треки";
-    expand.textContent = "▾";
-    expand.onclick = () => {
-        list.hidden = !list.hidden;
-        expand.textContent = list.hidden ? "▾" : "▴";
-        if (!list.hidden && !list.childElementCount) {
-            for (const t of group.tracks) list.appendChild(libraryRow(t, group.tracks));
-        }
-    };
+    const who = document.createElement("div");
+    who.className = "album-artist";
+    who.textContent = group.artist + " · " + plural(group.tracks.length, "трек", "трека", "треков");
 
-    head.append(cover, info, play, expand);
-    card.append(head, list);
-    return card;
+    const box = document.createElement("div");
+    box.className = "album-artbox";
+    box.append(art, play);
+    tile.append(box, name, who);
+    return tile;
 }
 
-/* Обложка трека — тоже не <img src>: /api/cover требует токен. */
-function loadTrackCover(host, path) {
-    fetch("/api/cover?path=" + encodeURIComponent(path), { headers: headers() })
+/* Один альбом целиком. Показывается на месте сетки — так же, как подборка
+ * показывается на месте списка подборок. */
+let openAlbumGroup = null;
+
+function openAlbum(group) {
+    openAlbumGroup = group;
+    const box = document.getElementById("library");
+    const note = document.getElementById("libraryModeNote");
+    box.replaceChildren();
+    if (note) note.textContent = group.artist;
+
+    const head = document.createElement("div");
+    head.className = "album-open";
+
+    const art = document.createElement("div");
+    art.className = "album-open-art";
+    art.textContent = group.album.slice(0, 1).toUpperCase();
+    loadTrackCover(art, group.tracks[0].path);
+
+    const meta = document.createElement("div");
+    meta.className = "album-open-meta";
+    const name = document.createElement("h2");
+    name.textContent = group.album;
+    const who = document.createElement("p");
+    who.className = "muted";
+    who.textContent = group.artist + " · " + plural(group.tracks.length, "трек", "трека", "треков");
+
+    const row = document.createElement("div");
+    row.className = "row wrap";
+    const play = document.createElement("button");
+    play.className = "primary";
+    play.textContent = "Слушать";
+    play.onclick = () => playQueue(group.tracks, 0, "manual");
+    const back = document.createElement("button");
+    back.className = "ghost";
+    back.textContent = "Назад";
+    back.onclick = () => { openAlbumGroup = null; library(); };
+    row.append(play, back);
+
+    meta.append(name, who, row);
+    head.append(art, meta);
+    box.appendChild(head);
+
+    const list = document.createElement("div");
+    list.className = "rows";
+    for (const t of group.tracks) list.appendChild(libraryRow(t, group.tracks));
+    box.appendChild(list);
+    markPlayingRow();
+}
+
+function playIcon() {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("class", "icon");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", "M8 5v14l11-7z");
+    svg.appendChild(path);
+    return svg;
+}
+
+/* ---------------- Обложки ----------------
+ *
+ * Обложка никогда не <img src>: /api/cover требует токен, а атрибут src
+ * заголовков не несёт. Поэтому fetch, blob и ссылка на объект.
+ *
+ * И поэтому же — кэш. Список перерисовывается фоновым опросом раз в несколько
+ * секунд; без кэша это 121 запрос за обложками каждый раз, картинки успевают
+ * мигнуть на букву-заглушку, и выглядит это поломкой. Ссылка живёт до
+ * перезагрузки страницы и не освобождается: в том и смысл.
+ */
+const coverUrls = new Map();
+
+function coverUrl(key, url) {
+    if (coverUrls.has(key)) return Promise.resolve(coverUrls.get(key));
+    const pending = fetch(url, { headers: headers() })
         .then(r => (r.ok ? r.blob() : null))
         .then(blob => {
-            if (!blob) return;
-            const url = URL.createObjectURL(blob);
+            const made = blob ? URL.createObjectURL(blob) : null;
+            coverUrls.set(key, made);
+            return made;
+        })
+        .catch(() => null);
+    // Запрос кладём в кэш сразу, а не по возвращении: сетка рисует сто
+    // плиток подряд, и иначе одна обложка запрашивалась бы дважды.
+    coverUrls.set(key, pending);
+    return pending;
+}
+
+function forgetCover(key) {
+    const old = coverUrls.get(key);
+    if (typeof old === "string") URL.revokeObjectURL(old);
+    coverUrls.delete(key);
+}
+
+function loadTrackCover(host, path) {
+    coverUrl("track:" + path, "/api/cover?path=" + encodeURIComponent(path))
+        .then(url => {
+            if (!url) return;
             const img = document.createElement("img");
             img.alt = "";
-            img.onload = () => URL.revokeObjectURL(url);
-            img.onerror = () => URL.revokeObjectURL(url);
             img.src = url;
             host.replaceChildren(img);
         })
         .catch(() => { /* остаётся буква */ });
 }
 
+/* Фоновый опрос не должен стирать то, что человек только что открыл.
+ *
+ * Список перерисовывается целиком раз в несколько секунд. Если в этот момент
+ * на экране развёрнут выбор подборки или подтверждение удаления, он просто
+ * исчезал — со стороны это выглядит как «меню закрывается от любого вздоха,
+ * от скролла, от движения мышки», хотя дело было не в мышке, а в таймере.
+ */
+function hasOpenChoice(id) {
+    const box = document.getElementById(id);
+    return !!box && !!box.querySelector(".confirm");
+}
+
 async function library() {
+    /* Открыт один альбом — фоновый опрос не должен смахивать его обратно в
+     * сетку под руками. Выход из него — только кнопкой «Назад». */
+    if (openAlbumGroup || hasOpenChoice("library")) return;
     const box = document.getElementById("library");
     const empty = document.getElementById("libraryEmpty");
     const count = document.getElementById("libraryCount");
@@ -587,7 +706,10 @@ async function library() {
             count.textContent = albums.length || "";
             empty.hidden = albums.length > 0;
             if (note) note.textContent = plural(albums.length, "издание", "издания", "изданий");
-            for (const g of albums) box.appendChild(albumRow(g));
+            const grid = document.createElement("div");
+            grid.className = "album-grid";
+            for (const g of albums) grid.appendChild(albumTile(g));
+            box.appendChild(grid);
         } else {
             /* Сингл — издание из одного трека. Показываем его обычной строкой:
              * разворачивать там нечего. */
