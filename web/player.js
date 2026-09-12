@@ -20,6 +20,15 @@ const player = {
     playlist: null,      // {name, revision, entries}
     reported: false,     // one journal entry per track, not one per pause
     queueMode: "manual", // "smart", "plain" or "manual" -- see reportPlay
+
+    /* Порядок обхода очереди — список её позиций, а не сама очередь.
+     * Так перемешивание не перетасовывает список, который человек видит:
+     * очередь остаётся той, что он собрал, меняется только маршрут по ней.
+     * Выключил перемешивание — маршрут снова прямой, и ничего не потеряно. */
+    order: [],
+    orderAt: -1,
+    shuffle: false,
+    repeat: "off",       // "off" | "all" | "one"
 };
 
 /* ---------------- Journal ---------------- */
@@ -74,11 +83,139 @@ async function playAt(position) {
     }
     renderPlayer();
     markPlayingRow();
+    renderQueuePanel();
+}
+
+/* ---------------- Порядок обхода, перемешивание и повтор ---------------- */
+
+function buildOrder(startIndex) {
+    const n = player.queue.length;
+    const straight = Array.from({ length: n }, (_, i) => i);
+    if (!player.shuffle) {
+        player.order = straight;
+        player.orderAt = startIndex >= 0 ? startIndex : -1;
+        return;
+    }
+    /* Играющий трек остаётся первым: включать перемешивание не значит
+     * перебивать то, что сейчас звучит. Остальные тасуются по Фишеру—Йетсу. */
+    const rest = straight.filter(i => i !== startIndex);
+    for (let i = rest.length - 1; i > 0; i -= 1) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [rest[i], rest[j]] = [rest[j], rest[i]];
+    }
+    player.order = startIndex >= 0 ? [startIndex, ...rest] : rest;
+    player.orderAt = startIndex >= 0 ? 0 : -1;
+}
+
+function stepInOrder(delta) {
+    if (!player.order.length) return -1;
+    let at = player.orderAt;
+    /* Позиция могла разъехаться, если очередь меняли снаружи. */
+    if (at < 0 || player.order[at] !== player.index) {
+        at = player.order.indexOf(player.index);
+    }
+    const next = at + delta;
+    if (next >= 0 && next < player.order.length) {
+        player.orderAt = next;
+        return player.order[next];
+    }
+    if (player.repeat === "all" && player.order.length) {
+        player.orderAt = delta > 0 ? 0 : player.order.length - 1;
+        return player.order[player.orderAt];
+    }
+    return -1;
+}
+
+function toggleShuffle() {
+    player.shuffle = !player.shuffle;
+    buildOrder(player.index);
+    renderPlayerModes();
+    renderQueuePanel();
+}
+
+function cycleRepeat() {
+    player.repeat = player.repeat === "off" ? "all" : player.repeat === "all" ? "one" : "off";
+    renderPlayerModes();
+}
+
+function renderPlayerModes() {
+    const shuffle = document.getElementById("playerShuffle");
+    if (shuffle) {
+        shuffle.classList.toggle("is-on", player.shuffle);
+        shuffle.setAttribute("aria-pressed", String(player.shuffle));
+        shuffle.title = player.shuffle ? "Перемешивание включено" : "Перемешать";
+    }
+    const repeat = document.getElementById("playerRepeat");
+    const one = document.getElementById("playerRepeatOne");
+    if (repeat) {
+        repeat.classList.toggle("is-on", player.repeat !== "off");
+        repeat.title = player.repeat === "one" ? "Повтор одного трека"
+            : player.repeat === "all" ? "Повтор всей очереди" : "Повтор выключен";
+    }
+    if (one) one.hidden = player.repeat !== "one";
+}
+
+/* ---------------- Панель очереди ---------------- */
+
+function toggleQueuePanel() {
+    const panel = document.getElementById("playQueue");
+    if (!panel) return;
+    panel.hidden = !panel.hidden;
+    const button = document.getElementById("playerQueueButton");
+    if (button) {
+        button.classList.toggle("is-on", !panel.hidden);
+        button.setAttribute("aria-pressed", String(!panel.hidden));
+    }
+    if (!panel.hidden) renderQueuePanel();
+}
+
+function renderQueuePanel() {
+    const panel = document.getElementById("playQueue");
+    if (!panel || panel.hidden) return;
+    const box = document.getElementById("playQueueRows");
+    const count = document.getElementById("playQueueCount");
+    box.replaceChildren();
+
+    /* Показываем в том порядке, в каком оно будет играть, а не в том,
+     * в каком лежит: при перемешивании это разные вещи, и человек
+     * открывает очередь именно чтобы увидеть, что будет дальше. */
+    const route = player.order.length ? player.order : player.queue.map((_, i) => i);
+    const at = route.indexOf(player.index);
+    if (count) {
+        const left = at >= 0 ? route.length - at - 1 : route.length;
+        count.textContent = left === 1 ? "дальше 1 трек" : `дальше ${left}`;
+    }
+
+    route.forEach((queueIndex, position) => {
+        const track = player.queue[queueIndex];
+        if (!track) return;
+        const row = document.createElement("button");
+        row.className = "track queue-row";
+        if (queueIndex === player.index) row.classList.add("is-playing");
+        if (at >= 0 && position < at) row.classList.add("is-played");
+        row.onclick = () => { player.orderAt = position; playAt(queueIndex); renderQueuePanel(); };
+
+        const info = document.createElement("div");
+        info.className = "track-info";
+        const title = document.createElement("div");
+        title.className = "track-title";
+        title.textContent = track.title || track.path;
+        info.appendChild(title);
+        if (track.artist) {
+            const artist = document.createElement("div");
+            artist.className = "track-artist";
+            artist.textContent = track.artist;
+            info.appendChild(artist);
+        }
+        row.appendChild(info);
+        box.appendChild(row);
+    });
 }
 
 function playQueue(tracks, startAt = 0, mode = "manual") {
     player.queue = tracks;
     player.queueMode = mode;
+    buildOrder(startAt);
     playAt(startAt);
 }
 
@@ -120,17 +257,28 @@ function togglePlay() {
     renderPlayer();
 }
 
-function nextTrack() { playAt(player.index + 1); }
+function nextTrack() {
+    const next = stepInOrder(1);
+    if (next >= 0) playAt(next);
+}
 function prevTrack() {
     /* Restart the track first, like every other player: pressing back three
      * seconds in means "from the top", not "the previous song". */
     if (player.audio.currentTime > 3) { player.audio.currentTime = 0; return; }
-    playAt(player.index - 1);
+    const back = stepInOrder(-1);
+    if (back >= 0) playAt(back);
 }
 
 player.audio.addEventListener("ended", () => {
     reportPlay(true);
-    if (player.index + 1 < player.queue.length) playAt(player.index + 1);
+    if (player.repeat === "one") {
+        /* Тот же трек с начала: позиция в маршруте не двигается. */
+        player.audio.currentTime = 0;
+        player.audio.play().catch(() => renderPlayer());
+        return;
+    }
+    const next = stepInOrder(1);
+    if (next >= 0) playAt(next);
     else renderPlayer();
 });
 player.audio.addEventListener("timeupdate", renderProgress);
@@ -816,6 +964,9 @@ function notifyShell() {
 for (const event of ["play", "pause", "ended", "loadedmetadata"]) {
     player.audio.addEventListener(event, notifyShell);
 }
+
+/* Кнопки должны показывать своё состояние сразу, а не после первого нажатия. */
+renderPlayerModes();
 
 // Пробел — играть/пауза, но только когда не печатаешь.
 //

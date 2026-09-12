@@ -560,6 +560,71 @@ button.danger {
 
 /* ---------------- Player ---------------- */
 
+/* Включённый режим виден цветом, а не только подсказкой: перемешивание
+   и повтор меняют то, что заиграет дальше, и это должно читаться с одного
+   взгляда на панель. */
+.icon-button.is-on { color: var(--accent); }
+.icon-button.is-on .icon { stroke: var(--accent); }
+
+/* Повтор одного трека и повтор всей очереди — одна кнопка и одна иконка,
+   поэтому единица поверх неё: иначе два состояния выглядят одинаково. */
+#playerRepeat { position: relative; }
+.repeat-one {
+    position: absolute;
+    right: 4px;
+    bottom: 2px;
+    font-size: 9px;
+    font-weight: 700;
+    line-height: 1;
+    color: var(--accent);
+    background: var(--bg);
+    padding: 1px 2px;
+    border-radius: 3px;
+}
+
+/* Очередь встаёт над панелью плеера, а не поверх списка: человек открывает
+   её, чтобы посмотреть, что дальше, и тут же вернуться к тому, что делал. */
+.play-queue {
+    position: fixed;
+    right: 12px;
+    bottom: calc(var(--tabbar) + 96px + env(safe-area-inset-bottom, 0px));
+    z-index: 4;
+    width: min(360px, calc(100vw - 24px));
+    max-height: min(56vh, 520px);
+    display: flex;
+    flex-direction: column;
+    background: var(--surface);
+    border: 1px solid var(--line-2);
+    border-radius: var(--r-card, 12px);
+    box-shadow: 0 18px 48px rgba(0, 0, 0, .55);
+    overflow: hidden;
+}
+.play-queue-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--line-2);
+}
+.play-queue-head h3 { margin: 0; font-size: 14px; font-weight: 650; }
+.play-queue-head .muted { margin-left: auto; font-size: 12px; color: var(--text-3); }
+#playQueueRows { overflow-y: auto; padding: 8px; gap: 2px; }
+
+.queue-row {
+    width: 100%;
+    text-align: left;
+    background: none;
+    border: 0;
+    padding: 8px 10px;
+    border-radius: var(--r-control, 8px);
+    cursor: pointer;
+}
+.queue-row:hover { background: var(--surface-2); }
+/* Уже сыгранное приглушено, играющее светится — список читается сверху вниз
+   как дорога: позади бледное, под ногами яркое, впереди обычное. */
+.queue-row.is-played { opacity: .45; }
+.queue-row.is-playing .track-title { color: var(--accent); font-weight: 650; }
+
 .player {
     position: fixed;
     left: 0;
@@ -941,6 +1006,14 @@ button.danger {
     /* Без таймингов подсвечивать нечего — показываем ровным текстом. */
     .lyric.plain { color: var(--text-2); }
     .lyric-note { margin: 0; color: var(--text-3); font-size: 12px; }
+
+    /* На широком экране панели снизу нет, и очередь считает своё место от
+       низа окна, а не от неё. Высота полосы плеера тут постоянная. */
+    .play-queue {
+        right: 320px;
+        bottom: 84px;
+        max-height: min(62vh, 620px);
+    }
 
     /* The bar keeps only what a bar is for: the transport and the position. */
     .player {
