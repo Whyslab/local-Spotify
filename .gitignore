@@ -84,3 +84,6 @@ design/desktop/local-spotify-desktop.html
 # OMC session state, written wherever a session happens to start.
 .omc/
 lyrics-cache/
+
+# Список похожих артистов от Deezer: кэш, а не исходники.
+similar-cache/
