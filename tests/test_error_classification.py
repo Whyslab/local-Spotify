@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pytest
 
+from adder import ingest
+
 os.environ.setdefault("API_TOKEN", "test-token")
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,8 +22,8 @@ spec = importlib.util.spec_from_file_location("adder.app", ROOT / "adder" / "app
 app_module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(app_module)
 
-classify_error = app_module.classify_error
-RETRYABLE_ERRORS = app_module.RETRYABLE_ERRORS
+classify_error = ingest.classify_error
+RETRYABLE_ERRORS = ingest.RETRYABLE_ERRORS
 
 
 class TestTransientErrorsAreRetryable:

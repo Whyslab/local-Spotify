@@ -1,0 +1,28 @@
+[Unit]
+Description=local-Spotify: measure tempo, energy and key across the library
+After=music-adder.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=%REPO%
+ExecStart=%REPO%/.venv/bin/python %REPO%/scripts/analyze_audio.py --jobs %JOBS%
+
+# The whole point of running this as its own unit. One analysis process peaks
+# at about 376 MB; this machine has under two gigabytes free, and an unbounded
+# run is how earlyoom ends up killing the browser instead. Three processes fit
+# inside this ceiling.
+MemoryMax=1500M
+
+# It yields to everything else. A pass takes roughly an hour and there is no
+# hurry: a track measured tomorrow is only unplaceable by tempo until then.
+Nice=15
+IOSchedulingClass=idle
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%REPO%/adder
+
+[Install]
+WantedBy=default.target

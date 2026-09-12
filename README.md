@@ -44,6 +44,14 @@ It is not built to be a public SaaS or to work around YouTube's restrictions —
 * **Resource limits** — caps on queue size, links per request, and free disk space required before a download starts.
 * **Bearer-token auth on the API**; the health check needs no authorisation.
 * **Web interface** — a minimal single-page UI for adding links and watching the queue (`web/`).
+* **Playlists as files** — every playlist is an `.m3u` in the library root, edited by rewriting it; Navidrome re-reads it within about six seconds.
+* **An edit made on the phone is not lost** — Navidrome accepts a reorder sent by a client but never writes the `.m3u`, and its own watcher discards that edit the next time the file changes. Every thirty seconds the service looks for a playlist whose database was edited past its file and writes the order into the file. Measured: the edit reaches the `.m3u` in ten seconds.
+* **Reordering that survives duplicates** — a line is identified by its index, not its path. `Monday.m3u` holds nineteen tracks that appear twice.
+* **Concurrent edits are refused, not merged** — every read hands out a hash of the file and every write must present it; a stale edit gets `409` instead of quietly overwriting one made from the phone.
+* **Playlist covers** — stored locally and replicated to Navidrome, so a rename is a re-upload rather than a loss. The type is decided by the bytes, not by the file name.
+* **A player** — the same page in two widths, with playback served through short-lived signed URLs, so an `<audio>` element can seek without the API token ever entering a URL.
+* **Play journal** — Navidrome keeps a play count and a last-played date, not a log. This one records track, time, how far it got and whether it was skipped.
+* **Shuffling that has a shape** — the library has no genre or BPM tags at all, so `scripts/analyze_audio.py` measures tempo, energy, brightness and key from the audio itself, and queues are walked rather than sampled: neighbours are close in tempo, the same artist does not follow itself, and a track heard recently is unlikely to come back. See `scripts/README.md`.
 * **Library audit tooling** — offline scripts for finding duplicates, checking metadata, and bulk-migrating a playlist from CSV.
 
 ---
@@ -152,6 +160,28 @@ Authorise with an `Authorization: Bearer <API_TOKEN>` header. `/health` needs no
 | `POST` | `/api/add` | Add one or more YouTube links |
 | `GET` | `/api/tasks` | The 50 most recent tasks and their status |
 | `GET` | `/` | Web interface |
+| `GET` | `/api/playlists` | List playlists |
+| `POST` | `/api/playlists` | Create a playlist |
+| `PATCH` | `/api/playlists/{name}` | Rename a playlist |
+| `DELETE` | `/api/playlists/{name}` | Delete a playlist (file to `trash/`, and removed from Navidrome) |
+| `GET` | `/api/playlists/{name}/tracks` | A playlist's tracks, with the revision needed to edit it |
+| `PUT` | `/api/playlists/{name}/tracks` | Replace order and contents; `409` if the revision is stale |
+| `POST` `GET` `DELETE` | `/api/playlists/{name}/cover` | Upload, fetch or remove a playlist cover |
+| `GET` | `/api/stream-url` | Mint a short-lived signed URL for one track |
+| `GET` | `/api/stream` | Serve a track to `<audio>`; authorised by that signature, not the token |
+| `POST` | `/api/plays` | Record a finished or abandoned track |
+| `GET` | `/api/plays/stats` | Skip rate overall and per queue kind |
+| `POST` | `/api/import` | Take audio files from disk through the same pipeline |
+| `GET` | `/api/search` | Look for a track on YouTube without downloading |
+| `POST` | `/api/import-playlist` | Queue a whole playlist from one link, YouTube or Spotify |
+| `GET` | `/api/shuffle` | Build a queue (`mode=smart` or `plain`) |
+| `POST` | `/api/shuffle/blind` | Two queues, one of each kind, unlabelled |
+| `POST` | `/api/shuffle/blind/{id}` | Record which one was preferred |
+| `GET` | `/api/shuffle/blind/results` | How the comparison stands |
+| `GET` | `/api/sync` | What the last synchronisation pass found |
+| `POST` | `/api/sync` | Run a pass now; `?apply=false` reports only |
+| `GET` | `/api/track` | A track's tags plus its tempo, key and energy |
+| `GET` | `/api/cover` | The artwork inside the file |
 
 <details>
 <summary><code>POST /api/add</code> — example</summary>
@@ -210,7 +240,7 @@ systemctl --user status music-adder
 journalctl --user -u music-adder -f
 ```
 
-The unit runs with `WorkingDirectory` at the repository root and permits writes only to `adder/` (database and temp files) and the library path — `ProtectSystem=strict` prevents the process from writing anywhere else, including the source tree and `.git`.
+The unit runs with `WorkingDirectory` at the repository root and permits writes only to `adder/` (database and temp files), `trash/` (deleted tracks) and the library path. `ProtectSystem=strict` alone is not enough for that: it mounts `/` read-only but leaves `/home` writable, since `/home` is a separate mount point. `ProtectHome=read-only` closes it, and the paths above are carved back out with `ReadWritePaths`.
 
 Back up state (SQLite plus `.env`):
 
@@ -237,7 +267,7 @@ CI (`.github/workflows/ci.yml`) runs `ruff check`, `ruff format --check`, `compi
 * The API is protected by a Bearer token compared with `secrets.compare_digest` (timing-attack resistant); the service will not start without one.
 * Data from YouTube (video title, uploader) is treated as untrusted: the frontend renders it only through `textContent`/`replaceChildren`, never `innerHTML`.
 * Only YouTube URLs with an exact host match are accepted, which blocks bypasses of the `youtube.com.evil.example` variety.
-* The systemd unit sets `ProtectSystem=strict`, `NoNewPrivileges` and `PrivateTmp`, and permits writes only to `adder/` and the library path.
+* The systemd unit sets `ProtectSystem=strict`, `ProtectHome=read-only`, `NoNewPrivileges` and `PrivateTmp`, and permits writes only to `adder/`, `trash/` and the library path. `ProtectHome` is what actually confines the process: `ProtectSystem=strict` does not cover `/home`, so without it the service could write to its own source tree.
 * The token and `.env` are never committed (`.gitignore`). Do not paste a real `API_TOKEN` into a README or an issue.
 
 Found a vulnerability? Please open a private security advisory on the repository rather than a public issue.
@@ -272,6 +302,8 @@ This is a self-hosted home project. It is not intended for:
 * circumventing YouTube's regional or other restrictions.
 
 Before downloading third-party content, make sure you have the right to do so.
+
+One thing about the phone. Amperfy 2.1 **does not show a playlist's own cover**: its response parser does not read the `coverArt` field at all and draws a collage from the first tracks' album art instead. Verified against its source (`SsPlaylistParserDelegate`, `Playlist.updateArtworkItems`). A cover set here shows up in Navidrome's own web UI and in this player; it will not show up in Amperfy. Track order, by contrast, it re-reads every time a playlist is opened.
 
 ---
 

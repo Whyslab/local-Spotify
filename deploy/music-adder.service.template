@@ -15,6 +15,14 @@ KillMode=mixed
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
+# ProtectSystem=strict mounts / read-only but does NOT cover /home, which is a
+# separate mount point: without ProtectHome the service could still write to its
+# own source tree. ProtectHome=read-only closes that, and every directory the
+# service legitimately writes to must then be listed in ReadWritePaths below --
+# including trash/, which lives at the repository root rather than under adder/.
+# Verified with systemd-run --user: without ReadWritePaths for trash/, deleting a
+# track fails silently.
+ProtectHome=read-only
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
@@ -23,11 +31,13 @@ LockPersonality=true
 RestrictNamespaces=true
 
 # The installer replaces %LIBRARY% with the configured library path.
-# Scoped to adder/ (holds adder.db and tmp/) rather than the whole repo,
-# so the service can't write to its own source, the web/ frontend it
-# serves, deploy/ scripts, or .git even if it were ever tricked into an
-# arbitrary file write.
+# Scoped to adder/ (adder.db and tmp/) and trash/ (deleted tracks) rather than
+# the whole repo, so the service can't write to its own source, the web/
+# frontend it serves, deploy/ scripts, or .git even if it were ever tricked
+# into an arbitrary file write. This only holds because ProtectHome=read-only
+# is set above; ProtectSystem=strict alone leaves /home writable.
 ReadWritePaths=%REPO%/adder
+ReadWritePaths=%REPO%/trash
 ReadWritePaths="%LIBRARY%"
 
 TimeoutStopSec=30

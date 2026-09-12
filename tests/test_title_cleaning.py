@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 os.environ.setdefault("API_TOKEN", "test-secret")
 
-from adder.app import clean_title
+from adder.ingest import clean_title
 
 
 def test_empty_parentheses_are_removed():
