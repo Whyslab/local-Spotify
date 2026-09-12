@@ -257,14 +257,19 @@ class PlayerWindow(Gtk.Window):
         if event.keyval == Gdk.KEY_F5:
             self.webview.reload()
             return True
-        if event.keyval == Gdk.KEY_space and not self._typing():
-            self.call_js("togglePlay()")
-            return True
         return False
 
-    def _typing(self) -> bool:
-        """Space must still be a space while a search box has focus."""
-        return False  # the page swallows key events in its own inputs first
+    # Пробел здесь больше не обрабатывается.
+    #
+    # Было: `if event.keyval == Gdk.KEY_space and not self._typing()`, где
+    # _typing() всегда возвращал False с комментарием «страница сама съедает
+    # клавиши в своих полях». Это неверно: key-press-event на окне GTK
+    # срабатывает РАНЬШЕ, чем WebKit отдаёт событие странице, так что пробел
+    # уходил в паузу даже посреди набора в поиске фонотеки.
+    #
+    # Теперь пробел ловит сама страница (web/player.js), где синхронно виден
+    # document.activeElement. Мультимедийные клавиши через MPRIS по-прежнему
+    # зовут togglePlay() отсюда — они не конфликтуют, у них свои коды.
 
 
 def main() -> int:

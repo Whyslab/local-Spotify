@@ -593,3 +593,28 @@ function notifyShell() {
 for (const event of ["play", "pause", "ended", "loadedmetadata"]) {
     player.audio.addEventListener(event, notifyShell);
 }
+
+// Пробел — играть/пауза, но только когда не печатаешь.
+//
+// Раньше это жило в оболочке GTK (desktop/local-spotify.py) и было сломано:
+// обработчик на окне срабатывает РАНЬШЕ, чем WebKit отдаёт событие странице,
+// поэтому пробел уходил в паузу даже посреди набора в поиске. Здесь, в самой
+// странице, видно document.activeElement — и решение принимается верно.
+// Заодно пробел появился и в браузерной версии, где его не было вовсе.
+document.addEventListener("keydown", (event) => {
+    if (event.code !== "Space" && event.key !== " ") return;
+    if (event.ctrlKey || event.altKey || event.metaKey) return;
+
+    const el = document.activeElement;
+    if (el) {
+        const tag = el.tagName;
+        // В поле ввода пробел — это пробел.
+        if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+        if (el.isContentEditable) return;
+        // На кнопке пробел — это нажатие кнопки, не трогаем.
+        if (tag === "BUTTON" || el.getAttribute("role") === "button") return;
+    }
+
+    event.preventDefault();  // иначе страница ещё и прокрутится
+    togglePlay();
+});
