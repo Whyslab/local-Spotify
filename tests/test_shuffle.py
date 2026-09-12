@@ -178,6 +178,85 @@ def test_no_journal_means_no_hour_affinity():
 
 
 # ---------------------------------------------------------------------------
+# Подборка как костяк очереди
+# ---------------------------------------------------------------------------
+
+
+def _library_of(core_count=10, outside_count=90):
+    """Маленькая подборка внутри большой фонотеки — как в жизни."""
+    core = [track(f"core/{i}.m4a", f"Своё {i}", tempo=120 + (i % 5)) for i in range(core_count)]
+    rest = [track(f"rest/{i}.m4a", f"Чужое {i}", tempo=118 + (i % 9)) for i in range(outside_count)]
+    return core, rest
+
+
+def test_a_playlist_stays_the_backbone_of_its_own_queue():
+    """Это перемешивание подборки, а не подмена её фонотекой."""
+    core, rest = _library_of(core_count=40)
+    core_paths = {t.path for t in core}
+
+    queue = shuffle.build_queue(core + rest, size=30, seed=1, core=core_paths)
+
+    outside = [t for t in queue if t.path not in core_paths]
+    assert len(queue) == 30
+    # Треть — это задумано; допуск на случайность, а не на «как получится».
+    assert 5 <= len(outside) <= 14
+
+
+def test_the_queue_opens_with_a_track_from_the_playlist():
+    """Нажал «перемешать» на подборке — первым играет своё."""
+    core, rest = _library_of()
+    core_paths = {t.path for t in core}
+
+    for seed in range(10):
+        queue = shuffle.build_queue(core + rest, size=20, seed=seed, core=core_paths)
+        assert queue[0].path in core_paths
+
+
+def test_outside_tracks_are_spread_through_the_queue_not_stacked_at_the_front():
+    """Иначе это две очереди подряд, а не одна перемешанная."""
+    core, rest = _library_of(core_count=40)
+    core_paths = {t.path for t in core}
+
+    queue = shuffle.build_queue(core + rest, size=30, seed=3, core=core_paths)
+    positions = [i for i, t in enumerate(queue) if t.path not in core_paths]
+
+    assert positions, "хоть что-то со стороны должно попасть"
+    # Последний чужой трек стоит дальше середины: бюджет не выгорает в начале.
+    assert max(positions) > len(queue) / 2
+
+
+def test_a_playlist_shorter_than_the_queue_is_filled_from_the_library():
+    """Пять треков в подборке и очередь на тридцать — остальное берём из фонотеки."""
+    core, rest = _library_of(core_count=5)
+    core_paths = {t.path for t in core}
+
+    queue = shuffle.build_queue(core + rest, size=30, seed=2, core=core_paths)
+
+    assert len(queue) == 30
+    assert sum(1 for t in queue if t.path in core_paths) == 5
+
+
+def test_without_a_playlist_nothing_changes():
+    """Перемешивание всей фонотеки осталось прежним."""
+    core, rest = _library_of()
+    assert shuffle.build_queue(core + rest, size=15, seed=7) == shuffle.build_queue(
+        core + rest, size=15, seed=7, core=None
+    )
+
+
+def test_outside_tracks_follow_the_same_tempo_rule():
+    """«Подходят» — это то же правило смежности, а не просто «не из подборки»."""
+    core = [track(f"core/{i}.m4a", f"Своё {i}", tempo=120) for i in range(10)]
+    near = [track(f"near/{i}.m4a", f"Рядом {i}", tempo=124) for i in range(40)]
+    far = [track(f"far/{i}.m4a", f"Далеко {i}", tempo=175) for i in range(40)]
+    core_paths = {t.path for t in core}
+
+    queue = shuffle.build_queue(core + near + far, size=30, seed=4, core=core_paths)
+
+    assert not [t for t in queue if t.path.startswith("far/")]
+
+
+# ---------------------------------------------------------------------------
 # API
 # ---------------------------------------------------------------------------
 
@@ -223,6 +302,41 @@ def test_plain_mode_is_available_for_comparison(client):
     body = client.get("/api/shuffle", params={"size": 5, "mode": "plain"}).json()
     assert body["mode"] == "plain"
     assert len(body["queue"]) == 5
+
+
+def test_shuffling_a_playlist_mixes_in_tracks_it_does_not_contain(client):
+    """Главное, ради чего это делалось: очередь шире подборки."""
+    (config.LIBRARY / "Вечер.m3u").write_text(
+        "\n".join(f"A{i}/Singles/t{i}.m4a" for i in range(4)), encoding="utf-8"
+    )
+
+    body = client.get("/api/shuffle", params={"size": 12, "playlist": "Вечер"}).json()
+
+    assert body["playlist"] == "Вечер"
+    assert body["core"] == 4
+    assert body["outside"] > 0
+    assert len(body["queue"]) == 12
+    # В очереди видно, что пришло со стороны.
+    assert any(item["outside"] for item in body["queue"])
+    assert not body["queue"][0]["outside"]
+
+
+def test_shuffling_a_playlist_that_is_not_there_is_a_404(client):
+    assert client.get("/api/shuffle", params={"playlist": "Нет такой"}).status_code == 404
+
+
+def test_plain_mode_of_a_playlist_stays_inside_it(client):
+    """Ровное перемешивание — то, с чем сравнивают; подмешивать в него нечего."""
+    (config.LIBRARY / "Вечер.m3u").write_text(
+        "\n".join(f"A{i}/Singles/t{i}.m4a" for i in range(4)), encoding="utf-8"
+    )
+
+    body = client.get(
+        "/api/shuffle", params={"size": 12, "mode": "plain", "playlist": "Вечер"}
+    ).json()
+
+    assert len(body["queue"]) == 4
+    assert body["outside"] == 0
 
 
 def test_a_blind_trial_does_not_leak_which_side_is_which(client):

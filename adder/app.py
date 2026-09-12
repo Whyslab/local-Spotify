@@ -766,20 +766,22 @@ def _shuffle_tracks() -> list[shuffle.Track]:
     )
 
 
-def _queue_payload(queue: list[shuffle.Track]) -> list[dict]:
+def _queue_payload(queue: list[shuffle.Track], core: set[str] | None = None) -> list[dict]:
     by_path = {row["path"]: row for row in library.library_index()}
     out = []
     for track in queue:
         row = by_path.get(track.path, {})
-        out.append(
-            {
-                "path": track.path,
-                "artist": row.get("artist") or track.artist,
-                "title": row.get("title") or track.path,
-                "duration": row.get("duration"),
-                "tempo": track.tempo,
-            }
-        )
+        entry = {
+            "path": track.path,
+            "artist": row.get("artist") or track.artist,
+            "title": row.get("title") or track.path,
+            "duration": row.get("duration"),
+            "tempo": track.tempo,
+        }
+        if core is not None:
+            # Чтобы в очереди было видно, что пришло со стороны, а не гадать.
+            entry["outside"] = track.path not in core
+        out.append(entry)
     return out
 
 
@@ -880,30 +882,51 @@ def home(authenticated: bool = Depends(verify_token)):
 def smart_shuffle(
     size: int = 50,
     mode: str = "smart",
+    playlist: str = "",
     authenticated: bool = Depends(verify_token),
 ):
     """Build a queue: neighbours that follow each other, and the shelf covered.
 
     ``mode=plain`` is uniform random, kept as the thing the smart one is
     measured against rather than as a feature.
+
+    ``playlist`` — перемешать подборку, не забывая про остальную фонотеку:
+    подборка остаётся костяком очереди, и примерно треть мест достаётся
+    подходящим трекам со стороны. Без него перемешивается вся фонотека, как
+    раньше.
     """
     tracks = _shuffle_tracks()
     if not tracks:
         return {"mode": mode, "queue": [], "report": {}, "analysed": 0}
 
-    queue = (
-        shuffle.plain_shuffle(tracks, size=size)
-        if mode == "plain"
-        else shuffle.build_queue(tracks, size=size)
-    )
+    core: set[str] | None = None
+    if playlist:
+        # read() сам отвечает 404, если подборки нет.
+        core = {entry.path for entry in playlists.read(playlist).entries}
+        known = {track.path for track in tracks}
+        core &= known
+
+    if mode == "plain":
+        # Ровно то, с чем сравнивают: равномерно и только из подборки, если её
+        # назвали. Подмешивать сюда сторону нельзя — иначе сравнение сломано.
+        pool = [t for t in tracks if t.path in core] if core else tracks
+        queue = shuffle.plain_shuffle(pool, size=size)
+    else:
+        queue = shuffle.build_queue(tracks, size=size, core=core)
+
     analysed = sum(1 for track in tracks if track.tempo)
-    return {
+    body = {
         "mode": mode,
-        "queue": _queue_payload(queue),
+        "queue": _queue_payload(queue, core if mode == "smart" else None),
         "report": shuffle.queue_report(queue),
         "analysed": analysed,
         "total": len(tracks),
     }
+    if core is not None:
+        body["playlist"] = playlist
+        body["core"] = len(core)
+        body["outside"] = sum(1 for track in queue if track.path not in core)
+    return body
 
 
 @app.post("/api/shuffle/blind")

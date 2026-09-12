@@ -208,6 +208,15 @@ function renderQueuePanel() {
             info.appendChild(artist);
         }
         row.appendChild(info);
+        /* Видно, что трек пришёл со стороны, а не из подборки. Иначе
+         * непонятно, откуда он взялся, и это выглядит ошибкой. */
+        if (track.outside) {
+            const mark = document.createElement("span");
+            mark.className = "queue-outside";
+            mark.textContent = "находка";
+            mark.title = "Этого трека нет в подборке — подобран по темпу";
+            row.appendChild(mark);
+        }
         box.appendChild(row);
     });
 }
@@ -221,35 +230,49 @@ function playQueue(tracks, startAt = 0, mode = "manual") {
 
 /* ---------------- Shuffling ---------------- */
 
-async function loadShuffle(mode) {
-    const note = document.getElementById("shuffleNote");
-    note.textContent = "Собираю очередь…";
+async function loadShuffle(mode, playlist = "", noteId = "shuffleNote") {
+    const note = document.getElementById(noteId);
+    if (note) note.textContent = "Собираю очередь…";
+    const say = text => { if (note) note.textContent = text; };
     try {
-        const r = await fetch(`/api/shuffle?size=50&mode=${mode}`, { headers: headers() });
+        const url = `/api/shuffle?size=50&mode=${mode}`
+            + (playlist ? `&playlist=${encodeURIComponent(playlist)}` : "");
+        const r = await fetch(url, { headers: headers() });
         const data = await r.json();
-        if (!r.ok) { note.textContent = data.detail || ("Ошибка " + r.status); return; }
-        if (!data.queue.length) { note.textContent = "Нечего играть."; return; }
+        if (!r.ok) { say(data.detail || ("Ошибка " + r.status)); return; }
+        if (!data.queue.length) { say("Нечего играть."); return; }
 
         playQueue(data.queue, 0, mode);
 
-        if (mode === "smart") {
-            const report = data.report || {};
+        if (mode !== "smart") { say(""); return; }
+
+        const report = data.report || {};
+        if (playlist) {
+            /* Про подборку интересно другое: сколько в очереди своего и
+             * сколько пришло со стороны. Разброс темпа тут — мелкий шрифт. */
+            say(`Своих ${data.queue.length - data.outside}, подобрано ещё ${data.outside}`
+                + ` — разброс темпа до ${report.max_tempo_jump ?? "—"} BPM`);
+        } else if (data.analysed < data.total) {
             /* Said plainly, because it is the difference between "it works"
              * and "it has nothing to work with yet": tempo cannot order a
              * library that has not been measured. */
-            note.textContent = data.analysed < data.total
-                ? `Измерено ${data.analysed} из ${data.total} — остальные ставятся без учёта темпа`
-                : `Разброс темпа до ${report.max_tempo_jump ?? "—"} BPM, артистов ${report.distinct_artists}`;
+            say(`Измерено ${data.analysed} из ${data.total} — остальные ставятся без учёта темпа`);
         } else {
-            note.textContent = "";
+            say(`Разброс темпа до ${report.max_tempo_jump ?? "—"} BPM, артистов ${report.distinct_artists}`);
         }
     } catch (e) {
-        note.textContent = e.message;
+        say(e.message);
     }
 }
 
 function playSmartShuffle() { loadShuffle("smart"); }
 function playPlainShuffle() { loadShuffle("plain"); }
+
+/* Перемешать подборку, не запирая очередь внутри неё. */
+function shufflePlaylist() {
+    if (!player.playlist || !player.playlist.entries.length) return;
+    loadShuffle("smart", player.playlist.name, "playlistNote");
+}
 
 function togglePlay() {
     if (!player.queue.length) return;

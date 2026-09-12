@@ -1099,3 +1099,15 @@ button.ghost.is-on { color: var(--accent); border-color: var(--accent-dim); }
 
 .shuffle-row { margin-bottom: 12px; align-items: center; }
 .shuffle-row .muted { font-size: 12px; }
+
+/* Метка трека, которого нет в подборке: подобран из фонотеки. */
+.queue-outside {
+  flex: none;
+  align-self: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  letter-spacing: .02em;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}

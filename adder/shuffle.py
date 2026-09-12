@@ -54,6 +54,14 @@ RECENCY_WINDOW = 200
 # of what was being asked for, not a detail.
 UNKNOWN_TRANSITION = 0.12
 
+# Какую долю очереди отдавать трекам не из подборки, когда перемешивают
+# подборку, а не всю фонотеку.
+#
+# Треть выбрана не случайно: половина — это уже не «твоя подборка с добавками»,
+# а другая подборка, и узнать её не выйдет. Меньше четверти — и за пятьдесят
+# треков новых наберётся десяток, то есть незаметно.
+OUTSIDE_SHARE = 0.3
+
 
 @dataclass
 class Track:
@@ -118,12 +126,20 @@ def build_queue(
     seed: int | None = None,
     use_moment: bool = True,
     tempo_tolerance: float = TEMPO_TOLERANCE,
+    core: set[str] | None = None,
+    outside_share: float = OUTSIDE_SHARE,
 ) -> list[Track]:
     """Order tracks so that each one follows plausibly from the one before.
 
     Greedy with weighted randomness rather than a strict nearest neighbour: a
     strict one produces the same queue every time from the same starting track,
     which is a playlist, not a shuffle.
+
+    ``core`` -- пути подборки, которую включили. Тогда ``tracks`` это вся
+    фонотека, а подборка остаётся костяком: очередь начинается с неё, и
+    примерно ``outside_share`` мест достаётся трекам со стороны, подобранным по
+    тем же правилам смежности. Без ``core`` всё как было — перемешивается то,
+    что передали.
     """
     if not tracks:
         return []
@@ -131,6 +147,11 @@ def build_queue(
     rng = random.Random(seed)
     pool = list(tracks)
     queue: list[Track] = []
+
+    core_paths = set(core) if core else None
+    # Сколько мест в очереди отдано стороне. Пересчёта по ходу нет: бюджет
+    # тратится, и когда он кончился, очередь снова только из подборки.
+    outside_budget = round(size * outside_share) if core_paths else 0
 
     # The first track is chosen on standing alone -- coverage, and the hour if
     # there is a journal -- since there is nothing yet for it to follow.
@@ -144,23 +165,49 @@ def build_queue(
             weight *= UNKNOWN_TRANSITION
         return max(weight, 1e-6)
 
-    current = rng.choices(pool, weights=[opening_weight(t) for t in pool], k=1)[0]
+    # Начинать со своего. Включили подборку — первым должно заиграть то, что в
+    # ней лежит, иначе это не «подборка с добавками», а чужая очередь.
+    opening = [t for t in pool if t.path in core_paths] if core_paths else pool
+    if not opening:
+        opening = pool
+    current = rng.choices(opening, weights=[opening_weight(t) for t in opening], k=1)[0]
     pool.remove(current)
     queue.append(current)
 
     while pool and len(queue) < size:
         recent_artists = {t.artist for t in queue[-2:] if t.artist}
 
+        # Решаем сначала, чьё это место, и только потом ищем трек. Иначе всё
+        # чужое встанет в начало: фонотека в сто раз больше подборки, и по
+        # весам она бы просто её задавила, пока не кончится бюджет.
+        side = pool
+        if core_paths:
+            slots_left = size - len(queue)
+            outside_turn = outside_budget > 0 and rng.random() < outside_budget / slots_left
+            side = [c for c in pool if (c.path not in core_paths) is outside_turn]
+            if not side:
+                # Подборка кончилась (или своих по темпу не осталось) — доиграем
+                # из фонотеки, это лучше, чем оборвать очередь на десятом треке.
+                side = pool
+
         # Criterion 24 is a limit, not a preference: neighbours must be within
         # the tolerance. Weighting alone let a 20 BPM jump through -- unlikely
         # is not the same as excluded. Candidates outside the window are cut
         # first, and only if that leaves nothing does the window widen, so a
         # library with a gap in it still produces a queue instead of stopping.
-        candidates = [c for c in pool if tempo_distance(current.tempo, c.tempo) <= tempo_tolerance]
-        if not candidates:
-            nearest = min(tempo_distance(current.tempo, c.tempo) for c in pool)
+        candidates = [c for c in side if tempo_distance(current.tempo, c.tempo) <= tempo_tolerance]
+        if not candidates and side is not pool:
+            # По темпу рядом не осталось никого с той стороны, чья очередь.
+            # Взять подходящий трек с другой лучше, чем рвать переход ради
+            # очерёдности: гладкость — то, ради чего всё и затевалось.
+            side = pool
             candidates = [
-                c for c in pool if tempo_distance(current.tempo, c.tempo) <= nearest + 1e-9
+                c for c in side if tempo_distance(current.tempo, c.tempo) <= tempo_tolerance
+            ]
+        if not candidates:
+            nearest = min(tempo_distance(current.tempo, c.tempo) for c in side)
+            candidates = [
+                c for c in side if tempo_distance(current.tempo, c.tempo) <= nearest + 1e-9
             ]
             logger.debug(
                 "No track within %.0f BPM of %.0f; stretching to %.0f",
@@ -182,6 +229,8 @@ def build_queue(
             weights.append(max(weight, 1e-9))
 
         chosen = rng.choices(candidates, weights=weights, k=1)[0]
+        if core_paths and chosen.path not in core_paths:
+            outside_budget = max(outside_budget - 1, 0)
         pool.remove(chosen)
         queue.append(chosen)
         current = chosen
