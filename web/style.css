@@ -625,6 +625,17 @@ button.danger {
 .queue-row.is-played { opacity: .45; }
 .queue-row.is-playing .track-title { color: var(--accent); font-weight: 650; }
 
+/* Переключатель «Треки · Альбомы · Синглы» и карточка альбома. */
+.library-modes { margin-bottom: 10px; }
+.library-modes .muted { margin-left: auto; font-size: 12px; }
+button.ghost.is-on { color: var(--accent); border-color: var(--accent-dim); }
+
+.album-card { display: block; padding: 0; }
+.album-head { display: flex; align-items: center; gap: 12px; padding: 8px 10px; }
+.album-head .track-info { flex: 1 1 auto; min-width: 0; }
+/* Треки альбома с отступом: видно, что они принадлежат карточке над ними. */
+.album-tracks { padding: 0 10px 10px 62px; gap: 2px; }
+
 .player {
     position: fixed;
     left: 0;

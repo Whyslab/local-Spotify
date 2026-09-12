@@ -109,6 +109,13 @@
         <span id="shuffleNote" class="muted"></span>
       </div>
 
+      <div class="row wrap library-modes">
+        <button id="modeTracks" class="ghost is-on" onclick="setLibraryMode('tracks')">Треки</button>
+        <button id="modeAlbums" class="ghost" onclick="setLibraryMode('albums')">Альбомы</button>
+        <button id="modeSingles" class="ghost" onclick="setLibraryMode('singles')">Синглы</button>
+        <span id="libraryModeNote" class="muted"></span>
+      </div>
+
       <div id="library" class="rows"></div>
       <p id="libraryEmpty" class="empty">Ничего не нашлось.</p>
 

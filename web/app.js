@@ -293,25 +293,169 @@ function scheduleLibrarySearch() {
     librarySearchTimer = setTimeout(library, SEARCH_DEBOUNCE_MS);
 }
 
+/* ---------------- Альбомы и синглы ----------------
+ *
+ * Группировать приходится по тегам, а не по папкам: в этой фонотеке все
+ * 1111 файлов лежат в «Артист/Singles/», то есть по дереву каталогов всё
+ * выглядит синглами. Теги же знают 873 издания, из которых сотня — настоящие
+ * альбомы от двух до семнадцати треков, а остальные действительно одиночные.
+ *
+ * Альбом опознаётся по паре «артист альбома + название альбома». Артист
+ * берётся из albumartist, а не из artist: у трека с фитом artist — это
+ * «A • B», и один альбом рассыпался бы на несколько.
+ */
+let libraryMode = "tracks";
+
+function setLibraryMode(mode) {
+    libraryMode = mode;
+    for (const [name, id] of [["tracks", "modeTracks"], ["albums", "modeAlbums"], ["singles", "modeSingles"]]) {
+        const b = document.getElementById(id);
+        if (b) b.classList.toggle("is-on", name === mode);
+    }
+    library();
+}
+
+function groupIntoAlbums(rows) {
+    const albums = new Map();
+    for (const t of rows) {
+        const who = (t.albumartist || t.artist || "").trim() || "Без артиста";
+        const name = (t.album || "").trim() || "Без альбома";
+        const key = who + "\u0000" + name;
+        if (!albums.has(key)) albums.set(key, { artist: who, album: name, tracks: [] });
+        albums.get(key).tracks.push(t);
+    }
+    for (const group of albums.values()) {
+        /* По номеру трека, а не по названию: альбом — это порядок. */
+        group.tracks.sort((a, b) => (a.track || 0) - (b.track || 0)
+            || (a.title || "").localeCompare(b.title || "", "ru"));
+    }
+    return [...albums.values()].sort((a, b) =>
+        a.artist.localeCompare(b.artist, "ru") || a.album.localeCompare(b.album, "ru"));
+}
+
+function albumRow(group) {
+    const card = document.createElement("div");
+    card.className = "track album-card";
+
+    const head = document.createElement("div");
+    head.className = "album-head";
+
+    const cover = document.createElement("div");
+    cover.className = "cover";
+    cover.textContent = group.album.slice(0, 1).toUpperCase();
+    loadTrackCover(cover, group.tracks[0].path);
+
+    const info = document.createElement("div");
+    info.className = "track-info";
+    const name = document.createElement("div");
+    name.className = "track-title";
+    name.textContent = group.album;
+    const who = document.createElement("div");
+    who.className = "track-artist";
+    who.textContent = group.artist;
+    const count = document.createElement("div");
+    count.className = "track-album";
+    count.textContent = plural(group.tracks.length, "трек", "трека", "треков");
+    info.append(name, who, count);
+
+    const play = document.createElement("button");
+    play.className = "icon-button";
+    play.setAttribute("aria-label", "Играть альбом");
+    play.title = "Играть альбом";
+    play.onclick = () => playQueue(group.tracks, 0, "manual");
+    const playSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    playSvg.setAttribute("class", "icon");
+    playSvg.setAttribute("viewBox", "0 0 24 24");
+    const playPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    playPath.setAttribute("d", "M8 5v14l11-7z");
+    playSvg.appendChild(playPath);
+    play.appendChild(playSvg);
+
+    const list = document.createElement("div");
+    list.className = "rows album-tracks";
+    list.hidden = true;
+
+    const expand = document.createElement("button");
+    expand.className = "icon-button";
+    expand.setAttribute("aria-label", "Показать треки");
+    expand.title = "Показать треки";
+    expand.textContent = "▾";
+    expand.onclick = () => {
+        list.hidden = !list.hidden;
+        expand.textContent = list.hidden ? "▾" : "▴";
+        if (!list.hidden && !list.childElementCount) {
+            for (const t of group.tracks) list.appendChild(libraryRow(t, group.tracks));
+        }
+    };
+
+    head.append(cover, info, play, expand);
+    card.append(head, list);
+    return card;
+}
+
+/* Обложка трека — тоже не <img src>: /api/cover требует токен. */
+function loadTrackCover(host, path) {
+    fetch("/api/cover?path=" + encodeURIComponent(path), { headers: headers() })
+        .then(r => (r.ok ? r.blob() : null))
+        .then(blob => {
+            if (!blob) return;
+            const url = URL.createObjectURL(blob);
+            const img = document.createElement("img");
+            img.alt = "";
+            img.onload = () => URL.revokeObjectURL(url);
+            img.onerror = () => URL.revokeObjectURL(url);
+            img.src = url;
+            host.replaceChildren(img);
+        })
+        .catch(() => { /* остаётся буква */ });
+}
+
 async function library() {
     const box = document.getElementById("library");
     const empty = document.getElementById("libraryEmpty");
     const count = document.getElementById("libraryCount");
+    const note = document.getElementById("libraryModeNote");
     const q = document.getElementById("librarySearch").value.trim();
 
+    /* Списком треков хватает первых двухсот: дальше всё равно ищут поиском.
+     * Альбомы так собрать нельзя — издание может начинаться на любой букве,
+     * поэтому для группировки берём фонотеку целиком. */
+    const limit = libraryMode === "tracks" ? 200 : 5000;
+
     try {
-        const r = await fetch("/api/library?q=" + encodeURIComponent(q), { headers: headers() });
+        const r = await fetch(
+            "/api/library?limit=" + limit + "&q=" + encodeURIComponent(q),
+            { headers: headers() });
         if (!r.ok) return;
         const data = await r.json();
-
-        count.textContent = data.length ? data.length + (data.length === 200 ? "+" : "") : "";
-        empty.hidden = data.length > 0;
         box.replaceChildren();
 
-        /* Keep the rendered list around: playing one row queues the rest, so
-         * "next" carries on down the screen instead of stopping at one track. */
-        for (const t of data) {
-            box.appendChild(libraryRow(t, data));
+        if (libraryMode === "tracks") {
+            if (note) note.textContent = "";
+            count.textContent = data.length ? data.length + (data.length === 200 ? "+" : "") : "";
+            empty.hidden = data.length > 0;
+            /* Keep the rendered list around: playing one row queues the rest, so
+             * "next" carries on down the screen instead of stopping at one track. */
+            for (const t of data) box.appendChild(libraryRow(t, data));
+            markPlayingRow();
+            return;
+        }
+
+        const groups = groupIntoAlbums(data);
+        if (libraryMode === "albums") {
+            const albums = groups.filter(g => g.tracks.length > 1);
+            count.textContent = albums.length || "";
+            empty.hidden = albums.length > 0;
+            if (note) note.textContent = plural(albums.length, "издание", "издания", "изданий");
+            for (const g of albums) box.appendChild(albumRow(g));
+        } else {
+            /* Сингл — издание из одного трека. Показываем его обычной строкой:
+             * разворачивать там нечего. */
+            const singles = groups.filter(g => g.tracks.length === 1).map(g => g.tracks[0]);
+            count.textContent = singles.length || "";
+            empty.hidden = singles.length > 0;
+            if (note) note.textContent = plural(singles.length, "сингл", "сингла", "синглов");
+            for (const t of singles) box.appendChild(libraryRow(t, singles));
         }
         markPlayingRow();
     } catch (e) {

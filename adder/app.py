@@ -289,7 +289,14 @@ def list_library(q: str = "", limit: int = 200, authenticated: bool = Depends(ve
     for row in library.library_index():
         if needle and needle not in row["haystack"]:
             continue
-        out.append({k: row[k] for k in ("path", "artist", "title", "album", "track", "duration")})
+        # albumartist нужен для группировки по альбомам: у трека с фитом
+        # artist — это "A • B", а альбом всё равно принадлежит одному.
+        out.append(
+            {
+                k: row[k]
+                for k in ("path", "artist", "albumartist", "title", "album", "track", "duration")
+            }
+        )
         if len(out) >= limit:
             break
     return out
