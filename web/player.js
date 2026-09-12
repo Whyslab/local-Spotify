@@ -565,6 +565,113 @@ async function uploadCover(input) {
 
 /* Playing a track straight from the library screen queues what is on screen,
  * so "next" continues down the list instead of stopping. */
+/* Добавить трек из фонотеки в подборку.
+ *
+ * Строка фонотеки заменяется на выбор подборки — тем же приёмом, что и
+ * подтверждение удаления, чтобы не заводить модальных окон. Список подборок
+ * читается в момент открытия: он короткий, а держать его свежим между
+ * устройствами всё равно пришлось бы перечитыванием.
+ *
+ * Запись идёт тем же путём, что и перестановка треков: читаем текущий список
+ * вместе с номером версии, дописываем путь в конец и отправляем целиком. Если
+ * подборку успели изменить с телефона, сервер ответит 409 и мы честно скажем
+ * об этом, а не затрём чужую правку.
+ */
+async function askAddToPlaylist(card, track) {
+    const box = document.createElement("div");
+    box.className = "confirm";
+
+    const head = document.createElement("h3");
+    head.textContent = "В какую подборку?";
+
+    const note = document.createElement("p");
+    note.textContent = "Читаю список…";
+
+    const list = document.createElement("div");
+    list.className = "rows";
+
+    const row = document.createElement("div");
+    row.className = "row";
+    const cancel = document.createElement("button");
+    cancel.className = "ghost grow";
+    cancel.textContent = "Отмена";
+    cancel.onclick = () => box.replaceWith(card);
+    row.appendChild(cancel);
+
+    box.append(head, note, list, row);
+    card.replaceWith(box);
+
+    let all;
+    try {
+        const r = await fetch("/api/playlists", { headers: headers() });
+        if (!r.ok) throw new Error("Ошибка " + r.status);
+        all = await r.json();
+    } catch (e) {
+        note.textContent = e.message;
+        return;
+    }
+
+    if (!all.length) {
+        note.textContent = "Пока ни одной подборки. Создай её в разделе с подборками.";
+        return;
+    }
+
+    note.textContent = track.title;
+    for (const p of all) {
+        const b = document.createElement("button");
+        b.className = "ghost";
+        b.textContent = p.name + " · " + p.tracks;
+        b.onclick = () => addToPlaylist(box, card, note, cancel, p.name, track);
+        list.appendChild(b);
+    }
+}
+
+async function addToPlaylist(box, card, note, cancel, name, track) {
+    for (const b of box.querySelectorAll("button")) b.disabled = true;
+    note.textContent = "Добавляю…";
+    try {
+        const url = "/api/playlists/" + encodeURIComponent(name) + "/tracks";
+        const got = await fetch(url, { headers: headers() });
+        if (!got.ok) throw new Error("Ошибка " + got.status);
+        const pl = await got.json();
+
+        const paths = pl.entries.map(e => e.path);
+        if (paths.includes(track.path)) {
+            note.textContent = "Уже в «" + name + "»";
+            cancel.disabled = false;
+            cancel.textContent = "Закрыть";
+            return;
+        }
+        paths.push(track.path);
+
+        const put = await fetch(url, {
+            method: "PUT",
+            headers: { ...headers(), "Content-Type": "application/json" },
+            body: JSON.stringify({ paths, revision: pl.revision }),
+        });
+        if (put.status === 409) {
+            note.textContent = "Подборку изменили с другого устройства. Открой ещё раз.";
+            cancel.disabled = false;
+            cancel.textContent = "Закрыть";
+            return;
+        }
+        if (!put.ok) {
+            const data = await put.json().catch(() => ({}));
+            throw new Error(data.detail || ("Ошибка " + put.status));
+        }
+
+        note.textContent = "Добавлено в «" + name + "»";
+        /* Если эта же подборка открыта рядом — показать её новой. */
+        if (player.playlist && player.playlist.name === name) await openPlaylist(name);
+        playlists();
+        setTimeout(() => box.replaceWith(card), 1200);
+    } catch (e) {
+        note.textContent = e.message;
+        for (const b of box.querySelectorAll("button")) b.disabled = false;
+        cancel.textContent = "Закрыть";
+    }
+}
+
 function playFromLibrary(track, rows) {
     playQueue(rows, rows.findIndex(r => r.path === track.path), "manual");
 }

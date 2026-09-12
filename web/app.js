@@ -364,6 +364,19 @@ function libraryRow(t, rows) {
     playSvg.appendChild(playPath);
     play.appendChild(playSvg);
 
+    const toPlaylist = document.createElement("button");
+    toPlaylist.className = "icon-button";
+    toPlaylist.setAttribute("aria-label", "В подборку");
+    toPlaylist.title = "В подборку";
+    toPlaylist.onclick = () => askAddToPlaylist(card, t);
+    const addSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    addSvg.setAttribute("class", "icon");
+    addSvg.setAttribute("viewBox", "0 0 24 24");
+    const addPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    addPath.setAttribute("d", "M12 5v14M5 12h14");
+    addSvg.appendChild(addPath);
+    toPlaylist.appendChild(addSvg);
+
     const del = document.createElement("button");
     del.className = "icon-button danger";
     del.setAttribute("aria-label", "Удалить");
@@ -377,7 +390,7 @@ function libraryRow(t, rows) {
     svg.appendChild(path);
     del.appendChild(svg);
 
-    card.append(cover, info, play, del);
+    card.append(cover, info, play, toPlaylist, del);
     return card;
 }
 
