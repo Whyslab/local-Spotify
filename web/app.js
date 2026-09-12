@@ -76,6 +76,7 @@ function refresh() {
     playlists();
     if (activeView === "viewAdd") tasks();
     if (activeView === "viewLibrary") library();
+    if (activeView === "viewHome") home();
 }
 
 /* ---------------- Adding ---------------- */
@@ -291,6 +292,145 @@ function plural(n, one, few, many) {
 function scheduleLibrarySearch() {
     clearTimeout(librarySearchTimer);
     librarySearchTimer = setTimeout(library, SEARCH_DEBOUNCE_MS);
+}
+
+/* ---------------- Главная ----------------
+ *
+ * Всё на этой странице считается из того, что уже лежит на диске. Единственный
+ * выход наружу — список похожих артистов, и он кэшируется навсегда: соседство
+ * артистов меняется годами, а не днями.
+ *
+ * Подборки по настроению берут границы от самой фонотеки, а не из воздуха:
+ * «спокойное» при абсолютном пороге дало бы здесь восемнадцать треков из
+ * тысячи с лишним. Самая спокойная четверть есть у любого собрания музыки.
+ */
+let homeCache = null;
+
+/* Строка-заглушка тоже строится узлами. В этом файле присваивание innerHTML
+ * однажды уже стоило утечки токена из хранилища через подставленное название
+ * трека, и тест на это правило стоит именно потому, что тогда оно уплыло
+ * незаметно. Исключений нет даже для строки без данных. */
+function homeNote(box, text) {
+    const note = document.createElement("p");
+    note.className = "empty";
+    note.textContent = text;
+    box.replaceChildren(note);
+}
+
+async function home() {
+    const box = document.getElementById("homeBody");
+    if (!box) return;
+    if (homeCache) { renderHome(homeCache); return; }
+    try {
+        const r = await fetch("/api/home", { headers: headers() });
+        if (!r.ok) { homeNote(box, "Не собралось."); return; }
+        homeCache = await r.json();
+        renderHome(homeCache);
+    } catch (e) {
+        homeNote(box, "Не собралось.");
+    }
+}
+
+function homeShelf(title, hint, tracks, playAll) {
+    const card = document.createElement("div");
+    card.className = "card home-shelf";
+
+    const head = document.createElement("div");
+    head.className = "card-head";
+    const h = document.createElement("h2");
+    h.textContent = title;
+    head.appendChild(h);
+    if (hint) {
+        const note = document.createElement("span");
+        note.className = "muted";
+        note.textContent = hint;
+        head.appendChild(note);
+    }
+    if (playAll) {
+        const play = document.createElement("button");
+        play.className = "primary";
+        play.textContent = "Слушать";
+        play.onclick = playAll;
+        head.appendChild(play);
+    }
+
+    const rows = document.createElement("div");
+    rows.className = "rows";
+    /* Шесть строк, а не сорок: полка на главной — это приглашение, а не список.
+     * Нажал «Слушать» — играет всё, что в ней есть. */
+    for (const t of tracks.slice(0, 6)) rows.appendChild(libraryRow(t, tracks));
+
+    card.append(head, rows);
+    return card;
+}
+
+function renderHome(data) {
+    const box = document.getElementById("homeBody");
+    box.replaceChildren();
+
+    const discover = data.discover || {};
+    if ((discover.tracks || []).length) {
+        const on = (discover.based_on || []).slice(0, 3).join(", ");
+        box.appendChild(homeShelf(
+            "Может понравиться",
+            on ? `похоже на ${on}` : "",
+            discover.tracks,
+            () => playQueue(discover.tracks, 0, "manual"),
+        ));
+    }
+
+    for (const mood of data.moods || []) {
+        if (!(mood.tracks || []).length) continue;
+        box.appendChild(homeShelf(
+            mood.name, mood.hint, mood.tracks,
+            () => playQueue(mood.tracks, 0, "manual"),
+        ));
+    }
+
+    if ((data.albums || []).length) {
+        const card = document.createElement("div");
+        card.className = "card";
+        const head = document.createElement("div");
+        head.className = "card-head";
+        const h = document.createElement("h2");
+        h.textContent = "Альбомы";
+        const note = document.createElement("span");
+        note.className = "muted";
+        note.textContent = "самые большие";
+        head.append(h, note);
+
+        const grid = document.createElement("div");
+        grid.className = "rows";
+        for (const a of data.albums) {
+            const row = document.createElement("button");
+            row.className = "track playlist-row";
+            row.onclick = () => { setLibraryMode("albums"); switchView("viewLibrary"); };
+            const cover = document.createElement("div");
+            cover.className = "cover";
+            cover.textContent = a.album.slice(0, 1).toUpperCase();
+            loadTrackCover(cover, a.cover);
+            const info = document.createElement("div");
+            info.className = "track-info";
+            const name = document.createElement("div");
+            name.className = "track-title";
+            name.textContent = a.album;
+            const who = document.createElement("div");
+            who.className = "track-artist";
+            who.textContent = a.artist;
+            const count = document.createElement("div");
+            count.className = "track-album";
+            count.textContent = plural(a.count, "трек", "трека", "треков");
+            info.append(name, who, count);
+            row.append(cover, info);
+            grid.appendChild(row);
+        }
+        card.append(head, grid);
+        box.appendChild(card);
+    }
+
+    if (!box.childElementCount) {
+        homeNote(box, "Пока нечего показать — фонотека ещё не измерена.");
+    }
 }
 
 /* ---------------- Альбомы и синглы ----------------

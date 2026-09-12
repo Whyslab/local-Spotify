@@ -101,6 +101,13 @@
     </section>
 
     <!-- ---------------- Фонотека ---------------- -->
+    <!-- ---------------- Главная ---------------- -->
+    <section id="viewHome" class="view" hidden>
+      <div id="homeBody">
+        <p class="empty">Собираю…</p>
+      </div>
+    </section>
+
     <section id="viewLibrary" class="view" hidden>
 
       <div class="row wrap shuffle-row">
@@ -256,6 +263,10 @@
   <div class="rail">
 
   <nav class="tabbar">
+    <button class="tab" data-view="viewHome" onclick="switchView('viewHome')">
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11l9-8 9 8M5 10v10h14V10"/></svg>
+      <span>Главная</span>
+    </button>
     <button class="tab is-active" data-view="viewAdd" onclick="switchView('viewAdd')">
       <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
       <span>Добавить</span>

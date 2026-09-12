@@ -625,6 +625,13 @@ button.danger {
 .queue-row.is-played { opacity: .45; }
 .queue-row.is-playing .track-title { color: var(--accent); font-weight: 650; }
 
+/* Главная: полки-приглашения. Каждая показывает шесть строк из сорока —
+   это приглашение, а не список; «Слушать» ставит в очередь всю полку. */
+.home-shelf .card-head { display: flex; align-items: center; gap: 12px; }
+.home-shelf .card-head h2 { margin: 0; font-size: 16px; }
+.home-shelf .card-head .muted { font-size: 12px; }
+.home-shelf .card-head .primary { margin-left: auto; padding: 6px 16px; font-size: 13px; }
+
 /* Переключатель «Треки · Альбомы · Синглы» и карточка альбома. */
 .library-modes { margin-bottom: 10px; }
 .library-modes .muted { margin-left: auto; font-size: 12px; }
