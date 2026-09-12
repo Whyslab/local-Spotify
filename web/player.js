@@ -536,12 +536,23 @@ function playlistTrackRow(entry, position) {
         info.appendChild(meta);
     }
 
+    /* Соседние перестановки и перетаскивание годятся, пока список короткий.
+     * В подборке на тысячу треков подняться наверх соседними шагами нельзя,
+     * а тащить мышью через тысячу строк — тем более. Поэтому рядом стоят
+     * два прыжка сразу на край. */
+    const top = smallButton("⤒", "В начало подборки", () => moveTrack(position, 0));
     const up = smallButton("↑", "Выше", () => moveTrack(position, position - 1));
     const down = smallButton("↓", "Ниже", () => moveTrack(position, position + 1));
+    const bottom = smallButton("⤓", "В конец подборки",
+        () => moveTrack(position, player.playlist.entries.length - 1));
     const drop = smallButton("×", "Убрать из подборки", () => removeAt(position));
     drop.classList.add("danger");
 
-    row.append(handle, info, up, down, drop);
+    /* Трек и так на своём краю — прыгать некуда. */
+    if (position === 0) top.disabled = true;
+    if (position === player.playlist.entries.length - 1) bottom.disabled = true;
+
+    row.append(handle, info, top, up, down, bottom, drop);
     return row;
 }
 
