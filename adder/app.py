@@ -5,6 +5,7 @@ of its own. The library lives in :mod:`adder.library`, the processing pipeline
 in :mod:`adder.ingest`, the queue and its retry policy in :mod:`adder.queue`.
 """
 
+import hashlib
 import logging
 import random
 import secrets
@@ -1137,4 +1138,23 @@ def health():
 
 @app.get("/", response_class=HTMLResponse)
 def index():
-    return (runtime.PROJECT.parent / "web" / "index.html").read_text(encoding="utf-8")
+    """Страница вместе с версиями файлов, которые она подключает.
+
+    Без этого браузер держит style.css в кэше и не спрашивает сервер, свежий
+    ли он. Выходит худшее из двух: новый app.js рисует то, чего старый css не
+    умеет разложить, — обложки без размеров разворачиваются во весь экран, и
+    выглядит это как сломанная вёрстка, а не как устаревший кэш.
+
+    К каждой ссылке дописывается отпечаток самого файла. Файл не менялся —
+    адрес тот же, и браузер честно берёт своё из кэша; изменился — адрес
+    другой, и старому кэшу нечего подставить.
+    """
+    web = runtime.PROJECT.parent / "web"
+    html = (web / "index.html").read_text(encoding="utf-8")
+    for name in ("style.css", "app.js", "player.js"):
+        path = web / name
+        if not path.is_file():
+            continue
+        stamp = hashlib.sha1(path.read_bytes()).hexdigest()[:10]
+        html = html.replace(f"/static/{name}", f"/static/{name}?v={stamp}")
+    return html
