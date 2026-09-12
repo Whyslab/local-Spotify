@@ -4,6 +4,15 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>local-Spotify</title>
+
+<!-- Картинка для вкладки. SVG понимают все нынешние браузеры и рисуют его
+     чётко в любом размере; png на 32 — запасной для тех, кто SVG не берёт.
+     apple-touch-icon нужен отдельным png: iOS в нём SVG не принимает, а
+     панель открывают с телефона и держат на домашнем экране. -->
+<link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+<link rel="icon" href="/static/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="/static/icon-180.png">
+
 <link rel="stylesheet" href="/static/style.css">
 
 <div class="app">
