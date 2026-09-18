@@ -54,6 +54,7 @@ function applyLoginState() {
 
 function switchView(id) {
     activeView = id;
+    updateSearchPlaceholder(id);
     /* The rail layout keys off this: on a phone the search band belongs to the
      * library and appears with it, on a desktop it is always the top band. */
     document.querySelector(".app").dataset.view = id;
@@ -64,6 +65,15 @@ function switchView(id) {
         tab.classList.toggle("is-active", tab.dataset.view === id);
     }
     refresh();
+}
+
+/* Поле одно, а ищет оно в разном — пусть само говорит, где именно. */
+function updateSearchPlaceholder(view) {
+    const field = document.getElementById("librarySearch");
+    if (!field) return;
+    field.placeholder = view === "viewPlaylists" ? "Поиск по подборкам"
+        : view === "viewPlaylist" ? "Поиск в этой подборке"
+        : "Артист, трек или альбом";
 }
 
 function refresh() {
@@ -374,9 +384,59 @@ function plural(n, one, few, many) {
 
 /* ---------------- Library ---------------- */
 
+/* Поиск сверху ищет там, где стоишь. Раньше он умел только фонотеку: в
+ * подборках и внутри подборки поле было, а толку от него не было никакого.
+ *
+ * Фонотеку спрашиваем у сервера — двести строк из тысячи ста, — а подборки и
+ * треки открытой подборки фильтруем на месте: они уже на странице, и ходить
+ * за ними второй раз незачем. */
+function searchText() {
+    const field = document.getElementById("librarySearch");
+    return field ? field.value.trim().toLowerCase() : "";
+}
+
 function scheduleLibrarySearch() {
     clearTimeout(librarySearchTimer);
-    librarySearchTimer = setTimeout(library, SEARCH_DEBOUNCE_MS);
+    librarySearchTimer = setTimeout(runSearchHere, SEARCH_DEBOUNCE_MS);
+}
+
+function runSearchHere() {
+    if (activeView === "viewPlaylists") { filterPlaylists(); return; }
+    if (activeView === "viewPlaylist") { filterOpenPlaylist(); return; }
+    /* Из главной и остальных разделов искать всё равно логично по фонотеке —
+     * там лежит всё, что можно найти. */
+    if (activeView !== "viewLibrary" && searchText()) switchView("viewLibrary");
+    library();
+}
+
+/* Совпадение по тексту строки целиком: в ней и название, и артист, и альбом. */
+function rowMatches(row, needle) {
+    return !needle || (row.textContent || "").toLowerCase().includes(needle);
+}
+
+function filterPlaylists() {
+    const needle = searchText();
+    let shown = 0;
+    for (const row of document.querySelectorAll("#playlists .playlist-row")) {
+        const ok = rowMatches(row, needle);
+        row.hidden = !ok;
+        if (ok) shown += 1;
+    }
+    const empty = document.getElementById("playlistsEmpty");
+    if (empty) {
+        empty.hidden = shown > 0;
+        if (!shown) empty.textContent = needle ? "Ничего не нашлось." : "Пока ни одной.";
+    }
+}
+
+/* Строки прячем, а не пересобираем список: у каждой строки записан её номер в
+ * подборке, и на нём держатся перемещения. Пересобери мы отфильтрованный
+ * список — «выше на один» двигал бы трек не туда. */
+function filterOpenPlaylist() {
+    const needle = searchText();
+    for (const row of document.querySelectorAll("#playlistTracks .playlist-track")) {
+        row.hidden = !rowMatches(row, needle);
+    }
 }
 
 /* ---------------- Главная ----------------

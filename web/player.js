@@ -687,6 +687,9 @@ async function playlists() {
         box.replaceChildren();
         for (const p of data) box.appendChild(playlistRow(p));
         renderRail(data);
+        /* Список перерисовывается фоновым опросом — без этого набранный поиск
+         * сбрасывался бы каждые три секунды прямо под руками. */
+        filterPlaylists();
     } catch (e) { /* the next poll retries */ }
 }
 
@@ -798,6 +801,7 @@ function renderPlaylist() {
     const box = document.getElementById("playlistTracks");
     box.replaceChildren();
     pl.entries.forEach((entry, position) => box.appendChild(playlistTrackRow(entry, position)));
+    filterOpenPlaylist();
     markPlayingRow();
 }
 
