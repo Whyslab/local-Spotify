@@ -1040,6 +1040,11 @@ button.ghost.is-on { color: var(--text); border-color: var(--text); font-weight:
    out of the way entirely, so the tab bar keeps behaving as the fixed bar at
    the bottom edge that it is on a phone. */
 .rail { display: contents; }
+/* Тянуть нечего там, где нет колонок: на телефоне раскладка одноколоночная.
+   По той же причине там нет и кнопки «панель трека»: панели, которую она
+   убирает, на узком экране не существует. */
+.rail-grip,
+.wide-only { display: none; }
 .rail-extra { display: none; }
 /* display:flex in the wide layout would otherwise beat [hidden]. */
 .rail[hidden] { display: none; }
@@ -1070,7 +1075,7 @@ button.ghost.is-on { color: var(--text); border-color: var(--text); font-weight:
         padding: 0;
         overflow: hidden;
         display: grid;
-        grid-template-columns: 232px minmax(0, 1fr) 296px;
+        grid-template-columns: var(--rail-w, 232px) minmax(0, 1fr) 296px;
         grid-template-rows: auto minmax(0, 1fr) auto;
         grid-template-areas:
             "rail header aside"
@@ -1082,11 +1087,59 @@ button.ghost.is-on { color: var(--text); border-color: var(--text); font-weight:
     /* Nothing playing: no cover to show and no bar to show it under. Keeping
        the column would leave a quarter of the screen empty. */
     .app:has(#player[hidden]) {
-        grid-template-columns: 232px minmax(0, 1fr);
+        grid-template-columns: var(--rail-w, 232px) minmax(0, 1fr);
         grid-template-areas:
             "rail header"
             "rail views";
         grid-template-rows: auto minmax(0, 1fr);
+    }
+
+
+    /* Правая панель — гость, а не часть каркаса: её убирают, когда нужно
+       место списку, и возвращают кнопкой в плеере. Скрываем показом, а не
+       атрибутом hidden: им уже распоряжается renderPlayer, и два хозяина у
+       одного признака — это гарантированный спор. */
+    /* Оба селектора нужны: соседнее правило написано через :has(#player…),
+       а :has считается по самому весомому доводу внутри — там это id, и по
+       весу оно перебивало простой класс. */
+    .app.aside-off,
+    .app.aside-off:has(#player:not([hidden])) {
+        grid-template-columns: var(--rail-w, 232px) minmax(0, 1fr);
+        grid-template-areas:
+            "rail header"
+            "rail views"
+            "bar  bar";
+    }
+    .app.aside-off #nowPanel { display: none; }
+
+    /* Край панели. Узкая полоса поверх стыка: курсор меняется на «тянуть»,
+       а видно её только когда к ней подводят мышь — иначе это была бы лишняя
+       линия на экране, где и так есть граница. */
+    .wide-only { display: flex; }
+
+    .rail-grip {
+        display: block;
+        grid-area: rail;
+        justify-self: end;
+        align-self: stretch;
+        width: 8px;
+        margin-right: -4px;
+        z-index: 4;
+        cursor: col-resize;
+        background: transparent;
+        transition: background .15s;
+    }
+    .rail-grip:hover,
+    .rail-grip.is-dragging { background: var(--line-2); }
+
+    /* Свёрнутая панель: только значки и логотип. Подписи и список подборок
+       уезжают, потому что в 72 точки они превращаются в кашу из многоточий. */
+    .app.rail-slim .tab span,
+    .app.rail-slim .rail-extra { display: none; }
+    .app.rail-slim .tab {
+        justify-content: center;
+        padding-left: 0;
+        padding-right: 0;
     }
 
     /* One column, two pieces: the sections at the top, the playlists filling

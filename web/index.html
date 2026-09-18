@@ -254,6 +254,10 @@
         <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M17 2l4 4-4 4M3 11V9a4 4 0 0 1 4-4h14M7 22l-4-4 4-4M21 13v2a4 4 0 0 1-4 4H3"/></svg>
         <span id="playerRepeatOne" class="repeat-one" hidden>1</span>
       </button>
+      <button id="playerAsideButton" class="icon-button wide-only" onclick="toggleAside()"
+              aria-label="Панель трека" title="Скрыть панель трека" aria-pressed="true">
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4h18v16H3zM15 4v16"/></svg>
+      </button>
       <button id="playerQueueButton" class="icon-button" onclick="toggleQueuePanel()"
               aria-label="Очередь" title="Очередь" aria-pressed="false">
         <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h11M4 12h11M4 18h7M17 14v7M21 18l-4 3-4-3"/></svg>
@@ -327,6 +331,11 @@
   </aside>
 
   </div>
+
+  <!-- Край панели: тянется мышкой, двойной щелчок сворачивает до значков.
+       Это не кнопка, поэтому и выглядит как край, а не как элемент. -->
+  <div id="railGrip" class="rail-grip" title="Потяните, чтобы сузить"
+       role="separator" aria-orientation="vertical" aria-label="Ширина панели"></div>
 
   <!-- What is playing, in full: cover, tags, and the three measured numbers.
        The bar at the bottom has room for none of that. -->

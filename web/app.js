@@ -1088,3 +1088,98 @@ document.addEventListener("DOMContentLoaded", () => {
         importFiles(e.dataTransfer.files);
     });
 });
+
+/* ---------------- Ширина панелей ----------------
+ *
+ * Широкая раскладка — три колонки, и обе боковые нужны не всегда: списку бывает
+ * тесно, а на главной правая панель и вовсе повторяет то, что уже в плеере.
+ *
+ * Левая тянется за край, как в файловых менеджерах, и сворачивается до значков;
+ * правая убирается кнопкой в плеере. Оба состояния запоминаются в браузере:
+ * ширина панели — не то, что хочется настраивать заново после каждой вкладки.
+ *
+ * На телефоне ничего этого нет: там .rail раскладывается в display: contents,
+ * колонок нет вовсе, а переменная ширины просто не на что влиять.
+ */
+
+const RAIL_KEY = "railWidth";
+const ASIDE_KEY = "asideHidden";
+const RAIL_MIN = 72;      // ровно под значок с полями
+const RAIL_MAX = 360;
+const RAIL_SLIM_AT = 150; // уже этого подписи не помещаются
+const RAIL_DEFAULT = 232;
+
+function applyRailWidth(width) {
+    const app = document.querySelector(".app");
+    if (!app) return;
+    const clamped = Math.min(RAIL_MAX, Math.max(RAIL_MIN, Math.round(width)));
+    app.style.setProperty("--rail-w", clamped + "px");
+    app.classList.toggle("rail-slim", clamped < RAIL_SLIM_AT);
+    return clamped;
+}
+
+function saveRailWidth(width) {
+    try { localStorage.setItem(RAIL_KEY, String(width)); } catch (e) { /* приватное окно */ }
+}
+
+function toggleAside() {
+    const app = document.querySelector(".app");
+    const button = document.getElementById("playerAsideButton");
+    if (!app) return;
+    const hidden = app.classList.toggle("aside-off");
+    try { localStorage.setItem(ASIDE_KEY, hidden ? "1" : "0"); } catch (e) { /* приватное окно */ }
+    if (button) {
+        button.classList.toggle("is-on", !hidden);
+        button.setAttribute("aria-pressed", String(!hidden));
+        button.title = hidden ? "Показать панель трека" : "Скрыть панель трека";
+    }
+}
+
+function initPanels() {
+    const app = document.querySelector(".app");
+    const grip = document.getElementById("railGrip");
+    if (!app) return;
+
+    let width = RAIL_DEFAULT;
+    try {
+        const stored = parseInt(localStorage.getItem(RAIL_KEY), 10);
+        if (Number.isFinite(stored)) width = stored;
+    } catch (e) { /* приватное окно — ширина по умолчанию */ }
+    applyRailWidth(width);
+
+    try {
+        if (localStorage.getItem(ASIDE_KEY) === "1") toggleAside();
+    } catch (e) { /* приватное окно — панель на месте */ }
+
+    if (!grip) return;
+
+    grip.addEventListener("pointerdown", (event) => {
+        event.preventDefault();
+        grip.setPointerCapture(event.pointerId);
+        grip.classList.add("is-dragging");
+
+        const move = (e) => {
+            /* Ширина — это расстояние от левого края окна до курсора: панель
+               начинается там же, так что пересчитывать нечего. */
+            applyRailWidth(e.clientX);
+        };
+        const up = (e) => {
+            grip.classList.remove("is-dragging");
+            grip.releasePointerCapture(event.pointerId);
+            grip.removeEventListener("pointermove", move);
+            grip.removeEventListener("pointerup", up);
+            saveRailWidth(applyRailWidth(e.clientX));
+        };
+        grip.addEventListener("pointermove", move);
+        grip.addEventListener("pointerup", up);
+    });
+
+    /* Двойной щелчок по краю — свернуть или вернуть. Тянуть до упора мышью
+       ради «спрятать подписи» каждый раз утомительно. */
+    grip.addEventListener("dblclick", () => {
+        const now = parseInt(getComputedStyle(app).getPropertyValue("--rail-w"), 10) || RAIL_DEFAULT;
+        saveRailWidth(applyRailWidth(now < RAIL_SLIM_AT ? RAIL_DEFAULT : RAIL_MIN));
+    });
+}
+
+initPanels();
