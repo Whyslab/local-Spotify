@@ -564,6 +564,36 @@ function renderHome(data) {
  */
 let libraryMode = "tracks";
 
+/* Порядок списка треков. Запоминается: это привычка, а не разовый выбор. */
+const LIBRARY_SORT_KEY = "librarySort";
+let librarySort = "new";
+
+function applyLibrarySortButton() {
+    const b = document.getElementById("librarySort");
+    if (!b) return;
+    const fresh = librarySort === "new";
+    b.classList.toggle("is-on", fresh);
+    b.textContent = fresh ? "Свежие сверху" : "По алфавиту";
+    b.title = fresh ? "Сначала недавно добавленные" : "По артисту, как на диске";
+}
+
+function toggleLibrarySort() {
+    librarySort = librarySort === "new" ? "name" : "new";
+    try { localStorage.setItem(LIBRARY_SORT_KEY, librarySort); } catch (e) { /* приватное окно */ }
+    applyLibrarySortButton();
+    library();
+}
+
+function initLibrarySort() {
+    try {
+        const stored = localStorage.getItem(LIBRARY_SORT_KEY);
+        if (stored === "new" || stored === "name") librarySort = stored;
+    } catch (e) { /* приватное окно — свежие сверху */ }
+    applyLibrarySortButton();
+}
+
+initLibrarySort();
+
 function setLibraryMode(mode) {
     libraryMode = mode;
     openAlbumGroup = null;
@@ -782,7 +812,7 @@ async function library() {
 
     try {
         const r = await fetch(
-            "/api/library?limit=" + limit + "&q=" + encodeURIComponent(q),
+            "/api/library?limit=" + limit + "&sort=" + librarySort + "&q=" + encodeURIComponent(q),
             { headers: headers() });
         if (!r.ok) return;
         const data = await r.json();

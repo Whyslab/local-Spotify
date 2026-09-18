@@ -285,11 +285,25 @@ def tasks(authenticated: bool = Depends(verify_token)):
 
 
 @app.get("/api/library")
-def list_library(q: str = "", limit: int = 200, authenticated: bool = Depends(verify_token)):
-    """List library tracks, optionally filtered by a substring of artist/title/album."""
+def list_library(
+    q: str = "",
+    limit: int = 200,
+    sort: str = "new",
+    authenticated: bool = Depends(verify_token),
+):
+    """List library tracks, optionally filtered by a substring of artist/title/album.
+
+    ``sort=new`` ставит наверх недавно добавленное. Так список отвечает на
+    вопрос, с которым его чаще всего и открывают: что приехало и куда это
+    разложить. ``sort=name`` возвращает прежний порядок — по пути на диске,
+    то есть по артисту.
+    """
     needle = q.strip().lower()
+    rows = library.library_index()
+    if sort == "new":
+        rows = sorted(rows, key=lambda r: r.get("added") or 0, reverse=True)
     out = []
-    for row in library.library_index():
+    for row in rows:
         if needle and needle not in row["haystack"]:
             continue
         # albumartist нужен для группировки по альбомам: у трека с фитом
@@ -297,7 +311,16 @@ def list_library(q: str = "", limit: int = 200, authenticated: bool = Depends(ve
         out.append(
             {
                 k: row[k]
-                for k in ("path", "artist", "albumartist", "title", "album", "track", "duration")
+                for k in (
+                    "path",
+                    "artist",
+                    "albumartist",
+                    "title",
+                    "album",
+                    "track",
+                    "duration",
+                    "added",
+                )
             }
         )
         if len(out) >= limit:

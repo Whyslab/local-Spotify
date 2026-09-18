@@ -127,6 +127,10 @@
         <button id="modeTracks" class="ghost is-on" onclick="setLibraryMode('tracks')">Треки</button>
         <button id="modeAlbums" class="ghost" onclick="setLibraryMode('albums')">Альбомы</button>
         <button id="modeSingles" class="ghost" onclick="setLibraryMode('singles')">Синглы</button>
+        <!-- Порядок списка. Свежие сверху — то, ради чего фонотеку чаще всего
+             и открывают: разложить только что приехавшее по подборкам. -->
+        <button id="librarySort" class="ghost is-on" onclick="toggleLibrarySort()"
+                title="Сначала недавно добавленные">Свежие сверху</button>
         <span id="libraryModeNote" class="muted"></span>
       </div>
 

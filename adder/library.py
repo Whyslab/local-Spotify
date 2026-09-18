@@ -132,6 +132,13 @@ def library_index() -> list[dict]:
                     "track": meta["track"],
                     "albumartist": meta["albumartist"],
                     "duration": round(meta["duration"], 3) if meta["duration"] else None,
+                    # Когда трек появился здесь. Своей даты добавления у файла
+                    # нет, а тегам верить нельзя: год издания к «когда я это
+                    # скачал» отношения не имеет. mtime ставится в момент, когда
+                    # ингест дописывает теги, — это и есть «появился в фонотеке».
+                    # Сдвигается при перетегировании, и это честнее, чем ничего:
+                    # иначе свежие треки не отличить от собранных в августе.
+                    "added": int(f.stat().st_mtime),
                     "haystack": f"{artist} {title} {album}".lower(),
                 }
             )
