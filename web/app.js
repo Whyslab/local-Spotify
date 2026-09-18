@@ -9,7 +9,7 @@
 const POLL_MS = 3000;
 const SEARCH_DEBOUNCE_MS = 300;
 
-let activeView = "viewAdd";
+let activeView = "viewHome";
 let librarySearchTimer = null;
 
 /* ---------------- Token ---------------- */
@@ -52,6 +52,72 @@ function applyLoginState() {
 
 /* ---------------- Views ---------------- */
 
+/* ---------------- «Ещё» ----------------
+ *
+ * Добавление и служебный раздел ушли из постоянного ряда: к ним обращаются
+ * изредка, а место в ряду они занимали наравне с фонотекой. Теперь они за
+ * одной кнопкой — дотянуться можно, но не задев локтем.
+ */
+const MORE_VIEWS = [
+    ["viewAdd", "Добавить"],
+    ["viewService", "Сервис"],
+];
+
+function closeMoreMenu() {
+    const menu = document.getElementById("moreMenu");
+    if (menu) menu.remove();
+    const tab = document.getElementById("moreTab");
+    if (tab) tab.setAttribute("aria-expanded", "false");
+    document.removeEventListener("keydown", moreKeydown, true);
+    document.removeEventListener("pointerdown", morePointerDown, true);
+}
+
+function moreKeydown(event) {
+    if (event.key === "Escape") { closeMoreMenu(); document.getElementById("moreTab")?.focus(); }
+}
+
+function morePointerDown(event) {
+    const menu = document.getElementById("moreMenu");
+    const tab = document.getElementById("moreTab");
+    if (menu && !menu.contains(event.target) && !tab.contains(event.target)) closeMoreMenu();
+}
+
+function toggleMoreMenu(event) {
+    if (event) event.stopPropagation();
+    const tab = document.getElementById("moreTab");
+    if (document.getElementById("moreMenu")) { closeMoreMenu(); return; }
+
+    const menu = document.createElement("div");
+    menu.id = "moreMenu";
+    menu.className = "row-menu more-menu";
+    menu.setAttribute("role", "menu");
+    for (const [view, label] of MORE_VIEWS) {
+        const item = document.createElement("button");
+        item.className = "row-menu-item";
+        item.setAttribute("role", "menuitem");
+        item.textContent = label;
+        item.onclick = () => { closeMoreMenu(); switchView(view); };
+        menu.appendChild(item);
+    }
+
+    tab.insertAdjacentElement("afterend", menu);
+
+    /* Ставим по месту кнопки: на телефоне ряд вкладок прижат к низу экрана,
+     * на ноутбуке стоит наверху рельсы, и «всегда вверх» там уезжает за край. */
+    const box = tab.getBoundingClientRect();
+    menu.style.left = Math.round(box.left) + "px";
+    if (window.innerHeight - box.bottom > 180) {
+        menu.style.top = Math.round(box.bottom + 6) + "px";
+    } else {
+        menu.style.bottom = Math.round(window.innerHeight - box.top + 6) + "px";
+    }
+
+    tab.setAttribute("aria-expanded", "true");
+    document.addEventListener("keydown", moreKeydown, true);
+    document.addEventListener("pointerdown", morePointerDown, true);
+    menu.querySelector(".row-menu-item").focus();
+}
+
 function switchView(id) {
     activeView = id;
     updateSearchPlaceholder(id);
@@ -64,6 +130,9 @@ function switchView(id) {
     for (const tab of document.querySelectorAll(".tab")) {
         tab.classList.toggle("is-active", tab.dataset.view === id);
     }
+    /* Раздел спрятан за «Ещё» — пусть кнопка показывает, что мы внутри неё. */
+    const more = document.getElementById("moreTab");
+    if (more) more.classList.toggle("is-active", MORE_VIEWS.some(([view]) => view === id));
     refresh();
 }
 

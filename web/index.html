@@ -321,13 +321,9 @@
   <div class="rail">
 
   <nav class="tabbar">
-    <button class="tab" data-view="viewHome" onclick="switchView('viewHome')">
+    <button class="tab is-active" data-view="viewHome" onclick="switchView('viewHome')">
       <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11l9-8 9 8M5 10v10h14V10"/></svg>
       <span>Главная</span>
-    </button>
-    <button class="tab is-active" data-view="viewAdd" onclick="switchView('viewAdd')">
-      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
-      <span>Добавить</span>
     </button>
     <button class="tab" data-view="viewLibrary" onclick="switchView('viewLibrary')">
       <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
@@ -337,9 +333,12 @@
       <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/><path d="M18 15v6M15 18h6"/></svg>
       <span>Подборки</span>
     </button>
-    <button class="tab" data-view="viewService" onclick="switchView('viewService')">
-      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg>
-      <span>Сервис</span>
+    <!-- Всё, к чему не тянутся каждый день: добавление и служебный раздел.
+         В постоянном ряду остаются Главная, Фонотека и Подборки. -->
+    <button id="moreTab" class="tab" onclick="toggleMoreMenu(event)"
+            aria-haspopup="menu" aria-expanded="false">
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg>
+      <span>Ещё</span>
     </button>
   </nav>
 

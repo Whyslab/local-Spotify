@@ -685,6 +685,15 @@ button.danger {
     box-shadow: 0 14px 30px #000000aa;
 }
 
+/* Меню «Ещё» ставится по месту самой кнопки, из player.js: ряд вкладок на
+   телефоне прижат к низу экрана, а на ноутбуке стоит наверху рельсы — одной
+   привязки «вверх» или «вниз» на оба случая не хватает. */
+.more-menu {
+    position: fixed;
+    right: auto;
+    min-width: 180px;
+}
+
 .row-menu-item {
     min-height: 38px;
     padding: 0 12px;
