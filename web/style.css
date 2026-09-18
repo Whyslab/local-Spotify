@@ -693,6 +693,17 @@ button.danger {
 /* Находка на полке. Обложки нет — вместо неё буква, поэтому квадрат надо
    нарисовать самому; пунктир отличает её от своих треков раньше, чем человек
    дочитает подпись. */
+/* Номер трека в альбоме. Моноширинные цифры, чтобы столбик не гулял от
+   единицы к десятке. */
+.album-track-number {
+    flex: 0 0 auto;
+    width: 22px;
+    text-align: right;
+    color: var(--text-3);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+}
+
 .shelf-tile.is-find .shelf-art {
     display: flex;
     align-items: center;

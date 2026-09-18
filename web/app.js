@@ -354,6 +354,16 @@ function renderRailQueue(tasks, pending) {
 
 }
 
+/* «1 ч 12 мин» вместо 4327 секунд: у альбома спрашивают, сколько он идёт,
+ * а не сколько в нём секунд. */
+function humanLength(seconds) {
+    const total = Math.round(seconds / 60);
+    const hours = Math.floor(total / 60);
+    const minutes = total % 60;
+    if (!hours) return `${minutes} мин`;
+    return minutes ? `${hours} ч ${minutes} мин` : `${hours} ч`;
+}
+
 function plural(n, one, few, many) {
     const mod10 = n % 10, mod100 = n % 100;
     let word = many;
@@ -624,7 +634,11 @@ function renderHome(data) {
         for (const a of data.albums) {
             const row = document.createElement("button");
             row.className = "track playlist-row";
-            row.onclick = () => { setLibraryMode("albums"); switchView("viewLibrary"); };
+            row.onclick = () => {
+                pendingAlbum = { artist: a.artist, album: a.album };
+                setLibraryMode("albums");
+                switchView("viewLibrary");
+            };
             const cover = document.createElement("div");
             cover.className = "cover";
             cover.textContent = a.album.slice(0, 1).toUpperCase();
@@ -775,6 +789,10 @@ function albumTile(group) {
 /* Один альбом целиком. Показывается на месте сетки — так же, как подборка
  * показывается на месте списка подборок. */
 let openAlbumGroup = null;
+/* Какой именно альбом открыть, когда фонотека догрузится. С главной альбом
+ * раньше открывал просто раздел «Альбомы» — и человек оказывался в сетке из
+ * сотни изданий, без того, на что нажал. */
+let pendingAlbum = null;
 
 function openAlbum(group) {
     openAlbumGroup = group;
@@ -797,7 +815,12 @@ function openAlbum(group) {
     name.textContent = group.album;
     const who = document.createElement("p");
     who.className = "muted";
-    who.textContent = group.artist + " · " + plural(group.tracks.length, "трек", "трека", "треков");
+    /* Сколько это играть — вопрос, который задают альбому первым после «чей он».
+     * Складываем то, что уже посчитано при чтении тегов. */
+    const seconds = group.tracks.reduce((sum, t) => sum + (t.duration || 0), 0);
+    who.textContent = group.artist
+        + " · " + plural(group.tracks.length, "трек", "трека", "треков")
+        + (seconds ? " · " + humanLength(seconds) : "");
 
     const row = document.createElement("div");
     row.className = "row wrap";
@@ -817,7 +840,16 @@ function openAlbum(group) {
 
     const list = document.createElement("div");
     list.className = "rows";
-    for (const t of group.tracks) list.appendChild(libraryRow(t, group.tracks));
+    group.tracks.forEach((t, i) => {
+        const card = libraryRow(t, group.tracks);
+        /* Номер по порядку, а не из тега: тег track в этой фонотеке пустой у
+         * большинства файлов, а «третий сверху» человеку и нужен. */
+        const number = document.createElement("div");
+        number.className = "album-track-number";
+        number.textContent = String(i + 1);
+        card.insertBefore(number, card.firstChild);
+        list.appendChild(card);
+    });
     box.appendChild(list);
     markPlayingRow();
 }
@@ -919,6 +951,10 @@ async function library() {
         if (!r.ok) return;
         const data = await r.json();
         if (mode !== libraryMode) return;
+        /* Пока мы ходили за фонотекой, мог открыться альбом: нажатие с главной
+         * запускает загрузку дважды — из setLibraryMode и из switchView, — и
+         * вторая перерисовка смахивала бы открытый альбом обратно в сетку. */
+        if (openAlbumGroup) return;
         box.replaceChildren();
 
         if (mode === "tracks") {
@@ -942,6 +978,13 @@ async function library() {
             grid.className = "album-grid";
             for (const g of albums) grid.appendChild(albumTile(g));
             box.appendChild(grid);
+
+            if (pendingAlbum) {
+                const wanted = albums.find(g =>
+                    g.album === pendingAlbum.album && g.artist === pendingAlbum.artist);
+                pendingAlbum = null;
+                if (wanted) { openAlbum(wanted); return; }
+            }
         } else {
             /* Сингл — издание из одного трека. Показываем его обычной строкой:
              * разворачивать там нечего. */
