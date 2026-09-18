@@ -988,17 +988,24 @@ function playPlaylist() {
 
 async function createPlaylist() {
     const field = document.getElementById("newPlaylist");
+    const note = document.getElementById("playlistsNote");
     const name = field.value.trim();
-    if (!name) return;
+    /* Молчание на пустое поле читается как поломка кнопки: нажал — ничего не
+     * произошло, и почему, страница не говорит. */
+    if (!name) {
+        note.textContent = "Впиши название: подборка станет файлом с этим именем.";
+        field.focus();
+        return;
+    }
     const r = await fetch("/api/playlists", {
         method: "POST",
         headers: { ...headers(), "Content-Type": "application/json" },
         body: JSON.stringify({ name, paths: [] }),
     });
     const data = await r.json();
-    if (!r.ok) { document.getElementById("playlistsNote").textContent = data.detail || "Ошибка"; return; }
+    if (!r.ok) { note.textContent = data.detail || "Ошибка"; return; }
     field.value = "";
-    document.getElementById("playlistsNote").textContent = "";
+    note.textContent = "";
     playlists();
 }
 
