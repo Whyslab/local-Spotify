@@ -1159,10 +1159,39 @@ function moveTrack(from, to) {
     savePlaylist(paths);
 }
 
-function removeAt(position) {
+/* Убрать трек — действие без вопроса, но с возвратом: вопрос на каждое «убрать»
+ * утомляет, а вот отменить промах надо уметь. Кнопка «Вернуть» живёт полминуты
+ * и ставит трек на то же место, откуда он ушёл. */
+async function removeAt(position) {
+    const removed = player.playlist.entries[position];
     const paths = player.playlist.entries.map(e => e.path);
     paths.splice(position, 1);
-    savePlaylist(paths);
+    await savePlaylist(paths);
+    if (removed) offerUndoRemoval(removed, position);
+}
+
+function offerUndoRemoval(removed, position) {
+    const note = document.getElementById("playlistNote");
+    if (!note) return;
+    note.replaceChildren();
+
+    const text = document.createElement("span");
+    text.textContent = `Убрано: ${removed.title || removed.path}. `;
+
+    const undo = document.createElement("button");
+    undo.className = "ghost small-inline";
+    undo.textContent = "Вернуть";
+    undo.onclick = async () => {
+        undo.disabled = true;
+        const paths = player.playlist.entries.map(e => e.path);
+        /* На то же место: «вернуть» в конец списка — это не возврат. */
+        paths.splice(Math.min(position, paths.length), 0, removed.path);
+        await savePlaylist(paths);
+        setPlaylistNote("Вернули на место.");
+    };
+
+    note.append(text, undo);
+    setTimeout(() => { if (note.contains(undo)) setPlaylistNote(""); }, 30000);
 }
 
 async function savePlaylist(paths) {
@@ -1238,6 +1267,51 @@ async function renamePlaylist() {
     player.playlist = await r.json();
     document.getElementById("playlistRename").value = "";
     renderPlaylist();
+}
+
+/* Удаление подборки спрашивает — одним неловким нажатием пропадала «Monday» на
+ * тысячу треков. Спрашиваем на месте, а не браузерным окном: то же правило, что
+ * и у удаления трека в app.js. Кнопка сама превращается в вопрос, поэтому
+ * промахнуться по «Удалить» второй раз подряд нужно уже осознанно. */
+function askDeletePlaylist(button) {
+    const pl = player.playlist;
+    if (!pl || button.dataset.armed === "1") return;
+
+    const box = document.createElement("div");
+    box.className = "confirm";
+
+    const head = document.createElement("h3");
+    head.textContent = `Удалить подборку «${pl.name}»?`;
+
+    const note = document.createElement("p");
+    note.textContent = pl.entries.length === 1
+        ? "Файл подборки уедет в корзину. Сам трек останется в фонотеке."
+        : `Файл подборки уедет в корзину. Все ${pl.entries.length} треков останутся в фонотеке.`;
+
+    const row = document.createElement("div");
+    row.className = "row";
+
+    const cancel = document.createElement("button");
+    cancel.className = "ghost grow";
+    cancel.textContent = "Отмена";
+    cancel.onclick = () => box.replaceWith(button);
+
+    const confirm = document.createElement("button");
+    confirm.className = "danger grow";
+    confirm.textContent = "Удалить";
+    confirm.onclick = async () => {
+        confirm.disabled = true;
+        cancel.disabled = true;
+        confirm.textContent = "Удаляю…";
+        await deletePlaylist();
+        /* Вернуть кнопку на место обязательно: иначе следующая открытая
+         * подборка встретит человека чужим вопросом «удалить?». */
+        box.replaceWith(button);
+    };
+
+    row.append(cancel, confirm);
+    box.append(head, note, row);
+    button.replaceWith(box);
 }
 
 async function deletePlaylist() {
