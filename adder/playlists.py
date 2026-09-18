@@ -221,6 +221,32 @@ def write(name: str, paths: list[str], expected_revision: str | None) -> Playlis
     return read(name)
 
 
+def swap_everywhere(old_path: str, new_path: str) -> int:
+    """Поставить `new_path` на все места, где стоит `old_path`.
+
+    Возвращает число изменённых подборок. Место в списке сохраняется — в этом
+    вся суть замены: «загрузилась не та версия» не должно означать «трек уехал
+    в конец».
+
+    Ревизия не проверяется намеренно: замену запускает не человек за экраном, а
+    завершившаяся загрузка, и отказывать ей из-за того, что подборку тронули
+    минуту назад, значило бы оставить в ней битую строку.
+    """
+    changed = 0
+    for entry in listing():
+        name = entry["name"]
+        with _lock_for(name):
+            path = playlist_path(name)
+            paths = parse(path.read_text(encoding="utf-8")) if path.exists() else []
+            if old_path not in paths:
+                continue
+            _archive(path)
+            _atomic_write(path, render([new_path if p == old_path else p for p in paths]))
+            changed += 1
+            logger.info("Playlist %r: %s заменён на %s", name, old_path, new_path)
+    return changed
+
+
 def create(name: str, paths: list[str] | None = None) -> Playlist:
     path = playlist_path(name)
     if path.exists():

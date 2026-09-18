@@ -476,6 +476,73 @@ async def import_files(
     return {"accepted": accepted, "skipped": skipped}
 
 
+class ReplaceRequest(BaseModel):
+    """Какой трек меняем и на что. Ссылка — для замены с YouTube."""
+
+    path: str
+    url: str
+
+
+@app.post("/api/replace")
+def replace_track(req: ReplaceRequest, authenticated: bool = Depends(verify_token)):
+    """Заменить трек фонотеки другой его версией с YouTube.
+
+    Бывает, что скачалась не та запись: концертник вместо студийной, дорожка
+    из клипа вместо трека. Меняем не байты файла, а то, на что смотрят
+    подборки: новая версия проходит обычный конвейер со своими тегами, а когда
+    доедет — встаёт на место старой, сохраняя её место в списке. Старая уезжает
+    в корзину.
+
+    Всё это происходит после загрузки, в рабочем потоке: страницу можно закрыть.
+    """
+    # Путь проверяется сразу: замену несуществующего трека лучше отвергнуть
+    # здесь, чем узнать об этом через минуту в журнале.
+    library.library_track(req.path)
+
+    is_valid, error_msg = ingest.validate_url(req.url)
+    if not is_valid:
+        raise HTTPException(status_code=400, detail=f"Invalid URL: {error_msg}")
+
+    try:
+        link = ingest.canonicalize_youtube_url(req.url)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid YouTube URL: {exc}") from exc
+
+    tid = _queue_source(link)
+    if tid is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Эта ссылка уже в очереди или её трек уже в фонотеке",
+        )
+    db.task_update(tid, replace_of=req.path)
+    return {"task": tid}
+
+
+@app.post("/api/replace-file")
+async def replace_track_with_file(
+    path: str,
+    file: UploadFile = File(...),
+    authenticated: bool = Depends(verify_token),
+):
+    """То же самое, но правильная версия приходит файлом с диска."""
+    library.library_track(path)
+
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in library.AUDIO_SUFFIXES:
+        raise HTTPException(status_code=400, detail=f"Формат {suffix or '(нет)'} не поддерживается")
+
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Пустой файл")
+
+    source_key, _ = ingest.stash_upload(data, file.filename or "track" + suffix)
+    tid = _queue_source(source_key)
+    if tid is None:
+        raise HTTPException(status_code=409, detail="Этот файл уже в очереди или уже в фонотеке")
+    db.task_update(tid, replace_of=path)
+    return {"task": tid}
+
+
 @app.get("/api/search")
 def search(q: str, limit: int = 8, authenticated: bool = Depends(verify_token)):
     """Look for a track on YouTube without downloading anything.

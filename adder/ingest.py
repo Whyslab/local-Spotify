@@ -1002,6 +1002,42 @@ def import_local_file(tid: int, source: Path, original_name: str) -> Downloaded:
     return Downloaded(temp_path=stage_into_temp(source, key), names=names, thumbnail=None)
 
 
+def _apply_replacement(tid: int, new_path: str) -> None:
+    """Поставить свежескачанный трек на место того, который он заменяет.
+
+    Заменяем не байты файла, а ссылку: новый трек проходит обычный конвейер со
+    своими тегами и своим именем, а потом занимает место старого во всех
+    подборках. Перезапись байтов сохранила бы путь, но развела бы имя файла с
+    содержимым — и расширение могло не совпасть.
+
+    Старый файл уезжает в корзину, а не стирается: «загрузилась не та версия» —
+    это ровно тот случай, когда через день выясняется, что та.
+    """
+    rows = db.db_query("SELECT replace_of FROM tasks WHERE id = ?", (tid,))
+    old_path = (rows[0]["replace_of"] if rows else None) or ""
+    if not old_path or old_path == new_path:
+        return
+
+    from . import playlists
+
+    moved = playlists.swap_everywhere(old_path, new_path)
+    try:
+        # Тот же путь, что и у обычного удаления: файл уезжает в корзину, а
+        # пустые папки за ним подчищаются.
+        library.delete_track(old_path)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Не удалось убрать заменённый файл %s: %s", old_path, exc, extra={"task_id": tid}
+        )
+    logger.info(
+        "Замена: %s → %s, подборок затронуто %d",
+        old_path,
+        new_path,
+        moved,
+        extra={"task_id": tid},
+    )
+
+
 def ingest_temp_file(tid: int, temp_path: Path, names: TrackNames, thumbnail: str | None) -> str:
     """Tag a staged file and move it into the library, or discard it as a duplicate.
 
@@ -1076,4 +1112,10 @@ def ingest_temp_file(tid: int, temp_path: Path, names: TrackNames, thumbnail: st
     from . import analysis
 
     analysis.analyse_track(str(final_target))
+
+    # Куда лёг файл — нужно для замены трека: подмену нельзя искать по артисту
+    # и названию, иначе в корзину уедет не тот.
+    relative = str(final_target.relative_to(config.LIBRARY.resolve()))
+    db.task_update(tid, result_path=relative)
+    _apply_replacement(tid, relative)
     return "stored"

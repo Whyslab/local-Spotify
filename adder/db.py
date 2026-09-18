@@ -58,6 +58,14 @@ def db_init():
     # Small key/value store for things that must outlive a restart but do not
     # deserve a table of their own -- e.g. "the reconciliation sweep has run
     # once, it may now delete rather than only report".
+    # Замена трека: какой файл эта задача должна вытеснить и чем она кончилась.
+    # Без пути результата подмену пришлось бы искать по артисту и названию —
+    # то есть угадывать, а угадывать тут нельзя: не тот файл уедет в корзину.
+    with suppress(sqlite3.OperationalError):
+        db_exec("ALTER TABLE tasks ADD COLUMN replace_of TEXT")
+    with suppress(sqlite3.OperationalError):
+        db_exec("ALTER TABLE tasks ADD COLUMN result_path TEXT")
+
     db_exec("CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT)")
 
     # Work owed to Navidrome. A cover upload or a playlist deletion cannot be

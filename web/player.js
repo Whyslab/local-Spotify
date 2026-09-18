@@ -933,6 +933,7 @@ function openTrackMenu(button, position) {
     const separator = document.createElement("div");
     separator.className = "row-menu-line";
     menu.appendChild(separator);
+    menu.appendChild(item("Заменить другой версией…", "", () => askForReplacement(button, position)));
     menu.appendChild(item("Убрать из подборки", "", () => removeAt(position)));
     menu.lastChild.classList.add("is-danger");
 
@@ -948,6 +949,89 @@ function openTrackMenu(button, position) {
 /* Спрашиваем номер прямо в списке, а не браузерным окном: тем же правилом
  * живёт подтверждение удаления в app.js — родное окно на телефоне слишком
  * легко смахнуть мимоходом, и оно ничего не объясняет. */
+/* Замена трека: скачалась не та версия — концертник вместо студийной, дорожка
+ * из клипа вместо трека. Даём два пути: ссылка на YouTube или файл с диска.
+ * Трек не исчезает и не уезжает в конец — новая версия встаёт на его место,
+ * а старая уходит в корзину. Всё после загрузки, на сервере: страницу можно
+ * закрыть. */
+function askForReplacement(button, position) {
+    const entry = player.playlist.entries[position];
+    closeTrackMenu();
+    if (!entry) return;
+
+    const form = document.createElement("form");
+    form.className = "row-menu row-menu-form";
+
+    const label = document.createElement("label");
+    label.className = "row-menu-label";
+    label.textContent = "Правильная версия: ссылка на YouTube";
+
+    const field = document.createElement("input");
+    field.type = "url";
+    field.placeholder = "https://youtu.be/…";
+    field.className = "row-menu-input";
+
+    const go = document.createElement("button");
+    go.type = "submit";
+    go.className = "row-menu-item";
+    go.textContent = "Заменить по ссылке";
+
+    const or = document.createElement("label");
+    or.className = "row-menu-item";
+    or.textContent = "…или выбрать файл";
+    const picker = document.createElement("input");
+    picker.type = "file";
+    picker.accept = ".mp3,.m4a,.flac,.opus,.ogg";
+    picker.hidden = true;
+    picker.onchange = () => {
+        if (picker.files && picker.files[0]) sendReplacement(entry.path, null, picker.files[0]);
+        closeTrackMenu();
+    };
+    or.appendChild(picker);
+
+    form.onsubmit = (event) => {
+        event.preventDefault();
+        const url = field.value.trim();
+        closeTrackMenu();
+        if (url) sendReplacement(entry.path, url, null);
+    };
+
+    form.append(label, field, go, or);
+    button.insertAdjacentElement("afterend", form);
+    button.setAttribute("aria-expanded", "true");
+    openMenu = { menu: form, button };
+    document.addEventListener("keydown", menuKeydown, true);
+    document.addEventListener("pointerdown", menuPointerDown, true);
+    field.focus();
+}
+
+async function sendReplacement(path, url, file) {
+    setPlaylistNote("Ставлю в очередь замену…");
+    try {
+        let r;
+        if (file) {
+            const body = new FormData();
+            body.append("file", file);
+            r = await fetch("/api/replace-file?path=" + encodeURIComponent(path), {
+                method: "POST",
+                headers: headers(),
+                body,
+            });
+        } else {
+            r = await fetch("/api/replace", {
+                method: "POST",
+                headers: { ...headers(), "Content-Type": "application/json" },
+                body: JSON.stringify({ path, url }),
+            });
+        }
+        const data = await r.json();
+        if (!r.ok) { setPlaylistNote(data.detail || "Не удалось заменить"); return; }
+        setPlaylistNote("Версия качается. Когда доедет — встанет на это же место.");
+    } catch (e) {
+        setPlaylistNote("Не удалось заменить: " + e.message);
+    }
+}
+
 function askForPosition(button, from, total) {
     closeTrackMenu();
 
