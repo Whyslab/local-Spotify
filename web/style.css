@@ -998,6 +998,15 @@ button.ghost.is-on { color: var(--text); border-color: var(--text); font-weight:
     gap: 4px;
 }
 
+/* Режимы и очередь — своей группой справа, с отбивкой от перемотки: это
+   переключатели, а не управление воспроизведением, и рука ищет их отдельно. */
+.player-modes {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: 10px;
+}
+
 .icon-button.primary-round {
     background: var(--accent);
     color: var(--accent-ink);

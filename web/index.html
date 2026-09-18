@@ -240,10 +240,6 @@
       <div id="playerNote" class="player-note"></div>
     </div>
     <div class="player-controls">
-      <button id="playerShuffle" class="icon-button" onclick="toggleShuffle()"
-              aria-label="Перемешать" title="Перемешать" aria-pressed="false">
-        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M16 3h5v5M4 20 21 3M21 16v5h-5M15 15l6 6M4 4l5 5"/></svg>
-      </button>
       <button class="icon-button" onclick="prevTrack()" aria-label="Предыдущий">
         <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M19 20 9 12l10-8zM5 4v16"/></svg>
       </button>
@@ -253,6 +249,15 @@
       <button class="icon-button" onclick="nextTrack()" aria-label="Следующий">
         <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4l10 8-10 8zM19 4v16"/></svg>
       </button>
+
+      <!-- Режимы и очередь — одной группой справа от перемотки. Перемешивание
+           стояло слева, до кнопки «играть», и до него приходилось тянуться
+           через весь ряд. -->
+      <div class="player-modes">
+        <button id="playerShuffle" class="icon-button" onclick="toggleShuffle()"
+                aria-label="Перемешать" title="Перемешать" aria-pressed="false">
+            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M16 3h5v5M4 20 21 3M21 16v5h-5M15 15l6 6M4 4l5 5"/></svg>
+          </button>
       <button id="playerRepeat" class="icon-button" onclick="cycleRepeat()"
               aria-label="Повтор" title="Повтор выключен">
         <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M17 2l4 4-4 4M3 11V9a4 4 0 0 1 4-4h14M7 22l-4-4 4-4M21 13v2a4 4 0 0 1-4 4H3"/></svg>
@@ -266,6 +271,7 @@
               aria-label="Очередь" title="Очередь" aria-pressed="false">
         <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h11M4 12h11M4 18h7M17 14v7M21 18l-4 3-4-3"/></svg>
       </button>
+      </div>
     </div>
     <div class="player-progress">
       <span id="playerElapsed" class="player-time">0:00</span>
