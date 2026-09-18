@@ -642,6 +642,30 @@ button.danger {
     cursor: pointer;
 }
 .queue-row:hover { background: var(--surface-2); }
+
+/* Находки — то, чего в фонотеке нет. Отделены заголовком и чуть приглушены:
+   это предложение, а не очередь, и нажатие на строку ничего не включает —
+   включать пока нечего. */
+.queue-finds-head {
+    margin: 14px 0 6px;
+    padding-top: 12px;
+    border-top: 1px solid var(--line);
+    color: var(--text-3);
+    font-size: 11px;
+    font-weight: 650;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+}
+
+.queue-find {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    cursor: default;
+}
+.queue-find:hover { background: none; }
+.queue-find .track-info { flex: 1 1 auto; min-width: 0; }
+.queue-find .track-title { color: var(--text-2); }
 /* Уже сыгранное приглушено, играющее светится — список читается сверху вниз
    как дорога: позади бледное, под ногами яркое, впереди обычное. */
 .queue-row.is-playing .track-title { font-weight: 750; }
@@ -1310,24 +1334,6 @@ button.ghost.is-on { color: var(--text); border-color: var(--text); font-weight:
         overflow: hidden;
         text-overflow: ellipsis;
     }
-
-    .rail-new {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        margin-top: 4px;
-        padding: 8px 12px;
-        border: 0;
-        border-radius: var(--r-control);
-        background: none;
-        color: var(--text-3);
-        font: inherit;
-        font-size: 12px;
-        cursor: pointer;
-    }
-    .rail-new:hover { background: var(--surface-2); color: var(--text); }
-    .rail-new .icon { width: 15px; height: 15px; }
-
     /* The slow numbers. They move about once a day and belong at the bottom of
        the rail, not in a panel that asks to be read. */
     .rail-foot {

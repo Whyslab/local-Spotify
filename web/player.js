@@ -157,6 +157,29 @@ function renderPlayerModes() {
 
 /* ---------------- Панель очереди ---------------- */
 
+/* Находки — треки, которых в фонотеке нет. null значит «ещё не спрашивали»:
+ * очередь перерисовывается на каждом переключении трека, а находки от этого не
+ * меняются, и Deezer незачем спрашивать по разу на трек. Спрошенное держится
+ * до перезагрузки страницы. */
+let externalFinds = null;
+
+async function loadExternalFinds() {
+    if (externalFinds !== null) return;
+    /* Занимаем место сразу: панель успевают закрыть и открыть заново, пока
+     * ответ идёт, и второй запрос был бы лишним. */
+    externalFinds = [];
+    try {
+        const r = await fetch("/api/discover-external?limit=12", { headers: headers() });
+        if (!r.ok) return;
+        const data = await r.json();
+        if (Array.isArray(data.tracks)) externalFinds = data.tracks;
+    } catch (e) {
+        /* Находки — приятное дополнение, а не часть очереди: без них так без них. */
+        return;
+    }
+    renderQueuePanel();
+}
+
 function toggleQueuePanel() {
     const panel = document.getElementById("playQueue");
     if (!panel) return;
@@ -166,7 +189,10 @@ function toggleQueuePanel() {
         button.classList.toggle("is-on", !panel.hidden);
         button.setAttribute("aria-pressed", String(!panel.hidden));
     }
-    if (!panel.hidden) renderQueuePanel();
+    if (!panel.hidden) {
+        renderQueuePanel();
+        loadExternalFinds();
+    }
 }
 
 function renderQueuePanel() {
@@ -225,6 +251,57 @@ function renderQueuePanel() {
         }
         box.appendChild(row);
     });
+
+    /* Находок нет — и раздела нет: пустой заголовок выглядел бы поломкой. */
+    if (!externalFinds || !externalFinds.length) return;
+    const head = document.createElement("div");
+    head.className = "queue-finds-head";
+    head.textContent = "Можно добавить — этого нет в фонотеке";
+    box.appendChild(head);
+    for (const find of externalFinds) box.appendChild(externalFindRow(find));
+}
+
+/* «+» ничего не качает. Он открывает поиск с готовым запросом: две загрузки
+ * одной песни различаются длиной и каналом, и выбор остаётся за человеком —
+ * то же правило, по которому /api/search сам ничего не выбирает. */
+function externalFindRow(find) {
+    const artist = find.artist || "";
+    const title = find.title || "";
+    const query = artist ? `${artist} — ${title}` : title;
+
+    const row = document.createElement("div");
+    row.className = "track queue-row queue-find";
+
+    const info = document.createElement("div");
+    info.className = "track-info";
+    const line = document.createElement("div");
+    line.className = "track-title";
+    line.textContent = title;
+    info.appendChild(line);
+    if (artist) {
+        const who = document.createElement("div");
+        who.className = "track-artist";
+        who.textContent = artist;
+        info.appendChild(who);
+    }
+    row.appendChild(info);
+
+    const add = document.createElement("button");
+    add.className = "icon-button small";
+    add.textContent = "+";
+    add.title = "Искать на YouTube";
+    add.setAttribute("aria-label", `Искать «${query}» на YouTube`);
+    add.onclick = () => {
+        switchView("viewAdd");
+        const field = document.getElementById("searchQuery");
+        if (field) field.value = query;
+        runSearch();
+        /* Панель закрывается: она стоит поверх выдачи, за которой человек
+         * и нажал «+». */
+        toggleQueuePanel();
+    };
+    row.appendChild(add);
+    return row;
 }
 
 function playQueue(tracks, startAt = 0, mode = "manual") {

@@ -9,6 +9,10 @@ Amperfy показывает только то, что Navidrome нашёл в �
 Полки считаются в одном месте. `discover` живёт здесь, а `adder.app` берёт её
 отсюда: будь две реализации, главная и подборки со временем разошлись бы, и
 «Может понравиться» на телефоне показывало бы не то, что на ноутбуке.
+
+Здесь же `external` — находки, которых в фонотеке нет. Подборкой она не
+становится (играть нечего, файлов нет), но начинается с тех же любимых
+артистов, что и `discover`, и делить с ней этот отбор проще, чем повторять.
 """
 
 from __future__ import annotations
@@ -33,31 +37,40 @@ DISCOVER_NAME = "Может понравиться"
 MIN_TRACKS = 8
 
 
-def discover(rows: list[dict], top: int = 6, want: int = 24) -> dict:
-    """Треки своей же фонотеки, о которых не думал.
+def _favourites(rows: list[dict], top: int) -> list[str]:
+    """Самые собранные артисты фонотеки.
 
     «Предпочтения» берутся из состава фонотеки, а не из истории прослушиваний:
     в `plays` сейчас четыре десятка записей, и почти все — проверочные включения
     по секунде. Собранное своими руками — свидетельство вкуса надёжнее, чем
     журнал, которого пока нет.
-
-    Дальше Deezer называет похожих на самых собранных артистов, и из фонотеки
-    отбирается то, что этими похожими написано, — за вычетом самих любимцев:
-    их треки не открытие.
     """
     counted = Counter(similar.primary(row.get("artist") or "") for row in rows if row.get("artist"))
     counted.pop("", None)
-    favourites = [name for name, _ in counted.most_common(top)]
-    if not favourites:
-        return {"based_on": [], "tracks": []}
+    return [name for name, _ in counted.most_common(top)]
 
+
+def _neighbours(favourites: list[str]) -> set[str]:
+    """Кого Deezer считает похожим на любимцев — за вычетом самих любимцев."""
     cache = runtime.PROJECT / "similar-cache"
     neighbours: set[str] = set()
     for name in favourites:
         neighbours.update(similar.similar_artists(name, cache, limit=10))
-    neighbours -= {name.lower() for name in favourites}
+    return neighbours - {name.lower() for name in favourites}
 
-    lowered = {name.lower() for name in neighbours}
+
+def discover(rows: list[dict], top: int = 6, want: int = 24) -> dict:
+    """Треки своей же фонотеки, о которых не думал.
+
+    Deezer называет похожих на самых собранных артистов, и из фонотеки
+    отбирается то, что этими похожими написано, — за вычетом самих любимцев:
+    их треки не открытие.
+    """
+    favourites = _favourites(rows, top)
+    if not favourites:
+        return {"based_on": [], "tracks": []}
+
+    lowered = {name.lower() for name in _neighbours(favourites)}
     picked = [
         row
         for row in rows
@@ -72,6 +85,63 @@ def discover(rows: list[dict], top: int = 6, want: int = 24) -> dict:
             for row in picked[:want]
         ],
     }
+
+
+def _key(artist: str, title: str) -> tuple[str, str]:
+    """По чему трек считается «тем же». Артист — только первый: в тегах фиты
+    склеены через «•», и «Артист • Гость» с «Артист» — одна и та же строка
+    фонотеки."""
+    return similar.primary(artist).strip().lower(), (title or "").strip().lower()
+
+
+def external(rows: list[dict], want: int = 12) -> list[dict]:
+    """Треки, которых в фонотеке нет вовсе.
+
+    То же начало, что у `discover` — любимцы и похожие на них, — но берутся уже
+    не свои файлы, а чарты похожих артистов, и из них выбрасывается всё, что
+    в фонотеке есть. Остаётся то, чего нет: это и предлагается человеку.
+
+    Ничего не скачивается: находка — повод открыть поиск и выбрать версию
+    руками. Автовыбор однажды набил фонотеку концертниками, и поэтому
+    `/api/search` до сих пор ничего не выбирает сам.
+
+    Сеть может не ответить — тогда список пустой. Для очереди это не ошибка:
+    находки к ней пристроены сбоку, играть она может и без них.
+    """
+    favourites = _favourites(rows, top=6)
+    if not favourites:
+        return []
+
+    have = {_key(row.get("artist") or "", row.get("title") or "") for row in rows}
+    cache = runtime.PROJECT / "similar-cache"
+
+    found: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    # Порядок обхода фиксирован: множество похожих каждый раз перебирается
+    # в своём порядке, и без сортировки один и тот же кэш давал бы разные
+    # находки на каждый запрос.
+    for name in sorted(_neighbours(favourites)):
+        for track in similar.top_tracks(name, cache, limit=5):
+            key = _key(track.get("artist") or "", track.get("title") or "")
+            if not all(key) or key in have or key in seen:
+                continue
+            seen.add(key)
+            found.append({"artist": track["artist"], "title": track["title"]})
+
+    random.Random(len(found)).shuffle(found)
+
+    # Подряд идущие треки одного артиста читаются как его список, а не как
+    # находки, поэтому следующий берётся первый, чей артист не тот же. Когда
+    # выбора нет, порядок остаётся как есть: перечень важнее вида.
+    ordered: list[dict] = []
+    while found and len(ordered) < want:
+        previous = ordered[-1]["artist"].lower() if ordered else ""
+        at = next(
+            (i for i, track in enumerate(found) if track["artist"].lower() != previous),
+            0,
+        )
+        ordered.append(found.pop(at))
+    return ordered
 
 
 def export(limit: int = 40) -> list[dict]:

@@ -857,6 +857,20 @@ def home(authenticated: bool = Depends(verify_token)):
     }
 
 
+@app.get("/api/discover-external")
+def discover_external(limit: int = 12, authenticated: bool = Depends(verify_token)):
+    """Находки извне: треки похожих артистов, которых в фонотеке нет.
+
+    Ничего не скачивает и ничего не ставит в очередь — только называет. Дальше
+    человек открывает поиск и выбирает версию сам, как и в /api/search.
+
+    Пустой список — нормальный ответ: Deezer мог не отозваться, а находки
+    к очереди пристроены сбоку. Отдавать 502 значило бы объявить сбоем то, что
+    им не является.
+    """
+    return {"tracks": shelves.external(library.library_index(), want=limit)}
+
+
 @app.get("/api/shuffle")
 def smart_shuffle(
     size: int = 50,

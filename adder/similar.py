@@ -14,6 +14,9 @@
 Ответ кладётся на диск навсегда: соседство артистов меняется годами,
 а не днями, и спрашивать одно и то же при каждом перемешивании незачем.
 Промах тоже запоминается — на месяц.
+
+Отсюда же берутся популярные треки артиста (`top_tracks`): одного имени мало,
+чтобы что-то предложить человеку, — ему нужен трек, который можно поискать.
 """
 
 from __future__ import annotations
@@ -30,13 +33,49 @@ logger = logging.getLogger(__name__)
 
 SEARCH = "https://api.deezer.com/search/artist"
 RELATED = "https://api.deezer.com/artist/{id}/related"
+TOP = "https://api.deezer.com/artist/{id}/top"
 TIMEOUT = 8
 MISS_TTL = 30 * 24 * 3600
 
 
-def _slot(cache_dir: Path, name: str) -> Path:
-    digest = hashlib.sha1(name.strip().lower().encode("utf-8")).hexdigest()
+class _Unreachable(Exception):
+    """Deezer не ответил. Отличать это от «не знает такого» приходится потому,
+    что промах можно запомнить, а обрыв связи запоминать нельзя: завтра тот же
+    артист найдётся."""
+
+
+def _slot(cache_dir: Path, name: str, kind: str = "") -> Path:
+    """Файл кэша. Про одного артиста спрашивают о разном, и у каждого вопроса
+    свой файл: иначе похожие и топ-треки затирали бы друг друга. Похожие
+    остаются без приставки — их кэш уже лежит на диске и переспрашивать незачем.
+    """
+    digest = hashlib.sha1(f"{kind}{name.strip().lower()}".encode()).hexdigest()
     return cache_dir / f"{digest}.json"
+
+
+def _recall(slot: Path, field: str) -> list | None:
+    """Что лежит в кэше. None значит «нечего взять, надо спрашивать»."""
+    if not slot.exists():
+        return None
+    try:
+        cached = json.loads(slot.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return None
+    saved = cached.get(field) or []
+    if saved or (time.time() - cached.get("at", 0)) < MISS_TTL:
+        return list(saved)
+    return None
+
+
+def _remember(slot: Path, cache_dir: Path, name: str, field: str, value: list) -> None:
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        slot.write_text(
+            json.dumps({"artist": name, field: value, "at": time.time()}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        logger.warning("Deezer: не смог записать кэш: %s", exc)
 
 
 def primary(artist: str) -> str:
@@ -44,29 +83,62 @@ def primary(artist: str) -> str:
     return (artist or "").split("•")[0].split(" feat")[0].strip()
 
 
+def _find_artist(client: httpx.Client, name: str) -> dict | None:
+    """Артист Deezer по имени. None — «не знает такого», иначе `_Unreachable`."""
+    found = client.get(SEARCH, params={"q": name, "limit": 5})
+    if not found.is_success:
+        raise _Unreachable(f"поиск ответил {found.status_code}")
+    candidates = (found.json() or {}).get("data") or []
+    if not candidates:
+        return None
+
+    # Поиск по строке иногда попадает не в того: на «PHARAOH» нашёлся
+    # однофамилец без похожих. Точное совпадение имени надёжнее
+    # первого места в выдаче.
+    exact = [c for c in candidates if c.get("name", "").lower() == name.lower()]
+    return (exact or candidates)[0]
+
+
 def _ask(name: str, limit: int) -> list[str] | None:
     """Спросить Deezer. None значит «не дозвонились», [] — «не знает»."""
     try:
         with httpx.Client(timeout=TIMEOUT) as client:
-            found = client.get(SEARCH, params={"q": name, "limit": 5})
-            if not found.is_success:
-                return None
-            candidates = (found.json() or {}).get("data") or []
-            if not candidates:
+            artist = _find_artist(client, name)
+            if artist is None:
                 return []
-
-            # Поиск по строке иногда попадает не в того: на «PHARAOH» нашёлся
-            # однофамилец без похожих. Точное совпадение имени надёжнее
-            # первого места в выдаче.
-            exact = [c for c in candidates if c.get("name", "").lower() == name.lower()]
-            artist = (exact or candidates)[0]
 
             related = client.get(RELATED.format(id=artist["id"]), params={"limit": limit})
             if not related.is_success:
                 return None
             return [row["name"] for row in (related.json() or {}).get("data") or []]
-    except httpx.HTTPError as exc:
+    except (_Unreachable, httpx.HTTPError) as exc:
         logger.info("похожие для %s: %s", name, exc)
+        return None
+
+
+def _ask_top(name: str, limit: int) -> list[dict] | None:
+    """То же про популярные треки. None — «не дозвонились», [] — «не знает»."""
+    try:
+        with httpx.Client(timeout=TIMEOUT) as client:
+            artist = _find_artist(client, name)
+            if artist is None:
+                return []
+
+            top = client.get(TOP.format(id=artist["id"]), params={"limit": limit})
+            if not top.is_success:
+                return None
+            tracks = []
+            for row in (top.json() or {}).get("data") or []:
+                title = (row.get("title") or "").strip()
+                if not title:
+                    continue
+                # Имя артиста берём из трека, а не из найденного артиста:
+                # у совместного трека в топе стоит тот, кто его выпустил.
+                who = ((row.get("artist") or {}).get("name") or artist.get("name") or "").strip()
+                tracks.append({"artist": who, "title": title})
+            return tracks
+    except (_Unreachable, httpx.HTTPError) as exc:
+        logger.info("топ-треки для %s: %s", name, exc)
         return None
 
 
@@ -77,26 +149,38 @@ def similar_artists(artist: str, cache_dir: Path, limit: int = 12) -> list[str]:
         return []
 
     slot = _slot(cache_dir, name)
-    if slot.exists():
-        try:
-            cached = json.loads(slot.read_text(encoding="utf-8"))
-            fresh = cached.get("names") or (time.time() - cached.get("at", 0)) < MISS_TTL
-            if fresh:
-                return list(cached.get("names") or [])
-        except (ValueError, OSError):
-            pass
+    cached = _recall(slot, "names")
+    if cached is not None:
+        return cached
 
     names = _ask(name, limit)
     if names is None:
         # Сеть молчит. Не запоминаем: это не про этого артиста.
         return []
 
-    try:
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        slot.write_text(
-            json.dumps({"artist": name, "names": names, "at": time.time()}, ensure_ascii=False),
-            encoding="utf-8",
-        )
-    except OSError as exc:
-        logger.warning("похожие: не смог записать кэш: %s", exc)
+    _remember(slot, cache_dir, name, "names", names)
     return names
+
+
+def top_tracks(artist: str, cache_dir: Path, limit: int = 5) -> list[dict]:
+    """Популярные треки артиста: `[{"artist": ..., "title": ...}]`.
+
+    Нужны, чтобы у похожего артиста было что предложить по имени: имени мало,
+    человек ищет трек. Кэш такой же вечный, как у похожих: чарт артиста живёт
+    неделями, а спрашивают его на каждое открытие очереди.
+    """
+    name = primary(artist)
+    if len(name) < 2:
+        return []
+
+    slot = _slot(cache_dir, name, kind="top:")
+    cached = _recall(slot, "tracks")
+    if cached is not None:
+        return cached
+
+    tracks = _ask_top(name, limit)
+    if tracks is None:
+        return []
+
+    _remember(slot, cache_dir, name, "tracks", tracks)
+    return tracks
