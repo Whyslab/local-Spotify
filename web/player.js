@@ -186,13 +186,19 @@ function renderQueuePanel() {
         count.textContent = left === 1 ? "дальше 1 трек" : `дальше ${left}`;
     }
 
-    route.forEach((queueIndex, position) => {
+    /* Очередь начинается с того, что играет, а не с начала маршрута. Сыгранное
+     * показывать незачем: панель открывают с вопросом «что дальше», а
+     * отыгранные строки отодвигали ответ вниз — при длинной подборке до него
+     * приходилось прокручивать. */
+    const from = at >= 0 ? at : 0;
+
+    route.slice(from).forEach((queueIndex, offset) => {
+        const position = from + offset;
         const track = player.queue[queueIndex];
         if (!track) return;
         const row = document.createElement("button");
         row.className = "track queue-row";
         if (queueIndex === player.index) row.classList.add("is-playing");
-        if (at >= 0 && position < at) row.classList.add("is-played");
         row.onclick = () => { player.orderAt = position; playAt(queueIndex); renderQueuePanel(); };
 
         const info = document.createElement("div");

@@ -644,7 +644,6 @@ button.danger {
 .queue-row:hover { background: var(--surface-2); }
 /* Уже сыгранное приглушено, играющее светится — список читается сверху вниз
    как дорога: позади бледное, под ногами яркое, впереди обычное. */
-.queue-row.is-played { opacity: .45; }
 .queue-row.is-playing .track-title { font-weight: 750; }
 
 /* Главная: полки-приглашения. Каждая показывает шесть строк из сорока —
