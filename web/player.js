@@ -161,6 +161,11 @@ function toggleQueuePanel() {
     const panel = document.getElementById("playQueue");
     if (!panel) return;
     panel.hidden = !panel.hidden;
+    /* На широком экране очередь занимает правую колонку — ту, где обложка.
+     * Всплывающим окном она перекрывала список, ради которого её и открывают,
+     * а на узком экране колонок нет вовсе, и там окно остаётся окном. */
+    const app = document.querySelector(".app");
+    if (app) app.classList.toggle("queue-open", !panel.hidden);
     const button = document.getElementById("playerQueueButton");
     if (button) {
         button.classList.toggle("is-on", !panel.hidden);

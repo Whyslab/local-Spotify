@@ -637,6 +637,10 @@ button.danger {
     text-align: left;
     background: none;
     border: 0;
+    /* Строка очереди — <button>, а у кнопки свой цвет текста, и он чёрный.
+       На тёмном фоне название трека выходило чёрным по чёрному: строки были,
+       читалось только имя артиста, у которого цвет задан своим правилом. */
+    color: var(--text);
     padding: 8px 10px;
     border-radius: var(--r-control, 8px);
     cursor: pointer;
@@ -1200,6 +1204,34 @@ button.ghost.is-on { color: var(--text); border-color: var(--text); font-weight:
        место списку, и возвращают кнопкой в плеере. Скрываем показом, а не
        атрибутом hidden: им уже распоряжается renderPlayer, и два хозяина у
        одного признака — это гарантированный спор. */
+    /* Очередь вместо панели трека. Оба селектора — по той же причине, что и
+       ниже: соседнее правило написано через :has(#player…), а :has считается по
+       самому весомому доводу внутри, и там id. */
+    .app.queue-open,
+    .app.queue-open:has(#player:not([hidden])) {
+        grid-template-columns: var(--rail-w, 232px) minmax(0, 1fr) 296px;
+        grid-template-areas:
+            "rail header aside"
+            "rail views  aside"
+            "bar  bar    bar";
+    }
+    /* Обложка уступает место: показывать их разом негде, а очередь человек
+       только что попросил. */
+    .app.queue-open #nowPanel { display: none; }
+
+    .app.queue-open .play-queue {
+        position: static;
+        grid-area: aside;
+        width: auto;
+        max-width: none;
+        max-height: none;
+        margin: 0;
+        border: 0;
+        border-left: 1px solid var(--line);
+        border-radius: 0;
+        box-shadow: none;
+    }
+
     /* Оба селектора нужны: соседнее правило написано через :has(#player…),
        а :has считается по самому весомому доводу внутри — там это id, и по
        весу оно перебивало простой класс. */
