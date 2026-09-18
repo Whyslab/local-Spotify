@@ -1368,8 +1368,21 @@ button.ghost.is-on { color: var(--text); border-color: var(--text); font-weight:
 
     /* Свёрнутая панель: только значки и логотип. Подписи и список подборок
        уезжают, потому что в 72 точки они превращаются в кашу из многоточий. */
+    /* Свёрнутая панель. Подписи вкладок уезжают — в 72 точки они превращаются
+       в кашу из многоточий, — а подборки остаются: по обложке их узнаёшь без
+       названия, и ради них панель и держат открытой. Прячутся только заголовок
+       и текст строк. */
     .app.rail-slim .tab span,
-    .app.rail-slim .rail-extra { display: none; }
+    .app.rail-slim .rail-head,
+    .app.rail-slim .rail-item .rail-text,
+    .app.rail-slim .rail-foot { display: none; }
+
+    .app.rail-slim .rail-extra { padding: 0 6px 10px; }
+    .app.rail-slim .rail-item {
+        justify-content: center;
+        padding-left: 0;
+        padding-right: 0;
+    }
     .app.rail-slim .tab {
         justify-content: center;
         padding-left: 0;

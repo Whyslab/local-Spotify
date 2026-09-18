@@ -663,10 +663,15 @@ function resyncLyrics() {
     highlightLyric(true);
 }
 
+/* Откуда пришли в текст. Закрывая его, возвращаемся туда же: раньше выход
+ * всегда вёл в фонотеку — читал текст, закрыл, и ты не там, где был. */
+let viewBeforeLyrics = null;
+
 function toggleLyricsView() {
     const button = document.getElementById("playerLyricsButton");
     const open = activeView !== "viewLyrics";
-    switchView(open ? "viewLyrics" : "viewLibrary");
+    if (open) viewBeforeLyrics = activeView;
+    switchView(open ? "viewLyrics" : (viewBeforeLyrics || "viewHome"));
     if (button) {
         button.classList.toggle("is-on", open);
         button.setAttribute("aria-pressed", String(open));
