@@ -527,14 +527,27 @@ code {
 .row.wrap { flex-wrap: wrap; }
 
 /* A <label> that has to look and size like the buttons beside it. */
+/* Выбор файла — это <label>, а не <button>, поэтому правила кнопок мимо него
+   проходят. Повторяем их здесь: без этого «Обложка» стояла рядом с «Слушать»
+   и «Перемешать» с прямыми углами, без рамки и тонким шрифтом. */
 .file-button {
     display: inline-flex;
     align-items: center;
     justify-content: center;
     cursor: pointer;
-    min-height: 44px;
-    padding: 0 16px;
+    min-height: 46px;
+    padding: 0 18px;
+    /* Только толщина и стиль: цвет рамки приходит от .ghost, а сокращённая
+       запись border его бы сбросила, и рамка снова пропала бы. */
+    border-width: 1px;
+    border-style: solid;
+    border-radius: var(--r-control);
+    font: inherit;
+    font-size: 15px;
+    font-weight: 650;
+    transition: opacity .15s, transform .1s;
 }
+.file-button:active { transform: scale(.98); }
 
 /* Drag handle and reorder affordances. The handle is what you grab with a
    mouse; the arrows exist because HTML drag-and-drop does nothing on iOS, and
