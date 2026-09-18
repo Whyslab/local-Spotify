@@ -324,12 +324,10 @@
   <aside class="rail-extra">
     <div class="rail-head">Подборки</div>
     <div id="railPlaylists" class="rail-list"></div>
-    <button class="rail-new" onclick="switchView('viewPlaylists')">
-      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
-      <span>Новая подборка</span>
-    </button>
+    <!-- Ни кнопки «Новая подборка», ни счётчика треков: первое повторяет
+         вкладку «Подборки», второе — строку под заголовком страницы. Внизу
+         остаётся только то, что меняется прямо сейчас, — ход загрузок. -->
     <div class="rail-foot">
-      <div id="railCounts"></div>
       <div id="railWork" class="muted"></div>
     </div>
   </aside>

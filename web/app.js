@@ -260,8 +260,6 @@ async function health() {
         if (typeof data.tracks === "number") {
             const albums = typeof data.albums === "number" ? ` · ${plural(data.albums, "альбом", "альбома", "альбомов")}` : "";
             stats.textContent = plural(data.tracks, "трек", "трека", "треков") + albums;
-            const counts = document.getElementById("railCounts");
-            if (counts) counts.textContent = stats.textContent;
         }
 
         /* The living numbers, which move while you watch: what is downloading
@@ -354,12 +352,6 @@ function renderRailQueue(tasks, pending) {
         box.appendChild(wait);
     }
 
-    if (!rows.length && !pending) {
-        const idle = document.createElement("div");
-        idle.className = "rail-jobs";
-        idle.textContent = "ничего не качается";
-        box.appendChild(idle);
-    }
 }
 
 function plural(n, one, few, many) {
