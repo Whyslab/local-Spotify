@@ -266,18 +266,8 @@ async function health() {
 
         /* The living numbers, which move while you watch: what is downloading
          * and what is waiting to reach the phone. Kept apart from the counts
-         * above, which change about once a day.
-         *
-         * Строка про загрузки теперь живёт под строкой про то, что играет, и
-         * пишется через setRailJobs. Раньше они делили одно место, и «очередь
-         * пуста» (про загрузки) читалось как «плеер молчит». */
-        const parts = [];
-        if (data.navidrome_pending) parts.push(data.navidrome_pending + " ждёт Navidrome");
-        if (data.queue_size) {
-            jobStage(data.queue_size, parts);
-        } else {
-            setRailJobs(parts.join(" · "));
-        }
+         * above, which change about once a day. */
+        renderRailQueue(data.active_tasks, data.navidrome_pending);
 
         box.replaceChildren();
         const rows = [
@@ -313,26 +303,63 @@ function fact(label, value, bad) {
     return row;
 }
 
-/* На каком этапе то, что качается прямо сейчас.
+/* Что качается — в нижней части рельсы.
  *
- * Спрашиваем только когда в очереди что-то есть: в покое это был бы лишний
- * запрос каждые несколько секунд ради строчки «ничего не качается». */
-async function jobStage(queued, parts) {
-    const stages = { queued: "ждёт очереди", downloading: "качается", tagging: "проставляю теги" };
-    let line = plural(queued, "задача", "задачи", "задач") + " в очереди";
-    try {
-        const r = await fetch("/api/tasks", { headers: headers() });
-        if (r.ok) {
-            const rows = await r.json();
-            const live = rows.find(t => t.status !== "done" && t.status !== "error");
-            if (live) {
-                const name = [live.artist, live.title].filter(Boolean).join(" — ");
-                line = (stages[live.status] || live.status) + ": " + (name || live.url);
-                if (queued > 1) line += " · и ещё " + (queued - 1);
-            }
-        }
-    } catch (e) { /* следующий опрос попробует снова */ }
-    setRailJobs([line, ...parts].join(" · "));
+ * Здесь раньше жил второй, крошечный плеер: название, полоска, время. Он
+ * повторял то, что и так есть в плеере внизу экрана, а главное — рос снизу и
+ * отжимал список подборок, из-за чего при играющем треке до нижней подборки
+ * было не дотянуться. Теперь тут только то, чего больше нигде не видно:
+ * на каком этапе каждая загрузка.
+ *
+ * Данные приходят вместе с /health, который и так опрашивается: отдельный
+ * запрос каждые три секунды ради этой строчки был бы лишним шумом и в сети,
+ * и в журнале службы.
+ */
+const TASK_STAGE = {
+    queued: "ждёт очереди",
+    downloading: "качается",
+    tagging: "проставляю теги",
+    error: "ошибка",
+    /* Готовые держатся пару минут — ровно чтобы увидеть, что трек доехал.
+       Дальше они живут в «Недавно добавлены» на странице добавления. */
+    done: "готово",
+};
+
+function renderRailQueue(tasks, pending) {
+    const box = document.getElementById("railWork");
+    if (!box) return;
+    box.replaceChildren();
+
+    const rows = Array.isArray(tasks) ? tasks : [];
+    for (const task of rows) {
+        const row = document.createElement("div");
+        row.className = "rail-job" + (task.status === "error" ? " is-error" : "");
+
+        const what = document.createElement("b");
+        what.textContent = [task.artist, task.title].filter(Boolean).join(" — ") || task.url || "—";
+
+        const stage = document.createElement("small");
+        stage.textContent = TASK_STAGE[task.status] || task.status;
+
+        row.append(what, stage);
+        box.appendChild(row);
+    }
+
+    /* Строка про Navidrome — не про загрузки, но про то же ожидание: сколько
+       готовых треков ещё не доехало до телефона. */
+    if (pending) {
+        const wait = document.createElement("div");
+        wait.className = "rail-jobs";
+        wait.textContent = pending + " ждёт Navidrome";
+        box.appendChild(wait);
+    }
+
+    if (!rows.length && !pending) {
+        const idle = document.createElement("div");
+        idle.className = "rail-jobs";
+        idle.textContent = "ничего не качается";
+        box.appendChild(idle);
+    }
 }
 
 function plural(n, one, few, many) {

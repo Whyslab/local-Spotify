@@ -350,7 +350,7 @@ function renderPlayer() {
     const track = player.queue[player.index];
     bar.hidden = !track;
     document.getElementById("nowPanel").hidden = !track;
-    if (!track) { renderRailWork(); return; }
+    if (!track) return;
 
     renderNowPanel(track);
 
@@ -539,72 +539,6 @@ function renderProgress() {
     bar.style.width = total ? `${(done / total) * 100}%` : "0%";
     document.getElementById("playerElapsed").textContent = formatTime(done);
     document.getElementById("playerTotal").textContent = formatTime(total);
-    renderRailWork();
-}
-
-/* ---------------- Нижняя строка рельса ---------------- */
-
-/* Раньше здесь стояло «очередь пуста» — и это была правда про очередь
- * загрузки, а читалось как «плеер ничего не играет». Надпись не менялась,
- * когда трек уже играл, и выглядело это поломкой.
- *
- * Теперь строка говорит про обе очереди и различает их словами: сверху что
- * играет и сколько осталось, снизу — что скачивается и на каком оно этапе.
- */
-let railJobs = "";
-
-function setRailJobs(text) {
-    railJobs = text || "";
-    renderRailWork();
-}
-
-function renderRailWork() {
-    const box = document.getElementById("railWork");
-    if (!box) return;
-    box.replaceChildren();
-
-    const track = player.queue[player.index];
-    if (track) {
-        const line = document.createElement("div");
-        line.className = "rail-now";
-        const what = document.createElement("b");
-        what.textContent = track.title || track.path;
-        line.appendChild(what);
-        if (track.artist) {
-            const who = document.createElement("small");
-            who.textContent = track.artist;
-            line.appendChild(who);
-        }
-
-        const total = player.audio.duration || 0;
-        const done = player.audio.currentTime || 0;
-        const bar = document.createElement("div");
-        bar.className = "rail-bar";
-        const fill = document.createElement("i");
-        fill.style.width = total ? `${(done / total) * 100}%` : "0%";
-        bar.appendChild(fill);
-
-        const route = player.order.length ? player.order : player.queue.map((_, i) => i);
-        const at = route.indexOf(player.index);
-        const left = at >= 0 ? route.length - at - 1 : 0;
-        const time = document.createElement("small");
-        time.className = "rail-time";
-        time.textContent = `${formatTime(done)} / ${formatTime(total)}`
-            + (left ? ` · дальше ${left}` : " · последний в очереди");
-
-        box.append(line, bar, time);
-    } else {
-        const idle = document.createElement("div");
-        idle.textContent = "ничего не играет";
-        box.appendChild(idle);
-    }
-
-    if (railJobs) {
-        const jobs = document.createElement("div");
-        jobs.className = "rail-jobs";
-        jobs.textContent = railJobs;
-        box.appendChild(jobs);
-    }
 }
 
 function seekFromClick(event) {

@@ -1076,6 +1076,27 @@ def health():
         "playlists": len(playlists.listing()) if library_status == "ok" else 0,
         "navidrome": "configured" if navidrome.configured() else "not configured",
         "navidrome_pending": navidrome.pending_count(),
+        # Что в работе прямо сейчас, а не только что ждёт своей очереди:
+        # queue_size выше — это длина очереди, и пока качается единственный трек,
+        # она равна нулю. Панель показывает этот список в рельсе, поэтому он
+        # приходит вместе с остальным здоровьем, а не отдельным опросом каждые
+        # три секунды.
+        #
+        # Ошибки попадают сюда за последний час: старая ошибка остаётся в
+        # таблице навсегда, и без срока она висела бы в рельсе вечно.
+        "active_tasks": (
+            db.db_query(
+                "SELECT artist, title, url, status FROM tasks "
+                "WHERE status IN ('queued', 'downloading', 'tagging') "
+                "   OR (status = 'error' "
+                "       AND updated_at > datetime('now', 'localtime', '-1 hour')) "
+                "   OR (status = 'done' "
+                "       AND updated_at > datetime('now', 'localtime', '-2 minutes')) "
+                "ORDER BY id DESC LIMIT 10"
+            )
+            if db_status == "ok"
+            else []
+        ),
         "sync_last_check_seconds_ago": sync.status()["last_check_seconds_ago"],
         "plays_logged": (
             db.db_query("SELECT COUNT(*) AS n FROM plays")[0]["n"] if db_status == "ok" else 0

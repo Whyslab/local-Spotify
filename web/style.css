@@ -1281,8 +1281,12 @@ button.ghost.is-on { color: var(--text); border-color: var(--text); font-weight:
     .rail-art img { width: 100%; height: 100%; object-fit: cover; display: block; }
     .rail-text { min-width: 0; flex: 1 1 auto; }
 
-    /* Что играет — прямо в рельсе, с полоской времени. */
-    .rail-now b {
+    /* Что качается — по строке на задачу: название сверху, этап снизу.
+       Полоски времени здесь больше нет: это место не про воспроизведение. */
+    .rail-job {
+        margin-bottom: 6px;
+    }
+    .rail-job b {
         display: block;
         color: var(--text);
         font-weight: 550;
@@ -1291,30 +1295,17 @@ button.ghost.is-on { color: var(--text); border-color: var(--text); font-weight:
         overflow: hidden;
         text-overflow: ellipsis;
     }
-    .rail-now small {
+    .rail-job small {
         display: block;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
     }
-    .rail-bar {
-        height: 3px;
-        margin: 5px 0 4px;
-        border-radius: 999px;
-        background: var(--surface-2);
-        overflow: hidden;
-    }
-    .rail-bar i {
-        display: block;
-        height: 100%;
-        background: var(--accent);
-        transition: width .25s linear;
-    }
-    .rail-time { display: block; }
+    /* Единственный цвет во всём подвале, и он оправдан: неудавшуюся загрузку
+       надо заметить, не вчитываясь. */
+    .rail-job.is-error b { color: var(--danger); }
+
     .rail-jobs {
-        margin-top: 6px;
-        padding-top: 6px;
-        border-top: 1px solid var(--line);
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
@@ -1345,6 +1336,13 @@ button.ghost.is-on { color: var(--text); border-color: var(--text); font-weight:
         color: var(--text-3);
         font-size: 11px;
         line-height: 1.6;
+        /* Потолок в треть рельсы: десять задач подряд иначе выдавливают список
+           подборок в ноль, и до нижней из них не дотянуться — ровно то, на что
+           жаловались, когда тут жил мини-плеер. */
+        max-height: 33%;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        flex: 0 0 auto;
     }
 
     /* What is playing, at a size worth looking at. */
