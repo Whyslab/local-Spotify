@@ -7,7 +7,6 @@ in :mod:`adder.ingest`, the queue and its retry policy in :mod:`adder.queue`.
 
 import hashlib
 import logging
-import random
 import secrets
 import threading
 import time
@@ -31,9 +30,9 @@ from . import (
     navidrome,
     playlists,
     runtime,
+    shelves,
     shuffle,
     signing,
-    similar,
     sources,
     sync,
 )
@@ -786,50 +785,6 @@ def _queue_payload(queue: list[shuffle.Track], core: set[str] | None = None) -> 
     return out
 
 
-def _home_discover(rows: list[dict], top: int = 6, want: int = 24) -> dict:
-    """Треки своей же фонотеки, о которых не думал.
-
-    «Предпочтения» берутся из состава фонотеки, а не из истории прослушиваний:
-    в `plays` сейчас четыре десятка записей, и почти все — проверочные включения
-    по секунде. Собранное своими руками — свидетельство вкуса надёжнее, чем
-    журнал, которого пока нет.
-
-    Дальше Deezer называет похожих на самых собранных артистов, и из фонотеки
-    отбирается то, что этими похожими написано, — за вычетом самих любимцев:
-    их треки не открытие.
-    """
-    from collections import Counter
-
-    counted = Counter(
-        similar.primary(row.get("artist") or "") for row in rows if row.get("artist")
-    )
-    counted.pop("", None)
-    favourites = [name for name, _ in counted.most_common(top)]
-    if not favourites:
-        return {"based_on": [], "tracks": []}
-
-    cache = runtime.PROJECT / "similar-cache"
-    neighbours: set[str] = set()
-    for name in favourites:
-        neighbours.update(similar.similar_artists(name, cache, limit=10))
-    neighbours -= {name.lower() for name in favourites}
-
-    lowered = {name.lower() for name in neighbours}
-    picked = [
-        row for row in rows
-        if similar.primary(row.get("artist") or "").lower() in lowered
-        and similar.primary(row.get("artist") or "") not in favourites
-    ]
-    random.Random(len(picked)).shuffle(picked)
-    return {
-        "based_on": favourites,
-        "tracks": [
-            {k: row.get(k) for k in ("path", "artist", "title", "album", "duration")}
-            for row in picked[:want]
-        ],
-    }
-
-
 @app.get("/api/home")
 def home(authenticated: bool = Depends(verify_token)):
     """Главная: подборки по настроению, находки и несколько альбомов.
@@ -868,7 +823,7 @@ def home(authenticated: bool = Depends(verify_token)):
             {"key": m.key, "name": m.name, "hint": m.hint, "tracks": as_tracks(m.paths)}
             for m in moods.collections(features, limit=40)
         ],
-        "discover": _home_discover(rows),
+        "discover": shelves.discover(rows),
         "albums": [
             {
                 "artist": who, "album": name, "count": len(albums[(who, name)]),

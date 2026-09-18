@@ -26,7 +26,7 @@ def _load_script():
 
 def test_numba_cache_points_somewhere_writable():
     """Иначе numba пишет рядом с librosa — а там только чтение, и разбор падает."""
-    module = _load_script()
+    _load_script()  # переменная не нужна: проверяется след импорта в окружении
 
     import os
 
