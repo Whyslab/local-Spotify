@@ -380,6 +380,11 @@ function scheduleLibrarySearch() {
  * тысячи с лишним. Самая спокойная четверть есть у любого собрания музыки.
  */
 let homeCache = null;
+/* Из каких данных собран экран. Главная перерисовывалась каждые три секунды
+ * фоновым опросом — при одних и тех же данных, — и каждая перерисовка сбрасывала
+ * листание полок вбок: пролистал ряд обложек, через пару секунд он снова в
+ * начале. Данные те же — экран не трогаем. */
+let homeRendered = null;
 
 /* Строка-заглушка тоже строится узлами. В этом файле присваивание innerHTML
  * однажды уже стоило утечки токена из хранилища через подставленное название
@@ -395,12 +400,19 @@ function homeNote(box, text) {
 async function home() {
     const box = document.getElementById("homeBody");
     if (!box) return;
-    if (homeCache) { renderHome(homeCache); return; }
+    if (homeCache) {
+        if (homeRendered !== homeCache) {
+            renderHome(homeCache);
+            homeRendered = homeCache;
+        }
+        return;
+    }
     try {
         const r = await fetch("/api/home", { headers: headers() });
         if (!r.ok) { homeNote(box, "Не собралось."); return; }
         homeCache = await r.json();
         renderHome(homeCache);
+        homeRendered = homeCache;
     } catch (e) {
         homeNote(box, "Не собралось.");
     }
