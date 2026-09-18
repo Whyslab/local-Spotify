@@ -1434,6 +1434,14 @@ function initVolume() {
 
 initVolume();
 
+/* Чем в последний раз двигали фокус. Обновляется на перехвате, до чужих
+ * обработчиков, чтобы к моменту нажатия значение было уже верным. */
+let focusCameFromPointer = false;
+document.addEventListener("pointerdown", () => { focusCameFromPointer = true; }, true);
+document.addEventListener("keydown", (event) => {
+    if (event.key === "Tab") focusCameFromPointer = false;
+}, true);
+
 // Пробел — играть/пауза, но только когда не печатаешь.
 //
 // Раньше это жило в оболочке GTK (desktop/local-spotify.py) и было сломано:
@@ -1454,8 +1462,19 @@ document.addEventListener("keydown", (event) => {
         const isSlider = tag === "INPUT" && el.type === "range";
         if (!isSlider && (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT")) return;
         if (el.isContentEditable) return;
-        // На кнопке пробел — это нажатие кнопки, не трогаем.
-        if (tag === "BUTTON" || el.getAttribute("role") === "button") return;
+        /* Кнопка под фокусом — самый частый случай в жизни: нажал «Добавить»
+         * или выбрал подборку, фокус остался там, и пробел снова жал ту же
+         * кнопку вместо паузы.
+         *
+         * Отличаем по тому, как на кнопку попали. Ходить по странице табом —
+         * значит управлять клавиатурой, и там пробел обязан нажимать кнопку.
+         * Пришли мышью — пробел про воспроизведение.
+         *
+         * :focus-visible для этого не годится, хотя и выглядит созданным ровно
+         * для такого случая: браузер включает его в момент самого нажатия, и
+         * внутри обработчика он истинный всегда — проверено. */
+        const isButton = tag === "BUTTON" || el.getAttribute("role") === "button";
+        if (isButton && !focusCameFromPointer) return;
     }
 
     event.preventDefault();  // иначе страница ещё и прокрутится
