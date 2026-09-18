@@ -36,6 +36,9 @@ systemd-run --user --scope -p MemoryMax=1500M \
 Прерванный прогон продолжается с места остановки, а неизменившийся трек не
 измеряется повторно. Убить процесс безопасно.
 
+С `--jobs` больше единицы выход не мгновенный: уже начатые треки дописываются,
+и это занимает секунды. Остальные снимаются сразу.
+
 ```bash
 scripts/analyze_audio.py --limit 50      # остановиться после 50 треков
 scripts/analyze_audio.py --only ФАЙЛ     # один файл
@@ -45,12 +48,18 @@ scripts/analyze_audio.py --force         # пересчитать всё зан�
 ### Ночью, само
 
 ```bash
-sed -e "s|%REPO%|$PWD|g" -e "s|%JOBS%|3|g" \
+sed -e "s|%REPO%|$PWD|g" -e "s|%JOBS%|1|g" \
   deploy/music-analysis.service.template > ~/.config/systemd/user/music-analysis.service
 cp deploy/music-analysis.timer.template ~/.config/systemd/user/music-analysis.timer
 systemctl --user daemon-reload
 systemctl --user enable --now music-analysis.timer
 ```
+
+Один процесс, а не три: ночной проход обычно только пересчитывает хеши и
+занимает меньше минуты, а после обновления librosa три процесса компилируют
+кэш разом и подходят вплотную к потолку памяти — на машине, где свободно
+меньше двух гигабайт, это стоит дороже сэкономленного времени. Три процесса
+остаются для ручного прогона всей фонотеки с нуля.
 
 Новый трек измеряется сразу при добавлении — тем же способом, в своей области
 с тем же лимитом, — так что таймер нужен только для догона того, что появилось

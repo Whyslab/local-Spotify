@@ -223,10 +223,18 @@ def measure_all(jobs, workers: int):
     # ends the run loudly.
     from concurrent.futures import ProcessPoolExecutor, as_completed
 
-    with ProcessPoolExecutor(max_workers=workers) as pool:
+    # Выход через try/finally, а не через `with`: его __exit__ ждёт завершения
+    # всех отправленных задач, а отправлены они разом — все до единой. На
+    # фонотеке это превращало Ctrl+C в пятнадцать минут ожидания, хотя README
+    # обещает обратное. cancel_futures снимает то, что ещё не начато, и ждать
+    # остаётся только начатое.
+    pool = ProcessPoolExecutor(max_workers=workers)
+    try:
         pending = [pool.submit(_measure_one, job) for job in jobs]
         for future in as_completed(pending):
             yield future.result()
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
 
 
 def library_files(root: Path, suffixes: tuple[str, ...]) -> list[Path]:

@@ -49,7 +49,11 @@ class TaskIdFormatter(logging.Formatter):
         return super().format(record)
 
 
-_LOG_FORMAT = "[%(asctime)s] [task=%(task_id)s] %(message)s"
+# Уровень в строке не для красоты: журнал службы — это сотни тысяч строк
+# доступа в сутки, и systemd раздаёт им всем один приоритет info, потому
+# что они приходят через stdout. Без имени уровня предупреждение о сбое
+# нельзя ни найти глазами, ни отфильтровать.
+_LOG_FORMAT = "[%(asctime)s] [%(levelname)s] [task=%(task_id)s] %(message)s"
 _LOG_DATEFMT = "%Y-%m-%d %H:%M:%S"
 
 
