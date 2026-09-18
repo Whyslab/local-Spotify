@@ -1079,6 +1079,91 @@ for (const event of ["play", "pause", "ended", "loadedmetadata"]) {
 /* Кнопки должны показывать своё состояние сразу, а не после первого нажатия. */
 renderPlayerModes();
 
+/* ---------------- Громкость ----------------
+ *
+ * Своя громкость нужна там, где страница — не единственное, что звучит: на
+ * ноутбуке системный ползунок тянет за собой всё сразу.
+ *
+ * На iOS её не будет, и это не недоделка. Apple отдаёт громкость физическим
+ * кнопкам: `audio.volume` там только для чтения и всегда возвращает 1,
+ * слушается один `muted`. Обойти это можно было бы через Web Audio, но там
+ * звук замолкает, стоит странице уйти в фон, — плеер потерял бы фоновое
+ * воспроизведение ради ползунка. Поэтому блок просто не показывается, и
+ * проверяется это опытом, а не разбором названия браузера: подставляем
+ * значение и смотрим, осталось ли оно.
+ */
+
+const VOLUME_KEY = "playerVolume";
+
+function volumeIsAdjustable() {
+    const before = player.audio.volume;
+    try {
+        player.audio.volume = 0.42;
+        return Math.abs(player.audio.volume - 0.42) < 0.01;
+    } finally {
+        player.audio.volume = before;
+    }
+}
+
+/* Заполнение ползунка: WebKit не красит пройденную часть сам, поэтому доля
+ * уходит в CSS переменной, а рисует её style.css. */
+function paintVolume(level) {
+    const slider = document.getElementById("playerVolumeRange");
+    if (slider) slider.style.setProperty("--vol", String(level));
+}
+
+function updateVolumeIcon() {
+    const icon = document.getElementById("playerVolumeIcon");
+    const button = document.getElementById("playerMute");
+    if (!icon || !button) return;
+
+    const silent = player.audio.muted || player.audio.volume === 0;
+    icon.setAttribute("d", silent
+        ? "M4 9v6h4l5 4V5L8 9zM17 9l4 6M21 9l-4 6"
+        : "M4 9v6h4l5 4V5L8 9zM16 9a4 4 0 0 1 0 6");
+    button.setAttribute("aria-label", silent ? "Включить звук" : "Выключить звук");
+    button.setAttribute("title", silent ? "Включить звук" : "Выключить звук");
+}
+
+function setVolumeFromSlider(value) {
+    const level = Math.min(100, Math.max(0, Number(value) || 0)) / 100;
+    player.audio.muted = false;
+    player.audio.volume = level;
+    paintVolume(level);
+    try { localStorage.setItem(VOLUME_KEY, String(level)); } catch (e) { /* приватное окно */ }
+    updateVolumeIcon();
+}
+
+function toggleMute() {
+    player.audio.muted = !player.audio.muted;
+    /* Нажал «без звука» на нуле — это просьба вернуть звук, а не поставить
+     * беззвучное воспроизведение: поднимаем ползунок до половины. */
+    if (!player.audio.muted && player.audio.volume === 0) setVolumeFromSlider(50);
+    const slider = document.getElementById("playerVolumeRange");
+    if (slider) slider.value = String(Math.round(player.audio.volume * 100));
+    updateVolumeIcon();
+}
+
+function initVolume() {
+    const box = document.getElementById("playerVolume");
+    const slider = document.getElementById("playerVolumeRange");
+    if (!box || !slider || !volumeIsAdjustable()) return;
+
+    let saved = 1;
+    try {
+        const stored = parseFloat(localStorage.getItem(VOLUME_KEY));
+        if (Number.isFinite(stored) && stored >= 0 && stored <= 1) saved = stored;
+    } catch (e) { /* приватное окно — играем на полной */ }
+
+    player.audio.volume = saved;
+    slider.value = String(Math.round(saved * 100));
+    paintVolume(saved);
+    box.hidden = false;
+    updateVolumeIcon();
+}
+
+initVolume();
+
 // Пробел — играть/пауза, но только когда не печатаешь.
 //
 // Раньше это жило в оболочке GTK (desktop/local-spotify.py) и было сломано:
@@ -1093,8 +1178,11 @@ document.addEventListener("keydown", (event) => {
     const el = document.activeElement;
     if (el) {
         const tag = el.tagName;
-        // В поле ввода пробел — это пробел.
-        if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+        // В поле ввода пробел — это пробел. Ползунок громкости — исключение:
+        // это тоже <input>, но печатать в нём нечего, а отнимать у него пробел
+        // значит ломать «пробел всегда играет/ставит на паузу».
+        const isSlider = tag === "INPUT" && el.type === "range";
+        if (!isSlider && (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT")) return;
         if (el.isContentEditable) return;
         // На кнопке пробел — это нажатие кнопки, не трогаем.
         if (tag === "BUTTON" || el.getAttribute("role") === "button") return;

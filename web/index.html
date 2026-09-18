@@ -263,6 +263,22 @@
       <span id="playerElapsed" class="player-time">0:00</span>
       <div class="player-track-bar" onclick="seekFromClick(event)"><div id="playerFill"></div></div>
       <span id="playerTotal" class="player-time">0:00</span>
+
+      <!-- На iOS громкость страницы задать нельзя: Apple отдаёт её физическим
+           кнопкам, а audio.volume там доступен только для чтения. Поэтому блок
+           скрыт, пока player.js не убедится опытом, что громкость слушается —
+           проверка, а не угадывание устройства по названию браузера. -->
+      <div id="playerVolume" class="player-volume" hidden>
+        <button id="playerMute" class="icon-button" onclick="toggleMute()"
+                aria-label="Выключить звук" title="Выключить звук">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path id="playerVolumeIcon" d="M4 9v6h4l5 4V5L8 9zM16 9a4 4 0 0 1 0 6"/>
+          </svg>
+        </button>
+        <input id="playerVolumeRange" class="volume-range" type="range"
+               min="0" max="100" step="1" value="100" aria-label="Громкость"
+               oninput="setVolumeFromSlider(this.value)">
+      </div>
     </div>
   </div>
 

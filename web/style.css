@@ -941,6 +941,79 @@ button.ghost.is-on { color: var(--text); border-color: var(--text); font-weight:
     border-radius: 2px;
 }
 
+/* Громкость: та же полоска, что и перемотка, только короткая и своя у каждой
+   раскладки движка. Ползунок узкий, чтобы не тянуть на себя внимание в ряду,
+   где главное — время и перемотка. */
+.player-volume {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex: 0 0 auto;
+}
+
+.player-volume .icon-button {
+    width: 28px;
+    height: 28px;
+}
+
+.volume-range {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 72px;
+    height: 14px;
+    background: transparent;
+    cursor: pointer;
+}
+
+/* Пройденную часть WebKit сам не красит (в отличие от Firefox с
+   ::-moz-range-progress), поэтому она рисуется заливкой по --vol — его
+   выставляет player.js на каждое движение. Иначе перемотка была бы с
+   заполнением, а громкость — просто серой чертой. */
+.volume-range::-webkit-slider-runnable-track {
+    height: 4px;
+    border-radius: 2px;
+    background: linear-gradient(
+        to right,
+        var(--accent) 0 calc(var(--vol, 1) * 100%),
+        var(--line-2) calc(var(--vol, 1) * 100%) 100%
+    );
+}
+
+.volume-range::-moz-range-track {
+    height: 4px;
+    border-radius: 2px;
+    background: var(--line-2);
+}
+
+.volume-range::-moz-range-progress {
+    height: 4px;
+    border-radius: 2px;
+    background: var(--accent);
+}
+
+.volume-range::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 10px;
+    height: 10px;
+    margin-top: -3px;
+    border-radius: 50%;
+    background: var(--accent);
+}
+
+.volume-range::-moz-range-thumb {
+    width: 10px;
+    height: 10px;
+    border: 0;
+    border-radius: 50%;
+    background: var(--accent);
+}
+
+.volume-range:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
 /* ---------------- Narrow: the search band belongs to the library ---------- */
 
 /* One search input, in the header, where the wide layout wants it. On a phone
