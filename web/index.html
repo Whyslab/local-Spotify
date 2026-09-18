@@ -140,6 +140,21 @@
     </section>
 
 
+    <!-- ---------------- Текст песни ----------------
+         Середина экрана, а не узкая колонка сбоку: текст читают, а не
+         подглядывают. Правая панель его больше не показывает — одно место
+         вместо двух. -->
+    <section id="viewLyrics" class="view" hidden>
+      <div class="lyrics-head">
+        <div>
+          <h2 id="lyricsTitle"></h2>
+          <p id="lyricsArtist" class="muted"></p>
+        </div>
+        <button id="lyricsSync" class="ghost" onclick="resyncLyrics()" hidden>Синхронизировать</button>
+      </div>
+      <div id="lyricsBody" class="lyrics-body" aria-live="off"></div>
+    </section>
+
     <!-- ---------------- Подборки ---------------- -->
     <section id="viewPlaylists" class="view" hidden>
 
@@ -250,9 +265,14 @@
         <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4l10 8-10 8zM19 4v16"/></svg>
       </button>
 
-      <!-- Режимы и очередь — одной группой справа от перемотки. Перемешивание
-           стояло слева, до кнопки «играть», и до него приходилось тянуться
-           через весь ряд. -->
+    </div>
+    <div class="player-progress">
+      <span id="playerElapsed" class="player-time">0:00</span>
+      <div class="player-track-bar" onclick="seekFromClick(event)"><div id="playerFill"></div></div>
+      <span id="playerTotal" class="player-time">0:00</span>
+
+      <!-- Режимы и очередь живут рядом с громкостью, а не в ряду перемотки:
+           это переключатели, а не управление воспроизведением. -->
       <div class="player-modes">
         <button id="playerShuffle" class="icon-button" onclick="toggleShuffle()"
                 aria-label="Перемешать" title="Перемешать" aria-pressed="false">
@@ -267,16 +287,15 @@
               aria-label="Панель трека" title="Скрыть панель трека" aria-pressed="true">
         <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4h18v16H3zM15 4v16"/></svg>
       </button>
+      <button id="playerLyricsButton" class="icon-button" onclick="toggleLyricsView()"
+              aria-label="Текст песни" title="Текст песни" aria-pressed="false">
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 11h16M4 16h9"/><circle cx="18" cy="17" r="3"/><path d="M21 17V9"/></svg>
+      </button>
       <button id="playerQueueButton" class="icon-button" onclick="toggleQueuePanel()"
               aria-label="Очередь" title="Очередь" aria-pressed="false">
         <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h11M4 12h11M4 18h7M17 14v7M21 18l-4 3-4-3"/></svg>
       </button>
       </div>
-    </div>
-    <div class="player-progress">
-      <span id="playerElapsed" class="player-time">0:00</span>
-      <div class="player-track-bar" onclick="seekFromClick(event)"><div id="playerFill"></div></div>
-      <span id="playerTotal" class="player-time">0:00</span>
 
       <!-- На iOS громкость страницы задать нельзя: Apple отдаёт её физическим
            кнопкам, а audio.volume там доступен только для чтения. Поэтому блок
@@ -353,7 +372,6 @@
     <div id="nowArtist" class="now-artist"></div>
     <div id="nowAlbum" class="now-album"></div>
     <div id="nowFacts" class="now-facts"></div>
-    <div id="nowLyrics" class="now-lyrics" aria-live="off"></div>
   </aside>
 
 </div>

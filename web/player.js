@@ -505,11 +505,17 @@ function loadNowCover(track) {
  * помнится между вызовами: перебирать полсотни строк тридцать раз в секунду
  * незачем, когда почти всегда нужна следующая по счёту.
  */
-const lyrics = { path: null, lines: [], index: -1, box: null };
+const lyrics = { path: null, lines: [], index: -1, box: null, follow: true };
 
 function loadLyrics(track) {
-    const box = document.getElementById("nowLyrics");
+    const box = document.getElementById("lyricsBody");
     if (!box) return;
+    const title = document.getElementById("lyricsTitle");
+    const artist = document.getElementById("lyricsArtist");
+    if (title) title.textContent = track.title || track.path;
+    if (artist) artist.textContent = track.artist || "";
+    lyrics.follow = true;
+    updateSyncButton();
     lyrics.box = box;
     lyrics.path = track.path;
     lyrics.lines = [];
@@ -570,12 +576,61 @@ function highlightLyric(force) {
 
     const rows = lyrics.box.querySelectorAll(".lyric");
     rows.forEach((row, n) => row.classList.toggle("now", n === i));
+    /* Пролистал сам — не выдёргиваем обратно: человек читает не ту строку, что
+     * звучит, и это его право. Вернуть слежение можно кнопкой. */
+    if (!lyrics.follow) return;
     if (i >= 0 && rows[i]) {
         const row = rows[i];
         const wanted = row.offsetTop - lyrics.box.clientHeight / 2 + row.clientHeight / 2;
+        lyrics.scrolling = true;
         lyrics.box.scrollTo({ top: Math.max(0, wanted), behavior: "smooth" });
+        clearTimeout(lyrics.settle);
+        lyrics.settle = setTimeout(() => { lyrics.scrolling = false; }, 700);
     }
 }
+
+/* ---------------- Текст: кнопка и слежение ---------------- */
+
+function updateSyncButton() {
+    const button = document.getElementById("lyricsSync");
+    if (button) button.hidden = lyrics.follow || !lyrics.lines.length;
+}
+
+function resyncLyrics() {
+    lyrics.follow = true;
+    updateSyncButton();
+    highlightLyric(true);
+}
+
+function toggleLyricsView() {
+    const button = document.getElementById("playerLyricsButton");
+    const open = activeView !== "viewLyrics";
+    switchView(open ? "viewLyrics" : "viewLibrary");
+    if (button) {
+        button.classList.toggle("is-on", open);
+        button.setAttribute("aria-pressed", String(open));
+    }
+    if (open) {
+        const track = player.queue[player.index];
+        if (track) loadLyrics(track);
+        else renderNoLyrics(document.getElementById("lyricsBody"), "Ничего не играет");
+    }
+}
+
+/* Ручная прокрутка выключает слежение. Отличить её от своей помогает флажок:
+ * плавная прокрутка к строке тоже приходит сюда событием. */
+function watchLyricsScroll() {
+    const box = document.getElementById("lyricsBody");
+    if (!box) return;
+    box.addEventListener("scroll", () => {
+        if (lyrics.scrolling) return;
+        if (!lyrics.follow) return;
+        lyrics.follow = false;
+        updateSyncButton();
+    }, { passive: true });
+}
+
+watchLyricsScroll();
 
 function renderFacts(facts) {
     const box = document.getElementById("nowFacts");

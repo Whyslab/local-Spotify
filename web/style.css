@@ -727,6 +727,44 @@ button.danger {
     text-transform: uppercase;
 }
 
+/* Текст песни — в середине экрана. Строки приглушены, светится та, что звучит
+   сейчас: глазу не нужно искать место, оно само подъезжает к середине.
+   Раньше эти правила лежали внутри блока для широкого экрана, и на узком окне
+   текста не было вовсе — даже когда он был найден. */
+.lyrics-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 14px;
+}
+.lyrics-head h2 { margin: 0; font-size: 19px; letter-spacing: -0.3px; }
+.lyrics-head p { margin: 2px 0 0; font-size: 13px; }
+
+.lyrics-body {
+    max-height: calc(100vh - 320px);
+    overflow-y: auto;
+    scrollbar-width: thin;
+    font-size: 16px;
+    line-height: 1.7;
+    padding-right: 6px;
+}
+
+.lyric {
+    margin: 0 0 8px;
+    color: var(--text-3);
+    transition: color .18s ease;
+}
+/* Было var(--text-1) — такой переменной в палитре нет, и правило пропадало.
+   Строка светилась белым только по случайности, от наследования. */
+.lyric.now {
+    color: var(--text);
+    font-weight: 650;
+}
+/* Без таймингов подсвечивать нечего — показываем ровным текстом. */
+.lyric.plain { color: var(--text-2); }
+.lyric-note { margin: 0; color: var(--text-3); font-size: 13px; }
+
 .queue-finds-head {
     margin: 14px 0 6px;
     padding-top: 12px;
@@ -1021,6 +1059,9 @@ button.ghost.is-on { color: var(--text); border-color: var(--text); font-weight:
     display: flex;
     align-items: center;
     gap: 8px;
+    /* На узком экране кнопки и громкость съедали полосу перемотки до нуля —
+       перематывать было нечем. Пусть уезжают на свою строку. */
+    flex-wrap: wrap;
 }
 
 .player-time {
@@ -1032,7 +1073,9 @@ button.ghost.is-on { color: var(--text); border-color: var(--text); font-weight:
 .player-time:last-child { text-align: right; }
 
 .player-track-bar {
-    flex: 1;
+    flex: 1 1 140px;
+    /* Ниже этого перематывать уже невозможно: пусть лучше перенесётся ряд. */
+    min-width: 140px;
     height: 14px;
     display: flex;
     align-items: center;
@@ -1508,34 +1551,7 @@ button.ghost.is-on { color: var(--text); border-color: var(--text); font-weight:
        a zero would say the track has none. */
     .now-fact.is-unknown b { color: var(--text-3); }
 
-    /* Текст песни. Строки приглушены, светится только та, что звучит сейчас, —
-       так глазу не нужно искать место, оно само подъезжает к середине.
-       Высота ограничена: панель должна остаться панелью, а не превратиться
-       в простыню, из-за которой не видно ни обложки, ни темпа. */
-    .now-lyrics {
-        margin-top: 16px;
-        max-height: 40vh;
-        overflow-y: auto;
-        scrollbar-width: thin;
-        font-size: 13px;
-        line-height: 1.5;
-    }
-    .now-lyrics.has-lyrics {
-        border-top: 1px solid var(--line-2);
-        padding-top: 12px;
-    }
-    .lyric {
-        margin: 0 0 6px;
-        color: var(--text-3);
-        transition: color .18s ease;
-    }
-    .lyric.now {
-        color: var(--text-1);
-        font-weight: 650;
-    }
-    /* Без таймингов подсвечивать нечего — показываем ровным текстом. */
-    .lyric.plain { color: var(--text-2); }
-    .lyric-note { margin: 0; color: var(--text-3); font-size: 12px; }
+
 
     /* На широком экране панели снизу нет, и очередь считает своё место от
        низа окна, а не от неё. Высота полосы плеера тут постоянная. */
