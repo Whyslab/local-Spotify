@@ -807,24 +807,142 @@ function playlistTrackRow(entry, position) {
         info.appendChild(meta);
     }
 
-    /* Соседние перестановки и перетаскивание годятся, пока список короткий.
-     * В подборке на тысячу треков подняться наверх соседними шагами нельзя,
-     * а тащить мышью через тысячу строк — тем более. Поэтому рядом стоят
-     * два прыжка сразу на край. */
-    const top = smallButton("⤒", "В начало подборки", () => moveTrack(position, 0));
-    const up = smallButton("↑", "Выше", () => moveTrack(position, position - 1));
-    const down = smallButton("↓", "Ниже", () => moveTrack(position, position + 1));
-    const bottom = smallButton("⤓", "В конец подборки",
-        () => moveTrack(position, player.playlist.entries.length - 1));
-    const drop = smallButton("×", "Убрать из подборки", () => removeAt(position));
-    drop.classList.add("danger");
+    /* Пять кнопок подряд у каждой строки — это пять кнопок, умноженные на
+     * тысячу треков: ряд значков, в котором нечего читать. Всё то же самое
+     * теперь живёт за одной кнопкой, и там у действий есть названия словами.
+     * Перетаскивание никуда не делось — оно быстрее любого меню, когда
+     * двигать надо на строку-другую. */
+    const more = smallButton("⋯", "Что сделать с треком", (event) => {
+        event.stopPropagation();
+        openTrackMenu(more, position);
+    });
+    more.setAttribute("aria-haspopup", "menu");
+    more.setAttribute("aria-expanded", "false");
 
-    /* Трек и так на своём краю — прыгать некуда. */
-    if (position === 0) top.disabled = true;
-    if (position === player.playlist.entries.length - 1) bottom.disabled = true;
-
-    row.append(handle, cover, info, top, up, down, bottom, drop);
+    row.append(handle, cover, info, more);
     return row;
+}
+
+/* ---------------- Меню строки ----------------
+ *
+ * Открытое меню одно на весь список: два раскрытых меню — это вопрос «какое
+ * из них про этот трек».
+ */
+let openMenu = null;
+
+function closeTrackMenu() {
+    if (!openMenu) return;
+    const { menu, button } = openMenu;
+    menu.remove();
+    button.setAttribute("aria-expanded", "false");
+    openMenu = null;
+    document.removeEventListener("keydown", menuKeydown, true);
+    document.removeEventListener("pointerdown", menuPointerDown, true);
+}
+
+function menuKeydown(event) {
+    if (event.key !== "Escape") return;
+    const button = openMenu && openMenu.button;
+    closeTrackMenu();
+    /* Возвращаем указатель туда, откуда меню открыли: иначе после Esc фокус
+     * оказывается в начале страницы. */
+    if (button) button.focus();
+}
+
+function menuPointerDown(event) {
+    if (openMenu && !openMenu.menu.contains(event.target) && event.target !== openMenu.button) {
+        closeTrackMenu();
+    }
+}
+
+function openTrackMenu(button, position) {
+    const wasMine = openMenu && openMenu.button === button;
+    closeTrackMenu();
+    if (wasMine) return;  // повторное нажатие закрывает
+
+    const total = player.playlist.entries.length;
+    const menu = document.createElement("div");
+    menu.className = "row-menu";
+    menu.setAttribute("role", "menu");
+
+    const item = (label, title, onClick, disabled) => {
+        const b = document.createElement("button");
+        b.className = "row-menu-item";
+        b.textContent = label;
+        b.setAttribute("role", "menuitem");
+        if (title) b.title = title;
+        b.disabled = Boolean(disabled);
+        b.onclick = () => { closeTrackMenu(); onClick(); };
+        return b;
+    };
+
+    menu.append(
+        item("В начало подборки", "", () => moveTrack(position, 0), position === 0),
+        item("Выше на один", "", () => moveTrack(position, position - 1), position === 0),
+        item("Ниже на один", "", () => moveTrack(position, position + 1), position === total - 1),
+        item("В конец подборки", "", () => moveTrack(position, total - 1), position === total - 1),
+        /* Прыжок на номер: в подборке на тысячу треков «выше на один» бесполезно,
+         * а тащить мышью через весь список — тем более. */
+        item("Переместить на место…", "", () => askForPosition(button, position, total)),
+    );
+
+    const separator = document.createElement("div");
+    separator.className = "row-menu-line";
+    menu.appendChild(separator);
+    menu.appendChild(item("Убрать из подборки", "", () => removeAt(position)));
+    menu.lastChild.classList.add("is-danger");
+
+    button.insertAdjacentElement("afterend", menu);
+    button.setAttribute("aria-expanded", "true");
+    openMenu = { menu, button };
+    document.addEventListener("keydown", menuKeydown, true);
+    document.addEventListener("pointerdown", menuPointerDown, true);
+    const first = menu.querySelector(".row-menu-item:not([disabled])");
+    if (first) first.focus();
+}
+
+/* Спрашиваем номер прямо в списке, а не браузерным окном: тем же правилом
+ * живёт подтверждение удаления в app.js — родное окно на телефоне слишком
+ * легко смахнуть мимоходом, и оно ничего не объясняет. */
+function askForPosition(button, from, total) {
+    closeTrackMenu();
+
+    const form = document.createElement("form");
+    form.className = "row-menu row-menu-form";
+
+    const label = document.createElement("label");
+    label.className = "row-menu-label";
+    label.textContent = `На какое место? 1 — ${total}`;
+
+    const field = document.createElement("input");
+    field.type = "number";
+    field.min = "1";
+    field.max = String(total);
+    field.value = String(from + 1);
+    field.className = "row-menu-input";
+
+    const go = document.createElement("button");
+    go.type = "submit";
+    go.className = "row-menu-item";
+    go.textContent = "Переместить";
+
+    form.onsubmit = (event) => {
+        event.preventDefault();
+        const wanted = parseInt(field.value, 10);
+        closeTrackMenu();
+        if (!Number.isFinite(wanted)) return;
+        /* Человек считает с единицы, список — с нуля. */
+        moveTrack(from, Math.min(total - 1, Math.max(0, wanted - 1)));
+    };
+
+    form.append(label, field, go);
+    button.insertAdjacentElement("afterend", form);
+    button.setAttribute("aria-expanded", "true");
+    openMenu = { menu: form, button };
+    document.addEventListener("keydown", menuKeydown, true);
+    document.addEventListener("pointerdown", menuPointerDown, true);
+    field.focus();
+    field.select();
 }
 
 function smallButton(label, title, onClick) {
