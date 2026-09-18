@@ -146,27 +146,57 @@ const STATUS_LABEL = {
     error: "ошибка",
 };
 
+/* Что действительно ждёт работы. Готовое сюда не входит: /api/tasks отдаёт
+ * последние пятьдесят задач любого состояния, и раньше все пятьдесят попадали
+ * в «Очередь» — со счётчиком «50» и готовыми треками в списке. Выглядело это
+ * как «трек висит в очереди», хотя он уже лежал в фонотеке.
+ *
+ * Ошибка остаётся здесь намеренно: это незаконченная работа, о ней надо знать. */
+const QUEUE_STATUSES = new Set(["queued", "downloading", "tagging", "error"]);
+
+/* Сколько последних готовых показывать. Достаточно, чтобы убедиться «трек
+ * доехал», и мало, чтобы список не превращался в журнал. */
+const RECENT_DONE_LIMIT = 5;
+
 async function tasks() {
     const box = document.getElementById("tasks");
     const empty = document.getElementById("tasksEmpty");
     const count = document.getElementById("queueCount");
+    const recentBox = document.getElementById("recentTasks");
+    const recentHead = document.getElementById("recentHead");
 
     try {
         const r = await fetch("/api/tasks", { headers: headers() });
         if (!r.ok) return;
         const data = await r.json();
 
-        count.textContent = data.length ? `${data.length}` : "";
-        empty.hidden = data.length > 0;
+        const queue = data.filter(t => QUEUE_STATUSES.has(t.status));
+        const recent = data.filter(t => t.status === "done").slice(0, RECENT_DONE_LIMIT);
+
+        count.textContent = queue.length ? `${queue.length}` : "";
+        empty.hidden = queue.length > 0;
         box.replaceChildren();
 
-        for (const t of data) {
+        for (const t of queue) {
             box.appendChild(trackRow({
                 title: t.title || t.url || "—",
                 artist: t.artist || "",
                 status: t.status,
                 error: t.error,
             }));
+        }
+
+        if (recentBox && recentHead) {
+            recentHead.hidden = recent.length === 0;
+            recentBox.replaceChildren();
+            for (const t of recent) {
+                recentBox.appendChild(trackRow({
+                    title: t.title || t.url || "—",
+                    artist: t.artist || "",
+                    status: t.status,
+                    error: t.error,
+                }));
+            }
         }
     } catch (e) {
         // Polling loop - a transient network hiccup shouldn't throw to console.
