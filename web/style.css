@@ -280,6 +280,11 @@ button:disabled { opacity: .5; cursor: default; }
     display: flex;
     align-items: center;
     gap: 12px;
+    /* Часть строк сделана кнопками — подборки, альбомы, очередь, — а у кнопки
+       свой цвет текста, и он чёрный. На тёмном фоне названия пропадали: было
+       видно только то, чему цвет задан отдельным правилом, вроде числа треков.
+       Задаём здесь, у всех строк сразу, а не по месту каждой находки. */
+    color: var(--text);
     background: var(--surface);
     border: 1px solid var(--line);
     border-radius: var(--r-row);
@@ -656,10 +661,6 @@ button.danger {
     text-align: left;
     background: none;
     border: 0;
-    /* Строка очереди — <button>, а у кнопки свой цвет текста, и он чёрный.
-       На тёмном фоне название трека выходило чёрным по чёрному: строки были,
-       читалось только имя артиста, у которого цвет задан своим правилом. */
-    color: var(--text);
     padding: 8px 10px;
     border-radius: var(--r-control, 8px);
     cursor: pointer;
