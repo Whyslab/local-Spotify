@@ -379,6 +379,51 @@ function scheduleLibrarySearch() {
  * «спокойное» при абсолютном пороге дало бы здесь восемнадцать треков из
  * тысячи с лишним. Самая спокойная четверть есть у любого собрания музыки.
  */
+/* ---------------- Находки извне ----------------
+ *
+ * Треки, которых в фонотеке нет вовсе. Спрашиваются один раз за жизнь страницы:
+ * ими пользуются и очередь, и главная, а Deezer от повторных вопросов новых
+ * артистов не придумает. Первый запрос ходит в сеть (секунды), дальше сервер
+ * отвечает из своего кэша мгновенно.
+ *
+ * Ничего не скачивается: находка — повод открыть поиск и выбрать версию руками.
+ */
+let externalFindsCache = null;
+let externalFindsPromise = null;
+
+function externalFindsReady() {
+    return externalFindsCache || [];
+}
+
+function externalFinds() {
+    if (externalFindsCache) return Promise.resolve(externalFindsCache);
+    if (externalFindsPromise) return externalFindsPromise;
+
+    externalFindsPromise = fetch("/api/discover-external?limit=12", { headers: headers() })
+        .then(r => (r.ok ? r.json() : { tracks: [] }))
+        .then(data => {
+            externalFindsCache = Array.isArray(data.tracks) ? data.tracks : [];
+            return externalFindsCache;
+        })
+        .catch(() => {
+            /* Находки — дополнение, а не часть страницы: без них так без них. */
+            externalFindsCache = [];
+            return externalFindsCache;
+        });
+    return externalFindsPromise;
+}
+
+/* «+» ничего не качает: открывает поиск с готовым запросом. Две загрузки одной
+ * песни различаются длиной и каналом, и выбор остаётся за человеком — то же
+ * правило, по которому /api/search сам ничего не выбирает. */
+function searchForFind(find) {
+    const query = find.artist ? `${find.artist} — ${find.title}` : find.title;
+    switchView("viewAdd");
+    const field = document.getElementById("searchQuery");
+    if (field) field.value = query;
+    runSearch();
+}
+
 let homeCache = null;
 /* Из каких данных собран экран. Главная перерисовывалась каждые три секунды
  * фоновым опросом — при одних и тех же данных, — и каждая перерисовка сбрасывала
@@ -486,6 +531,55 @@ function shelfTile(track, tracks, index) {
     return tile;
 }
 
+/* Плитка находки. Обложки у неё нет и быть не может — файла-то нет, — поэтому
+ * вместо неё буква артиста: пустой серый квадрат читался бы как не загрузившаяся
+ * картинка. Нажатие ведёт в поиск, а не в плеер: играть пока нечего. */
+function findTile(find) {
+    const tile = document.createElement("div");
+    tile.className = "shelf-tile is-find";
+
+    const art = document.createElement("button");
+    art.className = "shelf-art";
+    art.textContent = (find.artist || find.title || "?").slice(0, 1).toUpperCase();
+    art.setAttribute("aria-label", `Искать «${find.artist} — ${find.title}» на YouTube`);
+    art.onclick = () => searchForFind(find);
+
+    const box = document.createElement("div");
+    box.className = "album-artbox";
+    box.appendChild(art);
+
+    const name = document.createElement("div");
+    name.className = "shelf-name";
+    name.textContent = find.title || "";
+
+    const who = document.createElement("div");
+    who.className = "album-artist";
+    who.textContent = find.artist || "";
+
+    const mark = document.createElement("div");
+    mark.className = "find-mark";
+    mark.textContent = "нет в фонотеке";
+
+    tile.append(box, name, who, mark);
+    return tile;
+}
+
+/* Находки приезжают позже своей полки: сеть не должна задерживать главную.
+ * Поэтому они не перерисовывают её, а вставляются в уже собранный ряд — иначе
+ * пролистанная полка отскочила бы в начало, что мы только что чинили. */
+function mixFindsIntoShelf(shelf, finds) {
+    if (!shelf || !finds.length) return;
+    /* Через две свои — одна чужая: полка остаётся про твою музыку, а находки
+     * попадаются по дороге, а не выстраиваются отдельной стеной. */
+    let at = 2;
+    for (const find of finds.slice(0, 4)) {
+        const before = shelf.children[at];
+        if (before) shelf.insertBefore(findTile(find), before);
+        else shelf.appendChild(findTile(find));
+        at += 3;
+    }
+}
+
 function renderHome(data) {
     const box = document.getElementById("homeBody");
     box.replaceChildren();
@@ -493,12 +587,16 @@ function renderHome(data) {
     const discover = data.discover || {};
     if ((discover.tracks || []).length) {
         const on = (discover.based_on || []).slice(0, 3).join(", ");
-        box.appendChild(homeShelf(
+        const card = homeShelf(
             "Может понравиться",
             on ? `похоже на ${on}` : "",
             discover.tracks,
             () => playQueue(discover.tracks, 0, "manual"),
-        ));
+        );
+        box.appendChild(card);
+        /* Полка про вкус, а не про то, что уже лежит на диске: к своим трекам
+         * подмешивается то, чего в фонотеке нет вовсе. */
+        externalFinds().then(finds => mixFindsIntoShelf(card.querySelector(".shelf"), finds));
     }
 
     for (const mood of data.moods || []) {

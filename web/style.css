@@ -690,6 +690,28 @@ button.danger {
 /* Находки — то, чего в фонотеке нет. Отделены заголовком и чуть приглушены:
    это предложение, а не очередь, и нажатие на строку ничего не включает —
    включать пока нечего. */
+/* Находка на полке. Обложки нет — вместо неё буква, поэтому квадрат надо
+   нарисовать самому; пунктир отличает её от своих треков раньше, чем человек
+   дочитает подпись. */
+.shelf-tile.is-find .shelf-art {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px dashed var(--line-2);
+    background: var(--surface-2);
+    color: var(--text-3);
+    font-size: 26px;
+    font-weight: 650;
+}
+.shelf-tile.is-find .shelf-name { color: var(--text-2); }
+.find-mark {
+    margin-top: 2px;
+    color: var(--text-3);
+    font-size: 10px;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+}
+
 .queue-finds-head {
     margin: 14px 0 6px;
     padding-top: 12px;

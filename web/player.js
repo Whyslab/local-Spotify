@@ -157,29 +157,6 @@ function renderPlayerModes() {
 
 /* ---------------- Панель очереди ---------------- */
 
-/* Находки — треки, которых в фонотеке нет. null значит «ещё не спрашивали»:
- * очередь перерисовывается на каждом переключении трека, а находки от этого не
- * меняются, и Deezer незачем спрашивать по разу на трек. Спрошенное держится
- * до перезагрузки страницы. */
-let externalFinds = null;
-
-async function loadExternalFinds() {
-    if (externalFinds !== null) return;
-    /* Занимаем место сразу: панель успевают закрыть и открыть заново, пока
-     * ответ идёт, и второй запрос был бы лишним. */
-    externalFinds = [];
-    try {
-        const r = await fetch("/api/discover-external?limit=12", { headers: headers() });
-        if (!r.ok) return;
-        const data = await r.json();
-        if (Array.isArray(data.tracks)) externalFinds = data.tracks;
-    } catch (e) {
-        /* Находки — приятное дополнение, а не часть очереди: без них так без них. */
-        return;
-    }
-    renderQueuePanel();
-}
-
 function toggleQueuePanel() {
     const panel = document.getElementById("playQueue");
     if (!panel) return;
@@ -191,7 +168,9 @@ function toggleQueuePanel() {
     }
     if (!panel.hidden) {
         renderQueuePanel();
-        loadExternalFinds();
+        /* Находки приезжают отдельно и позже: очередь не должна ждать чужой
+         * сервис, чтобы открыться. */
+        externalFinds().then(() => renderQueuePanel());
     }
 }
 
@@ -253,12 +232,13 @@ function renderQueuePanel() {
     });
 
     /* Находок нет — и раздела нет: пустой заголовок выглядел бы поломкой. */
-    if (!externalFinds || !externalFinds.length) return;
+    const finds = externalFindsReady();
+    if (!finds.length) return;
     const head = document.createElement("div");
     head.className = "queue-finds-head";
     head.textContent = "Можно добавить — этого нет в фонотеке";
     box.appendChild(head);
-    for (const find of externalFinds) box.appendChild(externalFindRow(find));
+    for (const find of finds) box.appendChild(externalFindRow(find));
 }
 
 /* «+» ничего не качает. Он открывает поиск с готовым запросом: две загрузки
