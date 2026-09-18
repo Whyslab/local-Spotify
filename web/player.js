@@ -20,6 +20,7 @@ const player = {
     playlist: null,      // {name, revision, entries}
     reported: false,     // one journal entry per track, not one per pause
     queueMode: "manual", // "smart", "plain" or "manual" -- see reportPlay
+    queueSource: null,   // {kind: "playlist", name} | {kind: "library"} | null
 
     /* Порядок обхода очереди — список её позиций, а не сама очередь.
      * Так перемешивание не перетасовывает список, который человек видит:
@@ -206,10 +207,30 @@ function renderQueuePanel() {
         const position = from + offset;
         const track = player.queue[queueIndex];
         if (!track) return;
-        const row = document.createElement("button");
+        /* Строка — не <button>: внутри неё живёт своя кнопка «откуда играет», а
+         * кнопка в кнопке — недопустимая разметка. Роль и tabindex сохраняют
+         * доступ с клавиатуры; Enter включает трек, а пробел остаётся за
+         * воспроизведением, как и везде на странице. */
+        const row = document.createElement("div");
         row.className = "track queue-row";
+        row.setAttribute("role", "button");
+        row.tabIndex = 0;
+        row.onkeydown = (event) => {
+            if (event.key !== "Enter") return;
+            event.preventDefault();
+            row.click();
+        };
         if (queueIndex === player.index) row.classList.add("is-playing");
         row.onclick = () => { player.orderAt = position; playAt(queueIndex); renderQueuePanel(); };
+
+        /* «Откуда это» — в очереди все треки на одно лицо, а списком их видно
+         * в родном окружении: в своей подборке или в фонотеке рядом с соседями. */
+        const reveal = document.createElement("button");
+        reveal.className = "icon-button small queue-reveal";
+        reveal.textContent = "↗";
+        reveal.title = "Показать, откуда играет";
+        reveal.setAttribute("aria-label", "Показать, откуда играет");
+        reveal.onclick = (event) => { event.stopPropagation(); revealTrack(track); };
 
         const info = document.createElement("div");
         info.className = "track-info";
@@ -224,6 +245,7 @@ function renderQueuePanel() {
             info.appendChild(artist);
         }
         row.appendChild(info);
+        row.appendChild(reveal);
         /* Видно, что трек пришёл со стороны, а не из подборки. Иначе
          * непонятно, откуда он взялся, и это выглядит ошибкой. */
         if (track.outside) {
@@ -289,9 +311,48 @@ function externalFindRow(find) {
     return row;
 }
 
-function playQueue(tracks, startAt = 0, mode = "manual") {
+/* `source` — откуда эта очередь: подборка с именем или фонотека. Нужен для
+ * кнопки «показать, откуда играет»: из самой очереди этого не видно, треки в
+ * ней одинаковые независимо от происхождения. */
+/* Показать трек там, откуда он играет.
+ *
+ * Очередь помнит своё происхождение, но точного места в списке не знает: трек
+ * мог попасть в неё и из подборки, и подмешиванием. Поэтому подборка
+ * открывается целиком, а нужная строка подсвечивается и подъезжает к глазам;
+ * для фонотеки то же делает поиск по названию — двести строк за раз она всё
+ * равно не покажет.
+ */
+async function revealTrack(track) {
+    if (!track) return;
+    const source = player.queueSource;
+
+    if (source && source.kind === "playlist") {
+        await openPlaylist(source.name);
+        flashTrackRow(track.path);
+        return;
+    }
+
+    /* Фонотека: подставляем название в поиск — иначе трек может лежать за
+     * двухсотой строкой и на экране его не будет вовсе. */
+    switchView("viewLibrary");
+    const field = document.getElementById("librarySearch");
+    if (field) field.value = track.title || track.artist || "";
+    await library();
+    flashTrackRow(track.path);
+}
+
+function flashTrackRow(path) {
+    const row = document.querySelector(`[data-track-path="${CSS.escape(path)}"]`);
+    if (!row) return;
+    row.scrollIntoView({ block: "center", behavior: "smooth" });
+    row.classList.add("is-found");
+    setTimeout(() => row.classList.remove("is-found"), 2000);
+}
+
+function playQueue(tracks, startAt = 0, mode = "manual", source = null) {
     player.queue = tracks;
     player.queueMode = mode;
+    player.queueSource = source;
     buildOrder(startAt);
     playAt(startAt);
 }
@@ -839,7 +900,8 @@ function playlistTrackRow(entry, position) {
 
     const info = document.createElement("div");
     info.className = "track-info";
-    info.onclick = () => playQueue(player.playlist.entries, position, "manual");
+    info.onclick = () => playQueue(player.playlist.entries, position, "manual",
+        { kind: "playlist", name: player.playlist.name });
     const title = document.createElement("div");
     title.className = "track-title";
     title.textContent = entry.title;
@@ -1130,7 +1192,8 @@ function setPlaylistNote(text) {
 
 function playPlaylist() {
     if (player.playlist && player.playlist.entries.length) {
-        playQueue(player.playlist.entries, 0, "manual");
+        playQueue(player.playlist.entries, 0, "manual",
+            { kind: "playlist", name: player.playlist.name });
     }
 }
 
@@ -1318,7 +1381,7 @@ async function addToPlaylist(box, card, note, cancel, name, track) {
 }
 
 function playFromLibrary(track, rows) {
-    playQueue(rows, rows.findIndex(r => r.path === track.path), "manual");
+    playQueue(rows, rows.findIndex(r => r.path === track.path), "manual", { kind: "library" });
 }
 
 /* ---------------- Desktop shell bridge ---------------- */
