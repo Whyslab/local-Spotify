@@ -567,10 +567,16 @@ code {
 .playlist-track .track-info { cursor: pointer; }
 .playlist-track.is-dragging { opacity: 0.4; }
 .playlist-track.is-over { box-shadow: inset 0 2px 0 var(--accent); }
-/* Играющая строка. Цветом её больше не выделить — белый и так везде, —
-   поэтому весом и светлым фоном: строка выступает из списка, а не красится. */
-.track.is-playing { background: var(--surface-2); border-color: var(--line-2); }
-.track.is-playing .track-title { font-weight: 750; }
+/* Играющая строка. Цветом её не выделить — вся тема чёрно-белая, — а разницы
+   фона в девять оттенков (#111 против #1a1a1a) в списке на тысячу строк почти
+   не видно: глазами её приходилось искать. Поэтому белая полоса слева: в
+   монохроме это самый заметный признак после самого текста. */
+.track.is-playing {
+    background: var(--surface-2);
+    border-color: var(--accent-dim);
+    box-shadow: inset 3px 0 0 var(--accent);
+}
+.track.is-playing .track-title { font-weight: 750; color: var(--text); }
 
 .icon-button.small {
     width: 34px;
@@ -800,7 +806,11 @@ button.danger {
 .queue-find .track-title { color: var(--text-2); }
 /* Уже сыгранное приглушено, играющее светится — список читается сверху вниз
    как дорога: позади бледное, под ногами яркое, впереди обычное. */
-.queue-row.is-playing .track-title { font-weight: 750; }
+.queue-row.is-playing {
+    background: var(--surface-2);
+    box-shadow: inset 3px 0 0 var(--accent);
+}
+.queue-row.is-playing .track-title { font-weight: 750; color: var(--text); }
 
 /* Главная: полки-приглашения. Каждая показывает шесть строк из сорока —
    это приглашение, а не список; «Слушать» ставит в очередь всю полку. */
