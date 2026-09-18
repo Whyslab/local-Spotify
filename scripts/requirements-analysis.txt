@@ -1,0 +1,8 @@
+# Audio analysis only. Deliberately not in adder/requirements.txt: librosa
+# brings numba, llvmlite and scikit-learn with it, and the service imports
+# none of them -- only scripts/analyze_audio.py does. Keeping them apart is
+# what stops CI and a fresh install from pulling a compiler toolchain for a
+# feature that runs once a night.
+#
+#   .venv/bin/pip install -r scripts/requirements-analysis.txt
+librosa>=1.0,<2

@@ -1,0 +1,39 @@
+[Unit]
+Description=local-Spotify: export the home shelves as .m3u playlists
+# Ordering only, and only when both are started in the same transaction: the
+# shelves are built out of what the analysis measures, and the timer below is
+# what actually keeps them apart in time.
+After=music-analysis.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=%REPO%
+ExecStart=%REPO%/.venv/bin/python %REPO%/scripts/export_shelves.py
+
+# Building a shelf means reading the tags off every file in the library. There
+# is nothing to hurry for -- a shelf rebuilt half an hour later is the same
+# shelf -- so it yields to whatever else the machine is doing.
+Nice=15
+IOSchedulingClass=idle
+
+# systemd отключает таймаут запуска именно для Type=oneshot, а «Может
+# понравиться» ходит за списком похожих артистов наружу. Без этой строки одно
+# зависшее соединение оставило бы единицу в activating навсегда — а таймер не
+# запускает уже работающую, и обновление подборок молча прекратилось бы.
+TimeoutStartSec=30min
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+# As in music-adder.service: ProtectSystem=strict leaves /home writable,
+# ProtectHome=read-only closes it, and every directory written to has to be
+# listed below. This job writes in exactly two places -- the .m3u files in the
+# library root, and the previous contents of each, archived by adder.playlists
+# under adder/playlist-history. The installer replaces %LIBRARY% with the
+# configured library path.
+ProtectHome=read-only
+ReadWritePaths=%REPO%/adder
+ReadWritePaths="%LIBRARY%"
+
+[Install]
+WantedBy=default.target
