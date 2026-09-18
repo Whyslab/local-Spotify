@@ -213,10 +213,20 @@ def measure_all(jobs, workers: int):
             yield _measure_one(job)
         return
 
-    import multiprocessing
+    # ProcessPoolExecutor rather than multiprocessing.Pool: when a worker is
+    # killed -- and under MemoryMax a cold numba cache in three processes comes
+    # close enough to the ceiling for the kernel to do exactly that -- Pool's
+    # imap_unordered waits for a result that will never arrive, forever. As a
+    # oneshot unit with no start timeout, that means the nightly pass sits in
+    # `activating` and the timer never starts it again: the analysis stops, and
+    # nothing says so. The executor raises BrokenProcessPool instead, which
+    # ends the run loudly.
+    from concurrent.futures import ProcessPoolExecutor, as_completed
 
-    with multiprocessing.Pool(processes=workers) as pool:
-        yield from pool.imap_unordered(_measure_one, jobs, chunksize=1)
+    with ProcessPoolExecutor(max_workers=workers) as pool:
+        pending = [pool.submit(_measure_one, job) for job in jobs]
+        for future in as_completed(pending):
+            yield future.result()
 
 
 def library_files(root: Path, suffixes: tuple[str, ...]) -> list[Path]:

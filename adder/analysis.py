@@ -71,8 +71,15 @@ def analyse_track(path: str) -> None:
                 timeout=600,
             )
             if result.returncode != 0:
-                logger.info("Analysis of %s failed: %s", path, result.stderr.strip()[-160:])
+                # The reason lands on stdout -- the script prints "✗ <track>:
+                # <error>" there and writes nothing to stderr -- so logging
+                # stderr alone produced "failed:" with an empty tail. And at
+                # info level it would sit among a few hundred thousand access
+                # log lines a week: a failure nobody can find is the silence
+                # this was meant to end.
+                detail = (result.stdout.strip() or result.stderr.strip())[-200:]
+                logger.warning("Analysis of %s failed: %s", path, detail)
         except Exception as exc:  # noqa: BLE001
-            logger.info("Analysis of %s could not start: %s", path, exc)
+            logger.warning("Analysis of %s could not start: %s", path, exc)
 
     threading.Thread(target=run, name="analyse-track", daemon=True).start()
