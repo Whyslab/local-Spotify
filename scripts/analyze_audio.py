@@ -28,6 +28,17 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
+# numba, which librosa compiles through, caches compiled functions next to the
+# installed library by default. Under the units that run this -- both the adder
+# and the nightly pass set ProtectHome=read-only -- the project directory is
+# read-only, and numba raises "cannot cache function: no locator available"
+# instead of falling back to no cache. From a shell it works, which is why this
+# went unnoticed: every track added after 2026-09-03 came back unmeasured, and
+# the run still exited 0.
+#
+# adder/ is the one path both units mount read-write, so the cache goes there.
+os.environ.setdefault("NUMBA_CACHE_DIR", str(REPO / "adder" / "numba-cache"))
+
 # Only the middle of a track is analysed. Ninety seconds is more than enough to
 # establish tempo and key, it bounds memory to a few megabytes whatever the
 # track length, and it skips the intro and the outro -- which are the least
@@ -325,7 +336,11 @@ def main() -> int:
 
     print(f"Итог: измерено {done}, пропущено {skipped}, с ошибкой {failed}", flush=True)
     con.close()
-    return 0
+    # A failed track has to reach the caller as a failure. Returning 0 here is
+    # what hid the numba cache error above: the adder only logs when the exit
+    # code is non-zero, so nine tracks went unmeasured without a single line in
+    # the journal.
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
