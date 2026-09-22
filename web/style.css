@@ -1491,11 +1491,20 @@ button.ghost.is-on { color: var(--text); border-color: var(--text); font-weight:
     }
 
     /* Текст песни — ровно на высоту середины: прокручивается сам текст, а не
-       вся середина, и звучащая строка всегда посередине видимого. */
+       вся середина, и звучащая строка всегда посередине видимого.
+       Не height: 100% — WebKit (окно на ноутбуке) считал проценты от окна, а
+       не от середины, и низ текста уходил под плеер. Середина на это время
+       сама становится колонкой, и текст растягивается по ней. */
+    #views:has(> #viewLyrics:not([hidden])) {
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+    }
     #viewLyrics:not([hidden]) {
         display: flex;
         flex-direction: column;
-        height: 100%;
+        flex: 1 1 auto;
+        min-height: 0;
     }
     #viewLyrics .lyrics-body {
         flex: 1 1 auto;
