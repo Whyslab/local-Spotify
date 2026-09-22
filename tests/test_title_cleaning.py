@@ -16,6 +16,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 os.environ.setdefault("API_TOKEN", "test-secret")
 
+import pytest
+
 from adder.ingest import clean_title
 
 
@@ -67,3 +69,20 @@ def test_metadata_keeps_version_information():
         )
         == "Song (Live)"
     )
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("это любовь текст", "это любовь"),
+        ("Fata Morgana (текст)", "Fata Morgana"),
+        ("Money Flow [Lyrics]", "Money Flow"),
+        ("Song + lyrics", "Song"),
+        ("Бывшая (Audio)", "Бывшая"),
+        ("Текст", "Текст"),
+    ],
+)
+def test_lyric_video_marks_are_not_part_of_the_title(raw, expected):
+    """Первым в поиске часто стоит ролик с текстом — пометка не должна стать
+    названием: по нему потом не находится ни текст, ни дубликат."""
+    assert clean_title(raw, for_filename=False) == expected

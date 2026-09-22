@@ -45,6 +45,11 @@ JUNK = [
     r"(lyric(s)?\s+video|visuali[sz]er|music\s+video)",
     r"премьера(\s+(трека|клипа))?",
     r"текст\s+песни",
+    # «(текст)», «[lyrics]», «(audio)», «(клип)» — пометки ролика, а не названия.
+    r"[(\[]\s*(текст|lyrics|audio|клип|clip)\s*[)\]]",
+    # «Это любовь текст», «Song + lyrics» в конце: ролик с текстом на экране.
+    # Только после другого слова — песня, которая так и называется, остаётся.
+    r"(?<=\S)\s+\+?\s*(текст|lyrics)\s*$",
 ]
 
 # Version keywords that should be preserved in metadata (Problem #13)
