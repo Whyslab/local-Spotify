@@ -76,4 +76,6 @@ def verify(path: str, expires_at: str | int, signature: str, now: float | None =
         return False
     # compare_digest, not ==, so a wrong signature cannot be discovered one
     # character at a time by timing the answer.
-    return hmac.compare_digest(sign(path, expiry), signature or "")
+    # Байты: на строке с не-ASCII символом compare_digest бросает TypeError,
+    # и подделанная ссылка давала 500 вместо отказа.
+    return hmac.compare_digest(sign(path, expiry).encode(), (signature or "").encode())

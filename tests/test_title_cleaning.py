@@ -74,7 +74,8 @@ def test_metadata_keeps_version_information():
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
-        ("это любовь текст", "это любовь"),
+        ("это любовь - текст", "это любовь"),
+        ("Мой текст", "Мой текст"),
         ("Fata Morgana (текст)", "Fata Morgana"),
         ("Money Flow [Lyrics]", "Money Flow"),
         ("Song + lyrics", "Song"),

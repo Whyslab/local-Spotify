@@ -48,8 +48,25 @@ _LOCKS_GUARD = threading.Lock()
 
 
 def _lock_for(name: str) -> threading.Lock:
+    # По имени файла, а не по присланной строке: «x» и « x» — один файл, и
+    # замки у них должны быть одним.
+    key = safe_name(name)
     with _LOCKS_GUARD:
-        return _LOCKS.setdefault(name, threading.Lock())
+        return _LOCKS.setdefault(key, threading.Lock())
+
+
+def _clean_paths(paths: list[str]) -> list[str]:
+    """Пути, которые можно записать в .m3u строкой каждый.
+
+    Перевод строки внутри пути превращал его в две строки подборки, путь с
+    «#» в начале читался как комментарий, пустой — пропадал. Такое не
+    принимается вовсе, а не пишется молча.
+    """
+    for path in paths:
+        text = str(path)
+        if not text.strip() or "\n" in text or "\r" in text or text.lstrip().startswith("#"):
+            raise HTTPException(status_code=400, detail=f"Недопустимый путь в подборке: {text!r}")
+    return [str(path) for path in paths]
 
 
 def safe_name(name: str) -> str:
@@ -216,7 +233,7 @@ def write(name: str, paths: list[str], expected_revision: str | None) -> Playlis
                 ),
             )
         _archive(path)
-        _atomic_write(path, render(paths))
+        _atomic_write(path, render(_clean_paths(paths)))
         logger.info("Playlist %r written: %d entries", name, len(paths))
     return read(name)
 
@@ -249,10 +266,11 @@ def swap_everywhere(old_path: str, new_path: str) -> int:
 
 def create(name: str, paths: list[str] | None = None) -> Playlist:
     path = playlist_path(name)
-    if path.exists():
-        raise HTTPException(status_code=409, detail="Playlist already exists")
     with _lock_for(name):
-        _atomic_write(path, render(paths or []))
+        # Проверка — под замком: иначе два одновременных «создать» оба писали.
+        if path.exists():
+            raise HTTPException(status_code=409, detail="Playlist already exists")
+        _atomic_write(path, render(_clean_paths(paths or [])))
     logger.info("Playlist %r created", name)
     return read(name)
 
@@ -267,10 +285,14 @@ def rename(name: str, new_name: str) -> Playlist:
     source, target = playlist_path(name), playlist_path(new_name)
     if not source.is_file():
         raise HTTPException(status_code=404, detail="Playlist not found")
-    if target.exists():
-        raise HTTPException(status_code=409, detail="A playlist with that name already exists")
-    with _lock_for(name), _lock_for(new_name):
-        os.replace(source, target)
+    first, second = sorted({safe_name(name), safe_name(new_name)})
+    with _lock_for(first), _lock_for(second):
+        # Под замком и без затирания: os.replace молча заменил бы подборку,
+        # появившуюся под новым именем после проверки.
+        if target.exists():
+            raise HTTPException(status_code=409, detail="A playlist with that name already exists")
+        os.link(source, target)
+        source.unlink()
     logger.info("Playlist %r renamed to %r", name, new_name)
     return read(new_name)
 
@@ -283,7 +305,7 @@ def delete(name: str) -> dict:
     runtime.TRASH_DIR.mkdir(parents=True, exist_ok=True)
     destination = runtime.TRASH_DIR / path.name
     if destination.exists():
-        destination = destination.with_name(f"{destination.stem}-{int(time.time())}{SUFFIX}")
+        destination = destination.with_name(f"{destination.stem}-{time.time_ns()}{SUFFIX}")
     with _lock_for(name):
         shutil.move(str(path), str(destination))
     logger.info("Playlist %r deleted -> %s", name, destination)
@@ -299,7 +321,10 @@ def listing() -> list[dict]:
     for path in sorted(root.glob(f"*{SUFFIX}")):
         try:
             count = len(parse(path.read_text(encoding="utf-8")))
-        except OSError:
+        except (OSError, UnicodeDecodeError) as exc:
+            # Одна .m3u не в UTF-8 (скопированная откуда-то в cp1251) не должна
+            # ронять список подборок и /health вместе с ним.
+            logger.warning("Playlist file %s skipped: %s", path.name, exc)
             continue
         out.append(
             {

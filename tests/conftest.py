@@ -33,6 +33,7 @@ def _outside_stays_offline(monkeypatch, tmp_path):
     from adder import outside, runtime
 
     monkeypatch.setattr(runtime, "OUTSIDE_DIR", tmp_path / "outside-cache")
+    monkeypatch.setattr(runtime, "THUMB_DIR", tmp_path / "thumb-cache")
     monkeypatch.setattr(outside, "candidates", lambda *args, **kwargs: [])
     # Добавление трека измеряет его отдельным процессом и спрашивает Deezer
     # об альбоме — в тестах ни того, ни другого.

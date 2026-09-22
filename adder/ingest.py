@@ -36,7 +36,11 @@ def sanitize_filename(name: str) -> str:
     if not name:
         return "Unknown"
     name = re.sub(r"[\[\]'\"]", "", str(name))
-    return re.sub(r'[\\/*?:"<>|]', "", name).strip()
+    name = re.sub(r'[\\/*?:"<>|]', "", name)
+    # Управляющие символы из тегов и ведущие точки: «..» уводил бы из папки,
+    # «.m4a» становился скрытым файлом без имени.
+    name = re.sub(r"[\x00-\x1f\x7f]", "", name).strip().lstrip(".").strip()
+    return name or "Unknown"
 
 
 JUNK = [
@@ -47,9 +51,9 @@ JUNK = [
     r"текст\s+песни",
     # «(текст)», «[lyrics]», «(audio)», «(клип)» — пометки ролика, а не названия.
     r"[(\[]\s*(текст|lyrics|audio|клип|clip)\s*[)\]]",
-    # «Это любовь текст», «Song + lyrics» в конце: ролик с текстом на экране.
-    # Только после другого слова — песня, которая так и называется, остаётся.
-    r"(?<=\S)\s+\+?\s*(текст|lyrics)\s*$",
+    # «Song + lyrics», «Песня - текст» в конце: ролик с текстом на экране.
+    # Только через «+» или тире — «Мой текст» может быть названием песни.
+    r"\s*(\+|\s[-–—|])\s*(текст|lyrics)\s*$",
 ]
 
 # Version keywords that should be preserved in metadata (Problem #13)
@@ -644,19 +648,21 @@ def decodes_cleanly(filepath: Path, timeout: float = 120) -> tuple[bool, str, fl
 TRUNCATION_TOLERANCE = 0.9
 
 
-def validate_audio_integrity(filepath: Path) -> tuple[bool, str]:
+def validate_audio_integrity(filepath: Path, from_outside: bool = False) -> tuple[bool, str]:
     """Integrity check for any format the library accepts.
 
-    .m4a keeps the header-only check it has always had -- every one of those
-    arrives through the pipeline that produced it moments earlier. A file
-    imported from disk has no such provenance, so it is decoded in full.
+    An .m4a that yt-dlp produced moments earlier keeps the cheap header-only
+    check. Anything that arrived from outside -- an upload, a replacement
+    file, a track kept from the smart-shuffle cache -- has no such provenance
+    and is decoded in full, .m4a included: a faststart file with its tail
+    cut off passes the header check.
     """
     if not filepath.exists():
         return False, "File does not exist"
     if filepath.stat().st_size == 0:
         return False, "File is empty"
 
-    if filepath.suffix.lower() == ".m4a":
+    if filepath.suffix.lower() == ".m4a" and not from_outside:
         return validate_m4a_integrity(filepath)
 
     try:
@@ -690,6 +696,8 @@ def cleanup_old_temp_files():
     cleaned = 0
 
     for f in runtime.TMP_DIR.glob("*"):
+        if f.is_dir():
+            continue  # tmp/import — отдельно, ниже
         try:
             # Don't delete files that are currently being processed
             mtime = f.stat().st_mtime
@@ -705,8 +713,42 @@ def cleanup_old_temp_files():
                 extra={"task_id": "system"},
             )
 
+    cleaned += _cleanup_stale_uploads(current_time)
     if cleaned > 0:
         logger.info(f"Cleaned {cleaned} old temp files", extra={"task_id": "system"})
+
+
+def _cleanup_stale_uploads(now: float) -> int:
+    """Загруженные файлы, которые уже никто не обработает.
+
+    Файл кладётся в папку импорта ещё до проверки на дубликат, так что
+    пропущенные загрузки и повторные «в фонотеку» оставляли его там навсегда.
+    Убирается старше срока и только если его задача не ждёт очереди.
+    """
+    folder = runtime.TMP_DIR / IMPORT_DIR_NAME
+    if not folder.is_dir():
+        return 0
+    try:
+        waiting = {
+            row["url"].removeprefix("file:")
+            for row in db.db_query(
+                "SELECT url FROM tasks WHERE url LIKE 'file:%' "
+                "AND status IN ('queued', 'downloading', 'tagging')"
+            )
+        }
+    except Exception:  # noqa: BLE001 — без базы лучше ничего не трогать
+        return 0
+    removed = 0
+    for path in folder.iterdir():
+        digest = path.name.split(".", 1)[0]
+        try:
+            if digest in waiting or now - path.stat().st_mtime <= runtime.TMP_TTL_SECONDS:
+                continue
+            path.unlink()
+            removed += 1
+        except OSError:
+            continue
+    return removed
 
 
 # Errors worth trying again. Everything else is treated as permanent, so a
@@ -1002,7 +1044,7 @@ def import_local_file(tid: int, source: Path, original_name: str) -> Downloaded:
 
     db.task_update(tid, status="downloading")
 
-    is_valid, error_msg = validate_audio_integrity(source)
+    is_valid, error_msg = validate_audio_integrity(source, from_outside=True)
     if not is_valid:
         raise RuntimeError(error_msg)
 

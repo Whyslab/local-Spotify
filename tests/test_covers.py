@@ -164,3 +164,32 @@ def test_names_with_dots_and_glob_characters_keep_their_own_cover(name, tmp_path
     covers.rename(name, name + " x")
     assert covers.read_cover(name + " x")[0] == JPEG
     assert covers.read_cover("Rap vol")[0] == PNG
+
+
+def test_a_track_cover_can_be_asked_for_small(tmp_path, monkeypatch):
+    """Списку нужна миниатюра, а не полноразмерная обложка в мегабайты."""
+    import subprocess
+
+    from adder import app as app_module
+
+    big = tmp_path / "big.jpg"
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=c=red:s=1200x1200", "-frames:v", "1", str(big)],
+        check=True,
+    )  # fmt: skip
+    art = (big.read_bytes(), "image/jpeg")
+    track = tmp_path / "t.m4a"
+    track.write_bytes(b"x")
+
+    small, kind = app_module._thumbnail(track, art, 96)
+    assert kind == "image/jpeg"
+    assert len(small) < len(art[0]) / 5
+    # Второй раз — из кэша, тот же результат.
+    assert app_module._thumbnail(track, art, 96)[0] == small
+    # Не картинка — отдаётся как есть, без ошибки.
+    other = tmp_path / "other.m4a"
+    other.write_bytes(b"y")
+    assert app_module._thumbnail(other, (b"not an image", "image/png"), 96) == (
+        b"not an image",
+        "image/png",
+    )

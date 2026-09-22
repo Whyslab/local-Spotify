@@ -8,6 +8,7 @@ in :mod:`adder.ingest`, the queue and its retry policy in :mod:`adder.queue`.
 import hashlib
 import logging
 import secrets
+import subprocess
 import threading
 import time
 from contextlib import asynccontextmanager, suppress
@@ -52,9 +53,17 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Security(security))
     secrets.compare_digest avoids leaking the token via a timing side
     channel on the comparison.
     """
-    if credentials is None or not secrets.compare_digest(credentials.credentials, config.API_TOKEN):
+    if not _token_matches(credentials):
         raise HTTPException(status_code=401, detail="Invalid or missing API token")
     return True
+
+
+def _token_matches(credentials: HTTPAuthorizationCredentials | None) -> bool:
+    # Байты, а не строки: compare_digest на строке с не-ASCII символом бросает
+    # TypeError, и кривой заголовок давал 500 вместо 401.
+    return credentials is not None and secrets.compare_digest(
+        credentials.credentials.encode(), config.API_TOKEN.encode()
+    )
 
 
 @asynccontextmanager
@@ -137,6 +146,9 @@ async def lifespan(app: FastAPI):
     # Cleanup temporary files after workers have stopped.
     if runtime.TMP_DIR.exists():
         for f in runtime.TMP_DIR.glob("*"):
+            if f.is_dir():
+                # tmp/import: загрузки, ждущие очереди, должны пережить перезапуск.
+                continue
             try:
                 f.unlink()
                 logger.info(
@@ -150,7 +162,9 @@ async def lifespan(app: FastAPI):
                 )
 
 
-app = FastAPI(lifespan=lifespan)
+# Без /docs, /redoc и /openapi.json: служба слушает сеть общежития, и карта
+# всего API без ключа там ни к чему.
+app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 
 app.mount(
     "/static",
@@ -450,8 +464,45 @@ def lyrics_custom(req: LyricsTextRequest, authenticated: bool = Depends(verify_t
         raise HTTPException(status_code=400, detail="В тексте нет слов") from exc
 
 
+THUMB_SIZES = (96, 200, 600)
+
+
+def _thumbnail(source: Path, art: tuple[bytes, str], size: int) -> tuple[bytes, str]:
+    """Обложка, уменьшенная до ``size`` по большей стороне, в JPEG.
+
+    ffmpeg — не новая зависимость: без него служба не принимает ни одного
+    файла. Уменьшенное лежит в кэше по пути, размеру и времени изменения
+    файла; не вышло уменьшить — отдаём как есть.
+    """
+    stamp = source.stat().st_mtime_ns
+    key = hashlib.sha1(f"{source}|{stamp}|{size}".encode()).hexdigest()
+    cached = runtime.THUMB_DIR / f"{key}.jpg"
+    if cached.is_file():
+        return cached.read_bytes(), "image/jpeg"
+    try:
+        done = subprocess.run(
+            [
+                "ffmpeg", "-v", "error", "-i", "pipe:0",
+                "-vf", f"scale={size}:{size}:force_original_aspect_ratio=decrease",
+                "-frames:v", "1", "-q:v", "4", "-f", "mjpeg", "pipe:1",
+            ],
+            input=art[0],
+            capture_output=True,
+            timeout=15,
+        )  # fmt: skip
+    except (OSError, subprocess.TimeoutExpired):
+        return art
+    if done.returncode != 0 or not done.stdout:
+        return art
+    runtime.THUMB_DIR.mkdir(parents=True, exist_ok=True)
+    partial = cached.with_suffix(".part")
+    partial.write_bytes(done.stdout)
+    partial.replace(cached)
+    return done.stdout, "image/jpeg"
+
+
 @app.get("/api/cover")
-def track_cover(path: str, authenticated: bool = Depends(verify_token)):
+def track_cover(path: str, size: int = 0, authenticated: bool = Depends(verify_token)):
     """The artwork inside a track, for the panel beside the list.
 
     Served from the file rather than from Navidrome: the page already has a
@@ -464,6 +515,10 @@ def track_cover(path: str, authenticated: bool = Depends(verify_token)):
     art = library.embedded_cover(absolute)
     if art is None:
         raise HTTPException(status_code=404, detail="This track has no artwork")
+    if size > 0:
+        # Ближайший из трёх размеров: иначе кэш рос бы на каждый пиксель.
+        wanted = next((s for s in THUMB_SIZES if s >= size), THUMB_SIZES[-1])
+        art = _thumbnail(absolute, art, wanted)
     return Response(
         content=art[0],
         media_type=art[1],
@@ -480,6 +535,12 @@ def delete_track(req: DeleteRequest, authenticated: bool = Depends(verify_token)
 # ---------------------------------------------------------------------------
 # Getting music in
 # ---------------------------------------------------------------------------
+
+
+# Трек во flac — десятки мегабайт; двести — с запасом. Больше — почти
+# наверняка не трек, а держать его целиком в памяти 8-гигабайтного ноутбука
+# незачем.
+MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 
 
 def _can_requeue(task: dict) -> bool:
@@ -570,7 +631,10 @@ async def import_files(
                 }
             )
             continue
-        data = await upload.read()
+        data = await upload.read(MAX_UPLOAD_BYTES + 1)
+        if len(data) > MAX_UPLOAD_BYTES:
+            skipped.append({"file": upload.filename, "reason": "file is larger than 200 MB"})
+            continue
         if not data:
             skipped.append({"file": upload.filename, "reason": "empty file"})
             continue
@@ -638,7 +702,9 @@ async def replace_track_with_file(
     if suffix not in library.AUDIO_SUFFIXES:
         raise HTTPException(status_code=400, detail=f"Формат {suffix or '(нет)'} не поддерживается")
 
-    data = await file.read()
+    data = await file.read(MAX_UPLOAD_BYTES + 1)
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="Файл больше 200 МБ")
     if not data:
         raise HTTPException(status_code=400, detail="Пустой файл")
 
@@ -798,7 +864,20 @@ def stream(path: str, exp: str = "", sig: str = ""):
     track = _audio_file(path)
     # FileResponse handles Range itself, which is what makes seeking work:
     # starlette parses the header, answers 206, and returns 416 on a bad range.
-    return FileResponse(track, media_type="audio/mp4", filename=track.name)
+    # По расширению: mp3, flac и opus из импорта с меткой audio/mp4 Safari
+    # может не сыграть вовсе.
+    return FileResponse(
+        track, media_type=STREAM_TYPES.get(track.suffix.lower(), "audio/mp4"), filename=track.name
+    )
+
+
+STREAM_TYPES = {
+    ".m4a": "audio/mp4",
+    ".mp3": "audio/mpeg",
+    ".flac": "audio/flac",
+    ".opus": "audio/ogg",
+    ".ogg": "audio/ogg",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -902,7 +981,7 @@ def _sync_navidrome(op: str, name: str) -> str:
 
 
 @app.post("/api/playlists/{name}/cover")
-async def upload_playlist_cover(
+def upload_playlist_cover(
     name: str,
     image: UploadFile = File(...),
     authenticated: bool = Depends(verify_token),
@@ -917,7 +996,10 @@ async def upload_playlist_cover(
     away instead of waiting for a round trip through Navidrome.
     """
     playlists.read(name)  # 404 for a playlist that does not exist
-    data = await image.read()
+    # Обычная def, не async: запись файла и запросы к Navidrome (до десятков
+    # секунд) иначе держали весь цикл событий — и поток звука вместе с ним.
+    # Читаем не больше лимита плюс байт: store() сам скажет «слишком большая».
+    data = image.file.read(config.MAX_COVER_BYTES + 1)
     media = covers.store(name, data)
     return {
         "playlist": name,
@@ -1085,6 +1167,8 @@ def smart_shuffle(
     подходящим трекам со стороны. Без него перемешивается вся фонотека, как
     раньше.
     """
+    # Как у /api/shuffle/smart: size=-1 отдавал всю фонотеку без одного трека.
+    size = min(max(size, 1), 200)
     tracks = _shuffle_tracks()
     if not tracks:
         return {"mode": mode, "queue": [], "report": {}, "analysed": 0}
@@ -1246,6 +1330,7 @@ def start_blind_trial(size: int = 30, authenticated: bool = Depends(verify_token
     smart queue is recorded here and not returned, so the answer cannot be
     read off the response.
     """
+    size = min(max(size, 4), 100)
     tracks = _shuffle_tracks()
     if len(tracks) < 4:
         raise HTTPException(status_code=400, detail="Not enough tracks to compare")
@@ -1398,8 +1483,13 @@ def play_stats(authenticated: bool = Depends(verify_token)):
 
 
 @app.get("/health")
-def health():
-    """Health endpoint (Problem #21)."""
+def health(credentials: HTTPAuthorizationCredentials = Security(security)):
+    """Health endpoint (Problem #21).
+
+    Без ключа — только «жив ли»: служба слушает всю сеть общежития, а полный
+    ответ выдаёт путь к фонотеке (с именем пользователя) и что сейчас качается.
+    Подробности — с тем же ключом, что и остальное API.
+    """
     try:
         # Check database connectivity
         db.db_exec("SELECT 1")
@@ -1414,6 +1504,11 @@ def health():
     queue_size = runtime.TASK_QUEUE.qsize()
 
     healthy = db_status == "ok" and library_status == "ok"
+    if not _token_matches(credentials):
+        short = {"status": "healthy" if healthy else "unhealthy"}
+        if healthy:
+            return short
+        return JSONResponse(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, content=short)
     tracks, albums = library.library_counts() if library_status == "ok" else (0, 0)
 
     payload = {
