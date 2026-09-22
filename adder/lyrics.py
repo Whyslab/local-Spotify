@@ -246,7 +246,7 @@ def parse_synced(text: str) -> list[dict]:
         stamps = list(_STAMP.finditer(raw))
         if not stamps:
             continue
-        line = raw[stamps[-1].end():].strip()
+        line = raw[stamps[-1].end() :].strip()
         for stamp in stamps:
             minutes, seconds, fraction = stamp.groups()
             at = int(minutes) * 60 + int(seconds)

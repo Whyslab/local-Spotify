@@ -42,10 +42,7 @@ def collections(rows: list[dict], limit: int = 50, seed: int | None = None) -> l
     Треки без измерений просто не участвуют: соврать про их настроение
     хуже, чем не показать их в подборке.
     """
-    measured = [
-        r for r in rows
-        if r.get("tempo") is not None and r.get("energy") is not None
-    ]
+    measured = [r for r in rows if r.get("tempo") is not None and r.get("energy") is not None]
     if len(measured) < 20:
         # Меньше двадцати — четверти перестают что-либо значить.
         return []
@@ -67,17 +64,32 @@ def collections(rows: list[dict], limit: int = 50, seed: int | None = None) -> l
         return Mood(key, name, hint, chosen[:limit])
 
     wanted = [
-        pick(lambda r: float(r["tempo"]) > tempo_mid and float(r["energy"]) > energy_mid,
-             "car", "В машину", "быстрее и громче половины фонотеки"),
-        pick(lambda r: float(r["tempo"]) >= tempo_high,
-             "run", "Разогнаться", "самая быстрая четверть"),
-        pick(lambda r: float(r["energy"]) <= energy_low,
-             "work", "На работу", "самая тихая четверть — не тянет на себя внимание"),
+        pick(
+            lambda r: float(r["tempo"]) > tempo_mid and float(r["energy"]) > energy_mid,
+            "car",
+            "В машину",
+            "быстрее и громче половины фонотеки",
+        ),
+        pick(
+            lambda r: float(r["tempo"]) >= tempo_high,
+            "run",
+            "Разогнаться",
+            "самая быстрая четверть",
+        ),
+        pick(
+            lambda r: float(r["energy"]) <= energy_low,
+            "work",
+            "На работу",
+            "самая тихая четверть — не тянет на себя внимание",
+        ),
     ]
     if bright_high is not None:
         wanted.append(
-            pick(lambda r: r.get("brightness") is not None
-                 and float(r["brightness"]) >= bright_high,
-                 "bright", "Поярче", "звонкое и высокое")
+            pick(
+                lambda r: r.get("brightness") is not None and float(r["brightness"]) >= bright_high,
+                "bright",
+                "Поярче",
+                "звонкое и высокое",
+            )
         )
     return [mood for mood in wanted if mood is not None]

@@ -1005,10 +1005,9 @@ def home(authenticated: bool = Depends(verify_token)):
         for path in paths:
             row = by_path.get(path)
             if row:
-                out.append({
-                    k: row.get(k)
-                    for k in ("path", "artist", "title", "album", "duration")
-                })
+                out.append(
+                    {k: row.get(k) for k in ("path", "artist", "title", "album", "duration")}
+                )
         return out
 
     albums: dict[tuple[str, str], list[dict]] = {}
@@ -1017,8 +1016,7 @@ def home(authenticated: bool = Depends(verify_token)):
         name = (row.get("album") or "").strip()
         if who and name:
             albums.setdefault((who, name), []).append(row)
-    big = sorted((k for k, v in albums.items() if len(v) > 1),
-                 key=lambda k: -len(albums[k]))[:12]
+    big = sorted((k for k, v in albums.items() if len(v) > 1), key=lambda k: -len(albums[k]))[:12]
 
     return {
         "moods": [
@@ -1028,7 +1026,9 @@ def home(authenticated: bool = Depends(verify_token)):
         "discover": shelves.discover(rows),
         "albums": [
             {
-                "artist": who, "album": name, "count": len(albums[(who, name)]),
+                "artist": who,
+                "album": name,
+                "count": len(albums[(who, name)]),
                 "cover": albums[(who, name)][0]["path"],
             }
             for who, name in big
