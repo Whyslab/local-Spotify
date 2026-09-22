@@ -18,6 +18,11 @@ jobs:
           cache: pip
           cache-dependency-path: adder/requirements.txt
 
+      # ffmpeg — не для тестов, а для самого сервиса: им проверяются и
+      # перекодируются загрузки. Тесты импорта и потоков делают им файлы.
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+
       - name: Install dependencies
         run: python -m pip install -r adder/requirements.txt ruff
 
