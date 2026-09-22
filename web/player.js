@@ -1518,10 +1518,17 @@ function volumeIsAdjustable() {
 }
 
 /* Заполнение ползунка: WebKit не красит пройденную часть сам, поэтому доля
- * уходит в CSS переменной, а рисует её style.css. */
+ * уходит в CSS переменной, а рисует её style.css. Рядом — то же число в
+ * процентах: по полоске не скажешь, 60 там или 70. */
 function paintVolume(level) {
     const slider = document.getElementById("playerVolumeRange");
-    if (slider) slider.style.setProperty("--vol", String(level));
+    const value = document.getElementById("playerVolumeValue");
+    const percent = Math.round(level * 100) + "%";
+    if (slider) {
+        slider.style.setProperty("--vol", String(level));
+        slider.setAttribute("aria-valuetext", percent);
+    }
+    if (value) value.textContent = percent;
 }
 
 function updateVolumeIcon() {
@@ -1535,6 +1542,16 @@ function updateVolumeIcon() {
         : "M4 9v6h4l5 4V5L8 9zM16 9a4 4 0 0 1 0 6");
     button.setAttribute("aria-label", silent ? "Включить звук" : "Выключить звук");
     button.setAttribute("title", silent ? "Включить звук" : "Выключить звук");
+    /* Без звука ползунок остаётся на месте — к нему вернётся громкость, — но
+     * гаснет вместе с числом, чтобы 60% не читались как «играет на 60». */
+    const box = document.getElementById("playerVolume");
+    if (box) box.classList.toggle("is-muted", player.audio.muted);
+    const slider = document.getElementById("playerVolumeRange");
+    if (slider) {
+        const percent = Math.round(player.audio.volume * 100) + "%";
+        slider.setAttribute("aria-valuetext",
+            player.audio.muted ? percent + ", звук выключен" : percent);
+    }
 }
 
 function setVolumeFromSlider(value) {
@@ -1575,6 +1592,21 @@ function initVolume() {
 }
 
 initVolume();
+
+/* Высота панели плеера — в --player. Её ждут отступ под списком и очередь,
+ * которая встаёт над панелью, а сама панель бывает в одну, две и три строки
+ * в зависимости от ширины. Скрытая панель высоты не имеет — тогда остаётся
+ * последнее известное значение. */
+function trackPlayerHeight() {
+    const bar = document.getElementById("player");
+    if (!bar || typeof ResizeObserver === "undefined") return;
+    new ResizeObserver(() => {
+        if (bar.hidden || !bar.offsetHeight) return;
+        document.documentElement.style.setProperty("--player", bar.offsetHeight + "px");
+    }).observe(bar);
+}
+
+trackPlayerHeight();
 
 /* Чем в последний раз двигали фокус. Обновляется на перехвате, до чужих
  * обработчиков, чтобы к моменту нажатия значение было уже верным. */

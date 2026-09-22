@@ -633,7 +633,9 @@ button.danger {
 .play-queue {
     position: fixed;
     right: 12px;
-    bottom: calc(var(--tabbar) + 96px + env(safe-area-inset-bottom, 0px));
+    /* --player — настоящая высота панели, её пишет player.js: панель бывает
+       в одну, две и три строки, и с числом 96 очередь наезжала на кнопки. */
+    bottom: calc(var(--tabbar) + var(--player) + env(safe-area-inset-bottom, 0px));
     z-index: 4;
     width: min(360px, calc(100vw - 24px));
     max-height: min(56vh, 520px);
@@ -1170,14 +1172,33 @@ button.ghost.is-on { color: var(--text); border-color: var(--text); font-weight:
     height: 28px;
 }
 
+/* Рамка, фон и отступы общего правила для input сюда не относятся: с ними
+   ползунок сидел в «поле ввода», а сама полоска была короче его вдвое. */
 .volume-range {
     -webkit-appearance: none;
     appearance: none;
-    width: 72px;
+    width: 96px;
+    min-width: 72px;
     height: 14px;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
     background: transparent;
     cursor: pointer;
 }
+
+/* Ширина под «100%», чтобы ряд не дёргался, когда число меняет длину. */
+.volume-value {
+    min-width: 5ch;
+    color: var(--text-2);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+}
+
+.player-volume.is-muted .volume-range,
+.player-volume.is-muted .volume-value { opacity: .4; }
 
 /* Пройденную часть WebKit сам не красит (в отличие от Firefox с
    ::-moz-range-progress), поэтому она рисуется заливкой по --vol — его
@@ -1239,6 +1260,20 @@ button.ghost.is-on { color: var(--text); border-color: var(--text); font-weight:
    outranks the wide layout's plain .topbar .search and drags its order and
    basis into the rail, where the field ends up last in the header row. */
 @media (max-width: 1099.98px) {
+    /* Без боковых колонок время и перемотка занимают свою строку целиком, а
+       под ними — переключатели слева и громкость на всё остальное место.
+       Иначе на ширине в пол-экрана всё жалось в одну строку и перемотка
+       сужалась до огрызка, а на телефоне справа от громкости была пустота. */
+    /* Только когда громкость есть: на iOS её нет, и одним переключателям
+       своя строка ни к чему — они помещаются рядом с перемоткой. */
+    .player-progress:has(#playerVolume:not([hidden])) .player-track-bar {
+        flex-basis: calc(100% - 100px);
+    }
+    .player-progress:has(#playerVolume:not([hidden])) .player-modes { margin-left: 0; }
+    .player-volume { flex: 1 1 140px; }
+    /* Ширина задана явно: при width:auto ползунок весит для переноса строки
+       свои встроенные ~130px, и на телефоне громкость уезжала третьей строкой. */
+    .volume-range { flex: 1 1 48px; width: 48px; min-width: 48px; }
     .topbar { flex-wrap: wrap; }
     .app[data-view="viewLibrary"] .topbar .search {
         /* A row of its own, under the title. Sharing the header line with the
