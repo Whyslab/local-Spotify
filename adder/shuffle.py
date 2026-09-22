@@ -83,10 +83,14 @@ class Track:
 def tempo_distance(first: float | None, second: float | None) -> float:
     """Distance in BPM, counting half and double time as the same tempo."""
     if not first or not second:
-        # An unmeasured track is not evidence of a jump; treat it as neutral so
-        # a half-analysed library still shuffles sensibly.
+        # An unmeasured track is not evidence of a jump, so it always passes the
+        # tempo window. That is all zero means here: the weighting still
+        # demotes it through UNKNOWN_TRANSITION, which is where "we have no
+        # idea" is priced in.
         return 0.0
-    return min(abs(first * fold - second) for fold in TEMPO_FOLDS)
+    # В обе стороны: иначе 85→160 было 10, а 160→85 — 5, и одна и та же пара
+    # треков стыковалась по-разному в зависимости от порядка.
+    return min(min(abs(first * fold - second), abs(second * fold - first)) for fold in TEMPO_FOLDS)
 
 
 def _coverage_weight(track: Track) -> float:

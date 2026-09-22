@@ -3,3 +3,7 @@ DataFolder = "/var/lib/navidrome"
 Address = "0.0.0.0"
 Port = 4533
 LogLevel = "info"
+
+# Альбомы, где артист участвует (фиты), а не только те, где он — автор
+# альбома. Без этого Amperfy теряет половину альбомов у рэп-артистов.
+Subsonic.ArtistParticipations = true

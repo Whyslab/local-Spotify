@@ -125,3 +125,21 @@ def test_shuffle_size_is_clamped(client, monkeypatch):
     )
     body = client.get("/api/shuffle", headers=AUTH, params={"size": -1, "mode": "plain"}).json()
     assert len(body["queue"]) == 1
+
+
+def test_every_route_but_the_public_few_needs_the_token(client):
+    """Новый адрес без verify_token — это дыра в сети общежития. Список тех,
+    кому можно без ключа, короткий и явный."""
+    from fastapi.routing import APIRoute
+
+    from adder import app as app_module
+
+    public = {"/api/stream", "/health", "/"}
+    open_routes = []
+    for route in app_module.app.routes:
+        if not isinstance(route, APIRoute) or route.path in public:
+            continue
+        names = {dep.call.__name__ for dep in route.dependant.dependencies if dep.call}
+        if "verify_token" not in names:
+            open_routes.append(route.path)
+    assert open_routes == []

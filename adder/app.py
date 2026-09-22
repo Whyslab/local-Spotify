@@ -13,12 +13,13 @@ import threading
 import time
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
+from typing import Literal
 
 from fastapi import Depends, FastAPI, File, HTTPException, Security, UploadFile, status
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from . import (
     config,
@@ -205,15 +206,17 @@ class PlaylistTracksRequest(BaseModel):
 
 
 class PlayRequest(BaseModel):
-    path: str
-    played_seconds: float
-    duration: float | None = None
+    path: str = Field(min_length=1, max_length=4096)
+    # Не отрицательное и не NaN: по журналу считается доля пропусков, и одна
+    # кривая строка сдвигала её.
+    played_seconds: float = Field(ge=0, le=86400, allow_inf_nan=False)
+    duration: float | None = Field(default=None, ge=0, le=86400, allow_inf_nan=False)
     skipped: bool = False
-    source: str = "player"
+    source: Literal["player"] = "player"
     # Which kind of queue this track came out of. Criterion 26 is a comparison
     # of skip rates between the two, and that comparison needs the label at the
     # moment the track is played -- it cannot be reconstructed afterwards.
-    mode: str = "manual"
+    mode: Literal["manual", "smart", "plain"] = "manual"
 
 
 @app.post("/api/add")
@@ -1340,10 +1343,18 @@ def start_blind_trial(size: int = 30, authenticated: bool = Depends(verify_token
     smart_side = secrets.choice(["A", "B"])
 
     cur = db.db_exec("INSERT INTO blind_trials(smart_side) VALUES(?)", (smart_side,))
+
+    def blind(queue: list) -> list[dict]:
+        # Без темпа: по нему умную сторону видно сразу — у неё он ровный.
+        return [
+            {key: value for key, value in entry.items() if key != "tempo"}
+            for entry in _queue_payload(queue)
+        ]
+
     return {
         "trial": cur.lastrowid,
-        "A": _queue_payload(smart if smart_side == "A" else plain),
-        "B": _queue_payload(plain if smart_side == "A" else smart),
+        "A": blind(smart if smart_side == "A" else plain),
+        "B": blind(plain if smart_side == "A" else smart),
     }
 
 
@@ -1364,13 +1375,15 @@ def finish_blind_trial(
     rows = db.db_query("SELECT smart_side, choice FROM blind_trials WHERE id = ?", (trial_id,))
     if not rows:
         raise HTTPException(status_code=404, detail="No such trial")
-    if rows[0]["choice"]:
-        raise HTTPException(status_code=409, detail="This trial already has an answer")
 
-    db.db_exec(
-        "UPDATE blind_trials SET choice = ?, decided_at = datetime('now','localtime') WHERE id = ?",
+    # Условие — в самом UPDATE: два одновременных ответа не запишут оба.
+    cur = db.db_exec(
+        "UPDATE blind_trials SET choice = ?, decided_at = datetime('now','localtime') "
+        "WHERE id = ? AND choice IS NULL",
         (choice, trial_id),
     )
+    if cur.rowcount == 0:
+        raise HTTPException(status_code=409, detail="This trial already has an answer")
     return {"trial": trial_id, "recorded": choice}
 
 

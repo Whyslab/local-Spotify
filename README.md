@@ -42,7 +42,7 @@ It is not built to be a public SaaS or to work around YouTube's restrictions —
 * **Graceful shutdown and recovery** — `SIGTERM` stops workers cleanly, including child `yt-dlp`/`ffmpeg` processes, and unfinished tasks survive a service restart.
 * **File integrity checks** — every M4A is validated before and after tags are written, so corrupt files never reach the library.
 * **Resource limits** — caps on queue size, links per request, and free disk space required before a download starts.
-* **Bearer-token auth on the API**; the health check needs no authorisation.
+* **Bearer-token auth on the API**; without a token the health check answers only whether the service is up.
 * **Web interface** — a minimal single-page UI for adding links and watching the queue (`web/`).
 * **Playlists as files** — every playlist is an `.m3u` in the library root, edited by rewriting it; Navidrome re-reads it within about six seconds.
 * **An edit made on the phone is not lost** — Navidrome accepts a reorder sent by a client but never writes the `.m3u`, and its own watcher discards that edit the next time the file changes. Every thirty seconds the service looks for a playlist whose database was edited past its file and writes the order into the file. Measured: the edit reaches the `.m3u` in ten seconds.
@@ -152,7 +152,7 @@ Everything is read from `adder/.env` (see `.env.example`). The service refuses t
 
 ## 🔌 API
 
-Authorise with an `Authorization: Bearer <API_TOKEN>` header. `/health` needs no authorisation.
+Authorise with an `Authorization: Bearer <API_TOKEN>` header. `/health` without it returns only `{"status": ...}`; the full answer below needs the token.
 
 | Method | Path | Description |
 | --- | --- | --- |
@@ -181,7 +181,16 @@ Authorise with an `Authorization: Bearer <API_TOKEN>` header. `/health` needs no
 | `GET` | `/api/sync` | What the last synchronisation pass found |
 | `POST` | `/api/sync` | Run a pass now; `?apply=false` reports only |
 | `GET` | `/api/track` | A track's tags plus its tempo, key and energy |
-| `GET` | `/api/cover` | The artwork inside the file |
+| `GET` | `/api/cover` | The artwork inside the file; `?size=96\|200\|600` for a cached thumbnail |
+| `GET` `DELETE` | `/api/library` | The library (search, sort, paging) / move a track to `trash/` |
+| `POST` | `/api/replace` `/api/replace-file` | Replace a track by a better version, keeping its place in every playlist |
+| `GET` | `/api/home` | Home page shelves |
+| `GET` | `/api/discover-external` | Tracks by similar artists that are not in the library |
+| `POST` | `/api/shuffle/smart` | Smart shuffle of any set of tracks (album, current queue); about a third are new tracks |
+| `GET` `POST` | `/api/outside/status` `/api/outside/prefetch` | State of new (non-library) tracks; download ahead |
+| `POST` | `/api/outside/{key}/keep` | Put a new track into the library through the normal import |
+| `GET` | `/api/lyrics` | Lyrics, with timings where available |
+| `GET` `POST` | `/api/lyrics/candidates` `/api/lyrics/choose` `/api/lyrics/custom` | Pick lyrics by hand or paste your own |
 
 <details>
 <summary><code>POST /api/add</code> — example</summary>
@@ -256,7 +265,7 @@ Back up state (SQLite plus `.env`):
 PYTHONPATH="$PWD" pytest -q
 ```
 
-96 tests cover API authorisation, YouTube link validation and canonicalisation, content-based deduplication, error classification and which failures are worth retrying, the retry logic and how it interacts with graceful shutdown, task recovery after a restart, temp-file cleanup, track title cleaning, and an XSS regression in the frontend — asserting that data from untrusted sources (YouTube video metadata) never reaches the DOM through `innerHTML`.
+The test suite covers API authorisation, YouTube link validation and canonicalisation, content-based deduplication, error classification and which failures are worth retrying, the retry logic and how it interacts with graceful shutdown, task recovery after a restart, temp-file cleanup, track title cleaning, and an XSS regression in the frontend — asserting that data from untrusted sources (YouTube video metadata) never reaches the DOM through `innerHTML`.
 
 CI (`.github/workflows/ci.yml`) runs `ruff check`, `ruff format --check`, `compileall` and the full suite on a clean environment for every push and pull request.
 
@@ -286,7 +295,7 @@ local-Spotify/
 │   └── requirements.txt
 ├── web/                    # Static web interface (vanilla JS)
 ├── scripts/                # Offline tools: library audit, duplicate finder, playlist migration
-├── tests/                  # pytest, 96 tests
+├── tests/                  # pytest
 ├── deploy/                 # systemd unit, install/backup scripts, Navidrome config
 └── .env.example
 ```

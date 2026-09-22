@@ -41,13 +41,37 @@ UNIT_CONTENT="${UNIT_CONTENT//%LIBRARY%/$LIBRARY_PATH_VALUE}"
 printf '%s\n' "$UNIT_CONTENT" \
     > "$HOME/.config/systemd/user/music-adder.service"
 
+# Ночные таймеры: измерение темпа (без него умное перемешивание почти слепое)
+# и выгрузка полок главной в подборки «★ …». Раньше их ставили руками, и
+# новая установка оставалась без обоих.
+render() {
+  local text
+  text="$(cat "$1")"
+  text="${text//%REPO%/$REPO}"
+  text="${text//%LIBRARY%/$LIBRARY_PATH_VALUE}"
+  text="${text//%JOBS%/${ANALYSIS_JOBS:-3}}"
+  printf '%s\n' "$text"
+}
+for unit in music-analysis music-shelves; do
+  render "$REPO/deploy/$unit.service.template" > "$HOME/.config/systemd/user/$unit.service"
+  render "$REPO/deploy/$unit.timer.template" > "$HOME/.config/systemd/user/$unit.timer"
+done
+
 systemctl --user daemon-reload
 systemctl --user enable --now music-adder
+systemctl --user enable --now music-analysis.timer music-shelves.timer
 loginctl enable-linger "$USER"
 
 if command -v navidrome >/dev/null; then
   sudo install -d /etc/navidrome
-  sed "s|/home/USER|$HOME|g" "$REPO/deploy/navidrome.toml.example" | sudo tee /etc/navidrome/navidrome.toml >/dev/null
+  # Только если настроек ещё нет: повторный запуск установщика молча
+  # затирал живые (например, Subsonic.ArtistParticipations — без неё Amperfy
+  # перестаёт показывать альбомы с фитами).
+  if [[ ! -f /etc/navidrome/navidrome.toml ]]; then
+    sed "s|/home/USER|$HOME|g" "$REPO/deploy/navidrome.toml.example" | sudo tee /etc/navidrome/navidrome.toml >/dev/null
+  else
+    echo "Keeping existing /etc/navidrome/navidrome.toml (compare with deploy/navidrome.toml.example)"
+  fi
   sudo install -d /etc/systemd/system/navidrome.service.d
   sudo cp "$REPO/deploy/navidrome-override.conf" /etc/systemd/system/navidrome.service.d/override.conf
   sudo systemctl daemon-reload
@@ -65,7 +89,8 @@ if command -v ufw >/dev/null && sudo ufw status | grep -q "Status: active"; then
     exit 1
   fi
   sudo ufw allow from "$LAN_SUBNET" to any port 4533 proto tcp comment "Navidrome LAN"
-  sudo ufw allow from "$LAN_SUBNET" to any port 8787 proto tcp comment "Adder LAN"
+  PORT_VALUE="$(sed -n 's/^PORT=//p' "$REPO/adder/.env" | head -n1 | tr -d '\r')"
+  sudo ufw allow from "$LAN_SUBNET" to any port "${PORT_VALUE:-8787}" proto tcp comment "Adder LAN"
 fi
 
 echo "OK: adder http://localhost:8787 | navidrome http://localhost:4533"

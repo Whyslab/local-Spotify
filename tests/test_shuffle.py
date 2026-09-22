@@ -26,8 +26,9 @@ def test_half_and_double_time_are_the_same_groove():
     """80 next to 160 is not a jump, and treating it as one splits the library."""
     assert shuffle.tempo_distance(80, 160) == 0
     assert shuffle.tempo_distance(160, 80) == 0
-    # 90 doubles to 180, which is 40 from 140 -- closer than 90 itself is.
-    assert shuffle.tempo_distance(90, 140) == pytest.approx(40)
+    # 140 вполовину — 70, до 90 это 20: ближе, чем 180 до 140.
+    assert shuffle.tempo_distance(90, 140) == pytest.approx(20)
+    assert shuffle.tempo_distance(85, 160) == shuffle.tempo_distance(160, 85)
     assert shuffle.tempo_distance(100, 104) == pytest.approx(4)
 
 
