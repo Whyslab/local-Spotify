@@ -162,7 +162,8 @@
           <button id="lyricsFind" class="ghost" onclick="openLyricsFinder()">Найти текст</button>
         </div>
       </div>
-      <div id="lyricsBody" class="lyrics-body" aria-live="off"></div>
+      <!-- tabindex: чтобы стрелки листали сам текст и слежение это замечало. -->
+      <div id="lyricsBody" class="lyrics-body" aria-live="off" tabindex="0"></div>
     </section>
 
     <!-- ---------------- Подборки ---------------- -->

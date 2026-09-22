@@ -145,7 +145,9 @@ function setViewTitle(text) {
 function switchView(id) {
     activeView = id;
     updateSearchPlaceholder(id);
-    setViewTitle(VIEW_TITLES[id] || "Фонотека");
+    /* В подборке — её имя: и при входе, и при возврате из текста песни. */
+    setViewTitle(id === "viewPlaylist" && player.playlist ? player.playlist.name
+        : (VIEW_TITLES[id] || "Фонотека"));
     /* Перезагрузка страницы возвращает туда же, а не на главную. */
     try { localStorage.setItem(VIEW_KEY, id); } catch (e) { /* приватное окно */ }
     /* The rail layout keys off this: on a phone the search band belongs to the
@@ -175,12 +177,18 @@ function updateSearchPlaceholder(view) {
 }
 
 let lastSlowRefresh = 0;
+/* Есть ли загрузки в работе — по последнему ответу /health. */
+let downloadsActive = false;
 
 /* `now` — не ждать очереди: сменили экран или вернулись во вкладку. */
 function refresh(now = false) {
     if (!token()) return;
     if (document.hidden && !now) return;
-    if (activeView === "viewAdd") tasks();
+    if (activeView === "viewAdd") {
+        tasks();
+        /* Загрузки идут — их число в рельсе и состояние сервиса видны сразу. */
+        if (downloadsActive) health();
+    }
     if (!now && Date.now() - lastSlowRefresh < POLL_SLOW_MS) return;
     lastSlowRefresh = Date.now();
     health();
@@ -249,6 +257,7 @@ async function addTracks() {
             : "Ничего не добавлено — возможно, эти треки уже есть.";
         field.value = "";
         tasks();
+        health();  // новая загрузка — в рельсе сразу, не через полминуты
     } catch (e) {
         result.textContent = e.message;
     }
@@ -384,6 +393,7 @@ async function health() {
          * and what is waiting to reach the phone. Kept apart from the counts
          * above, which change about once a day. */
         renderRailQueue(data.active_tasks, data.navidrome_pending);
+        downloadsActive = (data.active_tasks || []).length > 0 || (data.queue_size || 0) > 0;
 
         box.replaceChildren();
         const rows = [
@@ -967,6 +977,9 @@ let pendingAlbum = null;
 
 function openAlbum(group) {
     openAlbumGroup = group;
+    /* Альбом рисуется поверх сетки — «Назад» обязан её перерисовать, даже если
+     * данные те же. */
+    librarySignature = "";
     const box = document.getElementById("library");
     const note = document.getElementById("libraryModeNote");
     box.replaceChildren();
@@ -1139,7 +1152,7 @@ async function library() {
         /* Опрос принёс то же самое — список не трогаем: перерисовка сбивала
          * прокрутку и открытые под строкой вопросы. */
         const signature = [mode, limit, q, data.length, ...data.map(t => t.path)].join("\n");
-        if (signature === librarySignature && box.childElementCount) return;
+        if (signature === librarySignature && box.childElementCount && !pendingAlbum) return;
         librarySignature = signature;
         box.replaceChildren();
 
@@ -1158,11 +1171,17 @@ async function library() {
                 const more = document.createElement("button");
                 more.className = "ghost block library-more";
                 more.textContent = "Показать ещё " + LIBRARY_PAGE;
-                more.onclick = () => {
+                more.onclick = async () => {
                     libraryLimit += LIBRARY_PAGE;
                     more.disabled = true;
                     more.textContent = "Загружаю…";
-                    library();
+                    await library();
+                    /* Не перерисовалось (вопрос под строкой, сбой сети) — кнопка
+                     * не должна застрять в «Загружаю…». */
+                    if (more.isConnected) {
+                        more.disabled = false;
+                        more.textContent = "Показать ещё " + LIBRARY_PAGE;
+                    }
                 };
                 box.appendChild(more);
             }
@@ -1352,8 +1371,8 @@ async function removeTrack(t) {
 document.addEventListener("DOMContentLoaded", () => {
     document.querySelector(".app").dataset.view = activeView;
     applyLoginState();
-    restoreView();
-    refresh(true);
+    /* restoreView сам переключает экран, а переключение само обновляет. */
+    if (!restoreView()) refresh(true);
     setInterval(refresh, POLL_MS);
 });
 
@@ -1366,13 +1385,15 @@ function restoreView() {
     try {
         view = localStorage.getItem(VIEW_KEY);
         playlist = localStorage.getItem(PLAYLIST_KEY);
-    } catch (e) { return; }
-    if (!view || !VIEW_TITLES[view] || view === "viewLyrics" || view === activeView) return;
+    } catch (e) { return false; }
+    if (!view || !VIEW_TITLES[view] || view === "viewLyrics" || view === activeView) return false;
     if (view === "viewPlaylist") {
-        if (playlist && token()) openPlaylist(playlist);
-        return;
+        if (!playlist || !token()) return false;
+        openPlaylist(playlist);
+        return false;  // пока подборка грузится, остальное обновим как обычно
     }
     switchView(view);
+    return true;
 }
 
 

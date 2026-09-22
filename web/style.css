@@ -822,7 +822,9 @@ button.danger {
 
 .lyric {
     margin: 0 0 .7em;
-    color: var(--text-3);
+    /* Не --text-3: тот посветлел ради мелкого текста, а здесь строки крупные
+       (от 20px, им хватает 3 : 1), и светлые соседи глушили звучащую. */
+    color: #5e5e5e;
     transition: color .18s ease;
     cursor: pointer;
 }
@@ -1842,7 +1844,9 @@ button.ghost.is-on { color: var(--text); border-color: var(--text); font-weight:
    кнопки: красный остаётся за вопросом «удалить?», а не висит в каждой
    строке ярче самих треков. */
 @media (hover: none) {
-    input, textarea { font-size: 16px; }
+    input, textarea,
+    .lyrics-finder textarea,
+    .row-menu-input { font-size: 16px; }
     /* Под палец — не меньше 40px. */
     .lyrics-head .ghost { min-height: 40px; }
     .track .icon-button.danger {
@@ -1855,8 +1859,9 @@ button.ghost.is-on { color: var(--text); border-color: var(--text); font-weight:
 /* На ноутбуке список — не стопка коробок: строки без рамок, а наведённая
    подсвечивается, как в любом настольном плеере. */
 @media (min-width: 1100px) {
-    .rows > .track:not(.is-playing) { border-color: transparent; background: transparent; }
-    .rows > .track:not(.is-playing):hover { background: var(--surface-2); }
+    /* Варианты текста — кнопки выбора, им рамка нужна. */
+    .rows > .track:not(.is-playing):not(.lyrics-choice) { border-color: transparent; background: transparent; }
+    .rows > .track:not(.is-playing):not(.lyrics-choice):hover { background: var(--surface-2); }
 }
 
 /* Низкий экран — телефон боком. Тут нет места ни на что, кроме текста: блок

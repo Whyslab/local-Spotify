@@ -695,7 +695,12 @@ function playQueue(tracks, startAt = 0, mode = "manual", source = null) {
      * умно, как в Spotify. Не дожидаясь первого трека: он мог не начаться
      * (пауза, сбой ссылки, «дальше»), а ✦ без умной очереди — обман.
      * Очередь, уже собранная сервером, не трогается. */
-    if (player.shuffle === "smart" && mode === "manual") smartifyQueue();
+    if (player.shuffle === "smart" && mode === "manual") {
+        smartifyQueue().then(ok => {
+            /* Не собралась — ✦ не должен гореть над обычным порядком. */
+            if (ok === false) { player.shuffle = false; renderPlayerModes(); }
+        });
+    }
 }
 
 /* ---------------- Shuffling ---------------- */
@@ -1216,7 +1221,9 @@ function watchLyricsScroll() {
     });
     /* Полоса прокрутки: нажатие по самому блоку, но не по строке. */
     box.addEventListener("pointerdown", (event) => {
-        if (event.target === box) byHand();
+        /* Только полоса: пустые поля и промежутки между строками — тоже сам
+         * блок, и касание мимо строки выключало слежение. */
+        if (event.target === box && event.offsetX >= box.clientWidth) byHand();
     });
 }
 
@@ -1386,6 +1393,7 @@ function togglePlaylistEdit(force) {
     const button = document.getElementById("playlistEditToggle");
     if (!card) return;
     card.hidden = force === undefined ? !card.hidden : !force;
+    if (card.hidden) resetPlaylistDelete();
     if (button) button.setAttribute("aria-expanded", String(!card.hidden));
     if (!card.hidden) {
         const field = document.getElementById("playlistRename");
@@ -1756,6 +1764,7 @@ async function savePlaylist(paths) {
             return;
         }
         if (!r.ok) { setPlaylistNote(data.detail || ("Ошибка " + r.status)); return; }
+        playlists();  // число треков в рельсе — сразу
         player.playlist = data;
         renderPlaylist();
         setPlaylistNote("");
@@ -1814,6 +1823,7 @@ async function renamePlaylist() {
     try { localStorage.setItem(PLAYLIST_KEY, player.playlist.name); } catch (e) { /* приватное окно */ }
     togglePlaylistEdit(false);
     renderPlaylist();
+    playlists();  // рельса — с новым именем сразу, а не через полминуты
 }
 
 /* Удаление подборки спрашивает — одним неловким нажатием пропадала «Monday» на
@@ -1826,9 +1836,13 @@ function askDeletePlaylist(button) {
 
     const box = document.createElement("div");
     box.className = "confirm";
+    /* Вопрос помнит, про какую подборку он задан: удаляется именно она, а не
+     * та, что открыта к моменту нажатия. */
+    const name = pl.name;
+    resetPlaylistDelete = () => { if (box.isConnected) box.replaceWith(button); };
 
     const head = document.createElement("h3");
-    head.textContent = `Удалить подборку «${pl.name}»?`;
+    head.textContent = `Удалить подборку «${name}»?`;
 
     const note = document.createElement("p");
     note.textContent = pl.entries.length === 1
@@ -1850,7 +1864,7 @@ function askDeletePlaylist(button) {
         confirm.disabled = true;
         cancel.disabled = true;
         confirm.textContent = "Удаляю…";
-        await deletePlaylist();
+        await deletePlaylist(name);
         /* Вернуть кнопку на место обязательно: иначе следующая открытая
          * подборка встретит человека чужим вопросом «удалить?». */
         box.replaceWith(button);
@@ -1861,10 +1875,13 @@ function askDeletePlaylist(button) {
     button.replaceWith(box);
 }
 
-async function deletePlaylist() {
+/* Открытый вопрос «удалить?» — вернуть кнопку, когда уходим в другую подборку. */
+let resetPlaylistDelete = () => {};
+
+async function deletePlaylist(name) {
     const pl = player.playlist;
-    if (!pl) return;
-    const r = await fetch("/api/playlists/" + encodeURIComponent(pl.name), {
+    if (!pl || !name || pl.name !== name) return;
+    const r = await fetch("/api/playlists/" + encodeURIComponent(name), {
         method: "DELETE", headers: headers(),
     });
     if (!r.ok) { setPlaylistNote("Не удалось удалить"); return; }
