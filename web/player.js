@@ -28,7 +28,10 @@ const player = {
      * Выключил перемешивание — маршрут снова прямой, и ничего не потеряно. */
     order: [],
     orderAt: -1,
-    shuffle: false,
+    shuffle: false,      // false | "plain" | "smart"
+    beforeSmart: null,   // очередь до умного перемешивания — вернуть при выключении
+    smartTicket: 0,      // номер последней сборки умной очереди — см. smartifyQueue
+    playingMode: null,   // из какой очереди начал играть текущий трек — для журнала
     repeat: "off",       // "off" | "all" | "one"
     generation: 0,       // номер последнего включения — см. playAt
 };
@@ -57,7 +60,7 @@ function reportPlay(finished) {
             /* Which kind of queue this came out of. The comparison of skip
              * rates cannot be reconstructed later, so the label has to travel
              * with the play. */
-            mode: player.queueMode,
+            mode: player.playingMode || player.queueMode,
         }),
     }).catch(() => { /* the journal is not worth interrupting playback for */ });
 }
@@ -125,10 +128,15 @@ async function playAt(position, skipped = 0, direction = 1) {
         return false;
     }
     if (generation !== player.generation) return false;
+    /* Метка для журнала — какой очередь была, когда трек начал играть, а не
+     * когда о нём сообщают: иначе переключение режима посреди трека
+     * приписывало его пропуск не той очереди. */
+    player.playingMode = player.queueMode;
     renderPlayer();
     markPlayingRow();
     renderQueuePanel();
     prefetchOutside();
+    extendSmartQueue();
     return true;
 }
 
@@ -233,7 +241,9 @@ function keepCurrent() {
 function buildOrder(startIndex) {
     const n = player.queue.length;
     const straight = Array.from({ length: n }, (_, i) => i);
-    if (!player.shuffle) {
+    /* Умное перемешивание переставляет саму очередь (на сервере), а маршрут
+     * по ней прямой; тасуется маршрут только при обычном. */
+    if (player.shuffle !== "plain") {
         player.order = straight;
         player.orderAt = startIndex >= 0 ? startIndex : -1;
         return;
@@ -268,10 +278,209 @@ function stepInOrder(delta) {
     return -1;
 }
 
+/* Кнопка перемешивания. Выключено — нажатие спрашивает, какое: обычное
+ * (тот же список вперемешку) или умное (похожее рядом, примерно треть новых,
+ * которых нет в фонотеке). Включено — нажатие выключает. */
 function toggleShuffle() {
-    player.shuffle = !player.shuffle;
-    buildOrder(player.index);
+    const button = document.getElementById("playerShuffle");
+    if (player.shuffle) {
+        closeTrackMenu();
+        setShuffle(false);
+        return;
+    }
+    openShuffleMenu(button);
+}
+
+function openShuffleMenu(button) {
+    const wasMine = openMenu && openMenu.button === button;
+    closeTrackMenu();
+    if (wasMine || !button) return;
+
+    const menu = document.createElement("div");
+    menu.className = "row-menu more-menu shuffle-menu";
+    menu.setAttribute("role", "menu");
+    const item = (label, hint, mode) => {
+        const b = document.createElement("button");
+        b.className = "row-menu-item";
+        b.setAttribute("role", "menuitem");
+        const name = document.createElement("span");
+        name.textContent = label;
+        const small = document.createElement("small");
+        small.textContent = hint;
+        b.append(name, small);
+        b.onclick = () => { closeTrackMenu(); setShuffle(mode); };
+        return b;
+    };
+    menu.append(
+        item("Обычное", "тот же список вперемешку", "plain"),
+        item("Умное", "похожее рядом, примерно треть новых", "smart"),
+    );
+    document.body.appendChild(menu);
+
+    /* Панель плеера внизу — меню встаёт над кнопкой и не вылезает за край. */
+    const box = button.getBoundingClientRect();
+    const width = menu.offsetWidth;
+    menu.style.left = Math.round(Math.max(8, Math.min(box.left, window.innerWidth - width - 8))) + "px";
+    /* top сбрасывается: у .row-menu он задан для меню строки и перебил бы низ. */
+    menu.style.top = "auto";
+    menu.style.bottom = Math.round(window.innerHeight - box.top + 6) + "px";
+
+    button.setAttribute("aria-expanded", "true");
+    openMenu = { menu, button };
+    document.addEventListener("keydown", menuKeydown, true);
+    document.addEventListener("pointerdown", menuPointerDown, true);
+    menu.querySelector(".row-menu-item").focus();
+}
+
+async function setShuffle(mode) {
+    const was = player.shuffle;
+    if (mode === "smart") {
+        player.shuffle = "smart";
+        renderPlayerModes();
+        const ok = await smartifyQueue();
+        /* null — эту сборку уже сменила другая просьба: состояние не наше. */
+        if (ok === false) player.shuffle = was;
+    } else {
+        /* Сборка, которая ещё идёт, больше не нужна. */
+        player.smartTicket += 1;
+        if (/^Собираю/.test(document.getElementById("playerNote").textContent)) setPlayerNote("");
+        player.shuffle = mode || false;
+        if (was === "smart" && !mode) restoreBeforeSmart();
+        else buildOrder(player.index);
+    }
     renderPlayerModes();
+    renderQueuePanel();
+}
+
+/* Умно перемешать то, что сейчас в очереди: её треки из фонотеки — костяк,
+ * между ними похожее, примерно треть — новое. Играющий трек не прерывается:
+ * он становится первым в новой очереди. Прежняя очередь запоминается, чтобы
+ * выключение вернуло её.
+ *
+ * Возвращает true — готово, false — не вышло (и режим надо вернуть), null —
+ * пока ждали сервер, попросили другое, и этот ответ уже никому не нужен. */
+async function smartifyQueue() {
+    const ticket = ++player.smartTicket;
+    const queueAtStart = player.queue;
+    const own = queueAtStart.filter(t => !isOutside(t));
+    const paths = [...new Set(own.map(t => t.path))];
+    if (!paths.length) {
+        setPlayerNote("В очереди нет треков из фонотеки — перемешивать нечего");
+        return false;
+    }
+    setPlayerNote("Собираю умную очередь…");
+    let data;
+    try {
+        data = await fetchSmartQueue(paths);
+    } catch (e) {
+        if (ticket !== player.smartTicket) return null;
+        setPlayerNote(e.message);
+        return false;
+    }
+    /* Пока ждали, могли выключить, выбрать другое или включить другую
+     * подборку. Нажатый «дальше» — не повод: берём то, что играет теперь. */
+    if (ticket !== player.smartTicket || player.shuffle !== "smart" || player.queue !== queueAtStart) {
+        return null;
+    }
+    const current = player.queue[player.index];
+    if (!player.beforeSmart) {
+        player.beforeSmart = {
+            queue: player.queue,
+            index: player.index,
+            mode: player.queueMode,
+            source: player.queueSource,
+        };
+    }
+    const rest = (data.queue || []).filter(t => !current || t.path !== current.path);
+    player.queue = current ? [current, ...rest] : rest;
+    player.index = current ? 0 : -1;
+    player.queueMode = "smart";
+    /* Показать, откуда играет, умная очередь не может: в ней и подборка, и
+     * фонотека, и новое. Пусть ищет в фонотеке. */
+    player.queueSource = null;
+    buildOrder(player.index);
+    markPlayingRow();
+    renderQueuePanel();
+    prefetchOutside();
+    setPlayerNote(data.external ? `Умная очередь: новых ${data.external}` : "Умная очередь: новых нет");
+    return true;
+}
+
+async function fetchSmartQueue(paths) {
+    const r = await fetch("/api/shuffle/smart", {
+        method: "POST",
+        headers: { ...headers(), "Content-Type": "application/json" },
+        body: JSON.stringify({
+            paths,
+            size: Math.min(200, Math.max(30, Math.round(paths.length * 1.5))),
+        }),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.detail || ("Ошибка " + r.status));
+    return data;
+}
+
+/* Умная очередь длиной не больше двухсот. Подборка бывает на тысячу — тогда,
+ * подходя к концу, очередь дополняется новой порцией из той же подборки,
+ * без треков, которые в ней уже есть. */
+let extendingSmart = false;
+
+async function extendSmartQueue() {
+    const saved = player.beforeSmart;
+    if (player.shuffle !== "smart" || !saved || extendingSmart) return;
+    const at = player.order.indexOf(player.index);
+    if (at < 0 || player.order.length - at > 3) return;
+    const have = new Set(player.queue.map(t => t.path));
+    const paths = [...new Set(saved.queue.filter(t => !isOutside(t) && !have.has(t.path)).map(t => t.path))];
+    if (!paths.length) return;
+    const ticket = player.smartTicket;
+    const queueAtStart = player.queue;
+    extendingSmart = true;
+    try {
+        const data = await fetchSmartQueue(paths);
+        if (ticket !== player.smartTicket || player.queue !== queueAtStart) return;
+        const more = (data.queue || []).filter(t => !have.has(t.path));
+        if (!more.length) return;
+        player.queue = [...player.queue, ...more];
+        buildOrder(player.index);
+        renderQueuePanel();
+        prefetchOutside();
+    } catch (e) {
+        /* Не вышло — очередь просто кончится, как без дополнения. */
+    } finally {
+        extendingSmart = false;
+    }
+}
+
+/* Выключили умное — вернуть очередь, какой она была, и с того места, где
+ * были. Играющий трек не прерывается: был в прежней очереди — продолжаем с
+ * него; это новый или подмешанный — он встаёт туда, где мы были, а после
+ * него очередь идёт дальше. */
+function restoreBeforeSmart() {
+    const saved = player.beforeSmart;
+    player.beforeSmart = null;
+    if (!saved) {
+        buildOrder(player.index);
+        return;
+    }
+    const current = player.queue[player.index];
+    let queue = saved.queue;
+    let index = saved.index;
+    if (current) {
+        const same = queue[index] && queue[index].path === current.path;
+        if (!same) index = queue.findIndex(t => t.path === current.path);
+        if (index < 0) {
+            queue = queue.slice();
+            index = Math.max(saved.index, -1) + 1;
+            queue.splice(index, 0, current);
+        }
+    }
+    player.queue = queue;
+    player.index = index;
+    player.queueMode = saved.mode;
+    player.queueSource = saved.source;
+    buildOrder(index);
+    markPlayingRow();
     renderQueuePanel();
 }
 
@@ -283,9 +492,18 @@ function cycleRepeat() {
 function renderPlayerModes() {
     const shuffle = document.getElementById("playerShuffle");
     if (shuffle) {
-        shuffle.classList.toggle("is-on", player.shuffle);
-        shuffle.setAttribute("aria-pressed", String(player.shuffle));
-        shuffle.title = player.shuffle ? "Перемешивание включено" : "Перемешать";
+        shuffle.classList.toggle("is-on", !!player.shuffle);
+        shuffle.setAttribute("aria-pressed", String(!!player.shuffle));
+        shuffle.title = player.shuffle === "smart" ? "Умное перемешивание включено"
+            : player.shuffle ? "Обычное перемешивание включено" : "Перемешать";
+        shuffle.setAttribute("aria-label", shuffle.title);
+    }
+    const smart = document.getElementById("playerShuffleSmart");
+    if (smart) smart.hidden = player.shuffle !== "smart";
+    /* Меню — только когда нажатие его открывает; включённое просто выключается. */
+    if (shuffle) {
+        if (player.shuffle) shuffle.removeAttribute("aria-haspopup");
+        else shuffle.setAttribute("aria-haspopup", "menu");
     }
     const repeat = document.getElementById("playerRepeat");
     const one = document.getElementById("playerRepeatOne");
@@ -456,8 +674,12 @@ function playQueue(tracks, startAt = 0, mode = "manual", source = null) {
     player.queue = tracks;
     player.queueMode = mode;
     player.queueSource = source;
+    player.beforeSmart = null;
     buildOrder(startAt);
-    playAt(startAt);
+    /* Умное перемешивание включено — новая подборка или альбом тоже идут
+     * умно, как в Spotify. Очередь, уже собранная сервером, не трогается. */
+    const smartify = player.shuffle === "smart" && mode === "manual";
+    playAt(startAt).then(played => { if (played && smartify) smartifyQueue(); });
 }
 
 /* ---------------- Shuffling ---------------- */
@@ -482,6 +704,12 @@ async function loadShuffle(mode, playlist = "", noteId = "shuffleNote", paths = 
         if (!r.ok) { say(data.detail || ("Ошибка " + r.status)); return; }
         if (!data.queue.length) { say("Нечего играть."); return; }
 
+        /* Эту очередь перемешал сервер — маршрут по ней прямой, и кнопка в
+         * плеере выключается: тасовать поверх незачем, а оставленный включённым
+         * режим перемешивал бы и всё, что включат потом. */
+        player.shuffle = false;
+        player.smartTicket += 1;
+        renderPlayerModes();
         playQueue(data.queue, 0, mode);
 
         if (mode !== "smart") { say(""); return; }
@@ -1223,7 +1451,9 @@ function menuKeydown(event) {
 }
 
 function menuPointerDown(event) {
-    if (openMenu && !openMenu.menu.contains(event.target) && event.target !== openMenu.button) {
+    /* contains, а не равенство: нажатие приходит на значок внутри кнопки, и
+     * меню закрывалось, а кнопка тут же открывала его снова. */
+    if (openMenu && !openMenu.menu.contains(event.target) && !openMenu.button.contains(event.target)) {
         closeTrackMenu();
     }
 }
@@ -1898,6 +2128,8 @@ document.addEventListener("keydown", (event) => {
         const isSlider = tag === "INPUT" && el.type === "range";
         if (!isSlider && (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT")) return;
         if (el.isContentEditable) return;
+        // В меню пробел выбирает пункт, как и положено.
+        if (el.closest && el.closest('[role="menu"]')) return;
         /* Кнопка под фокусом — самый частый случай в жизни: нажал «Добавить»
          * или выбрал подборку, фокус остался там, и пробел снова жал ту же
          * кнопку вместо паузы.

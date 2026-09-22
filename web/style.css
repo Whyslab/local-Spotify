@@ -614,7 +614,20 @@ button.danger {
 
 /* Повтор одного трека и повтор всей очереди — одна кнопка и одна иконка,
    поэтому единица поверх неё: иначе два состояния выглядят одинаково. */
-#playerRepeat { position: relative; }
+#playerRepeat,
+#playerShuffle { position: relative; }
+
+/* Выбор перемешивания: название и пояснение под ним. */
+.shuffle-menu { z-index: 7; }
+.shuffle-menu .row-menu-item {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: center;
+    gap: 1px;
+    padding: 7px 12px;
+}
+.shuffle-menu .row-menu-item small { color: var(--text-3); font-size: 11px; font-weight: 400; }
 .repeat-one {
     position: absolute;
     right: 4px;

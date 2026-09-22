@@ -1156,7 +1156,7 @@ def smart_shuffle_of(req: SmartShuffleRequest, authenticated: bool = Depends(ver
     того, как трек удалили.
     """
     if len(req.paths) > 5000:
-        raise HTTPException(status_code=400, detail="Too many tracks")
+        raise HTTPException(status_code=400, detail="Слишком много треков для перемешивания")
     size = min(max(req.size, 1), 200)
     tracks = _shuffle_tracks()
     if not tracks:
@@ -1165,7 +1165,7 @@ def smart_shuffle_of(req: SmartShuffleRequest, authenticated: bool = Depends(ver
     if req.paths:
         core = set(req.paths) & {track.path for track in tracks}
         if not core:
-            raise HTTPException(status_code=404, detail="None of these tracks is in the library")
+            raise HTTPException(status_code=404, detail="Этих треков нет в фонотеке")
     queue, payload = _smart_queue(tracks, size, core)
     body = _shuffle_body("smart", tracks, queue, payload)
     if core is not None:
