@@ -929,10 +929,6 @@ function loadLyrics(track, force = false) {
      * стирает. Закроет его «Отмена» или «Сохранить». */
     const draft = box.querySelector(".lyrics-finder textarea");
     if (!force && draft && draft.value.trim()) return;
-    const title = document.getElementById("lyricsTitle");
-    const artist = document.getElementById("lyricsArtist");
-    if (title) title.textContent = track.title || track.path;
-    if (artist) artist.textContent = track.artist || "";
     lyrics.follow = true;
     updateSyncButton();
     lyrics.box = box;
@@ -957,6 +953,13 @@ function loadLyrics(track, force = false) {
                     const line = document.createElement("p");
                     line.className = "lyric";
                     line.textContent = item.line || "♪";
+                    /* Нажал на строку — песня с этой строки, как в Spotify. */
+                    line.onclick = () => {
+                        player.audio.currentTime = item.at;
+                        lyrics.follow = true;
+                        updateSyncButton();
+                        highlightLyric(true);
+                    };
                     box.appendChild(line);
                 }
                 highlightLyric(true);
@@ -1126,7 +1129,9 @@ function highlightLyric(force) {
     lyrics.index = i;
 
     const rows = lyrics.box.querySelectorAll(".lyric");
-    rows.forEach((row, n) => row.classList.toggle("now", n === i));
+    /* «is-now», а не «now»: .now — это правая панель, и в широкой раскладке её
+     * фон с рамкой ложились на звучащую строку. */
+    rows.forEach((row, n) => row.classList.toggle("is-now", n === i));
     /* Пролистал сам — не выдёргиваем обратно: человек читает не ту строку, что
      * звучит, и это его право. Вернуть слежение можно кнопкой. */
     if (!lyrics.follow) return;

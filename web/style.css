@@ -775,38 +775,51 @@ button.danger {
    сейчас: глазу не нужно искать место, оно само подъезжает к середине.
    Раньше эти правила лежали внутри блока для широкого экрана, и на узком окне
    текста не было вовсе — даже когда он был найден. */
+/* Над текстом — только две маленькие кнопки справа. Название трека убрано:
+   оно в панели плеера, а здесь занимало место и прятало звучащую строку. */
 .lyrics-head {
     display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 12px;
-    margin-bottom: 14px;
+    justify-content: flex-end;
+    margin-bottom: 4px;
 }
-.lyrics-head h2 { margin: 0; font-size: 19px; letter-spacing: -0.3px; }
-.lyrics-head p { margin: 2px 0 0; font-size: 13px; }
+.lyrics-head .ghost { min-height: 32px; padding: 0 12px; font-size: 13px; }
 
+/* Текст на всё свободное место. Высота — окно минус шапка, вкладки и панель
+   плеера (её настоящая высота в --player). position: relative обязателен:
+   от него считается offsetTop строки, и без него прокрутка к звучащей строке
+   промахивалась на высоту шапки — строка уезжала за верхний край. */
 .lyrics-body {
-    max-height: calc(100vh - 320px);
+    position: relative;
+    height: calc(100dvh - var(--tabbar) - var(--player) - 150px);
+    min-height: 240px;
     overflow-y: auto;
     scrollbar-width: thin;
-    font-size: 16px;
-    line-height: 1.7;
-    padding-right: 6px;
+    font-size: clamp(20px, 2.4vw, 30px);
+    font-weight: 650;
+    line-height: 1.35;
+    letter-spacing: -0.3px;
+    padding: 8px 6px 45% 0;
+    /* Края тают, а не обрезают строку пополам. */
+    -webkit-mask-image: linear-gradient(transparent, #000 6%, #000 88%, transparent);
+    mask-image: linear-gradient(transparent, #000 6%, #000 88%, transparent);
 }
 
 .lyric {
-    margin: 0 0 8px;
+    margin: 0 0 .7em;
     color: var(--text-3);
     transition: color .18s ease;
+    cursor: pointer;
 }
+.lyric.plain { cursor: default; }
 /* Было var(--text-1) — такой переменной в палитре нет, и правило пропадало.
    Строка светилась белым только по случайности, от наследования. */
-.lyric.now {
+.lyric.is-now {
     color: var(--text);
     font-weight: 650;
 }
-/* Без таймингов подсвечивать нечего — показываем ровным текстом. */
-.lyric.plain { color: var(--text-2); }
+/* Без таймингов подсвечивать нечего — показываем ровным текстом, помельче:
+   его читают сплошь, а не следят за строкой. */
+.lyric.plain { color: var(--text-2); font-size: .75em; font-weight: 500; margin-bottom: .35em; }
 .lyric-note { margin: 0; color: var(--text-3); font-size: 13px; }
 
 .lyrics-actions { margin-top: 0; flex: none; }
@@ -1268,6 +1281,10 @@ button.ghost.is-on { color: var(--text); border-color: var(--text); font-weight:
    outranks the wide layout's plain .topbar .search and drags its order and
    basis into the rail, where the field ends up last in the header row. */
 @media (max-width: 1099.98px) {
+    /* Панель «что играет» живёт только в широкой раскладке. Здесь её некуда
+       поставить, и без этого правила она лежала голым текстом в конце
+       страницы — в коротком окне текста песни вылезала из-под плеера. */
+    #nowPanel { display: none; }
     /* Без боковых колонок время и перемотка занимают свою строку целиком, а
        под ними — переключатели слева и громкость на всё остальное место.
        Иначе на ширине в пол-экрана всё жалось в одну строку и перемотка
@@ -1471,6 +1488,19 @@ button.ghost.is-on { color: var(--text); border-color: var(--text); font-weight:
         overflow-y: auto;
         overscroll-behavior: contain;
         padding: 18px 22px 24px;
+    }
+
+    /* Текст песни — ровно на высоту середины: прокручивается сам текст, а не
+       вся середина, и звучащая строка всегда посередине видимого. */
+    #viewLyrics:not([hidden]) {
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+    }
+    #viewLyrics .lyrics-body {
+        flex: 1 1 auto;
+        height: auto;
+        min-height: 0;
     }
 
     .gate {

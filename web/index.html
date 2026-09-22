@@ -143,13 +143,10 @@
     <!-- ---------------- Текст песни ----------------
          Середина экрана, а не узкая колонка сбоку: текст читают, а не
          подглядывают. Правая панель его больше не показывает — одно место
-         вместо двух. -->
+         вместо двух. Названия трека здесь нет: оно в панели плеера, а над
+         текстом только мешало видеть, какая строка звучит. -->
     <section id="viewLyrics" class="view" hidden>
       <div class="lyrics-head">
-        <div>
-          <h2 id="lyricsTitle"></h2>
-          <p id="lyricsArtist" class="muted"></p>
-        </div>
         <div class="row wrap lyrics-actions">
           <button id="lyricsSync" class="ghost" onclick="resyncLyrics()" hidden>Синхронизировать</button>
           <!-- Есть всегда: текст мог найтись чужой, а мог не найтись вовсе. -->
