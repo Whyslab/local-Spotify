@@ -150,7 +150,11 @@
           <h2 id="lyricsTitle"></h2>
           <p id="lyricsArtist" class="muted"></p>
         </div>
-        <button id="lyricsSync" class="ghost" onclick="resyncLyrics()" hidden>Синхронизировать</button>
+        <div class="row wrap lyrics-actions">
+          <button id="lyricsSync" class="ghost" onclick="resyncLyrics()" hidden>Синхронизировать</button>
+          <!-- Есть всегда: текст мог найтись чужой, а мог не найтись вовсе. -->
+          <button id="lyricsFind" class="ghost" onclick="openLyricsFinder()">Найти текст</button>
+        </div>
       </div>
       <div id="lyricsBody" class="lyrics-body" aria-live="off"></div>
     </section>

@@ -101,6 +101,10 @@ async def lifespan(app: FastAPI):
     # that file. See adder/sync.py.
     sync.start()
 
+    # Тексты ищутся заранее, для всей фонотеки: иначе у трека, который ещё не
+    # включали, текста нет, а промах не перепроверяется. См. lyrics.backfill.
+    lyrics.start_backfill()
+
     for i in range(config.MAX_WORKERS):
         worker_thread = threading.Thread(
             target=task_queue.worker,
@@ -391,6 +395,67 @@ def track_lyrics(path: str, authenticated: bool = Depends(verify_token)):
             return {"found": False, "reason": "Трека нет"}
         return lyrics.for_track(path, row={**meta, "path": path})
     return lyrics.for_track(path)
+
+
+def _lyrics_row(path: str) -> dict:
+    """Теги трека для поиска текста: из фонотеки или из кэша треков со стороны."""
+    if outside.is_outside(path):
+        key = outside.track_key(path)
+        meta = outside.read_meta(key) if key else None
+        if meta is None:
+            raise HTTPException(status_code=404, detail="Track not found")
+        return {**meta, "path": path}
+    library.library_track(path)  # отказ всему, что вне фонотеки
+    row = next((r for r in library.library_index() if r["path"] == path), None)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Track not found")
+    return row
+
+
+@app.get("/api/lyrics/candidates")
+def lyrics_candidates(path: str, q: str = "", authenticated: bool = Depends(verify_token)):
+    """Варианты текста из каталога — выбрать руками, когда сам поиск не смог.
+
+    ``q`` — свой запрос: у трека с кривыми тегами («NYSTORY MUSIC — Markul ft
+    Oxxxymiron FATA MORGANA Audio») поиск по тегам безнадёжен.
+    """
+    found = lyrics.candidates(_lyrics_row(path), q[:200])
+    if found is None:
+        raise HTTPException(status_code=502, detail="Каталог текстов не ответил")
+    return {"candidates": found}
+
+
+class LyricsChoiceRequest(BaseModel):
+    path: str
+    id: int
+
+
+@app.post("/api/lyrics/choose")
+def lyrics_choose(req: LyricsChoiceRequest, authenticated: bool = Depends(verify_token)):
+    result = lyrics.choose(req.path, _lyrics_row(req.path), req.id)
+    if result is None:
+        raise HTTPException(status_code=502, detail="Каталог текстов не ответил")
+    if not result.get("found"):
+        raise HTTPException(status_code=404, detail="В этой записи нет текста")
+    return result
+
+
+class LyricsTextRequest(BaseModel):
+    path: str
+    text: str
+
+
+@app.post("/api/lyrics/custom")
+def lyrics_custom(req: LyricsTextRequest, authenticated: bool = Depends(verify_token)):
+    """Свой текст. С метками [мм:сс] он будет с таймингами."""
+    if not req.text.strip():
+        raise HTTPException(status_code=400, detail="Пустой текст")
+    if len(req.text) > lyrics.MAX_CUSTOM_TEXT:
+        raise HTTPException(status_code=400, detail="Слишком длинный текст")
+    try:
+        return lyrics.save_custom(req.path, _lyrics_row(req.path), req.text)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="В тексте нет слов") from exc
 
 
 @app.get("/api/cover")

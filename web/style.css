@@ -796,6 +796,21 @@ button.danger {
 .lyric.plain { color: var(--text-2); }
 .lyric-note { margin: 0; color: var(--text-3); font-size: 13px; }
 
+.lyrics-actions { margin-top: 0; flex: none; }
+
+/* Выбор текста руками: поиск, варианты каталога, свой текст. */
+.lyrics-finder { display: flex; flex-direction: column; gap: 10px; font-size: 15px; line-height: 1.45; }
+.lyrics-finder .row { margin-top: 0; }
+.lyrics-finder textarea { min-height: 140px; font-size: 14px; }
+.lyrics-choice { text-align: left; }
+.lyrics-choice .track-info { flex: 1 1 auto; min-width: 0; }
+.lyrics-choice .track-artist { white-space: normal; }
+.lyrics-choice.fits .track-title::after {
+    content: " · подходит";
+    color: var(--text-2);
+    font-weight: 500;
+}
+
 /* Кнопка «откуда играет» — только в строке очереди, и приглушена: она нужна
    изредка и не должна спорить с названием трека. */
 .queue-row { display: flex; align-items: center; gap: 8px; }

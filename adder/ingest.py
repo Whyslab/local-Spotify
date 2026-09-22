@@ -16,6 +16,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 from contextlib import suppress
 from dataclasses import dataclass
@@ -1118,4 +1119,21 @@ def ingest_temp_file(tid: int, temp_path: Path, names: TrackNames, thumbnail: st
     relative = str(final_target.relative_to(config.LIBRARY.resolve()))
     db.task_update(tid, result_path=relative)
     _apply_replacement(tid, relative)
+
+    # Текст — сразу, чтобы он был уже при первом включении. В своём потоке:
+    # на промахе это несколько запросов к чужому каталогу, и ждать их незачем
+    # ни очереди скачиваний, ни остановке службы. Не вышло — трек подберёт
+    # обход фонотеки.
+    threading.Thread(
+        target=_lyrics_for_new_track, args=(relative,), name="lyrics-new", daemon=True
+    ).start()
     return "stored"
+
+
+def _lyrics_for_new_track(relative: str) -> None:
+    from . import lyrics
+
+    try:
+        lyrics.for_track(relative)
+    except Exception as exc:  # noqa: BLE001 — текст не стоит упавшего потока
+        logger.info("Текст для нового трека не получен: %s", exc)

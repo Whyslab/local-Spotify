@@ -694,9 +694,13 @@ function loadNowCover(track) {
  */
 const lyrics = { path: null, lines: [], index: -1, box: null, follow: true };
 
-function loadLyrics(track) {
+function loadLyrics(track, force = false) {
     const box = document.getElementById("lyricsBody");
     if (!box) return;
+    /* Открыт выбор текста с начатым своим текстом — смена трека его не
+     * стирает. Закроет его «Отмена» или «Сохранить». */
+    const draft = box.querySelector(".lyrics-finder textarea");
+    if (!force && draft && draft.value.trim()) return;
     const title = document.getElementById("lyricsTitle");
     const artist = document.getElementById("lyricsArtist");
     if (title) title.textContent = track.title || track.path;
@@ -746,8 +750,140 @@ function loadLyrics(track) {
 function renderNoLyrics(box, reason) {
     const note = document.createElement("p");
     note.className = "lyric-note";
-    note.textContent = reason || "Текста нет";
+    note.textContent = (reason || "Текста нет")
+        + " — кнопка «Найти текст» покажет варианты или даст вставить свой.";
     box.replaceChildren(note);
+}
+
+/* Выбор текста руками.
+ *
+ * Для трека, которого нет в каталоге под его тегами, — или которому нашёлся
+ * чужой текст. Варианты ищутся мягче, чем автоматически, поэтому выбирает
+ * человек; подходящие по артисту, названию и длине стоят первыми. Строку
+ * поиска можно поправить: с кривыми тегами («NYSTORY MUSIC — Markul ft
+ * Oxxxymiron …») по ним не найти ничего. Выбранное обход фонотеки не трогает.
+ */
+function openLyricsFinder() {
+    const track = player.queue[player.index];
+    const box = document.getElementById("lyricsBody");
+    if (!track || !box) return;
+    /* Ответ на ещё идущую загрузку текста не должен заменить это окно. */
+    lyrics.path = null;
+    lyrics.lines = [];
+    lyrics.index = -1;
+    box.classList.remove("has-lyrics");
+    updateSyncButton();
+
+    const panel = document.createElement("div");
+    panel.className = "lyrics-finder";
+
+    const search = document.createElement("div");
+    search.className = "row";
+    const field = document.createElement("input");
+    field.type = "search";
+    field.className = "grow";
+    field.value = `${track.artist || ""} ${track.title || ""}`.trim();
+    field.setAttribute("aria-label", "Что искать");
+    const go = document.createElement("button");
+    go.className = "primary";
+    go.textContent = "Искать";
+    search.append(field, go);
+
+    const note = document.createElement("p");
+    note.className = "lyric-note";
+    const list = document.createElement("div");
+    list.className = "rows";
+
+    const own = document.createElement("textarea");
+    own.placeholder = "Или вставь свой текст. Строки с метками [01:23.45] будут с таймингами.";
+    const ownRow = document.createElement("div");
+    ownRow.className = "row";
+    const save = document.createElement("button");
+    save.className = "ghost grow";
+    save.textContent = "Сохранить свой текст";
+    const cancel = document.createElement("button");
+    cancel.className = "ghost";
+    cancel.textContent = "Отмена";
+    /* Закрыть — показать текст того, что играет сейчас: трек мог смениться. */
+    const close = () => loadLyrics(player.queue[player.index] || track, true);
+    cancel.onclick = close;
+    ownRow.append(save, cancel);
+
+    panel.append(search, note, list, own, ownRow);
+    box.replaceChildren(panel);
+
+    const post = async (url, body) => {
+        const r = await fetch(url, {
+            method: "POST",
+            headers: { ...headers(), "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+        });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(data.detail || ("Ошибка " + r.status));
+        return data;
+    };
+
+    /* Пустой запрос — сервер ищет по тегам трека; иначе — ровно то, что ввели. */
+    const run = async (query) => {
+        note.textContent = "Ищу…";
+        list.replaceChildren();
+        try {
+            const url = "/api/lyrics/candidates?path=" + encodeURIComponent(track.path)
+                + (query ? "&q=" + encodeURIComponent(query) : "");
+            const r = await fetch(url, { headers: headers() });
+            const data = await r.json().catch(() => ({}));
+            if (!r.ok) throw new Error(data.detail || ("Ошибка " + r.status));
+            const found = data.candidates || [];
+            note.textContent = found.length
+                ? "Выбери подходящий — длина рядом с названием"
+                : "В каталоге ничего нет. Поправь запрос или вставь свой текст ниже.";
+            for (const item of found) list.appendChild(choiceRow(item));
+        } catch (e) {
+            note.textContent = e.message;
+        }
+    };
+
+    const choiceRow = (item) => {
+        const row = document.createElement("button");
+        row.className = "track lyrics-choice" + (item.fits ? " fits" : "");
+        const info = document.createElement("div");
+        info.className = "track-info";
+        const title = document.createElement("div");
+        title.className = "track-title";
+        title.textContent = `${item.artist} — ${item.title}`;
+        const meta = document.createElement("div");
+        meta.className = "track-artist";
+        meta.textContent = [
+            item.duration ? formatTime(item.duration) : "",
+            item.synced ? "с таймингами" : "без таймингов",
+            item.preview,
+        ].filter(Boolean).join(" · ");
+        info.append(title, meta);
+        row.appendChild(info);
+        row.onclick = async () => {
+            note.textContent = "Беру этот…";
+            try {
+                await post("/api/lyrics/choose", { path: track.path, id: item.id });
+                close();
+            } catch (e) {
+                note.textContent = e.message;
+            }
+        };
+        return row;
+    };
+
+    go.onclick = () => run(field.value.trim());
+    field.onkeydown = (event) => { if (event.key === "Enter") go.click(); };
+    save.onclick = async () => {
+        if (!own.value.trim()) { note.textContent = "Сначала вставь текст"; return; }
+        try {
+            await post("/api/lyrics/custom", { path: track.path, text: own.value });
+            close();
+        } catch (e) {
+            note.textContent = e.message;
+        }
+    };
+    run("");
 }
 
 function highlightLyric(force) {

@@ -34,6 +34,15 @@ def _outside_stays_offline(monkeypatch, tmp_path):
 
     monkeypatch.setattr(runtime, "OUTSIDE_DIR", tmp_path / "outside-cache")
     monkeypatch.setattr(outside, "candidates", lambda *args, **kwargs: [])
+    # И обход текстов в фоне — тоже сеть.
+    from adder import lyrics
+
+    monkeypatch.setattr(lyrics, "start_backfill", lambda: None)
+    # Добавление трека сразу спрашивает текст — в тестах каталог «не знает»
+    # ничего, а кэш свой у каждого теста.
+    monkeypatch.setattr(lyrics, "CACHE_DIR", tmp_path / "lyrics-cache")
+    monkeypatch.setattr(lyrics, "_ask", lambda *args, **kwargs: {})
+    monkeypatch.setattr(lyrics, "_search", lambda *args, **kwargs: {})
     # Очередь скачиваний — состояние модуля; каждому тесту своя.
     monkeypatch.setattr(outside, "_jobs", queue.Queue())
     monkeypatch.setattr(outside, "_pending", set())
