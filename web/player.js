@@ -87,6 +87,9 @@ async function playAt(position, skipped = 0, direction = 1) {
     const generation = ++player.generation;
     player.index = position;
     player.reported = false;
+    /* Метка для журнала — какой была очередь, когда трек включили: иначе
+     * переключение режима посреди трека приписывало его не той очереди. */
+    player.playingMode = player.queueMode;
     const track = player.queue[position];
 
     let url;
@@ -128,10 +131,6 @@ async function playAt(position, skipped = 0, direction = 1) {
         return false;
     }
     if (generation !== player.generation) return false;
-    /* Метка для журнала — какой очередь была, когда трек начал играть, а не
-     * когда о нём сообщают: иначе переключение режима посреди трека
-     * приписывало его пропуск не той очереди. */
-    player.playingMode = player.queueMode;
     renderPlayer();
     markPlayingRow();
     renderQueuePanel();
@@ -343,7 +342,9 @@ async function setShuffle(mode) {
     } else {
         /* Сборка, которая ещё идёт, больше не нужна. */
         player.smartTicket += 1;
-        if (/^Собираю/.test(document.getElementById("playerNote").textContent)) setPlayerNote("");
+        if (/^(Собираю|Умная очередь)/.test(document.getElementById("playerNote").textContent)) {
+            setPlayerNote("");
+        }
         player.shuffle = mode || false;
         if (was === "smart" && !mode) restoreBeforeSmart();
         else buildOrder(player.index);
@@ -468,7 +469,14 @@ function restoreBeforeSmart() {
     let index = saved.index;
     if (current) {
         const same = queue[index] && queue[index].path === current.path;
-        if (!same) index = queue.findIndex(t => t.path === current.path);
+        if (!same) {
+            /* Ближайшая к прежнему месту копия: один файл бывает в подборке дважды. */
+            let best = -1;
+            queue.forEach((t, i) => {
+                if (t.path === current.path && (best < 0 || Math.abs(i - saved.index) < Math.abs(best - saved.index))) best = i;
+            });
+            index = best;
+        }
         if (index < 0) {
             queue = queue.slice();
             index = Math.max(saved.index, -1) + 1;
@@ -502,8 +510,12 @@ function renderPlayerModes() {
     if (smart) smart.hidden = player.shuffle !== "smart";
     /* Меню — только когда нажатие его открывает; включённое просто выключается. */
     if (shuffle) {
-        if (player.shuffle) shuffle.removeAttribute("aria-haspopup");
-        else shuffle.setAttribute("aria-haspopup", "menu");
+        if (player.shuffle) {
+            shuffle.removeAttribute("aria-haspopup");
+            shuffle.removeAttribute("aria-expanded");
+        } else {
+            shuffle.setAttribute("aria-haspopup", "menu");
+        }
     }
     const repeat = document.getElementById("playerRepeat");
     const one = document.getElementById("playerRepeatOne");
@@ -675,11 +687,15 @@ function playQueue(tracks, startAt = 0, mode = "manual", source = null) {
     player.queueMode = mode;
     player.queueSource = source;
     player.beforeSmart = null;
+    /* Прежняя сборка умной очереди — про прежнюю очередь. */
+    player.smartTicket += 1;
     buildOrder(startAt);
+    playAt(startAt);
     /* Умное перемешивание включено — новая подборка или альбом тоже идут
-     * умно, как в Spotify. Очередь, уже собранная сервером, не трогается. */
-    const smartify = player.shuffle === "smart" && mode === "manual";
-    playAt(startAt).then(played => { if (played && smartify) smartifyQueue(); });
+     * умно, как в Spotify. Не дожидаясь первого трека: он мог не начаться
+     * (пауза, сбой ссылки, «дальше»), а ✦ без умной очереди — обман.
+     * Очередь, уже собранная сервером, не трогается. */
+    if (player.shuffle === "smart" && mode === "manual") smartifyQueue();
 }
 
 /* ---------------- Shuffling ---------------- */
@@ -936,7 +952,7 @@ function loadLyrics(track, force = false) {
     lyrics.lines = [];
     lyrics.index = -1;
     box.replaceChildren();
-    box.classList.remove("has-lyrics");
+    box.classList.remove("has-lyrics", "is-synced");
 
     fetch("/api/lyrics?path=" + encodeURIComponent(track.path), { headers: headers() })
         .then(r => (r.ok ? r.json() : null))
@@ -948,7 +964,7 @@ function loadLyrics(track, force = false) {
 
             if (data.synced && data.synced.length) {
                 lyrics.lines = data.synced;
-                box.classList.add("has-lyrics");
+                box.classList.add("has-lyrics", "is-synced");
                 for (const item of data.synced) {
                     const line = document.createElement("p");
                     line.className = "lyric";
@@ -956,6 +972,7 @@ function loadLyrics(track, force = false) {
                     /* Нажал на строку — песня с этой строки, как в Spotify. */
                     line.onclick = () => {
                         player.audio.currentTime = item.at;
+                        if (player.audio.paused) player.audio.play().catch(() => {});
                         lyrics.follow = true;
                         updateSyncButton();
                         highlightLyric(true);
@@ -1002,7 +1019,7 @@ function openLyricsFinder() {
     lyrics.path = null;
     lyrics.lines = [];
     lyrics.index = -1;
-    box.classList.remove("has-lyrics");
+    box.classList.remove("has-lyrics", "is-synced");
     updateSyncButton();
 
     const panel = document.createElement("div");
@@ -1138,10 +1155,9 @@ function highlightLyric(force) {
     if (i >= 0 && rows[i]) {
         const row = rows[i];
         const wanted = row.offsetTop - lyrics.box.clientHeight / 2 + row.clientHeight / 2;
-        lyrics.scrolling = true;
-        lyrics.box.scrollTo({ top: Math.max(0, wanted), behavior: "smooth" });
-        clearTimeout(lyrics.settle);
-        lyrics.settle = setTimeout(() => { lyrics.scrolling = false; }, 700);
+        /* Прыжок дальше экрана — сразу, соседняя строка — плавно. */
+        const far = Math.abs(lyrics.box.scrollTop - wanted) > lyrics.box.clientHeight;
+        lyrics.box.scrollTo({ top: Math.max(0, wanted), behavior: far ? "instant" : "smooth" });
     }
 }
 
@@ -1180,15 +1196,28 @@ function toggleLyricsView() {
 
 /* Ручная прокрутка выключает слежение. Отличить её от своей помогает флажок:
  * плавная прокрутка к строке тоже приходит сюда событием. */
+/* Ручную прокрутку узнаём по самому действию человека — колесо, палец,
+ * клавиши, перетаскивание полосы, — а не по событию scroll. Своя плавная
+ * прокрутка к строке тоже шлёт scroll, и отличать её по времени (700 мс)
+ * перестало работать, когда строки стали крупнее: далёкий прыжок длится
+ * дольше, и слежение выключалось само. */
 function watchLyricsScroll() {
     const box = document.getElementById("lyricsBody");
     if (!box) return;
-    box.addEventListener("scroll", () => {
-        if (lyrics.scrolling) return;
-        if (!lyrics.follow) return;
+    const byHand = () => {
+        if (!lyrics.follow || !lyrics.lines.length) return;
         lyrics.follow = false;
         updateSyncButton();
-    }, { passive: true });
+    };
+    box.addEventListener("wheel", byHand, { passive: true });
+    box.addEventListener("touchmove", byHand, { passive: true });
+    box.addEventListener("keydown", (event) => {
+        if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"].includes(event.key)) byHand();
+    });
+    /* Полоса прокрутки: нажатие по самому блоку, но не по строке. */
+    box.addEventListener("pointerdown", (event) => {
+        if (event.target === box) byHand();
+    });
 }
 
 watchLyricsScroll();

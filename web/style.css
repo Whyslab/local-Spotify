@@ -807,11 +807,18 @@ button.danger {
     font-weight: 650;
     line-height: 1.35;
     letter-spacing: -0.3px;
-    padding: 8px 6px 45% 0;
+    padding: 8px 6px 0 0;
     /* Края тают, а не обрезают строку пополам. */
     -webkit-mask-image: linear-gradient(transparent, #000 6%, #000 88%, transparent);
     mask-image: linear-gradient(transparent, #000 6%, #000 88%, transparent);
 }
+
+/* Поля сверху и снизу — половина высоты блока, чтобы и первую, и последнюю
+   строку можно было поставить посередине. Не padding: проценты в нём берутся
+   от ширины, а нужна высота. Сверху — только у текста с таймингами: простой
+   текст читают с начала. */
+.lyrics-body::after { content: ""; display: block; height: 50%; }
+.lyrics-body.is-synced::before { content: ""; display: block; height: 40%; }
 
 .lyric {
     margin: 0 0 .7em;
@@ -834,7 +841,17 @@ button.danger {
 .lyrics-actions { margin-top: 0; flex: none; }
 
 /* Выбор текста руками: поиск, варианты каталога, свой текст. */
-.lyrics-finder { display: flex; flex-direction: column; gap: 10px; font-size: 15px; line-height: 1.45; }
+/* Размер, насыщенность и трекинг — свои: иначе всё окно выбора наследовало
+   крупный жирный шрифт самого текста песни. */
+.lyrics-finder {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    font-size: 15px;
+    font-weight: 400;
+    letter-spacing: normal;
+    line-height: 1.45;
+}
 .lyrics-finder .row { margin-top: 0; }
 .lyrics-finder textarea { min-height: 140px; font-size: 14px; }
 .lyrics-choice { text-align: left; }
@@ -1826,6 +1843,8 @@ button.ghost.is-on { color: var(--text); border-color: var(--text); font-weight:
    строке ярче самих треков. */
 @media (hover: none) {
     input, textarea { font-size: 16px; }
+    /* Под палец — не меньше 40px. */
+    .lyrics-head .ghost { min-height: 40px; }
     .track .icon-button.danger {
         color: var(--text-3);
         background: transparent;
@@ -1838,4 +1857,16 @@ button.ghost.is-on { color: var(--text); border-color: var(--text); font-weight:
 @media (min-width: 1100px) {
     .rows > .track:not(.is-playing) { border-color: transparent; background: transparent; }
     .rows > .track:not(.is-playing):hover { background: var(--surface-2); }
+}
+
+/* Низкий экран — телефон боком. Тут нет места ни на что, кроме текста: блок
+   ниже, шрифт мельче, иначе он уходил под панель плеера. */
+@media (max-height: 520px) and (max-width: 1099.98px) {
+    /* Шапка с поиском здесь съела бы всё место: пока открыт текст, её нет. */
+    .app[data-view="viewLyrics"] .topbar { display: none; }
+    .lyrics-body {
+        height: calc(100dvh - var(--tabbar) - var(--player) - 70px - env(safe-area-inset-top, 0px));
+        min-height: 60px;
+        font-size: 18px;
+    }
 }
