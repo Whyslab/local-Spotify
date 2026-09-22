@@ -287,3 +287,105 @@ def test_search_passes_results_through(client, monkeypatch):
     )
     body = client.get("/api/search", params={"q": "что-нибудь"}).json()
     assert body["results"][0]["title"] == "T"
+
+
+# ---------------------------------------------------------------------------
+# Полный путь загрузки: /api/import → обработка → фонотека
+# ---------------------------------------------------------------------------
+
+
+def test_an_untagged_upload_keeps_its_real_filename_all_the_way(client, env):
+    """Файл без тегов раньше ложился в фонотеку под хешем: имя терялось на
+    полпути, в папке импорта он назван по содержимому."""
+    from adder import db
+    from adder import queue as task_queue
+
+    path = make_audio(env / "src" / "Кино - Группа крови.mp3")
+    body = client.post(
+        "/api/import", files={"files": (path.name, path.read_bytes(), "audio/mpeg")}
+    ).json()
+    tid = body["accepted"][0]["task"]
+    url = db.db_query("SELECT url FROM tasks WHERE id = ?", (tid,))[0]["url"]
+
+    task_queue.process(tid, url)
+
+    task = db.db_query("SELECT status, result_path FROM tasks WHERE id = ?", (tid,))[0]
+    assert task["status"] == "done", task
+    assert task["result_path"] == "Кино/Singles/Группа крови.mp3"
+    # Загруженный файл и его имя убраны только после успеха.
+    assert ingest.stashed_upload(url) is None and ingest.stashed_name(url) is None
+
+
+def test_an_upload_survives_an_interrupted_attempt(client, env, monkeypatch):
+    """Перенос файла в обработку терял его при перезапуске посреди работы."""
+    from adder import db
+    from adder import queue as task_queue
+
+    path = make_audio(env / "src" / "Артист - Песня.mp3")
+    body = client.post(
+        "/api/import", files={"files": (path.name, path.read_bytes(), "audio/mpeg")}
+    ).json()
+    tid = body["accepted"][0]["task"]
+    url = db.db_query("SELECT url FROM tasks WHERE id = ?", (tid,))[0]["url"]
+
+    real = ingest.ingest_temp_file
+
+    def interrupted(*args, **kwargs):
+        raise runtime.ShutdownRequested()
+
+    monkeypatch.setattr(ingest, "ingest_temp_file", interrupted)
+    task_queue.process(tid, url)
+    assert ingest.stashed_upload(url) is not None
+
+    monkeypatch.setattr(ingest, "ingest_temp_file", real)
+    task_queue.process(tid, url)
+    assert db.db_query("SELECT status FROM tasks WHERE id = ?", (tid,))[0]["status"] == "done"
+
+
+def test_a_retried_link_does_not_revive_an_old_replacement(client, env):
+    """Упавшая «замени A на X», а потом обычное добавление X, уносило A в корзину."""
+    from adder import db
+
+    db.db_exec(
+        "INSERT INTO tasks(url, status, replace_of) VALUES(?, 'error', 'A/Singles/a.m4a')",
+        ("https://www.youtube.com/watch?v=abcdefghijk",),
+    )
+    client.post("/api/add", json={"links": ["https://www.youtube.com/watch?v=abcdefghijk"]})
+    task = db.db_query("SELECT status, replace_of FROM tasks")[0]
+    assert task["status"] == "queued"
+    assert task["replace_of"] is None
+
+
+def test_a_deleted_track_can_be_added_again_with_the_same_link(client, env):
+    from adder import db
+
+    link = "https://www.youtube.com/watch?v=abcdefghijk"
+    db.db_exec(
+        "INSERT INTO tasks(url, status, result_path) VALUES(?, 'done', 'A/Singles/gone.m4a')",
+        (link,),
+    )
+    added = client.post("/api/add", json={"links": [link]}).json()["added"]
+    assert len(added) == 1
+    # А трек, который на месте, второй раз не качается.
+    make_audio(config.LIBRARY / "A" / "Singles" / "here.m4a")
+    db.db_exec(
+        "INSERT INTO tasks(url, status, result_path) VALUES(?, 'done', 'A/Singles/here.m4a')",
+        ("https://www.youtube.com/watch?v=bbbbbbbbbbb",),
+    )
+    again = client.post(
+        "/api/add", json={"links": ["https://www.youtube.com/watch?v=bbbbbbbbbbb"]}
+    ).json()
+    assert again["added"] == []
+
+
+def test_a_crafted_delete_path_still_lands_in_the_trash(env):
+    target = make_audio(config.LIBRARY / "A" / "Singles" / "t.m4a")
+    crafted = "A/Singles/../Singles/t.m4a"
+    monkeypatch_guard = runtime.guard_real_library
+    try:
+        runtime.guard_real_library = lambda *a, **k: None
+        result = library.delete_track(crafted)
+    finally:
+        runtime.guard_real_library = monkeypatch_guard
+    assert not target.exists()
+    assert (runtime.TRASH_DIR / "A" / "Singles" / "t.m4a").exists(), result

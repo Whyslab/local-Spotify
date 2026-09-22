@@ -17,8 +17,10 @@ from adder import covers, library, navidrome, playlists, runtime, sync
 def forget_reconciled():
     """The seen-revisions cache is module state; tests must not inherit it."""
     sync._SEEN.clear()
+    sync._BASE.clear()
     yield
     sync._SEEN.clear()
+    sync._BASE.clear()
 
 
 @pytest.fixture()
@@ -319,3 +321,70 @@ def test_check_without_navidrome_is_quiet(monkeypatch):
     monkeypatch.setattr(navidrome, "configured", lambda: False)
 
     assert sync.check()["navidrome"] == "not configured"
+
+
+# ---------------------------------------------------------------------------
+# Правка с телефона вскоре после записи с ноутбука; свежие треки
+# ---------------------------------------------------------------------------
+
+
+def test_a_phone_edit_soon_after_a_laptop_write_is_still_seen(temp_library, monkeypatch):
+    """Раньше правка в пределах минуты от записи файла не замечалась никогда,
+    и следующая запись с ноутбука её стирала."""
+    monkeypatch.setattr(library, "library_index", lambda: _index("a.m4a", "b.m4a"))
+    playlists.create("p", ["a.m4a", "b.m4a"])
+    path = playlists.playlist_path("p")
+
+    # Navidrome прочитал файл: отметка на 5 с позже записи — это точка отсчёта.
+    assert sync._diverged(_entry("p", path, 2, ahead=5)) == (False, "in step with the file")
+    # Через полминуты отметка сдвинулась, а файл тот же — это правка с телефона.
+    diverged, why = sync._diverged(_entry("p", path, 2, ahead=30))
+    assert diverged, why
+
+
+def test_before_navidrome_reads_the_file_its_stamp_is_no_baseline(temp_library, monkeypatch):
+    monkeypatch.setattr(library, "library_index", lambda: _index("a.m4a"))
+    playlists.create("p", ["a.m4a"])
+    path = playlists.playlist_path("p")
+    # Отметка старше файла — Navidrome его ещё не читал.
+    sync._diverged(_entry("p", path, 1, ahead=-100))
+    assert "p" not in sync._BASE
+
+
+def test_a_fresh_track_navidrome_has_not_scanned_is_not_dropped(temp_library, monkeypatch):
+    """Только что скачанный трек Navidrome ещё не видит — это не «убран на телефоне»."""
+    for name in ("a.m4a", "b.m4a", "new.m4a"):
+        (temp_library / name).write_bytes(b"x")
+    monkeypatch.setattr(library, "library_index", lambda: _index("a.m4a", "b.m4a", "new.m4a"))
+    playlists.create("p", ["a.m4a", "new.m4a", "b.m4a"])
+    monkeypatch.setattr(navidrome, "remote_tracks", lambda _id, _n: ["b.m4a", "a.m4a"])
+
+    result = sync.pull_back("p", _entry("p", playlists.playlist_path("p"), 2))
+    assert [line.path for line in playlists.read("p").entries] == ["b.m4a", "a.m4a", "new.m4a"]
+    assert result["kept_missing"] == 1
+
+
+def test_an_old_track_removed_on_the_phone_is_removed(temp_library, monkeypatch):
+    import os
+
+    for name in ("a.m4a", "b.m4a"):
+        (temp_library / name).write_bytes(b"x")
+        old = time.time() - sync.FRESH_SECONDS - 3600
+        os.utime(temp_library / name, (old, old))
+    monkeypatch.setattr(library, "library_index", lambda: _index("a.m4a", "b.m4a"))
+    playlists.create("p", ["a.m4a", "b.m4a"])
+    monkeypatch.setattr(navidrome, "remote_tracks", lambda _id, _n: ["b.m4a"])
+
+    sync.pull_back("p", _entry("p", playlists.playlist_path("p"), 1))
+    assert [line.path for line in playlists.read("p").entries] == ["b.m4a"]
+
+
+def test_a_remote_path_the_library_does_not_know_stops_the_pull_back(temp_library, monkeypatch):
+    """Смена формата путей в Navidrome переписала бы подборку непроигрываемым."""
+    monkeypatch.setattr(library, "library_index", lambda: _index("a.m4a"))
+    playlists.create("p", ["a.m4a"])
+    monkeypatch.setattr(navidrome, "remote_tracks", lambda _id, _n: ["/abs/a.m4a"])
+
+    with pytest.raises(RuntimeError, match="does not know"):
+        sync.pull_back("p", _entry("p", playlists.playlist_path("p"), 1))
+    assert [line.path for line in playlists.read("p").entries] == ["a.m4a"]

@@ -6,6 +6,7 @@ What actually happens to the bytes lives in :mod:`adder.ingest`.
 
 import logging
 import queue as _queue
+from contextlib import suppress
 from pathlib import Path
 
 from . import config, db, ingest, runtime
@@ -59,7 +60,9 @@ def process(tid: int, url: str):
                 source = ingest.stashed_upload(url)
                 if source is None:
                     raise RuntimeError("Uploaded file is no longer in the import folder")
-                downloaded = ingest.import_local_file(tid, source, source.name)
+                downloaded = ingest.import_local_file(
+                    tid, source, ingest.stashed_name(url) or source.name
+                )
             else:
                 downloaded = ingest.download_to_temp(tid, url)
             temp_path = downloaded.temp_path
@@ -71,6 +74,8 @@ def process(tid: int, url: str):
 
             db.task_update(tid, status="done", error="", error_type="")
             logger.info("Task finished: %s", outcome, extra={"task_id": tid})
+            if url.startswith("file:"):
+                ingest.forget_upload(url)
             return  # Success, exit retry loop
 
         except runtime.ShutdownRequested:
@@ -133,6 +138,9 @@ def process(tid: int, url: str):
             )
 
             _discard_temp(temp_path, tid)
+            if url.startswith("file:"):
+                # Не прошёл — повторить можно, только загрузив файл заново.
+                ingest.forget_upload(url)
 
             break  # Exit retry loop
 
@@ -164,5 +172,14 @@ def worker():
                 return
 
             process(tid, url)
+        except Exception as exc:  # noqa: BLE001
+            # Сбой в самой обработке ошибки (диск полон, база заперта) раньше
+            # убивал поток насовсем, а ссылка оставалась «в работе» — повторить
+            # её было нельзя до перезапуска службы.
+            logger.exception("Worker survived a failure in task handling", extra={"task_id": tid})
+            with suppress(Exception):
+                db.task_update(tid, status="error", error=str(exc)[:300], error_type="internal")
+            with runtime.FILE_LOCK:
+                runtime.PROCESSING_URLS.discard(url)
         finally:
             runtime.TASK_QUEUE.task_done()

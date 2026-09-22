@@ -16,7 +16,7 @@ import shutil
 import subprocess
 import threading
 
-from . import runtime
+from . import config, runtime
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +65,19 @@ def analyse_track(path: str) -> None:
     def run() -> None:
         try:
             result = subprocess.run(
-                _command(["--only", path]),
+                # База и фонотека — те же, что у службы, а не значения по
+                # умолчанию скрипта: иначе копия службы (или тест) писала
+                # измерения в настоящую adder.db.
+                _command(
+                    [
+                        "--only",
+                        path,
+                        "--db",
+                        str(runtime.DB_PATH),
+                        "--library",
+                        str(config.LIBRARY),
+                    ]
+                ),
                 capture_output=True,
                 text=True,
                 timeout=600,

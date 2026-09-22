@@ -170,21 +170,27 @@ def delete_track(rel_path: str) -> dict:
     """
     runtime.guard_real_library(config.LIBRARY, "delete a track")
     target = library_track(rel_path)
-    destination = runtime.TRASH_DIR / rel_path
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    if destination.exists():
-        stamped = f"{destination.stem}-{int(time.time())}{destination.suffix}"
-        destination = destination.with_name(stamped)
-    shutil.move(str(target), str(destination))
+    # От проверенного пути, а не от присланной строки: «A/../../x» или
+    # абсолютный путь внутри фонотеки уводили файл мимо корзины.
+    relative = target.relative_to(config.LIBRARY.resolve())
+    destination = runtime.TRASH_DIR / relative
+    with runtime.FILE_LOCK:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if destination.exists():
+            stamped = f"{destination.stem}-{time.time_ns()}{destination.suffix}"
+            destination = destination.with_name(stamped)
+        shutil.move(str(target), str(destination))
 
-    # Leave no empty artist/album folders behind.
-    for parent in target.parents:
-        if parent == config.LIBRARY.resolve():
-            break
-        if parent.is_dir() and not any(parent.iterdir()):
-            parent.rmdir()
-        else:
-            break
+        # Leave no empty artist/album folders behind. Under the same lock as
+        # the move into the library, so a track being added for this artist
+        # does not find its folder gone.
+        for parent in target.parents:
+            if parent == config.LIBRARY.resolve():
+                break
+            if parent.is_dir() and not any(parent.iterdir()):
+                parent.rmdir()
+            else:
+                break
 
     invalidate_library_index()
     logger.info("Deleted %s -> %s", rel_path, destination)

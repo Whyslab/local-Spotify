@@ -249,28 +249,20 @@ def add(req: AddRequest, authenticated: bool = Depends(verify_token)):
             # Check if URL already exists in database.
             # Failed tasks can be explicitly retried by re-submitting the URL.
             existing = db.db_query(
-                "SELECT id, status FROM tasks WHERE url = ?",
+                "SELECT id, status, result_path FROM tasks WHERE url = ?",
                 (link,),
             )
 
             if existing:
                 task = existing[0]
 
-                if task["status"] != "error":
+                if not _can_requeue(task):
                     continue  # Skip active/completed duplicate
 
                 # Reuse the existing failed task instead of inserting a
                 # second row, which would violate the UNIQUE(url) index.
                 tid = task["id"]
-                db.task_update(
-                    tid,
-                    status="queued",
-                    artist=None,
-                    title=None,
-                    error=None,
-                    error_type=None,
-                    retry_count=0,
-                )
+                _reset_task(tid)
             else:
                 cur = db.db_exec(
                     "INSERT INTO tasks(url, status) VALUES(?, 'queued')",
@@ -490,7 +482,37 @@ def delete_track(req: DeleteRequest, authenticated: bool = Depends(verify_token)
 # ---------------------------------------------------------------------------
 
 
-def _queue_source(source_key: str) -> int | None:
+def _can_requeue(task: dict) -> bool:
+    """Можно ли поставить задачу с той же ссылкой заново.
+
+    Упавшую — да. Готовую — только если её трека больше нет в фонотеке:
+    удалённый трек иначе нельзя было добавить снова той же ссылкой, ответ
+    молча говорил «уже есть».
+    """
+    if task["status"] == "error":
+        return True
+    if task["status"] == "done" and task.get("result_path"):
+        return not (config.LIBRARY / task["result_path"]).exists()
+    return False
+
+
+def _reset_task(tid: int) -> None:
+    # replace_of и result_path — тоже: старая неудавшаяся «замена A» иначе
+    # оживала при обычном добавлении той же ссылки и уносила A в корзину.
+    db.task_update(
+        tid,
+        status="queued",
+        artist=None,
+        title=None,
+        error=None,
+        error_type=None,
+        retry_count=0,
+        replace_of=None,
+        result_path=None,
+    )
+
+
+def _queue_source(source_key: str, replace_of: str | None = None) -> int | None:
     """Put one source key in the queue, or skip it if it is already there.
 
     Same rules as a pasted link: an active or finished task is left alone, a
@@ -499,24 +521,22 @@ def _queue_source(source_key: str) -> int | None:
     with runtime.FILE_LOCK:
         if source_key in runtime.PROCESSING_URLS:
             return None
-        existing = db.db_query("SELECT id, status FROM tasks WHERE url = ?", (source_key,))
+        existing = db.db_query(
+            "SELECT id, status, result_path FROM tasks WHERE url = ?", (source_key,)
+        )
         if existing:
             task = existing[0]
-            if task["status"] != "error":
+            if not _can_requeue(task):
                 return None
             tid = task["id"]
-            db.task_update(
-                tid,
-                status="queued",
-                artist=None,
-                title=None,
-                error=None,
-                error_type=None,
-                retry_count=0,
-            )
+            _reset_task(tid)
         else:
             cur = db.db_exec("INSERT INTO tasks(url, status) VALUES(?, 'queued')", (source_key,))
             tid = cur.lastrowid
+        # До постановки в очередь: иначе работник мог взять задачу раньше, чем
+        # у неё появится пометка «это замена».
+        if replace_of is not None:
+            db.task_update(tid, replace_of=replace_of)
         runtime.TASK_QUEUE.put((tid, source_key))
         runtime.PROCESSING_URLS.add(source_key)
         return tid
@@ -596,13 +616,12 @@ def replace_track(req: ReplaceRequest, authenticated: bool = Depends(verify_toke
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=f"Invalid YouTube URL: {exc}") from exc
 
-    tid = _queue_source(link)
+    tid = _queue_source(link, replace_of=req.path)
     if tid is None:
         raise HTTPException(
             status_code=409,
             detail="Эта ссылка уже в очереди или её трек уже в фонотеке",
         )
-    db.task_update(tid, replace_of=req.path)
     return {"task": tid}
 
 
@@ -624,10 +643,9 @@ async def replace_track_with_file(
         raise HTTPException(status_code=400, detail="Пустой файл")
 
     source_key, _ = ingest.stash_upload(data, file.filename or "track" + suffix)
-    tid = _queue_source(source_key)
+    tid = _queue_source(source_key, replace_of=path)
     if tid is None:
         raise HTTPException(status_code=409, detail="Этот файл уже в очереди или уже в фонотеке")
-    db.task_update(tid, replace_of=path)
     return {"task": tid}
 
 

@@ -17,8 +17,10 @@ silently is how a playlist list fills up with corpses.
 
 import json
 import logging
+import os
 import threading
 import time
+from pathlib import Path
 
 import requests
 
@@ -78,9 +80,27 @@ def playlists() -> list[dict]:
         raise NavidromeUnavailable(f"Could not list Navidrome playlists: {exc}") from exc
 
 
+def _same_file(entry: dict, name: str) -> bool:
+    """Is this Navidrome playlist the one backed by our file for ``name``?
+
+    By the file, not by the name: a playlist made on the phone can carry the
+    same name, and deleting "Gym" must never take the phone's "Gym" with it —
+    that one has no file and cannot be brought back.
+    """
+    from . import playlists as playlist_files
+
+    if not entry.get("sync") or not entry.get("path"):
+        return False
+    try:
+        ours = playlist_files.playlist_path(name)
+    except Exception:
+        return False
+    return os.path.normpath(str(entry["path"])) == os.path.normpath(str(ours))
+
+
 def find_id(name: str) -> str | None:
     for entry in playlists():
-        if entry.get("name") == name:
+        if _same_file(entry, name):
             return entry.get("id")
     return None
 
@@ -100,11 +120,19 @@ def delete_playlist(name: str) -> bool:
     return True
 
 
+class NotImportedYet(Exception):
+    """Navidrome has not read the playlist file yet (it takes ~6 s after a
+    write). Worth retrying — unlike "no such playlist", this passes."""
+
+
 def upload_cover(name: str, image: bytes, filename: str) -> bool:
     """Attach an image to a playlist. True if Navidrome accepted it."""
     playlist_id = find_id(name)
     if playlist_id is None:
-        return False
+        # Right after create or rename the file is there but Navidrome has not
+        # imported it; a False here used to be reported as "done" and the
+        # cover never reached it.
+        raise NotImportedYet(f"playlist {name!r} is not in Navidrome yet")
     response = requests.post(
         f"{config.NAVIDROME_URL}/api/playlist/{playlist_id}/image",
         headers=_headers(),
@@ -195,7 +223,6 @@ def reconcile(apply: bool | None = None) -> dict:
     that records "this has run once" lives in the database rather than in a
     file, so it survives moving the repository.
     """
-    from . import playlists as playlist_files
 
     if apply is None:
         armed = db.db_query("SELECT value FROM settings WHERE key = ?", (_RECONCILE_MARKER,))
@@ -206,11 +233,9 @@ def reconcile(apply: bool | None = None) -> dict:
         if not entry.get("sync") or not entry.get("path"):
             continue
         name = entry.get("name") or ""
-        try:
-            path = playlist_files.playlist_path(name)
-        except Exception:
-            continue
-        if not path.exists():
+        # The file Navidrome says it read — not one rebuilt from the name, which
+        # would call every playlist in a subfolder an orphan on each start.
+        if not Path(str(entry["path"])).exists() and _same_file(entry, name):
             orphans.append(name)
 
     if apply:

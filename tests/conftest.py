@@ -34,6 +34,12 @@ def _outside_stays_offline(monkeypatch, tmp_path):
 
     monkeypatch.setattr(runtime, "OUTSIDE_DIR", tmp_path / "outside-cache")
     monkeypatch.setattr(outside, "candidates", lambda *args, **kwargs: [])
+    # Добавление трека измеряет его отдельным процессом и спрашивает Deezer
+    # об альбоме — в тестах ни того, ни другого.
+    from adder import analysis, enrich
+
+    monkeypatch.setattr(analysis, "analyse_track", lambda path: None)
+    monkeypatch.setattr(enrich, "lookup", lambda artist, title: None)
     # И обход текстов в фоне — тоже сеть.
     from adder import lyrics
 

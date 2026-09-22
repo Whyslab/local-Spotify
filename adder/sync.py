@@ -20,11 +20,14 @@ order no longer matches its file, and writes the file to match. After that the
 watcher re-reads the file, finds the same order, and the two agree for good.
 
 Telling "the phone edited this" apart from "Navidrome has not read our write
-yet" is done with one cheap signal. When Navidrome ingests a file it stamps
-``updatedAt`` within a few seconds of the file's mtime -- 5.6 s in the worst
-case measured here. When a client edits through the API, ``updatedAt`` moves
-and the mtime does not. A gap wider than QUIET_SECONDS is therefore an edit
-that did not come from us, and nothing else, with a ten-fold margin.
+yet" takes two signals. When Navidrome ingests a file it stamps ``updatedAt``
+within a few seconds of the file's mtime -- 5.6 s in the worst case measured
+here -- and that stamp is remembered as the playlist's baseline. After that,
+any move of ``updatedAt`` while the file stays the same is an edit that did
+not come from us, however soon after our write it happened. The old rule --
+"more than 60 s ahead of the file" -- never saw a phone edit made within a
+minute of a laptop write, and the next laptop write erased it. The gap rule
+stays for the first pass after a restart, when there is no baseline yet.
 
 What this module will not do is guess. If Navidrome returns fewer tracks than
 it says the playlist has, or the playlist has no file, or the remote list comes
@@ -57,6 +60,16 @@ POLL_SECONDS = 30
 # its tracks, forever, to conclude nothing had changed. In memory on purpose:
 # losing it after a restart costs one extra read.
 _SEEN: dict[str, str] = {}
+
+# What Navidrome's updatedAt was once it had read our current file:
+# name -> (file mtime, updatedAt). A later updatedAt for the same mtime is an
+# edit made through the API -- the phone.
+_BASE: dict[str, tuple[float, str]] = {}
+
+# A track this recent may not be in Navidrome's database yet: it drops an
+# .m3u line whose file it has not scanned. Such lines are never read as
+# "removed on the phone".
+FRESH_SECONDS = 7 * 24 * 3600
 
 _LAST: dict[str, object] = {"at": 0.0, "result": None, "error": None}
 _LOCK = threading.Lock()
@@ -98,13 +111,22 @@ def _diverged(entry: dict) -> tuple[bool, str]:
     mtime = _mtime(name)
     if mtime is None:
         return False, "no file on disk"
-    updated = _remote_epoch(str(entry.get("updatedAt") or ""))
+    stamp = str(entry.get("updatedAt") or "")
+    updated = _remote_epoch(stamp)
     if updated is None:
         return False, "unreadable updatedAt"
-    if updated - mtime <= QUIET_SECONDS:
-        return False, "in step with the file"
-    if _SEEN.get(name) == str(entry.get("updatedAt")):
+    if _SEEN.get(name) == stamp:
         return False, "already reconciled at this revision"
+    base = _BASE.get(name)
+    if base and base[0] == mtime and base[1] != stamp:
+        return True, "changed in Navidrome since it read the file"
+    if updated - mtime <= QUIET_SECONDS:
+        # Navidrome has read this very file (its stamp is not older than the
+        # write) -- remember that as the baseline. Before it reads it, the
+        # stamp is older than the mtime and means nothing yet.
+        if updated >= mtime - 1:
+            _BASE[name] = (mtime, stamp)
+        return False, "in step with the file"
     return True, f"Navidrome is {int(updated - mtime)}s ahead of the file"
 
 
@@ -117,36 +139,62 @@ def pull_back(name: str, entry: dict) -> dict:
     that happens to be missing at that moment. They keep their relative order
     and go to the end.
     """
-    remote = navidrome.remote_tracks(str(entry["id"]), int(entry.get("songCount") or 0))
-    remote = [path for path in remote if path]
-
+    # The file first: its revision then also covers a laptop write that lands
+    # while the remote list is being fetched.
     current = playlists.read(name)
     local = [line.path for line in current.entries]
-
-    if not remote and local:
-        raise RuntimeError("Navidrome returned an empty playlist for a file that is not empty")
-
-    known = {row["path"] for row in library.library_index()}
-    invisible = [path for path in local if path not in known]
-    merged = remote + invisible
+    merged, kept = _merged(name, entry, local)
 
     if merged == local:
         return {"playlist": name, "changed": False, "tracks": len(local)}
 
     playlists.write(name, merged, expected_revision=current.revision)
-    logger.info(
-        "Playlist %r pulled back from Navidrome: %d tracks (%d of them invisible to it)",
-        name,
-        len(merged),
-        len(invisible),
-    )
+    logger.info("Playlist %r pulled back from Navidrome: %d tracks", name, len(merged))
     return {
         "playlist": name,
         "changed": True,
         "tracks": len(merged),
-        "kept_missing": len(invisible),
+        "kept_missing": kept,
         "was": len(local),
     }
+
+
+def _merged(name: str, entry: dict, local: list[str]) -> tuple[list[str], int]:
+    """What the file should hold after taking Navidrome's order.
+
+    Declines (raises) rather than guess: an empty remote list for a non-empty
+    file, or a remote path this library does not know -- a Navidrome upgrade
+    that changes how paths are written would otherwise rewrite every playlist
+    with paths nothing can play.
+    """
+    remote = navidrome.remote_tracks(str(entry["id"]), int(entry.get("songCount") or 0))
+    remote = [path for path in remote if path]
+    if not remote and local:
+        raise RuntimeError("Navidrome returned an empty playlist for a file that is not empty")
+
+    known = {row["path"] for row in library.library_index()}
+    stray = [path for path in remote if path not in known]
+    if stray:
+        raise RuntimeError(f"Navidrome lists {len(stray)} path(s) this library does not know")
+
+    # Kept even though Navidrome does not list them: files missing from the
+    # library (it cannot see them), and files too new for it to have scanned.
+    # Taking its list as the whole truth would drop both.
+    remote_set = set(remote)
+    now = time.time()
+    kept = [
+        path
+        for path in local
+        if path not in remote_set and (path not in known or _is_fresh(path, now))
+    ]
+    return remote + kept, len(kept)
+
+
+def _is_fresh(rel_path: str, now: float) -> bool:
+    try:
+        return now - library.library_track(rel_path).stat().st_mtime < FRESH_SECONDS
+    except Exception:
+        return False
 
 
 def check(apply: bool = True) -> dict:
@@ -170,16 +218,9 @@ def check(apply: bool = True) -> dict:
             if apply:
                 row.update(pull_back(name, entry))
             else:
-                remote = [
-                    path
-                    for path in navidrome.remote_tracks(
-                        str(entry["id"]), int(entry.get("songCount") or 0)
-                    )
-                    if path
-                ]
+                # The same merge the real pass would write, guards included.
                 local = [line.path for line in playlists.read(name).entries]
-                known = {track["path"] for track in library.library_index()}
-                merged = remote + [path for path in local if path not in known]
+                merged, _ = _merged(name, entry, local)
                 row["changed"] = merged != local
                 row["tracks"] = len(merged)
             # Only on success: a playlist that could not be read must be
@@ -217,10 +258,17 @@ def status() -> dict:
     }
 
 
+_CHECK_LOCK = threading.Lock()
+
+
 def _loop() -> None:
     while not _stop.wait(POLL_SECONDS):
         try:
-            check(apply=True)
+            # Deletes and renames that failed while Navidrome was down: retried
+            # here, not only at the next service start.
+            navidrome.drain()
+            with _CHECK_LOCK:
+                check(apply=True)
         except Exception as exc:  # noqa: BLE001 -- a down Navidrome must not kill the thread
             with _LOCK:
                 _LAST.update({"at": time.time(), "error": str(exc)[:300]})
@@ -232,6 +280,7 @@ def start() -> threading.Thread | None:
     if not navidrome.configured():
         logger.info("Playlist sync not started: Navidrome is not configured")
         return None
+    _stop.clear()
     thread = threading.Thread(target=_loop, name="playlist-sync", daemon=True)
     thread.start()
     logger.info("Playlist sync watching Navidrome every %ds", POLL_SECONDS)

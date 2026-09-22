@@ -41,10 +41,20 @@ def detect(data: bytes) -> tuple[str, str]:
     )
 
 
-def _slot(name: str) -> Path:
+EXTENSIONS = ("jpg", "png", "webp")
+
+
+def _file(name: str, extension: str) -> Path:
+    """Путь обложки: имя подборки плюс расширение, приписанное строкой.
+
+    Не with_suffix: у «Rap vol. 2» он считал расширением «. 2» — обложка
+    ложилась в «Rap vol.jpg», терялась и затирала обложку «Rap vol». И не glob
+    по имени: «[2024]» в нём — набор символов, а «*» — что угодно, так что
+    обложка «R*» стирала обложки всех подборок на «R».
+    """
     from . import playlists
 
-    return COVERS_DIR / playlists.safe_name(name)
+    return COVERS_DIR / f"{playlists.safe_name(name)}.{extension}"
 
 
 def store(name: str, data: bytes) -> str:
@@ -58,16 +68,19 @@ def store(name: str, data: bytes) -> str:
         )
     extension, media_type = detect(data)
     COVERS_DIR.mkdir(parents=True, exist_ok=True)
-    for stale in COVERS_DIR.glob(f"{_slot(name).name}.*"):
-        stale.unlink(missing_ok=True)
-    _slot(name).with_suffix(f".{extension}").write_bytes(data)
+    for other in EXTENSIONS:
+        _file(name, other).unlink(missing_ok=True)
+    _file(name, extension).write_bytes(data)
     logger.info("Cover stored for playlist %r (%s, %d bytes)", name, media_type, len(data))
     return media_type
 
 
 def cover_file(name: str) -> Path | None:
-    matches = sorted(COVERS_DIR.glob(f"{_slot(name).name}.*")) if COVERS_DIR.exists() else []
-    return matches[0] if matches else None
+    for extension in EXTENSIONS:
+        path = _file(name, extension)
+        if path.is_file():
+            return path
+    return None
 
 
 def read_cover(name: str) -> tuple[bytes, str] | None:
@@ -91,7 +104,7 @@ def rename(old: str, new: str) -> None:
     path = cover_file(old)
     if path is None:
         return
-    path.rename(_slot(new).with_suffix(path.suffix))
+    path.rename(_file(new, path.suffix.lstrip(".")))
 
 
 def delete(name: str) -> None:

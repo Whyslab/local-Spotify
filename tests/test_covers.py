@@ -147,3 +147,20 @@ def test_deleting_a_playlist_removes_its_cover(client):
     client.delete("/api/playlists/gone")
 
     assert covers.cover_file("gone") is None
+
+
+@pytest.mark.parametrize("name", ["Rap vol. 2", "Mix [2024]", "R*", "a?b"])
+def test_names_with_dots_and_glob_characters_keep_their_own_cover(name, tmp_path, monkeypatch):
+    """«Rap vol. 2» ложилась в «Rap vol.jpg», «[2024]» не находилась, «R*» стирала чужие."""
+    monkeypatch.setattr(covers, "COVERS_DIR", tmp_path / "covers")
+    covers.store("Rap vol", PNG)
+    covers.store("Rock", PNG)
+    covers.store(name, JPEG)
+
+    assert covers.read_cover(name)[0] == JPEG
+    assert covers.read_cover("Rap vol")[0] == PNG
+    assert covers.read_cover("Rock")[0] == PNG
+
+    covers.rename(name, name + " x")
+    assert covers.read_cover(name + " x")[0] == JPEG
+    assert covers.read_cover("Rap vol")[0] == PNG

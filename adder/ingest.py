@@ -946,13 +946,44 @@ def stash_upload(data: bytes, original_name: str) -> tuple[str, Path]:
     suffix = Path(original_name).suffix.lower() or ".mp3"
     digest = hashlib.sha256(data).hexdigest()
     target = import_dir() / f"{digest}{suffix}"
-    target.write_bytes(data)
+    partial = target.with_name(target.name + ".part")
+    partial.write_bytes(data)
+    partial.replace(target)
+    # Настоящее имя файла — рядом: сам файл назван по содержимому, и без этого
+    # «Кино - Группа крови.mp3» без тегов ложился в фонотеку под хешем.
+    target.with_name(f"{digest}{NAME_SUFFIX}").write_text(
+        Path(original_name).name, encoding="utf-8"
+    )
     return f"file:{digest}", target
 
 
+NAME_SUFFIX = ".name"
+
+
 def stashed_upload(source_key: str) -> Path | None:
-    matches = sorted(import_dir().glob(f"{source_key.removeprefix('file:')}.*"))
+    digest = source_key.removeprefix("file:")
+    matches = sorted(
+        path
+        for path in import_dir().glob(f"{digest}.*")
+        if path.suffix.lower() in library.AUDIO_SUFFIXES
+    )
     return matches[0] if matches else None
+
+
+def stashed_name(source_key: str) -> str | None:
+    """Имя, под которым файл загрузили, если оно сохранилось."""
+    digest = source_key.removeprefix("file:")
+    try:
+        return (import_dir() / f"{digest}{NAME_SUFFIX}").read_text(encoding="utf-8") or None
+    except OSError:
+        return None
+
+
+def forget_upload(source_key: str) -> None:
+    """Убрать загруженный файл и его имя — после того как задача закончилась."""
+    digest = source_key.removeprefix("file:")
+    for path in import_dir().glob(f"{digest}.*"):
+        path.unlink(missing_ok=True)
 
 
 def import_local_file(tid: int, source: Path, original_name: str) -> Downloaded:
@@ -1005,7 +1036,13 @@ def import_local_file(tid: int, source: Path, original_name: str) -> Downloaded:
         meta_title=clean_title(title, for_filename=False),
     )
     key = file_sha256(source)[:16]
-    return Downloaded(temp_path=stage_into_temp(source, key), names=names, thumbnail=None)
+    # Копия, а не перенос: загруженный файл остаётся в папке импорта, пока
+    # задача не закончится. Перенос терял его при перезапуске посреди
+    # обработки и при повторной попытке — задача возвращалась, а файла нет.
+    runtime.TMP_DIR.mkdir(parents=True, exist_ok=True)
+    staged = runtime.TMP_DIR / f"{key}_processing{source.suffix.lower() or '.m4a'}"
+    shutil.copy2(source, staged)
+    return Downloaded(temp_path=staged, names=names, thumbnail=None)
 
 
 def _apply_replacement(tid: int, new_path: str) -> None:
@@ -1074,9 +1111,10 @@ def ingest_temp_file(tid: int, temp_path: Path, names: TrackNames, thumbnail: st
         cover, fmt = fetch_cover(names.fs_artist, names.fs_title, thumbnail)
 
     # Folder layout is left alone on purpose: Navidrome groups albums by
-    # tags, not by directory, so moving files would buy nothing.
+    # tags, not by directory, so moving files would buy nothing. The folder
+    # itself is created under the lock right before the move: deleting the
+    # artist's last track meanwhile removes it.
     target_dir = config.LIBRARY / names.fs_artist / "Singles"
-    target_dir.mkdir(parents=True, exist_ok=True)
     # An imported file keeps its own container; nothing is re-encoded to make
     # the folder uniform, because that would cost quality for tidiness.
     base_target = target_dir / f"{names.fs_title}{temp_path.suffix.lower()}"
@@ -1094,6 +1132,7 @@ def ingest_temp_file(tid: int, temp_path: Path, names: TrackNames, thumbnail: st
     # lock as the final move. This prevents concurrent workers from both
     # accepting identical audio.
     with runtime.FILE_LOCK:
+        target_dir.mkdir(parents=True, exist_ok=True)
         duplicate = find_duplicate_library_file(temp_path)
 
         if duplicate is not None:
