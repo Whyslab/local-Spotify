@@ -19,7 +19,7 @@
 
   <header class="topbar">
     <div class="brand">
-      <h1>Фонотека</h1>
+      <h1 id="viewTitle">Главная</h1>
       <p id="libraryStats">загружаю…</p>
     </div>
 
@@ -92,7 +92,8 @@
       </div>
 
       <div class="list-head">
-        <span>Очередь</span>
+        <!-- «Загрузки», а не «Очередь»: очередью зовётся то, что играет дальше. -->
+        <span>Загрузки</span>
         <span id="queueCount" class="muted"></span>
       </div>
       <div id="tasks" class="rows"></div>
@@ -118,8 +119,16 @@
     <section id="viewLibrary" class="view" hidden>
 
       <div class="row wrap shuffle-row">
-        <button class="primary" onclick="playSmartShuffle()">Умное перемешивание</button>
-        <button class="ghost" onclick="playPlainShuffle()">Обычное</button>
+        <!-- Две кнопки запуска, а не переключатель: у обеих значок «играть» и
+             полное название, иначе пара читалась как «Треки · Альбомы» рядом. -->
+        <button class="primary with-icon" onclick="playSmartShuffle()">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+          Умное перемешивание
+        </button>
+        <button class="ghost with-icon" onclick="playPlainShuffle()">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+          Обычное перемешивание
+        </button>
         <span id="shuffleNote" class="muted"></span>
       </div>
 
@@ -193,15 +202,16 @@
               Обложка
               <input type="file" accept="image/jpeg,image/png,image/webp" onchange="uploadCover(this)" hidden>
             </label>
+            <button id="playlistEditToggle" class="ghost" onclick="togglePlaylistEdit()"
+                    aria-expanded="false" aria-controls="playlistEdit">Изменить</button>
             <button class="ghost" onclick="switchView('viewPlaylists')">Назад</button>
           </div>
         </div>
       </div>
 
-      <p id="playlistNote" class="note"></p>
-      <div id="playlistTracks" class="rows"></div>
-
-      <div class="card">
+      <!-- Под шапкой и по кнопке: раньше стояло после всех треков, в «Monday»
+           — за тысячей строк. -->
+      <div id="playlistEdit" class="card" hidden>
         <div class="card-head">
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
           <h2>Переименовать или удалить</h2>
@@ -212,6 +222,9 @@
         </div>
         <button class="danger block" onclick="askDeletePlaylist(this)">Удалить подборку</button>
       </div>
+
+      <p id="playlistNote" class="note"></p>
+      <div id="playlistTracks" class="rows"></div>
 
     </section>
 

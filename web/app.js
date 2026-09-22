@@ -6,7 +6,13 @@
  * they are untrusted strings that happen to be displayed. A test enforces this.
  */
 
+/* Опрос сервера. Часто — только загрузки на «Добавить», пока их видно: там
+ * смотрят, как идёт скачивание. Остальное меняется редко, и опрос раз в три
+ * секунды писал в журнал службы ~29 тысяч строк в сутки, а в режиме
+ * «Альбомы» каждый раз заново качал всю фонотеку. Во вкладке, которую не
+ * видно, не опрашивается ничего. */
 const POLL_MS = 3000;
+const POLL_SLOW_MS = 30000;
 const SEARCH_DEBOUNCE_MS = 300;
 
 let activeView = "viewHome";
@@ -118,22 +124,45 @@ function toggleMoreMenu(event) {
     menu.querySelector(".row-menu-item").focus();
 }
 
+/* Заголовок экрана. Раньше на всех было «Фонотека». */
+const VIEW_TITLES = {
+    viewHome: "Главная",
+    viewLibrary: "Фонотека",
+    viewPlaylists: "Подборки",
+    viewPlaylist: "Подборка",
+    viewAdd: "Добавить",
+    viewService: "Сервис",
+    viewLyrics: "Текст песни",
+};
+const VIEW_KEY = "lastView";
+const PLAYLIST_KEY = "lastPlaylist";
+
+function setViewTitle(text) {
+    const title = document.getElementById("viewTitle");
+    if (title) title.textContent = text;
+}
+
 function switchView(id) {
     activeView = id;
     updateSearchPlaceholder(id);
+    setViewTitle(VIEW_TITLES[id] || "Фонотека");
+    /* Перезагрузка страницы возвращает туда же, а не на главную. */
+    try { localStorage.setItem(VIEW_KEY, id); } catch (e) { /* приватное окно */ }
     /* The rail layout keys off this: on a phone the search band belongs to the
      * library and appears with it, on a desktop it is always the top band. */
     document.querySelector(".app").dataset.view = id;
     for (const section of document.querySelectorAll(".view")) {
         section.hidden = section.id !== id;
     }
+    /* Внутри подборки подсвечен раздел «Подборки», откуда в неё пришли. */
+    const section = id === "viewPlaylist" ? "viewPlaylists" : id;
     for (const tab of document.querySelectorAll(".tab")) {
-        tab.classList.toggle("is-active", tab.dataset.view === id);
+        tab.classList.toggle("is-active", tab.dataset.view === section);
     }
     /* Раздел спрятан за «Ещё» — пусть кнопка показывает, что мы внутри неё. */
     const more = document.getElementById("moreTab");
     if (more) more.classList.toggle("is-active", MORE_VIEWS.some(([view]) => view === id));
-    refresh();
+    refresh(true);
 }
 
 /* Поле одно, а ищет оно в разном — пусть само говорит, где именно. */
@@ -145,18 +174,28 @@ function updateSearchPlaceholder(view) {
         : "Артист, трек или альбом";
 }
 
-function refresh() {
+let lastSlowRefresh = 0;
+
+/* `now` — не ждать очереди: сменили экран или вернулись во вкладку. */
+function refresh(now = false) {
     if (!token()) return;
+    if (document.hidden && !now) return;
+    if (activeView === "viewAdd") tasks();
+    if (!now && Date.now() - lastSlowRefresh < POLL_SLOW_MS) return;
+    lastSlowRefresh = Date.now();
     health();
     /* The playlists are in the rail now, which is on screen whatever section
      * you are in -- so they cannot be fetched only while their own tab is
      * open. On a phone the rail is not rendered and this is one small request
      * that costs a list nobody sees; it is the same request the tab made. */
     playlists();
-    if (activeView === "viewAdd") tasks();
     if (activeView === "viewLibrary") library();
     if (activeView === "viewHome") home();
 }
+
+document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) refresh(true);
+});
 
 /* ---------------- Adding ---------------- */
 
@@ -464,7 +503,12 @@ function searchText() {
     return field ? field.value.trim().toLowerCase() : "";
 }
 
+const LIBRARY_PAGE = 200;
+let libraryLimit = LIBRARY_PAGE;
+let librarySignature = "";
+
 function scheduleLibrarySearch() {
+    libraryLimit = LIBRARY_PAGE;
     clearTimeout(librarySearchTimer);
     librarySearchTimer = setTimeout(runSearchHere, SEARCH_DEBOUNCE_MS);
 }
@@ -615,7 +659,8 @@ function homeShelf(title, hint, tracks, playAll) {
     }
     if (playAll) {
         const play = document.createElement("button");
-        play.className = "primary";
+        /* Не белая: три белые кнопки на главной были ярче самих обложек. */
+        play.className = "ghost";
         play.textContent = "Слушать";
         play.onclick = playAll;
         head.appendChild(play);
@@ -837,6 +882,7 @@ initLibrarySort();
 
 function setLibraryMode(mode) {
     libraryMode = mode;
+    libraryLimit = LIBRARY_PAGE;
     openAlbumGroup = null;
     for (const [name, id] of [["tracks", "modeTracks"], ["albums", "modeAlbums"], ["singles", "modeSingles"]]) {
         const b = document.getElementById(id);
@@ -1077,7 +1123,7 @@ async function library() {
      * в альбомы вместо всей фонотеки. Получалось 25 изданий вместо 121, и
      * зависело это от того, попал ли клик между опросами. */
     const mode = libraryMode;
-    const limit = mode === "tracks" ? 200 : 5000;
+    const limit = mode === "tracks" ? libraryLimit : 5000;
 
     try {
         const r = await fetch(
@@ -1090,15 +1136,36 @@ async function library() {
          * запускает загрузку дважды — из setLibraryMode и из switchView, — и
          * вторая перерисовка смахивала бы открытый альбом обратно в сетку. */
         if (openAlbumGroup) return;
+        /* Опрос принёс то же самое — список не трогаем: перерисовка сбивала
+         * прокрутку и открытые под строкой вопросы. */
+        const signature = [mode, limit, q, data.length, ...data.map(t => t.path)].join("\n");
+        if (signature === librarySignature && box.childElementCount) return;
+        librarySignature = signature;
         box.replaceChildren();
 
         if (mode === "tracks") {
             if (note) note.textContent = "";
-            count.textContent = data.length ? data.length + (data.length === 200 ? "+" : "") : "";
+            /* Число в поле — только при поиске: «200+» в пустом поле читалось
+             * как «нашлось двести». */
+            count.textContent = q && data.length ? String(data.length) + (data.length === limit ? "+" : "") : "";
             empty.hidden = data.length > 0;
             /* Keep the rendered list around: playing one row queues the rest, so
              * "next" carries on down the screen instead of stopping at one track. */
             for (const t of data) box.appendChild(libraryRow(t, data));
+            /* Раньше список молча обрывался на двухсотом треке из тысячи с
+             * лишним, и до остальных можно было добраться только поиском. */
+            if (data.length === limit) {
+                const more = document.createElement("button");
+                more.className = "ghost block library-more";
+                more.textContent = "Показать ещё " + LIBRARY_PAGE;
+                more.onclick = () => {
+                    libraryLimit += LIBRARY_PAGE;
+                    more.disabled = true;
+                    more.textContent = "Загружаю…";
+                    library();
+                };
+                box.appendChild(more);
+            }
             markPlayingRow();
             return;
         }
@@ -1285,9 +1352,28 @@ async function removeTrack(t) {
 document.addEventListener("DOMContentLoaded", () => {
     document.querySelector(".app").dataset.view = activeView;
     applyLoginState();
-    refresh();
+    restoreView();
+    refresh(true);
     setInterval(refresh, POLL_MS);
 });
+
+/* Экран, открытый до перезагрузки. Подборка — по имени: её могли удалить или
+ * переименовать, тогда просто остаёмся на главной. Текст песни без музыки
+ * пуст — туда не возвращаем. */
+function restoreView() {
+    let view = null;
+    let playlist = null;
+    try {
+        view = localStorage.getItem(VIEW_KEY);
+        playlist = localStorage.getItem(PLAYLIST_KEY);
+    } catch (e) { return; }
+    if (!view || !VIEW_TITLES[view] || view === "viewLyrics" || view === activeView) return;
+    if (view === "viewPlaylist") {
+        if (playlist && token()) openPlaylist(playlist);
+        return;
+    }
+    switchView(view);
+}
 
 
 /* ---------------- Playlist links ---------------- */

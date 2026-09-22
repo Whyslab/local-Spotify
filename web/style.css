@@ -20,7 +20,10 @@
 
     --text: #ffffff;
     --text-2: #b0b0b0;
-    --text-3: #737373;
+    /* Не темнее: мелкий серый текст (10–13px) должен давать контраст от
+       4,5 : 1. #737373 давал 4,0 на фоне и меньше на карточках; #858585 —
+       5,1 на фоне и 4,7 на карточках. */
+    --text-3: #858585;
 
     /* Главное действие — белое на чёрном, как кнопки питания в панели. */
     --accent: #ffffff;
@@ -78,7 +81,10 @@ body::before {
     z-index: 1;
     max-width: 640px;
     margin: 0 auto;
-    padding: 14px 16px calc(var(--tabbar) + env(safe-area-inset-bottom, 0px) + 16px);
+    /* Сверху — место под часы айфона: с viewport-fit=cover страница с домашнего
+       экрана начинается под ними. */
+    padding: calc(14px + env(safe-area-inset-top, 0px)) 16px
+             calc(var(--tabbar) + env(safe-area-inset-bottom, 0px) + 16px);
 }
 
 /* The player bar is fixed above the tab bar, so while it is on screen the
@@ -327,7 +333,8 @@ button:disabled { opacity: .5; cursor: default; }
 .track-album {
     font-size: 11px;
     line-height: 16px;
-    color: #5c5c5c;
+    /* Было #5c5c5c — 2,8 : 1, при 11px почти не читалось. */
+    color: var(--text-3);
     margin-top: 1px;
 }
 
@@ -354,7 +361,9 @@ button:disabled { opacity: .5; cursor: default; }
 
    Не белой заливкой: полсотни белых плашек столбиком по правому краю
    перетягивают внимание на себя сильнее, чем сами названия. */
-.track-status.done        { color: var(--text);  background: var(--surface-2); border-color: var(--text); }
+/* Готовое — спокойно: его в списке десятки, и белые рамки перетягивали
+   взгляд с того, что ещё качается. */
+.track-status.done        { color: var(--text-2); background: var(--surface-2); border-color: var(--line-2); }
 .track-status.downloading,
 .track-status.tagging     { color: var(--warn);   background: var(--surface-2); border-color: #ffffff2e; }
 .track-status.error       { color: var(--danger); background: #241315; border-color: #ff555533; }
@@ -1800,4 +1809,33 @@ button.ghost.is-on { color: var(--text); border-color: var(--text); font-weight:
   color: var(--accent-ink);
   background: var(--accent);
   border-color: var(--accent);
+}
+
+
+/* ---------------- Проверка интерфейса 16.09: мелочи ---------------- */
+
+/* Две кнопки запуска со значком «играть» — чтобы не читались как переключатель. */
+.with-icon { display: inline-flex; align-items: center; gap: 8px; }
+.with-icon .icon { width: 13px; height: 13px; fill: currentColor; stroke: none; }
+
+.library-more { margin-top: 4px; }
+
+/* Сенсорный экран. Меньше 16px в поле ввода — и iOS увеличивает страницу
+   при каждом нажатии на поиск. Корзина в строке — серая, как остальные
+   кнопки: красный остаётся за вопросом «удалить?», а не висит в каждой
+   строке ярче самих треков. */
+@media (hover: none) {
+    input, textarea { font-size: 16px; }
+    .track .icon-button.danger {
+        color: var(--text-3);
+        background: transparent;
+        border-color: var(--line-2);
+    }
+}
+
+/* На ноутбуке список — не стопка коробок: строки без рамок, а наведённая
+   подсвечивается, как в любом настольном плеере. */
+@media (min-width: 1100px) {
+    .rows > .track:not(.is-playing) { border-color: transparent; background: transparent; }
+    .rows > .track:not(.is-playing):hover { background: var(--surface-2); }
 }

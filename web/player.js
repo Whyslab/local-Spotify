@@ -1342,8 +1342,26 @@ async function openPlaylist(name) {
     const r = await fetch("/api/playlists/" + encodeURIComponent(name) + "/tracks", { headers: headers() });
     if (!r.ok) { setPlaylistNote("Не удалось открыть подборку"); return; }
     player.playlist = await r.json();
+    togglePlaylistEdit(false);
     switchView("viewPlaylist");
+    /* Заголовок — имя подборки, и перезагрузка вернёт в неё же. */
+    setViewTitle(player.playlist.name);
+    try { localStorage.setItem(PLAYLIST_KEY, player.playlist.name); } catch (e) { /* приватное окно */ }
     renderPlaylist();
+}
+
+/* Переименовать и удалить — под шапкой подборки по кнопке «Изменить».
+ * Раньше это стояло после всех треков: в «Monday» — за тысячей строк. */
+function togglePlaylistEdit(force) {
+    const card = document.getElementById("playlistEdit");
+    const button = document.getElementById("playlistEditToggle");
+    if (!card) return;
+    card.hidden = force === undefined ? !card.hidden : !force;
+    if (button) button.setAttribute("aria-expanded", String(!card.hidden));
+    if (!card.hidden) {
+        const field = document.getElementById("playlistRename");
+        if (field && player.playlist) field.value = player.playlist.name;
+    }
 }
 
 function renderPlaylist() {
@@ -1763,6 +1781,9 @@ async function renamePlaylist() {
     if (!r.ok) { setPlaylistNote("Не удалось переименовать"); return; }
     player.playlist = await r.json();
     document.getElementById("playlistRename").value = "";
+    setViewTitle(player.playlist.name);
+    try { localStorage.setItem(PLAYLIST_KEY, player.playlist.name); } catch (e) { /* приватное окно */ }
+    togglePlaylistEdit(false);
     renderPlaylist();
 }
 
