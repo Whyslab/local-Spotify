@@ -24,6 +24,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import threading
 import time
 from pathlib import Path
 
@@ -83,20 +84,52 @@ def primary(artist: str) -> str:
     return (artist or "").split("•")[0].split(" feat")[0].strip()
 
 
+# Deezer пускает около 50 запросов за 5 секунд. Умное перемешивание спрашивает
+# про десятки артистов сразу, поэтому запросы из всех потоков идут не чаще
+# этого интервала — иначе квота кончается посреди подбора.
+MIN_INTERVAL = 0.15
+_pace_lock = threading.Lock()
+_last_request = 0.0
+
+
+def _get(client: httpx.Client, url: str, params: dict) -> list:
+    """`data` ответа Deezer. Любой сбой — `_Unreachable`, а не пустой список.
+
+    Превышение квоты Deezer отдаёт с кодом 200: внутри `{"error": {...}}` и
+    никакого `data`. Прочитанное как «ничего нет», оно попадало в кэш на месяц
+    — у двух десятков артистов пропали треки после одного перемешивания.
+    """
+    global _last_request
+    with _pace_lock:
+        wait = _last_request + MIN_INTERVAL - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        _last_request = time.monotonic()
+    response = client.get(url, params=params)
+    if not response.is_success:
+        raise _Unreachable(f"ответ {response.status_code}")
+    try:
+        body = response.json() or {}
+    except ValueError as exc:
+        raise _Unreachable("ответ не JSON") from exc
+    if "error" in body:
+        raise _Unreachable(f"ошибка Deezer: {body['error']}")
+    return body.get("data") or []
+
+
 def _find_artist(client: httpx.Client, name: str) -> dict | None:
     """Артист Deezer по имени. None — «не знает такого», иначе `_Unreachable`."""
-    found = client.get(SEARCH, params={"q": name, "limit": 5})
-    if not found.is_success:
-        raise _Unreachable(f"поиск ответил {found.status_code}")
-    candidates = (found.json() or {}).get("data") or []
+    candidates = _get(client, SEARCH, {"q": name, "limit": 5})
     if not candidates:
         return None
 
     # Поиск по строке иногда попадает не в того: на «PHARAOH» нашёлся
     # однофамилец без похожих. Точное совпадение имени надёжнее
-    # первого места в выдаче.
+    # первого места в выдаче, а из тёзок берём того, у кого больше слушателей.
     exact = [c for c in candidates if c.get("name", "").lower() == name.lower()]
-    return (exact or candidates)[0]
+    if exact:
+        return max(exact, key=lambda c: c.get("nb_fan") or 0)
+    return candidates[0]
 
 
 def _ask(name: str, limit: int) -> list[str] | None:
@@ -107,10 +140,8 @@ def _ask(name: str, limit: int) -> list[str] | None:
             if artist is None:
                 return []
 
-            related = client.get(RELATED.format(id=artist["id"]), params={"limit": limit})
-            if not related.is_success:
-                return None
-            return [row["name"] for row in (related.json() or {}).get("data") or []]
+            related = _get(client, RELATED.format(id=artist["id"]), {"limit": limit})
+            return [row["name"] for row in related]
     except (_Unreachable, httpx.HTTPError) as exc:
         logger.info("похожие для %s: %s", name, exc)
         return None
@@ -124,18 +155,26 @@ def _ask_top(name: str, limit: int) -> list[dict] | None:
             if artist is None:
                 return []
 
-            top = client.get(TOP.format(id=artist["id"]), params={"limit": limit})
-            if not top.is_success:
-                return None
             tracks = []
-            for row in (top.json() or {}).get("data") or []:
+            for row in _get(client, TOP.format(id=artist["id"]), {"limit": limit}):
                 title = (row.get("title") or "").strip()
                 if not title:
                     continue
                 # Имя артиста берём из трека, а не из найденного артиста:
                 # у совместного трека в топе стоит тот, кто его выпустил.
                 who = ((row.get("artist") or {}).get("name") or artist.get("name") or "").strip()
-                tracks.append({"artist": who, "title": title})
+                album = row.get("album") or {}
+                tracks.append(
+                    {
+                        "artist": who,
+                        "title": title,
+                        # Длительность — то, по чему на YouTube отличают
+                        # студийную запись от клипа со вставками и концертника.
+                        "duration": row.get("duration") or None,
+                        "album": (album.get("title") or "").strip(),
+                        "cover": album.get("cover_big") or album.get("cover_medium") or "",
+                    }
+                )
             return tracks
     except (_Unreachable, httpx.HTTPError) as exc:
         logger.info("топ-треки для %s: %s", name, exc)
@@ -163,7 +202,7 @@ def similar_artists(artist: str, cache_dir: Path, limit: int = 12) -> list[str]:
 
 
 def top_tracks(artist: str, cache_dir: Path, limit: int = 5) -> list[dict]:
-    """Популярные треки артиста: `[{"artist": ..., "title": ...}]`.
+    """Популярные треки артиста: `[{"artist", "title", "duration", "album", "cover"}]`.
 
     Нужны, чтобы у похожего артиста было что предложить по имени: имени мало,
     человек ищет трек. Кэш такой же вечный, как у похожих: чарт артиста живёт
@@ -173,7 +212,9 @@ def top_tracks(artist: str, cache_dir: Path, limit: int = 5) -> list[dict]:
     if len(name) < 2:
         return []
 
-    slot = _slot(cache_dir, name, kind="top:")
+    # «top2:», а не «top:»: в старом кэше нет длительностей, а без них
+    # умное перемешивание не может выбрать версию на YouTube.
+    slot = _slot(cache_dir, name, kind="top2:")
     cached = _recall(slot, "tracks")
     if cached is not None:
         return cached

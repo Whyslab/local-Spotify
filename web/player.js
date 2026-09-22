@@ -30,6 +30,7 @@ const player = {
     orderAt: -1,
     shuffle: false,
     repeat: "off",       // "off" | "all" | "one"
+    generation: 0,       // номер последнего включения — см. playAt
 };
 
 /* ---------------- Journal ---------------- */
@@ -38,7 +39,9 @@ const player = {
  * question "what was playing at this hour" has no source but this one. */
 function reportPlay(finished) {
     const current = player.queue[player.index];
-    if (!current || player.reported) return;
+    /* Трек со стороны в журнал не пишется: журнал — про фонотеку, по нему
+     * перемешивание решает, что давно не звучало, а этого трека в ней нет. */
+    if (!current || player.reported || isOutside(current)) return;
     player.reported = true;
 
     const played = player.audio.currentTime || 0;
@@ -67,24 +70,162 @@ async function streamUrlFor(path) {
     return (await r.json()).url;
 }
 
-async function playAt(position) {
-    if (position < 0 || position >= player.queue.length) return;
+/* `direction` — куда листают: пропуск недоступного трека идёт туда же, иначе
+ * «назад» упиралось бы в него и возвращало на тот же трек.
+ *
+ * Возвращает true, если трек заиграл и это включение всё ещё последнее. */
+async function playAt(position, skipped = 0, direction = 1) {
+    if (position < 0 || position >= player.queue.length) return false;
     reportPlay(false);
 
+    /* Номер включения. Пока ждём ссылку или play(), человек мог нажать
+     * «дальше» ещё раз — тогда этот запуск устарел и не должен ни играть,
+     * ни пропускать, ни рисовать. */
+    const generation = ++player.generation;
     player.index = position;
     player.reported = false;
     const track = player.queue[position];
 
+    let url;
     try {
-        player.audio.src = await streamUrlFor(track.path);
+        url = await streamUrlFor(track.path);
+    } catch (e) {
+        if (generation !== player.generation) return false;
+        /* Трек со стороны не успел или не смог скачаться. Тишина вместо
+         * музыки хуже, чем пропуск: играем соседний, а этот просим докачать
+         * — вдруг к нему ещё вернутся. Счётчик не даёт кружить по очереди,
+         * в которой не скачалось ничего. */
+        if (isOutside(track) && skipped < player.queue.length) {
+            requestOutside([outsideKey(track)]);
+            const next = stepInOrder(direction);
+            if (next >= 0 && next !== position) {
+                const played = await playAt(next, skipped + 1, direction);
+                if (played) setPlayerNote(`«${track.title}» пока недоступен — пропущен`);
+                return played;
+            }
+        }
+        setPlayerNote(e.message);
+        return false;
+    }
+    if (generation !== player.generation) return false;
+    try {
+        player.audio.src = url;
         await player.audio.play();
     } catch (e) {
+        if (generation !== player.generation) return false;
+        /* AbortError — это не сбой трека: play() прервала пауза, нажатая, пока
+         * трек грузился. Трек всё равно текущий — очередь должна это знать. */
+        if (e.name === "AbortError") {
+            markPlayingRow();
+            renderQueuePanel();
+            prefetchOutside();
+            return false;
+        }
         setPlayerNote(e.message);
-        return;
+        return false;
     }
+    if (generation !== player.generation) return false;
     renderPlayer();
     markPlayingRow();
     renderQueuePanel();
+    prefetchOutside();
+    return true;
+}
+
+/* ---------------- Треки со стороны ----------------
+ *
+ * В умной очереди примерно каждый третий трек — не из фонотеки: его путь
+ * начинается с «outside:», а файл сервер качает с YouTube во временный кэш.
+ * Качать надо заранее — это секунд двадцать, — поэтому после каждого
+ * включения плеер просит следующие два таких трека, пока играет текущий.
+ */
+const OUTSIDE_AHEAD = 2;
+
+function isOutside(track) {
+    return !!track && typeof track.path === "string" && track.path.startsWith("outside:");
+}
+
+function outsideKey(track) {
+    return track.path.slice("outside:".length);
+}
+
+function requestOutside(keys) {
+    if (!keys.length) return;
+    fetch("/api/outside/prefetch", {
+        method: "POST",
+        headers: { ...headers(), "Content-Type": "application/json" },
+        body: JSON.stringify({ keys }),
+    }).catch(() => { /* не скачается — плеер его пропустит */ });
+}
+
+function prefetchOutside() {
+    const route = player.order.length ? player.order : player.queue.map((_, i) => i);
+    const keys = [];
+    for (let i = route.indexOf(player.index) + 1; i < route.length && keys.length < OUTSIDE_AHEAD; i += 1) {
+        const track = player.queue[route[i]];
+        if (isOutside(track)) keys.push(outsideKey(track));
+    }
+    requestOutside(keys);
+}
+
+/* «В фонотеку»: скачанный трек уходит в обычный импорт — с тегами, обложкой
+ * и Navidrome. До этого он живёт во временном кэше и через месяц без
+ * прослушиваний исчезнет сам. Состояние помнит сама строка очереди. */
+async function keepOutside(track) {
+    if (!isOutside(track) || track.kept === "saving" || track.kept === "queued") return;
+    track.kept = "saving";
+    renderKeepButton();
+    try {
+        const r = await fetch(`/api/outside/${outsideKey(track)}/keep`, {
+            method: "POST",
+            headers: headers(),
+        });
+        const data = await r.json().catch(() => ({}));
+        if (r.status === 409) {
+            /* Не скачан. Сервер уже попросил его скачать; «не нашёлся» —
+             * другое дело, его на YouTube нет, и ждать нечего. */
+            track.kept = undefined;
+            setPlayerNote(data.status === "failed"
+                ? `«${track.title}» не нашёлся на YouTube — добавить нельзя`
+                : data.status === "unknown"
+                    ? `«${track.title}» уже убран из кэша — перемешай заново`
+                    : "Трек ещё качается — нажми «+» через полминуты");
+        } else if (!r.ok) {
+            throw new Error(data.detail || ("Ошибка " + r.status));
+        } else {
+            track.kept = "queued";
+            setPlayerNote(data.queued ? `«${track.title}» добавляется в фонотеку`
+                : `«${track.title}» уже в фонотеке или добавляется`);
+        }
+    } catch (e) {
+        track.kept = undefined;
+        setPlayerNote(e.message);
+    }
+    renderKeepButton();
+    renderQueuePanel();
+}
+
+function keepLabel(track) {
+    return track.kept === "queued" ? "Добавляется в фонотеку"
+        : track.kept === "saving" ? "Добавляю…" : "В фонотеку";
+}
+
+/* Кнопка в панели плеера — только пока играет трек со стороны. */
+function renderKeepButton() {
+    const button = document.getElementById("playerKeep");
+    if (!button) return;
+    const track = player.queue[player.index];
+    button.hidden = !isOutside(track);
+    if (button.hidden) return;
+    const done = track.kept === "queued";
+    button.classList.toggle("is-on", done);
+    button.disabled = track.kept === "saving" || done;
+    button.title = keepLabel(track);
+    button.setAttribute("aria-label", keepLabel(track));
+}
+
+function keepCurrent() {
+    keepOutside(player.queue[player.index]);
 }
 
 /* ---------------- Порядок обхода, перемешивание и повтор ---------------- */
@@ -172,12 +313,7 @@ function toggleQueuePanel() {
         button.classList.toggle("is-on", !panel.hidden);
         button.setAttribute("aria-pressed", String(!panel.hidden));
     }
-    if (!panel.hidden) {
-        renderQueuePanel();
-        /* Находки приезжают отдельно и позже: очередь не должна ждать чужой
-         * сервис, чтобы открыться. */
-        externalFinds().then(() => renderQueuePanel());
-    }
+    if (!panel.hidden) renderQueuePanel();
 }
 
 function renderQueuePanel() {
@@ -245,10 +381,29 @@ function renderQueuePanel() {
             info.appendChild(artist);
         }
         row.appendChild(info);
-        row.appendChild(reveal);
+        /* Трек со стороны показать «откуда играет» нельзя — его нет ни в
+         * подборке, ни в фонотеке. Вместо этого у него кнопка «в фонотеку». */
+        if (isOutside(track)) {
+            const keep = document.createElement("button");
+            keep.className = "icon-button small queue-keep";
+            keep.textContent = track.kept === "queued" ? "✓" : "+";
+            keep.title = keepLabel(track);
+            keep.setAttribute("aria-label", `${keepLabel(track)}: «${track.title}»`);
+            keep.disabled = track.kept === "saving" || track.kept === "queued";
+            keep.onclick = (event) => { event.stopPropagation(); keepOutside(track); };
+            row.appendChild(keep);
+        } else {
+            row.appendChild(reveal);
+        }
         /* Видно, что трек пришёл со стороны, а не из подборки. Иначе
          * непонятно, откуда он взялся, и это выглядит ошибкой. */
-        if (track.outside) {
+        if (isOutside(track)) {
+            const mark = document.createElement("span");
+            mark.className = "queue-outside is-new";
+            mark.textContent = "новое";
+            mark.title = "Этого трека нет в фонотеке — подобран к похожим артистам";
+            row.appendChild(mark);
+        } else if (track.outside) {
             const mark = document.createElement("span");
             mark.className = "queue-outside";
             mark.textContent = "находка";
@@ -257,58 +412,6 @@ function renderQueuePanel() {
         }
         box.appendChild(row);
     });
-
-    /* Находок нет — и раздела нет: пустой заголовок выглядел бы поломкой. */
-    const finds = externalFindsReady();
-    if (!finds.length) return;
-    const head = document.createElement("div");
-    head.className = "queue-finds-head";
-    head.textContent = "Можно добавить — этого нет в фонотеке";
-    box.appendChild(head);
-    for (const find of finds) box.appendChild(externalFindRow(find));
-}
-
-/* «+» ничего не качает. Он открывает поиск с готовым запросом: две загрузки
- * одной песни различаются длиной и каналом, и выбор остаётся за человеком —
- * то же правило, по которому /api/search сам ничего не выбирает. */
-function externalFindRow(find) {
-    const artist = find.artist || "";
-    const title = find.title || "";
-    const query = artist ? `${artist} — ${title}` : title;
-
-    const row = document.createElement("div");
-    row.className = "track queue-row queue-find";
-
-    const info = document.createElement("div");
-    info.className = "track-info";
-    const line = document.createElement("div");
-    line.className = "track-title";
-    line.textContent = title;
-    info.appendChild(line);
-    if (artist) {
-        const who = document.createElement("div");
-        who.className = "track-artist";
-        who.textContent = artist;
-        info.appendChild(who);
-    }
-    row.appendChild(info);
-
-    const add = document.createElement("button");
-    add.className = "icon-button small";
-    add.textContent = "+";
-    add.title = "Искать на YouTube";
-    add.setAttribute("aria-label", `Искать «${query}» на YouTube`);
-    add.onclick = () => {
-        switchView("viewAdd");
-        const field = document.getElementById("searchQuery");
-        if (field) field.value = query;
-        runSearch();
-        /* Панель закрывается: она стоит поверх выдачи, за которой человек
-         * и нажал «+». */
-        toggleQueuePanel();
-    };
-    row.appendChild(add);
-    return row;
 }
 
 /* `source` — откуда эта очередь: подборка с именем или фонотека. Нужен для
@@ -359,14 +462,22 @@ function playQueue(tracks, startAt = 0, mode = "manual", source = null) {
 
 /* ---------------- Shuffling ---------------- */
 
-async function loadShuffle(mode, playlist = "", noteId = "shuffleNote") {
+/* `paths` — перемешать любой набор треков (альбом, выдачу) умно: он станет
+ * костяком очереди так же, как подборка. */
+async function loadShuffle(mode, playlist = "", noteId = "shuffleNote", paths = null) {
     const note = document.getElementById(noteId);
     if (note) note.textContent = "Собираю очередь…";
     const say = text => { if (note) note.textContent = text; };
     try {
         const url = `/api/shuffle?size=50&mode=${mode}`
             + (playlist ? `&playlist=${encodeURIComponent(playlist)}` : "");
-        const r = await fetch(url, { headers: headers() });
+        const r = paths
+            ? await fetch("/api/shuffle/smart", {
+                method: "POST",
+                headers: { ...headers(), "Content-Type": "application/json" },
+                body: JSON.stringify({ paths, size: 50 }),
+            })
+            : await fetch(url, { headers: headers() });
         const data = await r.json();
         if (!r.ok) { say(data.detail || ("Ошибка " + r.status)); return; }
         if (!data.queue.length) { say("Нечего играть."); return; }
@@ -376,18 +487,26 @@ async function loadShuffle(mode, playlist = "", noteId = "shuffleNote") {
         if (mode !== "smart") { say(""); return; }
 
         const report = data.report || {};
-        if (playlist) {
+        /* Новое — то, чего нет в фонотеке. Ноль означает, что Deezer не
+         * ответил или подходящего не нашлось: очередь тогда целиком своя. */
+        const fresh = data.external ? `, новых ${data.external}` : ", новых нет";
+        if (playlist || paths) {
             /* Про подборку интересно другое: сколько в очереди своего и
              * сколько пришло со стороны. Разброс темпа тут — мелкий шрифт. */
-            say(`Своих ${data.queue.length - data.outside}, подобрано ещё ${data.outside}`
+            const outside = data.outside || 0;
+            const near = outside - (data.external || 0);
+            say(`Своих ${data.queue.length - outside}`
+                + (near ? `, из фонотеки ${near}` : "") + fresh
                 + ` — разброс темпа до ${report.max_tempo_jump ?? "—"} BPM`);
         } else if (data.analysed < data.total) {
             /* Said plainly, because it is the difference between "it works"
              * and "it has nothing to work with yet": tempo cannot order a
              * library that has not been measured. */
-            say(`Измерено ${data.analysed} из ${data.total} — остальные ставятся без учёта темпа`);
+            say(`Измерено ${data.analysed} из ${data.total} — остальные ставятся без учёта темпа`
+                + fresh);
         } else {
-            say(`Разброс темпа до ${report.max_tempo_jump ?? "—"} BPM, артистов ${report.distinct_artists}`);
+            say(`Разброс темпа до ${report.max_tempo_jump ?? "—"} BPM, артистов ${report.distinct_artists}`
+                + fresh);
         }
     } catch (e) {
         say(e.message);
@@ -396,6 +515,12 @@ async function loadShuffle(mode, playlist = "", noteId = "shuffleNote") {
 
 function playSmartShuffle() { loadShuffle("smart"); }
 function playPlainShuffle() { loadShuffle("plain"); }
+
+/* Умно перемешать альбом (или любой другой набор треков). */
+function shuffleTracks(tracks, noteId) {
+    const paths = (tracks || []).map(t => t.path).filter(Boolean);
+    if (paths.length) loadShuffle("smart", "", noteId, paths);
+}
 
 /* Перемешать подборку, не запирая очередь внутри неё. */
 function shufflePlaylist() {
@@ -418,7 +543,7 @@ function prevTrack() {
      * seconds in means "from the top", not "the previous song". */
     if (player.audio.currentTime > 3) { player.audio.currentTime = 0; return; }
     const back = stepInOrder(-1);
-    if (back >= 0) playAt(back);
+    if (back >= 0) playAt(back, 0, -1);
 }
 
 player.audio.addEventListener("ended", () => {
@@ -476,6 +601,7 @@ function renderPlayer() {
     if (!track) return;
 
     renderNowPanel(track);
+    renderKeepButton();
 
     document.getElementById("playerTitle").textContent = track.title || track.path;
     document.getElementById("playerArtist").textContent = track.artist || "";

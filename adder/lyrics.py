@@ -111,8 +111,12 @@ def _ask(artist: str, title: str, album: str, duration: float | None) -> dict | 
         return None
 
 
-def for_track(rel_path: str) -> dict:
-    """Текст трека: из кэша, а если там пусто — спросить и запомнить."""
+def for_track(rel_path: str, row: dict | None = None) -> dict:
+    """Текст трека: из кэша, а если там пусто — спросить и запомнить.
+
+    ``row`` — теги трека, которого нет в фонотеке (трек со стороны в умном
+    перемешивании). Без него теги берутся из индекса фонотеки.
+    """
     path = _key(rel_path)
     if path.exists():
         try:
@@ -123,7 +127,8 @@ def for_track(rel_path: str) -> dict:
         except (ValueError, OSError):
             pass  # битый кэш — просто спросим заново
 
-    row = next((r for r in library.library_index() if r["path"] == rel_path), None)
+    if row is None:
+        row = next((r for r in library.library_index() if r["path"] == rel_path), None)
     if row is None:
         return {"found": False, "reason": "Трека нет в фонотеке"}
 

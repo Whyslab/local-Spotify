@@ -530,10 +530,6 @@ function filterOpenPlaylist() {
 let externalFindsCache = null;
 let externalFindsPromise = null;
 
-function externalFindsReady() {
-    return externalFindsCache || [];
-}
-
 function externalFinds() {
     if (externalFindsCache) return Promise.resolve(externalFindsCache);
     if (externalFindsPromise) return externalFindsPromise;
@@ -957,13 +953,23 @@ function openAlbum(group) {
     play.className = "primary";
     play.textContent = "Слушать";
     play.onclick = () => playQueue(group.tracks, 0, "manual");
+    /* Умно: альбом — костяк очереди, между его треками — похожее, в том числе
+     * то, чего в фонотеке нет. */
+    const mix = document.createElement("button");
+    mix.className = "ghost";
+    mix.textContent = "Перемешать";
+    mix.title = "Альбом вперемешку, плюс похожие треки — и из фонотеки, и новые";
+    mix.onclick = () => shuffleTracks(group.tracks, "albumNote");
     const back = document.createElement("button");
     back.className = "ghost";
     back.textContent = "Назад";
     back.onclick = () => { openAlbumGroup = null; library(); };
-    row.append(play, back);
+    row.append(play, mix, back);
+    const albumNote = document.createElement("p");
+    albumNote.id = "albumNote";
+    albumNote.className = "note";
 
-    meta.append(name, who, row);
+    meta.append(name, who, row, albumNote);
     head.append(art, meta);
     box.appendChild(head);
 

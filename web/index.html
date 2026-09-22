@@ -187,7 +187,7 @@
           <div class="row wrap">
             <button class="primary" onclick="playPlaylist()">Слушать</button>
             <button class="ghost" onclick="shufflePlaylist()"
-                    title="Подборка вперемешку, плюс подходящие треки из фонотеки">Перемешать</button>
+                    title="Подборка вперемешку, плюс похожие треки — и из фонотеки, и новые">Перемешать</button>
             <label class="ghost file-button">
               Обложка
               <input type="file" accept="image/jpeg,image/png,image/webp" onchange="uploadCover(this)" hidden>
@@ -274,6 +274,12 @@
       <!-- Режимы и очередь живут рядом с громкостью, а не в ряду перемотки:
            это переключатели, а не управление воспроизведением. -->
       <div class="player-modes">
+        <!-- Только для трека со стороны: его нет в фонотеке, и это способ
+             оставить его насовсем. Прячется, пока играет своё. -->
+        <button id="playerKeep" class="icon-button" onclick="keepCurrent()" hidden
+                aria-label="В фонотеку" title="В фонотеку">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
         <button id="playerShuffle" class="icon-button" onclick="toggleShuffle()"
                 aria-label="Перемешать" title="Перемешать" aria-pressed="false">
             <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M16 3h5v5M4 20 21 3M21 16v5h-5M15 15l6 6M4 4l5 5"/></svg>

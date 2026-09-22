@@ -88,3 +88,6 @@ lyrics-cache/
 # Список похожих артистов от Deezer: кэш, а не исходники.
 similar-cache/
 adder/numba-cache/
+
+# Треки не из фонотеки для умного перемешивания: временный кэш, чистится сам.
+adder/outside-cache/

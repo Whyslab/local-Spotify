@@ -28,6 +28,7 @@ from . import (
     lyrics,
     moods,
     navidrome,
+    outside,
     playlists,
     runtime,
     shelves,
@@ -74,6 +75,7 @@ async def lifespan(app: FastAPI):
 
     # Remove stale temporary files from previous runs.
     ingest.cleanup_old_temp_files()
+    outside.cleanup_now_and_then()
 
     # Trim the play journal, then settle up with Navidrome: deliver whatever
     # was queued while it was unreachable, and look for playlists it is still
@@ -337,6 +339,21 @@ def track_details(path: str, authenticated: bool = Depends(verify_token)):
     them -- the panel leaves that half blank rather than showing a zero, which
     would read as "this track has no tempo" instead of "nobody has looked".
     """
+    if outside.is_outside(path):
+        key = outside.track_key(path)
+        meta = outside.read_meta(key) if key else None
+        if meta is None:
+            raise HTTPException(status_code=404, detail="Track not found")
+        # Трек со стороны никто не измерял: чисел нет, и панель это покажет.
+        return {
+            "path": path,
+            "artist": meta.get("artist") or "",
+            "title": meta.get("title") or "",
+            "album": meta.get("album") or "",
+            "duration": meta.get("duration"),
+            "external": True,
+            "features": None,
+        }
     # library_track answers with an absolute path and, more to the point,
     # refuses anything that escapes the library. The index is keyed on the
     # relative form, so take it back from the resolved file rather than
@@ -367,6 +384,12 @@ def track_lyrics(path: str, authenticated: bool = Depends(verify_token)):
     бесплатный и чужой, дёргать его при каждом воспроизведении незачем.
     Промах тоже запоминается, но на две недели — текст может появиться позже.
     """
+    if outside.is_outside(path):
+        key = outside.track_key(path)
+        meta = outside.read_meta(key) if key else None
+        if meta is None:
+            return {"found": False, "reason": "Трека нет"}
+        return lyrics.for_track(path, row={**meta, "path": path})
     return lyrics.for_track(path)
 
 
@@ -380,7 +403,7 @@ def track_cover(path: str, authenticated: bool = Depends(verify_token)):
     when the file is retagged, and then its path is the same but the panel is
     re-rendered anyway.
     """
-    absolute = library.library_track(path)
+    absolute = _audio_file(path)
     art = library.embedded_cover(absolute)
     if art is None:
         raise HTTPException(status_code=404, detail="This track has no artwork")
@@ -633,6 +656,24 @@ def import_playlist(req: PlaylistImportRequest, authenticated: bool = Depends(ve
 # ---------------------------------------------------------------------------
 
 
+def _audio_file(path: str) -> Path:
+    """Файл трека очереди: из фонотеки или из кэша треков со стороны.
+
+    Путь со стороны разбирается строго (см. ``outside.track_key``): всё, что
+    начинается с приставки, но не является ключом, — отказ, а не попытка
+    найти такой файл в фонотеке.
+    """
+    if outside.is_outside(path):
+        key = outside.track_key(path)
+        if key is None:
+            raise HTTPException(status_code=400, detail="Bad outside track key")
+        found = outside.audio_file(key)
+        if found is None:
+            raise HTTPException(status_code=404, detail="Track is not downloaded yet")
+        return found
+    return library.library_track(path)
+
+
 @app.get("/api/stream-url")
 def get_stream_url(path: str, authenticated: bool = Depends(verify_token)):
     """Mint a short-lived playable URL for one track.
@@ -641,6 +682,12 @@ def get_stream_url(path: str, authenticated: bool = Depends(verify_token)):
     so the lifetime is spent on the track rather than on the browsing that
     preceded it.
     """
+    if outside.is_outside(path):
+        # Трек со стороны: файл во временном кэше, длительность — из Deezer.
+        # _audio_file же и отказывает всему, что ключом не является.
+        _audio_file(path)
+        meta = outside.read_meta(outside.track_key(path) or "") or {}
+        return signing.stream_url(path, meta.get("duration"))
     track = library.library_track(path)
     duration = None
     for row in library.library_index():
@@ -665,7 +712,7 @@ def stream(path: str, exp: str = "", sig: str = ""):
     """
     if not signing.verify(path, exp, sig):
         raise HTTPException(status_code=403, detail="Stream link is invalid or has expired")
-    track = library.library_track(path)
+    track = _audio_file(path)
     # FileResponse handles Range itself, which is what makes seeking work:
     # starlette parses the header, answers 206, and returns 416 on a bad range.
     return FileResponse(track, media_type="audio/mp4", filename=track.name)
@@ -971,22 +1018,141 @@ def smart_shuffle(
         # назвали. Подмешивать сюда сторону нельзя — иначе сравнение сломано.
         pool = [t for t in tracks if t.path in core] if core else tracks
         queue = shuffle.plain_shuffle(pool, size=size)
+        body = _shuffle_body(mode, tracks, queue, _queue_payload(queue))
     else:
-        queue = shuffle.build_queue(tracks, size=size, core=core)
-
-    analysed = sum(1 for track in tracks if track.tempo)
-    body = {
-        "mode": mode,
-        "queue": _queue_payload(queue, core if mode == "smart" else None),
-        "report": shuffle.queue_report(queue),
-        "analysed": analysed,
-        "total": len(tracks),
-    }
+        queue, payload = _smart_queue(tracks, size, core)
+        body = _shuffle_body(mode, tracks, queue, payload)
     if core is not None:
         body["playlist"] = playlist
         body["core"] = len(core)
-        body["outside"] = sum(1 for track in queue if track.path not in core)
     return body
+
+
+def _shuffle_body(mode: str, tracks: list, queue: list, payload: list[dict]) -> dict:
+    return {
+        "mode": mode,
+        "queue": payload,
+        "report": shuffle.queue_report(queue),
+        "analysed": sum(1 for track in tracks if track.tempo),
+        "total": len(tracks),
+        # Не из подборки (своё со стороны и новое) и отдельно — новое, чего
+        # нет в фонотеке. Подпись под кнопкой называет оба числа.
+        "outside": sum(1 for entry in payload if entry.get("outside")),
+        "external": sum(1 for entry in payload if entry.get("external")),
+    }
+
+
+def _smart_queue(
+    tracks: list[shuffle.Track], size: int, core: set[str] | None
+) -> tuple[list[shuffle.Track], list[dict]]:
+    """Умная очередь: своё по темпу и примерно каждый третий трек — новый.
+
+    Сначала строится очередь своих — на треть короче, — и уже к её артистам
+    Deezer подбирает похожее, чего в фонотеке нет. Так новое подбирается к
+    тому, что на самом деле заиграет, а не к фонотеке вообще.
+
+    Если Deezer молчит (нет сети), очередь собирается как раньше, целиком
+    из фонотеки: перемешивание не должно ломаться от чужого сервиса.
+    """
+    outside.cleanup_now_and_then()
+    want = round(size * outside.SHARE)
+    local = shuffle.build_queue(tracks, size=size - want, core=core, outside_share=0.0)
+    found = outside.candidates(
+        [track.artist for track in local],
+        outside.library_keys(library.library_index()),
+        want,
+    )
+    if not found:
+        queue = shuffle.build_queue(tracks, size=size, core=core)
+        return queue, _queue_payload(queue, core)
+    if len(found) < want:
+        # Нашлось меньше, чем мест под новое: своих берём больше, чтобы очередь
+        # не укорачивалась. Артисты чуть другие — новое всё равно встанет рядом
+        # с похожим, а если нет, то просто между своими.
+        local = shuffle.build_queue(tracks, size=size - len(found), core=core, outside_share=0.0)
+    outside.remember(found)
+    payload = outside.weave(_queue_payload(local, core), found, len(found))
+    return local, payload
+
+
+class SmartShuffleRequest(BaseModel):
+    """Перемешать что угодно: альбом, выдачу поиска, текущую очередь."""
+
+    paths: list[str] = []
+    size: int = 50
+
+
+@app.post("/api/shuffle/smart")
+def smart_shuffle_of(req: SmartShuffleRequest, authenticated: bool = Depends(verify_token)):
+    """Умное перемешивание для любого набора треков, а не только подборки.
+
+    Треки набора — костяк очереди, как у подборки. Пустой набор — вся
+    фонотека. Неизвестные пути молча отбрасываются: набор мог собраться до
+    того, как трек удалили.
+    """
+    if len(req.paths) > 5000:
+        raise HTTPException(status_code=400, detail="Too many tracks")
+    size = min(max(req.size, 1), 200)
+    tracks = _shuffle_tracks()
+    if not tracks:
+        return {"mode": "smart", "queue": [], "report": {}, "analysed": 0}
+    core = None
+    if req.paths:
+        core = set(req.paths) & {track.path for track in tracks}
+        if not core:
+            raise HTTPException(status_code=404, detail="None of these tracks is in the library")
+    queue, payload = _smart_queue(tracks, size, core)
+    body = _shuffle_body("smart", tracks, queue, payload)
+    if core is not None:
+        body["core"] = len(core)
+    return body
+
+
+class OutsideKeysRequest(BaseModel):
+    keys: list[str]
+
+
+@app.get("/api/outside/status")
+def outside_status(keys: str = "", authenticated: bool = Depends(verify_token)):
+    """Состояние треков со стороны: wanted, pending, ready, failed, unknown."""
+    wanted = [key for key in keys.split(",") if key][:50]
+    return {
+        "status": {
+            key: outside.status(key) for key in wanted if outside.track_key(outside.PREFIX + key)
+        }
+    }
+
+
+@app.post("/api/outside/prefetch")
+def outside_prefetch(req: OutsideKeysRequest, authenticated: bool = Depends(verify_token)):
+    """Скачать заранее. Плеер просит следующие треки, пока играет текущий."""
+    return {"status": outside.request(req.keys[:10])}
+
+
+@app.post("/api/outside/{key}/keep")
+def outside_keep(key: str, authenticated: bool = Depends(verify_token)):
+    """«В фонотеку»: скачанный трек идёт обычным путём импорта.
+
+    Тем же, что и файл с диска: проверка на дубликат, теги, обложка, папка
+    артиста, Navidrome. Отдельного пути в фонотеку у трека со стороны нет —
+    иначе он оказался бы там без того, что проверяется у всех остальных.
+    """
+    if outside.track_key(outside.PREFIX + key) is None:
+        raise HTTPException(status_code=400, detail="Bad outside track key")
+    meta = outside.read_meta(key)
+    found = outside.audio_file(key)
+    if meta is None or found is None:
+        # Не скачан — сразу просим скачать, чтобы повторное нажатие сработало.
+        # Состояние в ответе: плеер отличает «ещё качается» от «не нашёлся».
+        state = outside.request([key]).get(key, "unknown") if meta else "unknown"
+        return JSONResponse(
+            status_code=409,
+            content={"detail": "Трек ещё не скачан", "status": state},
+        )
+    name = ingest.sanitize_filename(f"{meta['artist']} - {meta['title']}") + ".m4a"
+    source_key, _ = ingest.stash_upload(found.read_bytes(), name)
+    tid = _queue_source(source_key)
+    return {"task": tid, "queued": tid is not None}
 
 
 @app.post("/api/shuffle/blind")

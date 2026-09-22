@@ -22,6 +22,9 @@ DB_PATH = PROJECT / "adder.db"
 # phone stays recoverable. It sits at the repository root, not under adder/,
 # which is why the systemd unit needs its own ReadWritePaths entry for it.
 TRASH_DIR = PROJECT.parent / "trash"
+# Треки не из фонотеки, скачанные для умного перемешивания. Временные: живут
+# 30 дней после последнего прослушивания, в фонотеку попадают только по кнопке.
+OUTSIDE_DIR = PROJECT / "outside-cache"
 
 TMP_TTL_SECONDS = TMP_TTL_HOURS * 3600
 

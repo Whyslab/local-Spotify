@@ -821,26 +821,6 @@ button.danger {
     vertical-align: middle;
 }
 
-.queue-finds-head {
-    margin: 14px 0 6px;
-    padding-top: 12px;
-    border-top: 1px solid var(--line);
-    color: var(--text-3);
-    font-size: 11px;
-    font-weight: 650;
-    letter-spacing: .06em;
-    text-transform: uppercase;
-}
-
-.queue-find {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    cursor: default;
-}
-.queue-find:hover { background: none; }
-.queue-find .track-info { flex: 1 1 auto; min-width: 0; }
-.queue-find .track-title { color: var(--text-2); }
 /* Уже сыгранное приглушено, играющее светится — список читается сверху вниз
    как дорога: позади бледное, под ногами яркое, впереди обычное. */
 .queue-row.is-playing {
@@ -1745,4 +1725,12 @@ button.ghost.is-on { color: var(--text); border-color: var(--text); font-weight:
   color: var(--text-2);
   background: var(--surface-2);
   border: 1px solid var(--line-2);
+}
+
+/* Трека нет в фонотеке вовсе — метка ярче «находки»: это не соседний трек
+   из своего, а новое, и его можно оставить кнопкой «+» рядом. */
+.queue-outside.is-new {
+  color: var(--accent-ink);
+  background: var(--accent);
+  border-color: var(--accent);
 }
