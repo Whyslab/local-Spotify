@@ -471,7 +471,7 @@ def lyrics_custom(req: LyricsTextRequest, authenticated: bool = Depends(verify_t
         raise HTTPException(status_code=400, detail="В тексте нет слов") from exc
 
 
-THUMB_SIZES = (96, 200, 600)
+THUMB_SIZES = (96, 300, 600)
 
 
 def _thumbnail(source: Path, art: tuple[bytes, str], size: int) -> tuple[bytes, str]:

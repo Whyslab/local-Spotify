@@ -1,3 +1,5 @@
+<!doctype html>
+<html lang="ru">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#090909">
@@ -47,7 +49,7 @@
   <main id="views">
 
     <!-- ---------------- Добавить ---------------- -->
-    <section id="viewAdd" class="view">
+    <section id="viewAdd" class="view" hidden>
 
       <div class="card">
         <div class="card-head">
@@ -86,7 +88,7 @@
         <p class="muted">Перетащи сюда или выбери. Форматы: mp3, m4a, flac, opus, ogg. Ничего не перекодируется.</p>
         <label id="dropZone" class="drop-zone">
           <span id="dropLabel">Перетащить или выбрать файлы</span>
-          <input type="file" accept=".mp3,.m4a,.flac,.opus,.ogg" multiple onchange="importFiles(this.files)" hidden>
+          <input type="file" accept=".mp3,.m4a,.flac,.opus,.ogg" multiple onchange="importFiles(this.files); this.value = ''" hidden>
         </label>
         <p id="importNote" class="note"></p>
       </div>
@@ -108,14 +110,17 @@
 
     </section>
 
-    <!-- ---------------- Фонотека ---------------- -->
-    <!-- ---------------- Главная ---------------- -->
-    <section id="viewHome" class="view" hidden>
+    <!-- ---------------- Главная ----------------
+         Видна с самого начала: activeView в app.js тоже начинается с неё, и
+         иначе до первого переключения под заголовком «Главная» стоял
+         раздел «Добавить». -->
+    <section id="viewHome" class="view">
       <div id="homeBody">
         <p class="empty">Собираю…</p>
       </div>
     </section>
 
+    <!-- ---------------- Фонотека ---------------- -->
     <section id="viewLibrary" class="view" hidden>
 
       <div class="row wrap shuffle-row">
@@ -226,6 +231,9 @@
 
       <p id="playlistNote" class="note"></p>
       <div id="playlistTracks" class="rows"></div>
+      <!-- Поиск спрятал все строки — сказать об этом и дать сбросить: иначе
+           подборка выглядела пустой, хотя в ней сотни треков. -->
+      <p id="playlistFilterEmpty" class="empty" hidden></p>
 
     </section>
 
@@ -283,7 +291,12 @@
     </div>
     <div class="player-progress">
       <span id="playerElapsed" class="player-time">0:00</span>
-      <div class="player-track-bar" onclick="seekFromClick(event)"><div id="playerFill"></div></div>
+      <!-- Настоящий ползунок, а не полоска под щелчок: его можно тянуть
+           пальцем, двигать стрелками и прочитать экранным диктором. -->
+      <input id="playerSeek" class="player-track-bar seek-range" type="range"
+             min="0" max="0" step="1" value="0" aria-label="Перемотка"
+             oninput="previewSeek(this.value)" onchange="commitSeek(this.value)"
+             onkeydown="seekByKey(event)">
       <span id="playerTotal" class="player-time">0:00</span>
 
       <!-- Режимы и очередь живут рядом с громкостью, а не в ряду перемотки:

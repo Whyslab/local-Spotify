@@ -546,6 +546,8 @@ function toggleQueuePanel() {
     if (!panel.hidden) renderQueuePanel();
 }
 
+const QUEUE_PANEL_ROWS = 60;
+
 function renderQueuePanel() {
     const panel = document.getElementById("playQueue");
     if (!panel || panel.hidden) return;
@@ -569,7 +571,11 @@ function renderQueuePanel() {
      * приходилось прокручивать. */
     const from = at >= 0 ? at : 0;
 
-    route.slice(from).forEach((queueIndex, offset) => {
+    /* Строк — не больше QUEUE_PANEL_ROWS. Панель пересобирается на каждое
+     * переключение трека, и в «Monday» это была тысяча строк заново каждый
+     * раз; дальше шестидесятой всё равно никто не листает. */
+    const shown = route.slice(from, from + QUEUE_PANEL_ROWS);
+    shown.forEach((queueIndex, offset) => {
         const position = from + offset;
         const track = player.queue[queueIndex];
         if (!track) return;
@@ -642,6 +648,13 @@ function renderQueuePanel() {
         }
         box.appendChild(row);
     });
+    const rest = route.length - from - shown.length;
+    if (rest > 0) {
+        const more = document.createElement("p");
+        more.className = "muted queue-more";
+        more.textContent = `ещё ${rest}`;
+        box.appendChild(more);
+    }
 }
 
 /* `source` — откуда эта очередь: подборка с именем или фонотека. Нужен для
@@ -779,7 +792,16 @@ function shufflePlaylist() {
 
 function togglePlay() {
     if (!player.queue.length) return;
-    if (player.audio.paused) player.audio.play(); else player.audio.pause();
+    if (player.audio.paused) {
+        /* play() отказывает вслух — трек не грузится, браузер не разрешил. Без
+         * catch это была немая ошибка в консоли и кнопка, которая «не жмётся». */
+        player.audio.play().catch(e => {
+            if (e.name !== "AbortError") setPlayerNote(e.message);
+            renderPlayer();
+        });
+    } else {
+        player.audio.pause();
+    }
     renderPlayer();
 }
 
@@ -798,7 +820,9 @@ function prevTrack() {
 player.audio.addEventListener("ended", () => {
     reportPlay(true);
     if (player.repeat === "one") {
-        /* Тот же трек с начала: позиция в маршруте не двигается. */
+        /* Тот же трек с начала: позиция в маршруте не двигается. Это новое
+         * прослушивание — и в журнал оно пишется отдельно. */
+        player.reported = false;
         player.audio.currentTime = 0;
         player.audio.play().catch(() => renderPlayer());
         return;
@@ -815,18 +839,54 @@ player.audio.addEventListener("pause", renderPlayer);
 
 /* A signed link outlives its track and then some, but a long pause can still
  * outlast it. Fetch a fresh one and carry on from the same spot rather than
- * dropping the user back to silence. */
+ * dropping the user back to silence.
+ *
+ * Но только раз и только когда это похоже на истёкшую ссылку: сбой сети или
+ * трек уже поиграл. Файл, который браузер не может разобрать, ошибается снова
+ * сразу после новой ссылки — и прежний обработчик крутился бесконечно, 57
+ * запросов за пять секунд. Такой трек пропускаем. */
+let errorRetry = -1;   // включение, для которого новая ссылка уже бралась
+let errorSkips = 0;    // сколько подряд пропущено — чтобы не кружить по битой очереди
+
+/* Попытка — одна на включение трека, и «playing» её не возвращает: файл,
+ * битый в середине, после новой ссылки снова начинал играть с того же места,
+ * снова падал — и так по кругу. */
+player.audio.addEventListener("playing", () => { errorSkips = 0; });
+
 player.audio.addEventListener("error", async () => {
     const track = player.queue[player.index];
-    if (!track) return;
+    const error = player.audio.error;
+    if (!track || !error || error.code === MediaError.MEDIA_ERR_ABORTED) return;
+    const generation = player.generation;
     const at = player.audio.currentTime;
-    try {
-        player.audio.src = await streamUrlFor(track.path);
-        player.audio.currentTime = at;
-        await player.audio.play();
-    } catch (e) {
-        setPlayerNote("Трек недоступен");
+    const expired = error.code === MediaError.MEDIA_ERR_NETWORK || at > 1;
+
+    if (expired && errorRetry !== generation) {
+        errorRetry = generation;
+        try {
+            const url = await streamUrlFor(track.path);
+            if (generation !== player.generation) return;
+            player.audio.src = url;
+            player.audio.currentTime = at;
+            await player.audio.play();
+            return;
+        } catch (e) {
+            if (generation !== player.generation) return;
+            /* Новая ссылка не помогла — дальше как с битым файлом. */
+        }
     }
+
+    if (generation !== player.generation) return;
+    const title = track.title || track.path;
+    errorSkips += 1;
+    const next = errorSkips <= player.queue.length ? stepInOrder(1) : -1;
+    if (next < 0 || next === player.index) {
+        setPlayerNote(`«${title}» не играет`);
+        renderPlayer();
+        return;
+    }
+    const played = await playAt(next);
+    if (played) setPlayerNote(`«${title}» не играет — пропущен`);
 });
 
 /* ---------------- Player bar ---------------- */
@@ -841,6 +901,11 @@ function formatTime(seconds) {
     const s = Math.floor(seconds % 60);
     return `${m}:${String(s).padStart(2, "0")}`;
 }
+
+/* Какой трек был на экране при прошлой отрисовке. Пояснение под названием
+ * («пропущен», «добавляется») стирается при смене трека, а не при каждой
+ * паузе: раньше нажатие «пауза» стирало его, не дав прочитать. */
+let renderedTrack = null;
 
 function renderPlayer() {
     const bar = document.getElementById("player");
@@ -858,7 +923,10 @@ function renderPlayer() {
         "aria-label", player.audio.paused ? "Играть" : "Пауза");
     document.getElementById("playerToggleIcon").setAttribute(
         "d", player.audio.paused ? "M8 5v14l11-7z" : "M7 5h4v14H7zM13 5h4v14h-4z");
-    setPlayerNote("");
+    if (track !== renderedTrack) {
+        renderedTrack = track;
+        setPlayerNote("");
+    }
     renderProgress();
 }
 
@@ -920,7 +988,7 @@ function loadNowCover(track) {
         nowCoverUrl = null;
     };
 
-    fetch("/api/cover?path=" + encodeURIComponent(wanted), { headers: headers() })
+    fetch("/api/cover?path=" + encodeURIComponent(wanted) + "&size=600", { headers: headers() })
         .then(r => r.ok ? r.blob() : null)
         .then(blob => {
             if (nowRequested !== wanted) return;
@@ -1076,8 +1144,12 @@ function openLyricsFinder() {
         return data;
     };
 
-    /* Пустой запрос — сервер ищет по тегам трека; иначе — ровно то, что ввели. */
+    /* Пустой запрос — сервер ищет по тегам трека; иначе — ровно то, что ввели.
+     * Рисует только последний поиск: первый (по тегам) идёт дольше, и его
+     * ответ приходил поверх поправленного запроса. */
+    let runTicket = 0;
     const run = async (query) => {
+        const ticket = ++runTicket;
         note.textContent = "Ищу…";
         list.replaceChildren();
         try {
@@ -1085,6 +1157,7 @@ function openLyricsFinder() {
                 + (query ? "&q=" + encodeURIComponent(query) : "");
             const r = await fetch(url, { headers: headers() });
             const data = await r.json().catch(() => ({}));
+            if (ticket !== runTicket) return;
             if (!r.ok) throw new Error(data.detail || ("Ошибка " + r.status));
             const found = data.candidates || [];
             note.textContent = found.length
@@ -1092,7 +1165,7 @@ function openLyricsFinder() {
                 : "В каталоге ничего нет. Поправь запрос или вставь свой текст ниже.";
             for (const item of found) list.appendChild(choiceRow(item));
         } catch (e) {
-            note.textContent = e.message;
+            if (ticket === runTicket) note.textContent = e.message;
         }
     };
 
@@ -1184,14 +1257,10 @@ function resyncLyrics() {
 let viewBeforeLyrics = null;
 
 function toggleLyricsView() {
-    const button = document.getElementById("playerLyricsButton");
     const open = activeView !== "viewLyrics";
     if (open) viewBeforeLyrics = activeView;
+    /* Подсветку кнопки ставит switchView: из текста уходят и вкладками. */
     switchView(open ? "viewLyrics" : (viewBeforeLyrics || "viewHome"));
-    if (button) {
-        button.classList.toggle("is-on", open);
-        button.setAttribute("aria-pressed", String(open));
-    }
     if (open) {
         const track = player.queue[player.index];
         if (track) loadLyrics(track);
@@ -1199,8 +1268,6 @@ function toggleLyricsView() {
     }
 }
 
-/* Ручная прокрутка выключает слежение. Отличить её от своей помогает флажок:
- * плавная прокрутка к строке тоже приходит сюда событием. */
 /* Ручную прокрутку узнаём по самому действию человека — колесо, палец,
  * клавиши, перетаскивание полосы, — а не по событию scroll. Своя плавная
  * прокрутка к строке тоже шлёт scroll, и отличать её по времени (700 мс)
@@ -1246,20 +1313,52 @@ function renderFacts(facts) {
     }
 }
 
+/* Перемотка — ползунок в секундах. Пока его тянут, воспроизведение его не
+ * дёргает обратно: тянешь к третьей минуте, а timeupdate возвращает бегунок
+ * туда, где играет. Сама перемотка — по отпусканию (change), а не на каждое
+ * движение: иначе каждый пиксель пути был бы отдельным запросом к файлу. */
+let seekDragging = false;
+
+function paintSeek(done, total) {
+    const slider = document.getElementById("playerSeek");
+    if (!slider) return;
+    slider.max = String(Math.max(0, Math.floor(total)));
+    if (!seekDragging) slider.value = String(Math.floor(done));
+    const shown = seekDragging ? Number(slider.value) : done;
+    slider.style.setProperty("--seek", total ? String(Math.min(1, shown / total)) : "0");
+    slider.setAttribute("aria-valuetext", `${formatTime(shown)} из ${formatTime(total)}`);
+}
+
 function renderProgress() {
-    const bar = document.getElementById("playerFill");
     const done = player.audio.currentTime || 0;
-    const total = player.audio.duration || 0;
-    bar.style.width = total ? `${(done / total) * 100}%` : "0%";
-    document.getElementById("playerElapsed").textContent = formatTime(done);
+    /* Длина бывает Infinity (поток без заголовка длины) — перематывать нечего. */
+    const total = Number.isFinite(player.audio.duration) ? player.audio.duration : 0;
+    paintSeek(done, total);
+    if (!seekDragging) document.getElementById("playerElapsed").textContent = formatTime(done);
     document.getElementById("playerTotal").textContent = formatTime(total);
 }
 
-function seekFromClick(event) {
+function previewSeek(value) {
+    seekDragging = true;
+    const total = Number.isFinite(player.audio.duration) ? player.audio.duration : 0;
+    paintSeek(Number(value), total);
+    document.getElementById("playerElapsed").textContent = formatTime(Number(value));
+}
+
+function commitSeek(value) {
+    seekDragging = false;
     const total = player.audio.duration;
-    if (!total) return;
-    const box = event.currentTarget.getBoundingClientRect();
-    player.audio.currentTime = ((event.clientX - box.left) / box.width) * total;
+    if (Number.isFinite(total) && total) player.audio.currentTime = Math.min(total, Math.max(0, Number(value) || 0));
+    renderProgress();
+}
+
+/* Стрелки — на пять секунд, а не на одну, как у ползунка по умолчанию:
+ * секунда на слух не отличается от «ничего не произошло». */
+function seekByKey(event) {
+    const step = { ArrowLeft: -5, ArrowDown: -5, ArrowRight: 5, ArrowUp: 5 }[event.key];
+    if (!step || !Number.isFinite(player.audio.duration)) return;
+    event.preventDefault();
+    commitSeek((player.audio.currentTime || 0) + step);
 }
 
 function markPlayingRow() {
@@ -1374,16 +1473,38 @@ function playlistRow(p) {
     return row;
 }
 
+/* Возвращает true, если подборка открылась. Пока она грузилась, человек мог
+ * уйти в другой раздел или открыть другую подборку — тогда этот ответ уже
+ * не нужен, и возвращать его на экран подборки нельзя. */
 async function openPlaylist(name) {
-    const r = await fetch("/api/playlists/" + encodeURIComponent(name) + "/tracks", { headers: headers() });
-    if (!r.ok) { setPlaylistNote("Не удалось открыть подборку"); return; }
-    player.playlist = await r.json();
+    const mine = ++navigation;
+    const fail = (text) => {
+        if (mine !== navigation) return false;
+        /* Ошибку видно там, где стоишь: в подборке или в списке подборок. */
+        setPlaylistNote(text);
+        const listNote = document.getElementById("playlistsNote");
+        if (listNote) listNote.textContent = text;
+        return false;
+    };
+    let data;
+    try {
+        const r = await fetch("/api/playlists/" + encodeURIComponent(name) + "/tracks", { headers: headers() });
+        if (!r.ok) return fail("Не удалось открыть подборку");
+        data = await r.json();
+    } catch (e) {
+        return fail("Не удалось открыть подборку: " + e.message);
+    }
+    if (mine !== navigation) return false;
+    player.playlist = data;
+    /* Пояснение («Убрано: … Вернуть») — про прежнюю подборку, здесь ему не место. */
+    setPlaylistNote("");
     togglePlaylistEdit(false);
     switchView("viewPlaylist");
     /* Заголовок — имя подборки, и перезагрузка вернёт в неё же. */
     setViewTitle(player.playlist.name);
     try { localStorage.setItem(PLAYLIST_KEY, player.playlist.name); } catch (e) { /* приватное окно */ }
     renderPlaylist();
+    return true;
 }
 
 /* Переименовать и удалить — под шапкой подборки по кнопке «Изменить».
@@ -1421,6 +1542,8 @@ function renderPlaylist() {
     markPlayingRow();
 }
 
+const DRAG_TYPE = "application/x-ls-index";
+
 /* The row carries its index, not its path: nineteen tracks in Monday.m3u
  * appear twice, so a path does not identify a line. */
 function playlistTrackRow(entry, position) {
@@ -1430,18 +1553,38 @@ function playlistTrackRow(entry, position) {
     row.dataset.index = String(position);
     row.dataset.trackPath = entry.path;
 
+    /* Свой тип данных, а не text/plain: брошенный на строку текст, ссылка
+     * или файл давали Number("") = 0, и первый трек подборки уезжал на место
+     * строки. Чужое перетаскивание строка теперь просто не принимает. */
     row.addEventListener("dragstart", e => {
-        e.dataTransfer.setData("text/plain", String(position));
+        e.dataTransfer.setData(DRAG_TYPE, String(position));
+        e.dataTransfer.effectAllowed = "move";
         row.classList.add("is-dragging");
     });
     row.addEventListener("dragend", () => row.classList.remove("is-dragging"));
-    row.addEventListener("dragover", e => { e.preventDefault(); row.classList.add("is-over"); });
+    row.addEventListener("dragover", e => {
+        if (!Array.from(e.dataTransfer.types).includes(DRAG_TYPE)) return;
+        e.preventDefault();
+        row.classList.add("is-over");
+    });
     row.addEventListener("dragleave", () => row.classList.remove("is-over"));
     row.addEventListener("drop", e => {
-        e.preventDefault();
         row.classList.remove("is-over");
-        moveTrack(Number(e.dataTransfer.getData("text/plain")), position);
+        const raw = e.dataTransfer.getData(DRAG_TYPE);
+        if (!/^\d+$/.test(raw)) return;
+        e.preventDefault();
+        moveTrack(Number(raw), position);
     });
+
+    /* С клавиатуры и для экранного диктора строка — кнопка «играть», как в
+     * очереди: Enter включает трек. Пробел остаётся за паузой. */
+    row.setAttribute("role", "button");
+    row.tabIndex = 0;
+    row.onkeydown = (event) => {
+        if (event.key !== "Enter" || event.target !== row) return;
+        event.preventDefault();
+        info.click();
+    };
 
     const handle = document.createElement("div");
     handle.className = "handle";
@@ -1716,13 +1859,17 @@ function moveTrack(from, to) {
  * и ставит трек на то же место, откуда он ушёл. */
 async function removeAt(position) {
     const removed = player.playlist.entries[position];
+    const name = player.playlist.name;
     const paths = player.playlist.entries.map(e => e.path);
     paths.splice(position, 1);
-    await savePlaylist(paths);
-    if (removed) offerUndoRemoval(removed, position);
+    /* «Вернуть» — только если убралось: иначе возвращать нечего. */
+    if (await savePlaylist(paths) && removed) offerUndoRemoval(removed, position, name);
 }
 
-function offerUndoRemoval(removed, position) {
+/* «Вернуть» помнит, из какой подборки убрано. Открыта уже другая (или эту
+ * переименовали) — не трогаем ничего: раньше трек возвращался в ту, что на
+ * экране в момент нажатия. */
+function offerUndoRemoval(removed, position, name) {
     const note = document.getElementById("playlistNote");
     if (!note) return;
     note.replaceChildren();
@@ -1734,20 +1881,36 @@ function offerUndoRemoval(removed, position) {
     undo.className = "ghost small-inline";
     undo.textContent = "Вернуть";
     undo.onclick = async () => {
+        if (!player.playlist || player.playlist.name !== name) {
+            setPlaylistNote(`Открыта другая подборка — вернуть в «${name}» отсюда нельзя.`);
+            return;
+        }
         undo.disabled = true;
         const paths = player.playlist.entries.map(e => e.path);
         /* На то же место: «вернуть» в конец списка — это не возврат. */
         paths.splice(Math.min(position, paths.length), 0, removed.path);
-        await savePlaylist(paths);
-        setPlaylistNote("Вернули на место.");
+        if (await savePlaylist(paths)) setPlaylistNote("Вернули на место.");
     };
 
     note.append(text, undo);
     setTimeout(() => { if (note.contains(undo)) setPlaylistNote(""); }, 30000);
 }
 
+/* Сохранение идёт одно за раз. Каждое несёт номер версии, и три быстрых
+ * «выше на один» уходили с одним и тем же, ещё не обновлённым номером:
+ * второе и третье сервер честно отвергал как «изменили с другого
+ * устройства». Пока идёт запись, правки строк не принимаются (и кнопки
+ * приглушены), а следующая берёт версию из ответа на предыдущую.
+ *
+ * Возвращает true, если записалось. */
+let playlistSaving = false;
+
 async function savePlaylist(paths) {
     const pl = player.playlist;
+    if (!pl || playlistSaving) return false;
+    playlistSaving = true;
+    const box = document.getElementById("playlistTracks");
+    if (box) box.setAttribute("aria-busy", "true");
     setPlaylistNote("Сохраняю…");
     try {
         const r = await fetch("/api/playlists/" + encodeURIComponent(pl.name) + "/tracks", {
@@ -1760,16 +1923,26 @@ async function savePlaylist(paths) {
             /* Someone edited from the other device while this view was open.
              * Reload rather than overwrite: their edit is as real as this one. */
             setPlaylistNote("Подборку изменили с другого устройства — перечитываю");
-            await openPlaylist(pl.name);
-            return;
+            if (await openPlaylist(pl.name)) {
+                setPlaylistNote("Подборку изменили с другого устройства — показана свежая версия, повтори правку");
+            }
+            return false;
         }
-        if (!r.ok) { setPlaylistNote(data.detail || ("Ошибка " + r.status)); return; }
+        if (!r.ok) { setPlaylistNote(data.detail || ("Ошибка " + r.status)); return false; }
         playlists();  // число треков в рельсе — сразу
-        player.playlist = data;
-        renderPlaylist();
+        /* Ответ мог прийти, когда открыта уже другая подборка. */
+        if (player.playlist === pl) {
+            player.playlist = data;
+            renderPlaylist();
+        }
         setPlaylistNote("");
+        return true;
     } catch (e) {
         setPlaylistNote(e.message);
+        return false;
+    } finally {
+        playlistSaving = false;
+        if (box) box.removeAttribute("aria-busy");
     }
 }
 
@@ -1795,13 +1968,18 @@ async function createPlaylist() {
         field.focus();
         return;
     }
-    const r = await fetch("/api/playlists", {
-        method: "POST",
-        headers: { ...headers(), "Content-Type": "application/json" },
-        body: JSON.stringify({ name, paths: [] }),
-    });
-    const data = await r.json();
-    if (!r.ok) { note.textContent = data.detail || "Ошибка"; return; }
+    try {
+        const r = await fetch("/api/playlists", {
+            method: "POST",
+            headers: { ...headers(), "Content-Type": "application/json" },
+            body: JSON.stringify({ name, paths: [] }),
+        });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) { note.textContent = data.detail || "Ошибка"; return; }
+    } catch (e) {
+        note.textContent = "Не удалось создать: " + e.message;
+        return;
+    }
     field.value = "";
     note.textContent = "";
     playlists();
@@ -1811,13 +1989,18 @@ async function renamePlaylist() {
     const pl = player.playlist;
     const next = document.getElementById("playlistRename").value.trim();
     if (!pl || !next || next === pl.name) return;
-    const r = await fetch("/api/playlists/" + encodeURIComponent(pl.name), {
-        method: "PATCH",
-        headers: { ...headers(), "Content-Type": "application/json" },
-        body: JSON.stringify({ name: next }),
-    });
-    if (!r.ok) { setPlaylistNote("Не удалось переименовать"); return; }
-    player.playlist = await r.json();
+    try {
+        const r = await fetch("/api/playlists/" + encodeURIComponent(pl.name), {
+            method: "PATCH",
+            headers: { ...headers(), "Content-Type": "application/json" },
+            body: JSON.stringify({ name: next }),
+        });
+        if (!r.ok) { setPlaylistNote("Не удалось переименовать"); return; }
+        player.playlist = await r.json();
+    } catch (e) {
+        setPlaylistNote("Не удалось переименовать: " + e.message);
+        return;
+    }
     document.getElementById("playlistRename").value = "";
     setViewTitle(player.playlist.name);
     try { localStorage.setItem(PLAYLIST_KEY, player.playlist.name); } catch (e) { /* приватное окно */ }
@@ -1832,7 +2015,7 @@ async function renamePlaylist() {
  * промахнуться по «Удалить» второй раз подряд нужно уже осознанно. */
 function askDeletePlaylist(button) {
     const pl = player.playlist;
-    if (!pl || button.dataset.armed === "1") return;
+    if (!pl) return;
 
     const box = document.createElement("div");
     box.className = "confirm";
@@ -1881,10 +2064,15 @@ let resetPlaylistDelete = () => {};
 async function deletePlaylist(name) {
     const pl = player.playlist;
     if (!pl || !name || pl.name !== name) return;
-    const r = await fetch("/api/playlists/" + encodeURIComponent(name), {
-        method: "DELETE", headers: headers(),
-    });
-    if (!r.ok) { setPlaylistNote("Не удалось удалить"); return; }
+    try {
+        const r = await fetch("/api/playlists/" + encodeURIComponent(name), {
+            method: "DELETE", headers: headers(),
+        });
+        if (!r.ok) { setPlaylistNote("Не удалось удалить"); return; }
+    } catch (e) {
+        setPlaylistNote("Не удалось удалить: " + e.message);
+        return;
+    }
     player.playlist = null;
     switchView("viewPlaylists");
     playlists();
@@ -1895,18 +2083,26 @@ async function deletePlaylist(name) {
  * Navidrome to be told about it. */
 async function uploadCover(input) {
     const file = input.files && input.files[0];
+    /* Сразу, а не после ответа: иначе после сбоя тот же файл второй раз не
+     * выбирался — поле считало, что ничего не изменилось. */
+    input.value = "";
     if (!file || !player.playlist) return;
+    const name = player.playlist.name;
     setPlaylistNote("Загружаю обложку…");
     const body = new FormData();
     body.append("image", file);
-    const r = await fetch("/api/playlists/" + encodeURIComponent(player.playlist.name) + "/cover", {
-        method: "POST", headers: headers(), body,
-    });
-    const data = await r.json();
-    input.value = "";
-    if (!r.ok) { setPlaylistNote(data.detail || "Не удалось загрузить обложку"); return; }
+    try {
+        const r = await fetch("/api/playlists/" + encodeURIComponent(name) + "/cover", {
+            method: "POST", headers: headers(), body,
+        });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) { setPlaylistNote(data.detail || "Не удалось загрузить обложку"); return; }
+    } catch (e) {
+        setPlaylistNote("Не удалось загрузить обложку: " + e.message);
+        return;
+    }
     // Старую из кэша выкинуть, иначе новая не появится до перезагрузки.
-    forgetCover("playlist:" + player.playlist.name);
+    forgetCover("playlist:" + name);
     setPlaylistNote("");
     renderPlaylist();
     playlists();
@@ -2218,5 +2414,7 @@ document.addEventListener("keydown", (event) => {
     }
 
     event.preventDefault();  // иначе страница ещё и прокрутится
+    /* Зажатый пробел шлёт повторы — и плеер мигал пауза-игра-пауза. */
+    if (event.repeat) return;
     togglePlay();
 });

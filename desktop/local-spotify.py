@@ -19,6 +19,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import gi
 
@@ -31,12 +32,38 @@ gi.require_version("WebKit2", "4.1")
 import dbus  # noqa: E402
 import dbus.mainloop.glib  # noqa: E402
 import dbus.service  # noqa: E402
-from gi.repository import Gdk, GLib, Gtk, WebKit2  # noqa: E402
+from gi.repository import GLib  # noqa: E402
 
-APP_ID = "org.whyslab.localSpotify"
+# Имя программы, по которому окно узнают панель задач и док: класс окна в X11
+# и app_id в Wayland. Совпадает с именем ярлыка local-spotify.desktop, его
+# значком и DesktopEntry в MPRIS ниже — одно имя на всё.
+#
+# Ставится до импорта Gtk: GDK читает имя, когда подключается к дисплею, а
+# это происходит при импорте. Раньше вызов стоял после show_all() и не делал
+# ничего — окно называлось по файлу скрипта, «local-spotify.py».
+APP_ID = "local-spotify"
+GLib.set_prgname(APP_ID)
+
+from gi.repository import Gdk, Gio, Gtk, WebKit2  # noqa: E402
+
 SERVICE_URL = os.environ.get("LOCAL_SPOTIFY_URL", "http://127.0.0.1:8787")
 REPO = Path(__file__).resolve().parent.parent
 ENV_FILE = REPO / "adder" / ".env"
+
+
+def origin_of(url: str) -> str:
+    """scheme://host:port, the unit a browser trusts as one site."""
+    parts = urlsplit(url)
+    return f"{parts.scheme}://{parts.netloc}".lower()
+
+
+SERVICE_ORIGIN = origin_of(SERVICE_URL)
+
+# Данные страницы (localStorage: громкость, ширина панели, последний раздел)
+# WebKit по умолчанию кладёт в папку по имени программы. Пока имя было
+# «local-spotify.py», папка звалась так же; с новым именем WebKit завёл бы
+# пустую, и настройки молча обнулились бы. Держим прежнюю папку явно.
+WEB_DATA_NAME = "local-spotify.py"
 
 
 def read_token() -> str:
@@ -212,14 +239,25 @@ class PlayerWindow(Gtk.Window):
         # WebKit keeps its own localStorage, so without this the window would
         # open on the token prompt every time. Injected before the document
         # runs, so the page finds the token already in place.
+        #
+        # Только на страницы самого сервиса. Без списка скрипт выполнялся на
+        # любой странице, куда окно перейдёт, — и ключ оказался бы в
+        # localStorage чужого сайта. Уйти окно никуда и не должно (см.
+        # on_decide_policy), но ключ стережём и здесь.
+        #
+        # Порт шаблоны WebKit не различают (проверено: «http://127.0.0.1:8799/*»
+        # не совпадает ни с чем), поэтому в списке — хост, а точное
+        # совпадение с портом скрипт проверяет сам.
         token = read_token()
         if token:
+            parts = urlsplit(SERVICE_URL)
             manager.add_script(
                 WebKit2.UserScript.new(
+                    f"if (location.origin === {json.dumps(SERVICE_ORIGIN)}) "
                     f"localStorage.setItem('token', {json.dumps(token)});",
                     WebKit2.UserContentInjectedFrames.TOP_FRAME,
                     WebKit2.UserScriptInjectionTime.START,
-                    None,
+                    [f"{parts.scheme}://{parts.hostname}/*"],
                     None,
                 )
             )
@@ -227,12 +265,21 @@ class PlayerWindow(Gtk.Window):
         manager.register_script_message_handler("mpris")
         manager.connect("script-message-received::mpris", self.on_mpris_message)
 
-        self.webview = WebKit2.WebView.new_with_user_content_manager(manager)
+        data = WebKit2.WebsiteDataManager(
+            base_data_directory=os.path.join(GLib.get_user_data_dir(), WEB_DATA_NAME),
+            base_cache_directory=os.path.join(GLib.get_user_cache_dir(), WEB_DATA_NAME),
+        )
+        self.webview = WebKit2.WebView(
+            web_context=WebKit2.WebContext.new_with_website_data_manager(data),
+            user_content_manager=manager,
+        )
         settings = self.webview.get_settings()
         settings.set_enable_developer_extras(True)
         # The page only ever plays audio the user asked for, and a shell that
         # needs a click before every track is not a music player.
         settings.set_media_playback_requires_user_gesture(False)
+
+        self.webview.connect("decide-policy", self.on_decide_policy)
 
         self.add(self.webview)
         self.webview.load_uri(SERVICE_URL)
@@ -251,6 +298,35 @@ class PlayerWindow(Gtk.Window):
             return
         if self.mpris is not None:
             self.mpris.update(payload)
+
+    def on_decide_policy(self, _webview, decision, decision_type):
+        """Окно показывает только сервис.
+
+        Переход на чужой адрес — ссылка, перенаправление или файл, брошенный
+        мимо поля загрузки (WebKit открывает его вместо страницы), — внутри
+        окна не выполняется. Ссылку, по которой нажал человек, открываем в
+        браузере по умолчанию: там ей и место.
+        """
+        if decision_type not in (
+            WebKit2.PolicyDecisionType.NAVIGATION_ACTION,
+            WebKit2.PolicyDecisionType.NEW_WINDOW_ACTION,
+        ):
+            return False
+        action = decision.get_navigation_action()
+        uri = action.get_request().get_uri() or ""
+        if origin_of(uri) == SERVICE_ORIGIN:
+            return False
+        # about:blank и подобное — пустые кадры самого движка, не переходы.
+        if uri.startswith("about:"):
+            return False
+        decision.ignore()
+        clicked = action.get_navigation_type() == WebKit2.NavigationType.LINK_CLICKED
+        if clicked and uri.startswith(("http://", "https://")):
+            try:
+                Gio.AppInfo.launch_default_for_uri(uri, None)
+            except GLib.Error as exc:
+                print(f"Could not open {uri}: {exc}", file=sys.stderr)
+        return True
 
     def on_key(self, _widget, event):
         """Keys that belong to the window rather than to the page."""
@@ -286,7 +362,6 @@ def main() -> int:
         print(f"MPRIS unavailable, media keys will not work: {exc}", file=sys.stderr)
 
     window.show_all()
-    GLib.set_prgname(APP_ID)
     Gtk.main()
     return 0
 

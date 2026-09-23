@@ -489,15 +489,20 @@ code {
 .tab .icon { width: 21px; height: 21px; }
 .tab.is-active { color: var(--accent); }
 
+/* Шире телефона ряд вкладок — той же ширины, что колонка и плеер, и по
+   центру. Но по-прежнему прибит к низу: липким (sticky) он уезжал вместе с
+   концом страницы под панель плеера, которая прибита всегда, и между 700 и
+   1099 точками до вкладок было не дотянуться. Центрируется полями, а не
+   transform: transform сделал бы ряд точкой отсчёта для меню «Ещё», которое
+   ставится по окну. */
 @media (min-width: 700px) {
     .tabbar {
-        position: sticky;
         max-width: 640px;
         margin: 0 auto;
-        border-radius: 16px;
+        border-radius: 16px 16px 0 0;
         border: 1px solid #1c1c1c;
+        border-bottom: 0;
     }
-    .app { padding-bottom: 20px; }
 }
 
 /* ---------------- Playlists ---------------- */
@@ -563,9 +568,8 @@ code {
 }
 .file-button:active { transform: scale(.98); }
 
-/* Drag handle and reorder affordances. The handle is what you grab with a
-   mouse; the arrows exist because HTML drag-and-drop does nothing on iOS, and
-   a playlist you can only reorder from the laptop is half a feature. */
+/* Ручка — чтобы тащить мышью. На iOS перетаскивание HTML не работает вовсе,
+   поэтому те же перестановки есть словами в меню «⋯» у каждой строки. */
 .playlist-track { gap: 8px; }
 
 .handle {
@@ -579,6 +583,9 @@ code {
 }
 
 .playlist-track .track-info { cursor: pointer; }
+/* Идёт запись подборки — правки строк подождут, и это видно. */
+#playlistTracks[aria-busy="true"] .handle,
+#playlistTracks[aria-busy="true"] .icon-button { opacity: .4; pointer-events: none; }
 .playlist-track.is-dragging { opacity: 0.4; }
 .playlist-track.is-over { box-shadow: inset 0 2px 0 var(--accent); }
 /* Играющая строка. Цветом её не выделить — вся тема чёрно-белая, — а разницы
@@ -744,12 +751,6 @@ button.danger {
 .row-menu-label { color: var(--text-3); font-size: 11px; }
 .row-menu-input { padding: 8px 10px; font-size: 14px; }
 
-/* Находки — то, чего в фонотеке нет. Отделены заголовком и чуть приглушены:
-   это предложение, а не очередь, и нажатие на строку ничего не включает —
-   включать пока нечего. */
-/* Находка на полке. Обложки нет — вместо неё буква, поэтому квадрат надо
-   нарисовать самому; пунктир отличает её от своих треков раньше, чем человек
-   дочитает подпись. */
 /* Номер трека в альбоме. Моноширинные цифры, чтобы столбик не гулял от
    единицы к десятке. */
 .album-track-number {
@@ -761,6 +762,9 @@ button.danger {
     font-variant-numeric: tabular-nums;
 }
 
+/* Находка на полке. Обложки нет — вместо неё буква, поэтому квадрат надо
+   нарисовать самому; пунктир отличает её от своих треков раньше, чем человек
+   дочитает подпись. */
 .shelf-tile.is-find .shelf-art {
     display: flex;
     align-items: center;
@@ -890,22 +894,24 @@ button.danger {
     vertical-align: middle;
 }
 
-/* Уже сыгранное приглушено, играющее светится — список читается сверху вниз
-   как дорога: позади бледное, под ногами яркое, впереди обычное. */
+/* Очередь начинается с играющего трека, и он светится — остальное ниже него
+   обычным текстом. Сыгранное в панели не показывается вовсе. */
 .queue-row.is-playing {
     background: var(--surface-2);
     box-shadow: inset 3px 0 0 var(--accent);
 }
 .queue-row.is-playing .track-title { font-weight: 750; color: var(--text); }
+/* «ещё N» под последней показанной строкой: дальше шестидесятой не рисуем. */
+.queue-more { padding: 8px 10px; font-size: 12px; color: var(--text-3); }
 
-/* Главная: полки-приглашения. Каждая показывает шесть строк из сорока —
+/* Главная: полки-приглашения. Каждая показывает двенадцать обложек из сорока —
    это приглашение, а не список; «Слушать» ставит в очередь всю полку. */
 .home-shelf .card-head { display: flex; align-items: center; gap: 12px; }
 .home-shelf .card-head h2 { margin: 0; font-size: 16px; }
 .home-shelf .card-head .muted { font-size: 12px; }
-/* Кнопка полки — маленькая. Белая заливка в 46 пикселей высотой, повторённая
+/* Кнопка полки — маленькая и серая. Кнопка в 46 пикселей высотой, повторённая
    шесть раз вниз по странице, перетягивает внимание с обложек на себя. */
-.home-shelf .card-head .primary {
+.home-shelf .card-head .ghost {
     margin-left: auto;
     min-height: 32px;
     padding: 0 16px;
@@ -1186,24 +1192,6 @@ button.ghost.is-on { color: var(--text); border-color: var(--text); font-weight:
     /* Ниже этого перематывать уже невозможно: пусть лучше перенесётся ряд. */
     min-width: 140px;
     height: 14px;
-    display: flex;
-    align-items: center;
-    cursor: pointer;
-}
-.player-track-bar::before {
-    content: "";
-    position: absolute;
-    width: 0;
-}
-.player-track-bar > div {
-    height: 4px;
-    background: var(--accent);
-    border-radius: 2px;
-    transition: width 0.2s linear;
-}
-.player-track-bar {
-    background: linear-gradient(var(--line-2), var(--line-2)) center / 100% 4px no-repeat;
-    border-radius: 2px;
 }
 
 /* Громкость: та же полоска, что и перемотка, только короткая и своя у каждой
@@ -1222,12 +1210,13 @@ button.ghost.is-on { color: var(--text); border-color: var(--text); font-weight:
 }
 
 /* Рамка, фон и отступы общего правила для input сюда не относятся: с ними
-   ползунок сидел в «поле ввода», а сама полоска была короче его вдвое. */
-.volume-range {
+   ползунок сидел в «поле ввода», а сама полоска была короче его вдвое.
+   Перемотка — такой же ползунок, поэтому правила у них общие; своё у неё
+   только заполнение (--seek вместо --vol) и ширина. */
+.volume-range,
+.seek-range {
     -webkit-appearance: none;
     appearance: none;
-    width: 96px;
-    min-width: 72px;
     height: 14px;
     margin: 0;
     padding: 0;
@@ -1236,6 +1225,8 @@ button.ghost.is-on { color: var(--text); border-color: var(--text); font-weight:
     background: transparent;
     cursor: pointer;
 }
+.volume-range { width: 96px; min-width: 72px; }
+.seek-range { width: auto; }
 
 /* Ширина под «100%», чтобы ряд не дёргался, когда число меняет длину. */
 .volume-value {
@@ -1263,19 +1254,32 @@ button.ghost.is-on { color: var(--text); border-color: var(--text); font-weight:
     );
 }
 
-.volume-range::-moz-range-track {
+.seek-range::-webkit-slider-runnable-track {
+    height: 4px;
+    border-radius: 2px;
+    background: linear-gradient(
+        to right,
+        var(--accent) 0 calc(var(--seek, 0) * 100%),
+        var(--line-2) calc(var(--seek, 0) * 100%) 100%
+    );
+}
+
+.volume-range::-moz-range-track,
+.seek-range::-moz-range-track {
     height: 4px;
     border-radius: 2px;
     background: var(--line-2);
 }
 
-.volume-range::-moz-range-progress {
+.volume-range::-moz-range-progress,
+.seek-range::-moz-range-progress {
     height: 4px;
     border-radius: 2px;
     background: var(--accent);
 }
 
-.volume-range::-webkit-slider-thumb {
+.volume-range::-webkit-slider-thumb,
+.seek-range::-webkit-slider-thumb {
     -webkit-appearance: none;
     appearance: none;
     width: 10px;
@@ -1285,7 +1289,8 @@ button.ghost.is-on { color: var(--text); border-color: var(--text); font-weight:
     background: var(--accent);
 }
 
-.volume-range::-moz-range-thumb {
+.volume-range::-moz-range-thumb,
+.seek-range::-moz-range-thumb {
     width: 10px;
     height: 10px;
     border: 0;
@@ -1293,7 +1298,8 @@ button.ghost.is-on { color: var(--text); border-color: var(--text); font-weight:
     background: var(--accent);
 }
 
-.volume-range:focus-visible {
+.volume-range:focus-visible,
+.seek-range:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 2px;
 }
@@ -1442,6 +1448,17 @@ button.ghost.is-on { color: var(--text); border-color: var(--text); font-weight:
             "bar  bar";
     }
     .app.aside-off #nowPanel { display: none; }
+    /* Панель трека убрана, а очередь открыли — третья колонка нужна ей. Без
+       этого правила очередь с grid-area: aside попадала в сетку без такой
+       области, и раскладка разъезжалась. */
+    .app.aside-off.queue-open,
+    .app.aside-off.queue-open:has(#player:not([hidden])) {
+        grid-template-columns: var(--rail-w, 232px) minmax(0, 1fr) 296px;
+        grid-template-areas:
+            "rail header aside"
+            "rail views  aside"
+            "bar  bar    bar";
+    }
 
     /* Край панели. Узкая полоса поверх стыка: курсор меняется на «тянуть»,
        а видно её только когда к ней подводят мышь — иначе это была бы лишняя
@@ -1463,8 +1480,6 @@ button.ghost.is-on { color: var(--text); border-color: var(--text); font-weight:
     .rail-grip:hover,
     .rail-grip.is-dragging { background: var(--line-2); }
 
-    /* Свёрнутая панель: только значки и логотип. Подписи и список подборок
-       уезжают, потому что в 72 точки они превращаются в кашу из многоточий. */
     /* Свёрнутая панель. Подписи вкладок уезжают — в 72 точки они превращаются
        в кашу из многоточий, — а подборки остаются: по обложке их узнаёшь без
        названия, и ради них панель и держат открытой. Прячутся только заголовок
@@ -1733,15 +1748,6 @@ button.ghost.is-on { color: var(--text); border-color: var(--text); font-weight:
     .now-fact.is-unknown b { color: var(--text-3); }
 
 
-
-    /* На широком экране панели снизу нет, и очередь считает своё место от
-       низа окна, а не от неё. Высота полосы плеера тут постоянная. */
-    .play-queue {
-        right: 320px;
-        bottom: 84px;
-        max-height: min(62vh, 620px);
-    }
-
     /* The bar keeps only what a bar is for: the transport and the position. */
     .player {
         grid-area: bar;
@@ -1849,11 +1855,31 @@ button.ghost.is-on { color: var(--text); border-color: var(--text); font-weight:
     .row-menu-input { font-size: 16px; }
     /* Под палец — не меньше 40px. */
     .lyrics-head .ghost { min-height: 40px; }
+    .icon-button.small { width: 40px; min-width: 40px; height: 40px; min-height: 40px; }
+    /* Кнопки плеера — 44, как советует Apple: по ним жмут на ходу, не глядя.
+       Перемотке — 24 в высоту: полоску в 14 пальцем было не поймать. */
+    .player .icon-button { width: 44px; min-width: 44px; height: 44px; min-height: 44px; }
+    .seek-range { height: 24px; }
     .track .icon-button.danger {
         color: var(--text-3);
         background: transparent;
         border-color: var(--line-2);
     }
+}
+
+/* Самый узкий телефон с громкостью (не iOS: там её нет): 44 точки не
+   помещаются — громкость уезжала четвёртой строкой, и панель плеера съедала
+   треть экрана. Здесь переключатели по 40, а громкость остаётся рядом. */
+@media (hover: none) and (max-width: 374.98px) {
+    .player-progress:has(#playerVolume:not([hidden])) .player-modes .icon-button {
+        width: 40px; min-width: 40px; height: 40px; min-height: 40px;
+    }
+    .player-progress:has(#playerVolume:not([hidden])) #playerMute { width: 40px; min-width: 40px; height: 40px; min-height: 40px; }
+    /* Число процентов — лишнее место, которого нет: уровень видно по полоске,
+       а диктору его называет aria-valuetext ползунка. */
+    .player-progress:has(#playerVolume:not([hidden])) .volume-value { display: none; }
+    /* Своя ширина у громкости — 140, с ней ряд не сходится ни при каких кнопках. */
+    .player-progress:has(#playerVolume:not([hidden])) .player-volume { flex-basis: 0; }
 }
 
 /* На ноутбуке список — не стопка коробок: строки без рамок, а наведённая

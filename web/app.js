@@ -17,6 +17,9 @@ const SEARCH_DEBOUNCE_MS = 300;
 
 let activeView = "viewHome";
 let librarySearchTimer = null;
+/* Номер последнего перехода. Медленный ответ (подборка грузилась, а человек
+ * тем временем ушёл в фонотеку) не должен возвращать его обратно. */
+let navigation = 0;
 
 /* ---------------- Token ---------------- */
 
@@ -115,6 +118,9 @@ function toggleMoreMenu(event) {
     if (window.innerHeight - box.bottom > 180) {
         menu.style.top = Math.round(box.bottom + 6) + "px";
     } else {
+        /* top сбрасывается: у .row-menu он задан для меню строки, и вместе с
+         * bottom сжимал меню в полоску у нижнего края. */
+        menu.style.top = "auto";
         menu.style.bottom = Math.round(window.innerHeight - box.top + 6) + "px";
     }
 
@@ -143,8 +149,10 @@ function setViewTitle(text) {
 }
 
 function switchView(id) {
+    navigation += 1;
     activeView = id;
     updateSearchPlaceholder(id);
+    keepSearchFor(id);
     /* В подборке — её имя: и при входе, и при возврате из текста песни. */
     setViewTitle(id === "viewPlaylist" && player.playlist ? player.playlist.name
         : (VIEW_TITLES[id] || "Фонотека"));
@@ -164,7 +172,38 @@ function switchView(id) {
     /* Раздел спрятан за «Ещё» — пусть кнопка показывает, что мы внутри неё. */
     const more = document.getElementById("moreTab");
     if (more) more.classList.toggle("is-active", MORE_VIEWS.some(([view]) => view === id));
+    /* Кнопка текста в плеере горит, пока открыт текст, — как бы из него ни
+     * ушли: вкладкой, из рельсы или той же кнопкой. */
+    const lyricsButton = document.getElementById("playerLyricsButton");
+    if (lyricsButton) {
+        lyricsButton.classList.toggle("is-on", id === "viewLyrics");
+        lyricsButton.setAttribute("aria-pressed", String(id === "viewLyrics"));
+    }
     refresh(true);
+}
+
+/* Где ищет поле: фонотека, список подборок или одна подборка. Поле одно на
+ * все разделы, и слово, набранное в фонотеке, молча фильтровало следующую
+ * открытую подборку — до нуля строк, будто она пустая. Поэтому при переходе
+ * в другое место поиска поле очищается; в разделах без поиска (главная,
+ * текст, сервис) оно просто ждёт, и возврат туда же набранное сохраняет. */
+let searchScope = null;
+
+function scopeOf(view) {
+    if (view === "viewLibrary" || view === "viewPlaylists") return view;
+    if (view === "viewPlaylist") return "playlist:" + (player.playlist ? player.playlist.name : "");
+    return null;
+}
+
+function keepSearchFor(view) {
+    const scope = scopeOf(view);
+    if (!scope || scope === searchScope) return;
+    searchScope = scope;
+    const field = document.getElementById("librarySearch");
+    if (field && field.value) {
+        field.value = "";
+        libraryLimit = LIBRARY_PAGE;
+    }
 }
 
 /* Поле одно, а ищет оно в разном — пусть само говорит, где именно. */
@@ -377,7 +416,8 @@ async function health() {
     const stats = document.getElementById("libraryStats");
 
     try {
-        const r = await fetch("/health");
+        /* Подробности сервер отдаёт только с ключом; без него — одно состояние. */
+        const r = await fetch("/health", { headers: headers() });
         const data = await r.json();
         const ok = data.status === "healthy";
 
@@ -398,8 +438,8 @@ async function health() {
         box.replaceChildren();
         const rows = [
             ["Сервис", ok ? "работает" : data.status, !ok],
-            ["База", data.database, data.database !== "ok"],
-            ["Фонотека", data.library, data.library !== "ok"],
+            ["База", data.database ?? "—", data.database !== undefined && data.database !== "ok"],
+            ["Фонотека", data.library ?? "—", data.library !== undefined && data.library !== "ok"],
             ["В очереди", String(data.queue_size ?? "—"), false],
             ["Воркеров", String(data.workers ?? "—"), false],
             ["Путь", data.library_path || "—", false],
@@ -516,9 +556,16 @@ function searchText() {
 const LIBRARY_PAGE = 200;
 let libraryLimit = LIBRARY_PAGE;
 let librarySignature = "";
+/* Номер последнего запроса фонотеки. Ответы приходят не по порядку: опрос
+ * без фильтра, ушедший раньше, мог вернуться после поиска и заменить его
+ * выдачу. Рисует только последний. */
+let libraryTicket = 0;
 
 function scheduleLibrarySearch() {
     libraryLimit = LIBRARY_PAGE;
+    /* Набранное относится к тому месту, где будет искать, — с главной это
+     * фонотека. Иначе переход туда по первой букве тут же стёр бы поле. */
+    searchScope = scopeOf(activeView) || "viewLibrary";
     clearTimeout(librarySearchTimer);
     librarySearchTimer = setTimeout(runSearchHere, SEARCH_DEBOUNCE_MS);
 }
@@ -529,7 +576,26 @@ function runSearchHere() {
     /* Из главной и остальных разделов искать всё равно логично по фонотеке —
      * там лежит всё, что можно найти. */
     if (activeView !== "viewLibrary" && searchText()) switchView("viewLibrary");
+    /* Открытый альбом держится против фонового опроса, а заодно держался и
+     * против поиска: набирал — и ничего не происходило. Поиск его закрывает. */
+    if (searchText()) openAlbumGroup = null;
     library();
+}
+
+/* Фильтр спрятал всё — сказать словами и дать сбросить одним нажатием. */
+function showFilterEmpty(box, needle) {
+    const text = document.createElement("span");
+    text.textContent = `Ничего не нашлось по «${needle}». `;
+    const reset = document.createElement("button");
+    reset.className = "ghost small-inline";
+    reset.textContent = "Сбросить поиск";
+    reset.onclick = () => {
+        const field = document.getElementById("librarySearch");
+        if (field) field.value = "";
+        runSearchHere();
+    };
+    box.replaceChildren(text, reset);
+    box.hidden = false;
 }
 
 /* Совпадение по тексту строки целиком: в ней и название, и артист, и альбом. */
@@ -548,7 +614,8 @@ function filterPlaylists() {
     const empty = document.getElementById("playlistsEmpty");
     if (empty) {
         empty.hidden = shown > 0;
-        if (!shown) empty.textContent = needle ? "Ничего не нашлось." : "Пока ни одной.";
+        if (!shown && needle) showFilterEmpty(empty, needle);
+        else if (!shown) empty.textContent = "Пока ни одной.";
     }
 }
 
@@ -557,9 +624,16 @@ function filterPlaylists() {
  * список — «выше на один» двигал бы трек не туда. */
 function filterOpenPlaylist() {
     const needle = searchText();
+    let shown = 0, total = 0;
     for (const row of document.querySelectorAll("#playlistTracks .playlist-track")) {
         row.hidden = !rowMatches(row, needle);
+        total += 1;
+        if (!row.hidden) shown += 1;
     }
+    const empty = document.getElementById("playlistFilterEmpty");
+    if (!empty) return;
+    if (total && !shown) showFilterEmpty(empty, needle);
+    else empty.hidden = true;
 }
 
 /* ---------------- Главная ----------------
@@ -698,7 +772,7 @@ function shelfTile(track, tracks, index) {
     art.className = "shelf-art";
     art.setAttribute("aria-label", "Играть «" + (track.title || track.path) + "»");
     art.onclick = () => playQueue(tracks, index, "manual");
-    loadTrackCover(art, track.path);
+    loadTrackCover(art, track.path, THUMB_LARGE);
 
     const play = document.createElement("button");
     play.className = "album-play";
@@ -731,7 +805,8 @@ function findTile(find) {
     const art = document.createElement("button");
     art.className = "shelf-art";
     art.textContent = (find.artist || find.title || "?").slice(0, 1).toUpperCase();
-    art.setAttribute("aria-label", `Искать «${find.artist} — ${find.title}» на YouTube`);
+    art.setAttribute("aria-label",
+        `Искать «${[find.artist, find.title].filter(Boolean).join(" — ")}» на YouTube`);
     art.onclick = () => searchForFind(find);
 
     const box = document.createElement("div");
@@ -942,7 +1017,7 @@ function albumTile(group) {
     letter.className = "album-letter";
     letter.textContent = group.album.slice(0, 1).toUpperCase();
     art.appendChild(letter);
-    loadTrackCover(art, group.tracks[0].path);
+    loadTrackCover(art, group.tracks[0].path, THUMB_LARGE);
 
     const play = document.createElement("button");
     play.className = "album-play";
@@ -991,7 +1066,7 @@ function openAlbum(group) {
     const art = document.createElement("div");
     art.className = "album-open-art";
     art.textContent = group.album.slice(0, 1).toUpperCase();
-    loadTrackCover(art, group.tracks[0].path);
+    loadTrackCover(art, group.tracks[0].path, THUMB_LARGE);
 
     const meta = document.createElement("div");
     meta.className = "album-open-meta";
@@ -1065,25 +1140,79 @@ function playIcon() {
  *
  * И поэтому же — кэш. Список перерисовывается фоновым опросом раз в несколько
  * секунд; без кэша это 121 запрос за обложками каждый раз, картинки успевают
- * мигнуть на букву-заглушку, и выглядит это поломкой. Ссылка живёт до
- * перезагрузки страницы и не освобождается: в том и смысл.
+ * мигнуть на букву-заглушку, и выглядит это поломкой.
+ *
+ * Но не бесконечный: фонотека в тысячу строк держала бы тысячу картинок в
+ * памяти. Держим последние COVER_CACHE_MAX, самую давнюю выселяем и
+ * освобождаем — уже нарисованная картинка от этого не пропадает.
+ *
+ * «Обложки нет» (404) тоже помнится, но недолго: её могли поставить минуту
+ * спустя, а навсегда запомненный промах показывал букву до перезагрузки.
+ * Сбой сети не помнится вовсе — следующая перерисовка спросит снова.
+ *
+ * Значение в кэше — ссылка (строка), запрос в пути (Promise) или время, до
+ * которого считаем, что обложки нет (число).
  */
 const coverUrls = new Map();
+const COVER_CACHE_MAX = 300;
+const COVER_MISS_MS = 10 * 60 * 1000;
+
+/* Размер миниатюры для сервера. Строке в списке хватает 96 точек; плитке в
+ * 140–200 точек на экране с двойной плотностью — 300. Без него фонотека в
+ * двести строк качала 81 МБ полноразмерных обложек. */
+const THUMB_SMALL = 96;
+const THUMB_LARGE = 300;
 
 function coverUrl(key, url) {
-    if (coverUrls.has(key)) return Promise.resolve(coverUrls.get(key));
+    const have = coverUrls.get(key);
+    if (typeof have === "number") {
+        if (Date.now() < have) return Promise.resolve(null);
+        coverUrls.delete(key);
+    } else if (have !== undefined) {
+        // Недавно нужная — в конец очереди на выселение.
+        coverUrls.delete(key);
+        coverUrls.set(key, have);
+        return Promise.resolve(have);
+    }
     const pending = fetch(url, { headers: headers() })
-        .then(r => (r.ok ? r.blob() : null))
-        .then(blob => {
-            const made = blob ? URL.createObjectURL(blob) : null;
-            coverUrls.set(key, made);
+        .then(r => {
+            if (r.ok) return r.blob();
+            if (r.status === 404) return Date.now() + COVER_MISS_MS;
+            return null;
+        })
+        .then(got => {
+            const made = got instanceof Blob ? URL.createObjectURL(got) : null;
+            /* Пока шёл запрос, обложку могли сбросить (новая загружена) —
+             * тогда устаревший ответ в кэш не кладём. */
+            if (coverUrls.get(key) === pending) {
+                // Удалить и вставить заново — чтобы пришедшая встала в конец
+                // очереди на выселение, а не на место, где стоял запрос.
+                coverUrls.delete(key);
+                if (made) coverUrls.set(key, made);
+                else if (typeof got === "number") coverUrls.set(key, got);
+            }
+            trimCovers();
             return made;
         })
-        .catch(() => null);
+        .catch(() => {
+            if (coverUrls.get(key) === pending) coverUrls.delete(key);
+            return null;
+        });
     // Запрос кладём в кэш сразу, а не по возвращении: сетка рисует сто
     // плиток подряд, и иначе одна обложка запрашивалась бы дважды.
     coverUrls.set(key, pending);
     return pending;
+}
+
+function trimCovers() {
+    for (const [key, value] of coverUrls) {
+        if (coverUrls.size <= COVER_CACHE_MAX) return;
+        if (value instanceof Promise) continue;  // ещё в пути — не трогаем
+        /* Освобождаем не сразу: картинка с этой ссылкой могла только что
+         * получить src и ещё не прочитаться — отзыв сейчас оставил бы дыру. */
+        if (typeof value === "string") setTimeout(() => URL.revokeObjectURL(value), 10000);
+        coverUrls.delete(key);
+    }
 }
 
 function forgetCover(key) {
@@ -1092,8 +1221,8 @@ function forgetCover(key) {
     coverUrls.delete(key);
 }
 
-function loadTrackCover(host, path) {
-    coverUrl("track:" + path, "/api/cover?path=" + encodeURIComponent(path))
+function loadTrackCover(host, path, size = THUMB_SMALL) {
+    coverUrl(`track:${size}:${path}`, "/api/cover?path=" + encodeURIComponent(path) + "&size=" + size)
         .then(url => {
             if (!url) return;
             const img = document.createElement("img");
@@ -1137,6 +1266,7 @@ async function library() {
      * зависело это от того, попал ли клик между опросами. */
     const mode = libraryMode;
     const limit = mode === "tracks" ? libraryLimit : 5000;
+    const ticket = ++libraryTicket;
 
     try {
         const r = await fetch(
@@ -1144,7 +1274,10 @@ async function library() {
             { headers: headers() });
         if (!r.ok) return;
         const data = await r.json();
-        if (mode !== libraryMode) return;
+        if (ticket !== libraryTicket || mode !== libraryMode) return;
+        /* Пока ответ шёл, под строкой могли открыть вопрос («удалить?», «в
+         * какую подборку?») — проверка в начале этого уже не видела. */
+        if (hasOpenChoice("library")) return;
         /* Пока мы ходили за фонотекой, мог открыться альбом: нажатие с главной
          * запускает загрузку дважды — из setLibraryMode и из switchView, — и
          * вторая перерисовка смахивала бы открытый альбом обратно в сетку. */
@@ -1155,6 +1288,7 @@ async function library() {
         if (signature === librarySignature && box.childElementCount && !pendingAlbum) return;
         librarySignature = signature;
         box.replaceChildren();
+        empty.textContent = "Ничего не нашлось.";
 
         if (mode === "tracks") {
             if (note) note.textContent = "";
@@ -1162,6 +1296,7 @@ async function library() {
              * как «нашлось двести». */
             count.textContent = q && data.length ? String(data.length) + (data.length === limit ? "+" : "") : "";
             empty.hidden = data.length > 0;
+            if (!data.length && q) showFilterEmpty(empty, q);
             /* Keep the rendered list around: playing one row queues the rest, so
              * "next" carries on down the screen instead of stopping at one track. */
             for (const t of data) box.appendChild(libraryRow(t, data));
@@ -1431,22 +1566,28 @@ async function importPlaylists(links, result) {
 
 /* ---------------- Search ---------------- */
 
+/* Как у фонотеки: второй поиск, начатый раньше ответа на первый, не должен
+ * быть перезаписан этим первым ответом. */
+let searchTicket = 0;
+
 async function runSearch() {
     const query = document.getElementById("searchQuery").value.trim();
     const note = document.getElementById("searchNote");
     const box = document.getElementById("searchResults");
+    const ticket = ++searchTicket;
     box.replaceChildren();
-    if (!query) return;
+    if (!query) { note.textContent = ""; return; }
 
     note.textContent = "Ищу…";
     try {
         const r = await fetch("/api/search?q=" + encodeURIComponent(query), { headers: headers() });
         const data = await r.json();
+        if (ticket !== searchTicket) return;
         if (!r.ok) { note.textContent = data.detail || ("Ошибка " + r.status); return; }
         note.textContent = data.results.length ? "" : "Ничего не нашлось.";
         for (const item of data.results) box.appendChild(searchRow(item));
     } catch (e) {
-        note.textContent = e.message;
+        if (ticket === searchTicket) note.textContent = e.message;
     }
 }
 
@@ -1474,12 +1615,19 @@ function searchRow(item) {
     add.onclick = async () => {
         add.disabled = true;
         add.textContent = "…";
-        const r = await fetch("/api/add", {
-            method: "POST",
-            headers: { ...headers(), "Content-Type": "application/json" },
-            body: JSON.stringify({ links: [item.url] }),
-        });
-        add.textContent = r.ok ? "В очереди" : "Ошибка";
+        try {
+            const r = await fetch("/api/add", {
+                method: "POST",
+                headers: { ...headers(), "Content-Type": "application/json" },
+                body: JSON.stringify({ links: [item.url] }),
+            });
+            add.textContent = r.ok ? "В очереди" : "Ошибка";
+            /* Не вышло — пусть можно нажать ещё раз, а не застрять. */
+            add.disabled = r.ok;
+        } catch (e) {
+            add.textContent = "Ошибка";
+            add.disabled = false;
+        }
         tasks();
     };
 
@@ -1531,6 +1679,19 @@ document.addEventListener("DOMContentLoaded", () => {
         e.preventDefault();
         importFiles(e.dataTransfer.files);
     });
+
+    /* Файл, брошенный мимо этого поля, браузер открывает вместо страницы, а
+     * в окне на ноутбуке уйти со страницы — значит потерять плеер. Мимо поля
+     * файлы просто не принимаются; текст в поля ввода бросать можно. */
+    for (const type of ["dragover", "drop"]) {
+        document.addEventListener(type, e => {
+            const files = e.dataTransfer && Array.from(e.dataTransfer.types || []).includes("Files");
+            if (!files || e.defaultPrevented) return;
+            if (e.target.closest && e.target.closest("#dropZone")) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = "none";
+        });
+    }
 });
 
 /* ---------------- Ширина панелей ----------------
