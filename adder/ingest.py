@@ -96,22 +96,6 @@ def clean_title(s: str, for_filename: bool = True) -> str:
     return s or "Unknown"
 
 
-def extract_version_info(original_title: str) -> str:
-    """Extract version information from original title (Problem #13)."""
-    versions = []
-    for pattern in VERSION_KEYWORDS:
-        matches = re.findall(pattern, original_title, flags=re.IGNORECASE)
-        for match in matches:
-            if isinstance(match, tuple):
-                # Multiple groups in pattern, take first non-empty
-                v = next((m for m in match if m), None)
-                if v:
-                    versions.append(v)
-            elif match:
-                versions.append(match)
-    return " ".join(versions) if versions else ""
-
-
 def split_artist_title(meta: dict):
     artist = meta.get("artist") or meta.get("creator") or ""
     title = meta.get("track") or meta.get("title") or "Unknown"
