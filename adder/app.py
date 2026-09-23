@@ -237,7 +237,9 @@ def add(req: AddRequest, authenticated: bool = Depends(verify_token)):
             detail=f"Queue full. Current: {current_queue_size}, Max: {config.MAX_QUEUE_SIZE}",
         )
 
-    ids = []
+    # Сначала проверяются все ссылки, потом ставятся в очередь: кривая ссылка
+    # в середине списка давала 400, а те, что до неё, уже стояли в очереди.
+    links = []
     for link in req.links:
         link = link.strip()
         if not link:
@@ -251,13 +253,15 @@ def add(req: AddRequest, authenticated: bool = Depends(verify_token)):
         # Normalize all supported YouTube URL forms to one canonical URL
         # before duplicate checks and database insertion.
         try:
-            link = ingest.canonicalize_youtube_url(link)
+            links.append(ingest.canonicalize_youtube_url(link))
         except ValueError as exc:
             raise HTTPException(
                 status_code=400,
                 detail=f"Invalid YouTube URL: {exc}",
             ) from exc
 
+    ids = []
+    for link in links:
         # Problem #7: Check for duplicate URLs already in queue/processing
         with runtime.FILE_LOCK:
             if link in runtime.PROCESSING_URLS:
@@ -622,6 +626,9 @@ async def import_files(
             status_code=400,
             detail=f"Too many files. Maximum {config.MAX_LINKS_PER_REQUEST} per request.",
         )
+
+    if runtime.TASK_QUEUE.qsize() + len(files) > config.MAX_QUEUE_SIZE:
+        raise HTTPException(status_code=429, detail="Queue full")
 
     accepted, skipped = [], []
     for upload in files:

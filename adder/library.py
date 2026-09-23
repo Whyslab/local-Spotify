@@ -120,6 +120,9 @@ def library_index() -> list[dict]:
                 # and reading it now costs one already-open file rather than a
                 # second pass over the library.
                 meta = read_tags(f)
+                # stat — тоже здесь: файл, удалённый посреди перестройки,
+                # иначе ронял весь список ошибкой 500.
+                added = int(f.stat().st_mtime)
             except Exception:
                 continue
             artist, title, album = meta["artist"], meta["title"], meta["album"]
@@ -138,7 +141,7 @@ def library_index() -> list[dict]:
                     # ингест дописывает теги, — это и есть «появился в фонотеке».
                     # Сдвигается при перетегировании, и это честнее, чем ничего:
                     # иначе свежие треки не отличить от собранных в августе.
-                    "added": int(f.stat().st_mtime),
+                    "added": added,
                     "haystack": f"{artist} {title} {album}".lower(),
                 }
             )
