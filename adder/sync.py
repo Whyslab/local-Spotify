@@ -67,9 +67,15 @@ _SEEN: dict[str, str] = {}
 _BASE: dict[str, tuple[float, str]] = {}
 
 # A track this recent may not be in Navidrome's database yet: it drops an
-# .m3u line whose file it has not scanned. Such lines are never read as
-# "removed on the phone".
+# .m3u line whose file it has not scanned. Used only when there is no earlier
+# remote list to compare with (first pass after a restart) — see _REMOTE.
 FRESH_SECONDS = 7 * 24 * 3600
+
+# The remote list of each playlist as last fetched. A local line missing from
+# Navidrome now was removed on the phone only if Navidrome listed it before;
+# a line it never listed is one it has not scanned yet. Without this, a fresh
+# track the user removed on the phone came back for a week.
+_REMOTE: dict[str, set[str]] = {}
 
 _LAST: dict[str, object] = {"at": 0.0, "result": None, "error": None}
 _LOCK = threading.Lock()
@@ -181,12 +187,20 @@ def _merged(name: str, entry: dict, local: list[str]) -> tuple[list[str], int]:
     # library (it cannot see them), and files too new for it to have scanned.
     # Taking its list as the whole truth would drop both.
     remote_set = set(remote)
+    before = _REMOTE.get(name)
     now = time.time()
+
+    def unseen_by_navidrome(path: str) -> bool:
+        if before is not None:
+            return path not in before
+        return _is_fresh(path, now)
+
     kept = [
         path
         for path in local
-        if path not in remote_set and (path not in known or _is_fresh(path, now))
+        if path not in remote_set and (path not in known or unseen_by_navidrome(path))
     ]
+    _REMOTE[name] = remote_set
     return remote + kept, len(kept)
 
 

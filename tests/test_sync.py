@@ -18,9 +18,11 @@ def forget_reconciled():
     """The seen-revisions cache is module state; tests must not inherit it."""
     sync._SEEN.clear()
     sync._BASE.clear()
+    sync._REMOTE.clear()
     yield
     sync._SEEN.clear()
     sync._BASE.clear()
+    sync._REMOTE.clear()
 
 
 @pytest.fixture()
@@ -388,3 +390,25 @@ def test_a_remote_path_the_library_does_not_know_stops_the_pull_back(temp_librar
     with pytest.raises(RuntimeError, match="does not know"):
         sync.pull_back("p", _entry("p", playlists.playlist_path("p"), 1))
     assert [line.path for line in playlists.read("p").entries] == ["a.m4a"]
+
+
+def test_a_fresh_track_removed_on_the_phone_stays_removed(temp_library, monkeypatch):
+    """Свежий трек, который Navidrome уже показывал, убран на телефоне — не
+    возвращается (раньше возвращался всю первую неделю)."""
+    for name in ("a.m4a", "b.m4a"):
+        (temp_library / name).write_bytes(b"x")
+    monkeypatch.setattr(library, "library_index", lambda: _index("a.m4a", "b.m4a"))
+    playlists.create("p", ["a.m4a", "b.m4a"])
+    # Первый проход: Navidrome видит оба.
+    monkeypatch.setattr(navidrome, "remote_tracks", lambda _id, _n: ["a.m4a", "b.m4a"])
+    sync.pull_back("p", _entry("p", playlists.playlist_path("p"), 2))
+    # На телефоне b убрали.
+    monkeypatch.setattr(navidrome, "remote_tracks", lambda _id, _n: ["a.m4a"])
+    sync.pull_back("p", _entry("p", playlists.playlist_path("p"), 1))
+    assert [line.path for line in playlists.read("p").entries] == ["a.m4a"]
+
+
+def test_renaming_to_the_same_file_name_is_a_no_op(temp_library):
+    playlists.create("Тест", ["a.m4a"])
+    assert playlists.rename("Тест", " Тест ").name == "Тест"
+    assert playlists.rename("Тест", "Тест").name == "Тест"

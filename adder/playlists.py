@@ -285,7 +285,11 @@ def rename(name: str, new_name: str) -> Playlist:
     source, target = playlist_path(name), playlist_path(new_name)
     if not source.is_file():
         raise HTTPException(status_code=404, detail="Playlist not found")
-    first, second = sorted({safe_name(name), safe_name(new_name)})
+    if safe_name(name) == safe_name(new_name):
+        # Тот же файл (имя не поменялось или отличается пробелами по краям):
+        # переименовывать нечего. Раньше это падало с 500 на распаковке пары.
+        return read(name)
+    first, second = sorted((safe_name(name), safe_name(new_name)))
     with _lock_for(first), _lock_for(second):
         # Под замком и без затирания: os.replace молча заменил бы подборку,
         # появившуюся под новым именем после проверки.
