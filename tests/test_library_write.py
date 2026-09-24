@@ -562,3 +562,27 @@ def test_a_finished_and_a_failed_task_reach_the_desktop(app, monkeypatch):
 
     assert added == [("A", "B")]
     assert failed == [("https://www.youtube.com/watch?v=gone", "видео недоступно")]
+
+
+def test_a_new_track_gets_replaygain_and_the_player_gets_it_with_the_link(app, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from adder import app as app_module
+
+    youtube(app, monkeypatch, {"title": "A - B", "uploader": "x"})
+    deezer(app, monkeypatch, None)
+    covers(app, monkeypatch)
+    run(app)
+
+    library.invalidate_library_index()
+    assert library.library_index()[0]["gain"] == pytest.approx(3.9, abs=0.2)
+
+    monkeypatch.setattr(config, "API_TOKEN", "test-secret")
+    with TestClient(app_module.app) as client:
+        response = client.get(
+            "/api/stream-url",
+            params={"path": "A/Singles/B.m4a"},
+            headers={"Authorization": "Bearer test-secret"},
+        )
+    assert response.status_code == 200
+    assert response.json()["gain"] == pytest.approx(3.9, abs=0.2)

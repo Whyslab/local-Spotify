@@ -15,10 +15,12 @@ from fastapi import HTTPException
 from mutagen.easyid3 import EasyID3
 from mutagen.mp4 import MP4
 
-from . import config, runtime
+from . import config, loudness, runtime
 
 # Lets read_tags see ingest.write_source's TXXX frame in an MP3 as "source_url".
 EasyID3.RegisterTXXXKey("source_url", "SOURCE_URL")
+# EasyID3's own replaygain_* keys map to RVA2 frames; players write TXXX.
+EasyID3.RegisterTXXXKey("rg_track_gain", "REPLAYGAIN_TRACK_GAIN")
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +44,11 @@ def read_tags(path: Path) -> dict:
         tags = parsed.tags or {}
         track = tags.get("trkn") or []
         source = tags.get("----:com.apple.iTunes:SOURCE_URL") or []
+        gain = tags.get("----:com.apple.iTunes:replaygain_track_gain") or tags.get(
+            "----:com.apple.iTunes:REPLAYGAIN_TRACK_GAIN"
+        )
         return {
+            "gain": loudness.parse_gain(bytes(gain[0])) if gain else None,
             "source": bytes(source[0]).decode("utf-8", "replace") if source else "",
             "artist": " \u2022 ".join(tags.get("\xa9ART") or []),
             "title": (tags.get("\xa9nam") or [path.stem])[0],
@@ -69,6 +75,7 @@ def read_tags(path: Path) -> dict:
         track_number = None
 
     return {
+        "gain": loudness.parse_gain(first("replaygain_track_gain") or first("rg_track_gain")),
         "source": first("source_url"),
         "artist": " \u2022 ".join(tags.get("artist") or []),
         "title": first("title") or path.stem,
@@ -175,6 +182,7 @@ def library_index() -> list[dict]:
                     # иначе свежие треки не отличить от собранных в августе.
                     "added": added,
                     "source": meta.get("source") or "",
+                    "gain": meta.get("gain"),
                     "haystack": f"{artist} {title} {album}".lower(),
                 }
             )

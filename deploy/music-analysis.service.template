@@ -1,10 +1,13 @@
 [Unit]
-Description=local-Spotify: measure tempo, energy and key across the library
+Description=local-Spotify: ReplayGain, then tempo, energy and key across the library
 After=music-adder.service
 
 [Service]
 Type=oneshot
 WorkingDirectory=%REPO%
+# ReplayGain first: it retags only files without it and moves their analysis
+# hash along, so the pass below does not re-measure them. See the script.
+ExecStart=%REPO%/.venv/bin/python %REPO%/scripts/replaygain.py
 ExecStart=%REPO%/.venv/bin/python %REPO%/scripts/analyze_audio.py --jobs %JOBS%
 
 # The whole point of running this as its own unit. One analysis process peaks
@@ -35,6 +38,8 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=%REPO%/adder
+# The ReplayGain step writes tags into the library files.
+ReadWritePaths="%LIBRARY%"
 
 [Install]
 WantedBy=default.target

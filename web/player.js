@@ -34,6 +34,9 @@ const player = {
     playingMode: null,   // из какой очереди начал играть текущий трек — для журнала
     repeat: "off",       // "off" | "all" | "one"
     generation: 0,       // номер последнего включения — см. playAt
+    userVolume: 1,       // ползунок; звучит userVolume × поправка трека — см. applyVolume
+    trackGain: null,     // ReplayGain текущего трека в дБ, null — не измерен
+    volumeAdjustable: false,
 };
 
 /* ---------------- Journal ---------------- */
@@ -67,10 +70,12 @@ function reportPlay(finished) {
 
 /* ---------------- Playback ---------------- */
 
+/* Ссылка и поправка громкости трека (ReplayGain) приходят вместе. */
 async function streamUrlFor(path) {
     const r = await fetch("/api/stream-url?path=" + encodeURIComponent(path), { headers: headers() });
     if (!r.ok) throw new Error("Не удалось получить ссылку на трек");
-    return (await r.json()).url;
+    const data = await r.json();
+    return { url: data.url, gain: typeof data.gain === "number" ? data.gain : null };
 }
 
 /* `direction` — куда листают: пропуск недоступного трека идёт туда же, иначе
@@ -94,7 +99,9 @@ async function playAt(position, skipped = 0, direction = 1) {
 
     let url;
     try {
-        url = await streamUrlFor(track.path);
+        const stream = await streamUrlFor(track.path);
+        url = stream.url;
+        player.trackGain = stream.gain;
     } catch (e) {
         if (generation !== player.generation) return false;
         /* Трек со стороны не успел или не смог скачаться. Тишина вместо
@@ -115,6 +122,7 @@ async function playAt(position, skipped = 0, direction = 1) {
     }
     if (generation !== player.generation) return false;
     try {
+        applyVolume();
         player.audio.src = url;
         await player.audio.play();
     } catch (e) {
@@ -864,7 +872,7 @@ player.audio.addEventListener("error", async () => {
     if (expired && errorRetry !== generation) {
         errorRetry = generation;
         try {
-            const url = await streamUrlFor(track.path);
+            const { url } = await streamUrlFor(track.path);
             if (generation !== player.generation) return;
             player.audio.src = url;
             player.audio.currentTime = at;
@@ -2267,6 +2275,21 @@ renderPlayerModes();
 
 const VOLUME_KEY = "playerVolume";
 
+/* ReplayGain: трек, измеренный громче опорных −18 LUFS, звучит тише на свою
+ * поправку. Только вниз — громкость <audio> выше 1 не бывает, а поднимать
+ * тихие треки через Web Audio значит потерять фоновое воспроизведение (см.
+ * выше). Треки громче опорного — почти всё с YouTube — выравниваются. */
+function gainFactor() {
+    const gain = player.trackGain;
+    if (typeof gain !== "number") return 1;
+    return Math.min(1, Math.pow(10, gain / 20));
+}
+
+function applyVolume() {
+    if (!player.volumeAdjustable) return;
+    player.audio.volume = player.userVolume * gainFactor();
+}
+
 function volumeIsAdjustable() {
     const before = player.audio.volume;
     try {
@@ -2296,7 +2319,7 @@ function updateVolumeIcon() {
     const button = document.getElementById("playerMute");
     if (!icon || !button) return;
 
-    const silent = player.audio.muted || player.audio.volume === 0;
+    const silent = player.audio.muted || player.userVolume === 0;
     icon.setAttribute("d", silent
         ? "M4 9v6h4l5 4V5L8 9zM17 9l4 6M21 9l-4 6"
         : "M4 9v6h4l5 4V5L8 9zM16 9a4 4 0 0 1 0 6");
@@ -2308,7 +2331,7 @@ function updateVolumeIcon() {
     if (box) box.classList.toggle("is-muted", player.audio.muted);
     const slider = document.getElementById("playerVolumeRange");
     if (slider) {
-        const percent = Math.round(player.audio.volume * 100) + "%";
+        const percent = Math.round(player.userVolume * 100) + "%";
         slider.setAttribute("aria-valuetext",
             player.audio.muted ? percent + ", звук выключен" : percent);
     }
@@ -2317,7 +2340,8 @@ function updateVolumeIcon() {
 function setVolumeFromSlider(value) {
     const level = Math.min(100, Math.max(0, Number(value) || 0)) / 100;
     player.audio.muted = false;
-    player.audio.volume = level;
+    player.userVolume = level;
+    applyVolume();
     paintVolume(level);
     try { localStorage.setItem(VOLUME_KEY, String(level)); } catch (e) { /* приватное окно */ }
     updateVolumeIcon();
@@ -2327,9 +2351,9 @@ function toggleMute() {
     player.audio.muted = !player.audio.muted;
     /* Нажал «без звука» на нуле — это просьба вернуть звук, а не поставить
      * беззвучное воспроизведение: поднимаем ползунок до половины. */
-    if (!player.audio.muted && player.audio.volume === 0) setVolumeFromSlider(50);
+    if (!player.audio.muted && player.userVolume === 0) setVolumeFromSlider(50);
     const slider = document.getElementById("playerVolumeRange");
-    if (slider) slider.value = String(Math.round(player.audio.volume * 100));
+    if (slider) slider.value = String(Math.round(player.userVolume * 100));
     updateVolumeIcon();
 }
 
@@ -2344,7 +2368,9 @@ function initVolume() {
         if (Number.isFinite(stored) && stored >= 0 && stored <= 1) saved = stored;
     } catch (e) { /* приватное окно — играем на полной */ }
 
-    player.audio.volume = saved;
+    player.volumeAdjustable = true;
+    player.userVolume = saved;
+    applyVolume();
     slider.value = String(Math.round(saved * 100));
     paintVolume(saved);
     box.hidden = false;

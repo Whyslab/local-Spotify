@@ -37,6 +37,7 @@ It is not built to be a public SaaS or to work around YouTube's restrictions —
 * **Add music by link** — POST a list of YouTube URLs; the service handles the rest.
 * **Background queue with multiple workers** — downloads run in parallel (`MAX_WORKERS`) and never block the API.
 * **Automatic metadata cleanup** — `Song (Official Video) [4K]` becomes a clean `Artist / Song`, while genuine variants like `(Live)` or `(Remix)` are preserved in the tags.
+* **Even loudness (ReplayGain)** — every track is measured with ffmpeg (EBU R 128) and tagged; Navidrome, Subsonic clients that honour ReplayGain and the built-in desktop player play everything at the same level. On an iPhone the browser does not let a page change volume, so there it is up to the Subsonic client.
 * **HD cover art** — iTunes Search API with a fallback to the YouTube thumbnail; a separate script (`fix_covers.py`) backfills missing artwork afterwards via iTunes → Deezer.
 * **Content-based deduplication** — each track is hashed (SHA-256) and compared against what is already in the library, rather than matched on filename.
 * **Retry with exponential backoff** — transient network and download failures are retried automatically; permanent ones are not.
@@ -363,7 +364,7 @@ For continuous background operation the service runs as a systemd user unit. The
 ./deploy/install.sh
 ```
 
-The script refuses to continue without `.venv` or with an unset/placeholder `API_TOKEN`; writes the unit for `LIBRARY_PATH` and enables lingering; installs three timers — nightly audio analysis, nightly shelf export, and a weekly yt-dlp update that rolls itself back if the new version cannot read YouTube; if `navidrome` is installed and has no config yet, writes `/etc/navidrome/navidrome.toml` with the same `MusicFolder` (an existing config is left alone); and, if `ufw` is active, opens Navidrome and the service to the LAN subnet (`LAN_SUBNET=192.168.1.0/24` to choose it).
+The script refuses to continue without `.venv` or with an unset/placeholder `API_TOKEN`; writes the unit for `LIBRARY_PATH` and enables lingering; installs three timers — nightly ReplayGain tagging and audio analysis, nightly shelf export, and a weekly yt-dlp update that rolls itself back if the new version cannot read YouTube; if `navidrome` is installed and has no config yet, writes `/etc/navidrome/navidrome.toml` with the same `MusicFolder` (an existing config is left alone); and, if `ufw` is active, opens Navidrome and the service to the LAN subnet (`LAN_SUBNET=192.168.1.0/24` to choose it).
 
 ```bash
 systemctl --user status music-adder

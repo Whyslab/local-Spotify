@@ -27,7 +27,7 @@ import mutagen
 import requests
 from mutagen.mp4 import MP4, MP4Cover
 
-from . import config, db, enrich, library, runtime
+from . import config, db, enrich, library, loudness, runtime
 
 logger = logging.getLogger(__name__)
 
@@ -1445,6 +1445,12 @@ def ingest_temp_file(tid: int, temp_path: Path, names: TrackNames, thumbnail: st
     source = _task_source(tid)
     if source:
         write_source(temp_path, source)
+    # Loudness, so a shuffle does not jump between quiet and loud uploads. A
+    # failed measurement only means no ReplayGain tag, never a failed task.
+    try:
+        loudness.apply(temp_path)
+    except Exception as exc:
+        logger.warning("ReplayGain not written: %s", exc, extra={"task_id": tid})
 
     if not verify_tags_written(temp_path, names.meta_title):
         raise RuntimeError("Metadata write failed verification")

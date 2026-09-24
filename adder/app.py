@@ -920,16 +920,19 @@ def get_stream_url(path: str, authenticated: bool = Depends(verify_token)):
         return signing.stream_url(path, meta.get("duration"))
     track = library.library_track(path)
     duration = None
+    gain = None
     for row in library.library_index():
         if row["path"] == path:
             duration = row.get("duration")
+            gain = row.get("gain")
             break
     if duration is None:
         from mutagen.mp4 import MP4
 
         with suppress(Exception):
             duration = MP4(track).info.length
-    return signing.stream_url(path, duration)
+    # ReplayGain travels with the link: the player turns the track down by it.
+    return {**signing.stream_url(path, duration), "gain": gain}
 
 
 @app.get("/api/stream")
