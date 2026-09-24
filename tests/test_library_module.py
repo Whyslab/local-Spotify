@@ -123,3 +123,29 @@ def test_rebuilding_the_index_rereads_only_changed_files(tmp_path, monkeypatch):
 
     assert [row["path"] for row in library.library_index()] == ["a/t.m4a", "b/t.m4a"]
     assert reads == ["b"]
+
+
+def test_a_retag_that_keeps_the_date_is_still_noticed(tmp_path, monkeypatch):
+    import os
+    import shutil
+
+    from mutagen.mp4 import MP4
+
+    from adder import config, library
+
+    fixture = Path(__file__).parent / "fixtures" / "tone.m4a"
+    monkeypatch.setattr(config, "LIBRARY", tmp_path)
+    monkeypatch.setattr(library, "_FILE_ROWS", {})
+    path = tmp_path / "t.m4a"
+    shutil.copy(fixture, path)
+    library.invalidate_library_index()
+    library.library_index()
+
+    stat = path.stat()
+    audio = MP4(path)
+    audio["\xa9nam"] = ["Renamed"]
+    audio.save()
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))  # as the tag editor does
+    library.invalidate_library_index()
+
+    assert library.library_index()[0]["title"] == "Renamed"

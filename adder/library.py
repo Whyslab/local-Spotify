@@ -110,8 +110,8 @@ def library_track(rel_path: str) -> Path:
 
 
 LIBRARY_INDEX_TTL = 60
-# Parsed row per file, keyed by path and valid while (mtime_ns, size) match.
-_FILE_ROWS: dict[str, tuple[tuple[int, int], dict]] = {}
+# Parsed row per file, keyed by path and valid while (mtime_ns, size, ctime_ns) match.
+_FILE_ROWS: dict[str, tuple[tuple[int, int, int], dict]] = {}
 _LIBRARY_INDEX: dict[str, object] = {"at": 0.0, "rows": []}
 _LIBRARY_INDEX_LOCK = threading.Lock()
 
@@ -143,7 +143,9 @@ def library_index() -> list[dict]:
                 continue
             key = str(f)
             seen.add(key)
-            stamp = (stat.st_mtime_ns, stat.st_size)
+            # ctime as well as mtime: tag edits and ReplayGain keep mtime on
+            # purpose (it is the "added" date), but no write can keep ctime.
+            stamp = (stat.st_mtime_ns, stat.st_size, stat.st_ctime_ns)
             cached = _FILE_ROWS.get(key)
             if cached and cached[0] == stamp:
                 # Unchanged since the last pass: reading its tags again is what
