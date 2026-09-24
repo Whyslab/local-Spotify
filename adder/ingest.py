@@ -135,7 +135,11 @@ def split_artist_title(meta: dict):
 
     # For filesystem, use primary artist only (safe naming)
     if not config.PRESERVE_FEAT_ARTISTS:
-        fs_artist = artist.split(",")[0].split(" feat")[0].split(" ft")[0]
+        # Whole words only: splitting on the bare substrings " feat" and " ft"
+        # also cut names such as "Joe Feather" or "Lefty Ftw" short.
+        fs_artist = re.split(
+            r",|\s+(?:feat\.?|ft\.?|featuring)(?=\s)", artist, maxsplit=1, flags=re.IGNORECASE
+        )[0]
     else:
         # Keep full artist string but sanitize for filesystem
         fs_artist = artist

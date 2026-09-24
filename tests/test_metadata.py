@@ -201,3 +201,26 @@ def test_channel_suffixes_are_not_part_of_the_artist(uploader, artist):
     _, _, full_artist, _ = split_artist_title({"title": "Song", "uploader": uploader})
 
     assert full_artist == artist
+
+
+@pytest.mark.parametrize(
+    ("artist", "folder"),
+    [
+        ("Daft Punk feat. Pharrell", "Daft Punk"),
+        ("Daft Punk ft. Pharrell", "Daft Punk"),
+        ("Daft Punk ft Pharrell", "Daft Punk"),
+        ("Daft Punk Featuring Pharrell", "Daft Punk"),
+        ("A, B", "A"),
+        ("Joe Feather", "Joe Feather"),
+        ("Lefty Ftw", "Lefty Ftw"),
+    ],
+)
+def test_lead_artist_folder_splits_on_whole_words_only(monkeypatch, artist, folder):
+    from adder import config
+
+    monkeypatch.setattr(config, "PRESERVE_FEAT_ARTISTS", False)
+
+    fs_artist, _, full_artist, _ = split_artist_title({"artist": artist, "track": "Song"})
+
+    assert fs_artist == folder
+    assert full_artist == artist
