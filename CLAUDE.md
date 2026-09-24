@@ -78,7 +78,8 @@ journalctl --user -u music-adder -f
 - Paths live on `runtime` and config values on `config`, and modules read them at call time:
   in tests patch `runtime.TMP_DIR`, `config.LIBRARY`, `config.MAX_RETRIES`, … — never a copy.
 - `runtime.TASK_QUEUE`, `PROCESSING_URLS` and `shutdown_event` are shared across tests; drain or
-  reset them in tests that touch workers.
+  reset them in tests that touch workers. The YouTube rate-limit pause (`runtime.pause_youtube`)
+  holds every yt-dlp call process-wide; conftest resets it per test.
 - Errors: `ingest.classify_error()` maps a message to an `error_type`; only
   `ingest.RETRYABLE_ERRORS` are retried. yt-dlp failures carry its last `ERROR:` line
   (`ingest.ytdlp_error()`). New yt-dlp wordings go into `classify_error` with a test in
