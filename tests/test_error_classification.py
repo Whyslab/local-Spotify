@@ -184,3 +184,20 @@ class TestYtdlpErrorExtraction:
 
     def test_empty_stderr_still_explains_itself(self):
         assert ingest.ytdlp_error("") == "yt-dlp failed without an error message"
+
+
+class TestFilesystemWording:
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "[Errno 28] No space left on device",
+            "Insufficient disk space: 10MB free, 2048MB required",
+        ],
+    )
+    def test_a_full_disk_is_a_filesystem_error(self, message):
+        assert classify_error(message) == "filesystem_error"
+
+    def test_the_word_space_elsewhere_is_not(self):
+        assert classify_error("AttributeError: module 'x' has no namespace 'y'") != (
+            "filesystem_error"
+        )

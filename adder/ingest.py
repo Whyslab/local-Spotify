@@ -999,7 +999,9 @@ def classify_error(message: str) -> str:
     if re.search(r"http error 5\d\d", text):
         return "network_error"
 
-    if "disk" in text or "space" in text or "no space left" in text:
+    # The OS's and this service's own wording, not any "space" or "disk":
+    # "namespace" in a traceback used to read as a full disk.
+    if "no space left" in text or "disk space" in text or "disk full" in text:
         return "filesystem_error"
     if "database" in text or "sqlite" in text:
         return "database_error"
