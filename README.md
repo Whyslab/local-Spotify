@@ -307,7 +307,7 @@ curl -X POST http://127.0.0.1:8787/api/add \
 { "added": [12, 13] }
 ```
 
-Only links to `youtube.com`, `m.youtube.com`, `music.youtube.com` and `youtu.be` are accepted. Different URL forms pointing at the same video are canonicalised, so they do not create duplicate tasks. Re-submitting a link whose task has already completed or is still running is ignored; a link whose task ended in `error` can be re-submitted to queue it again.
+Only links to `youtube.com`, `m.youtube.com`, `music.youtube.com` and `youtu.be` are accepted. Shorts, live and embed links (`/shorts/ID`, `/live/ID`, `/embed/ID`) are accepted too. Different URL forms pointing at the same video are canonicalised, so they do not create duplicate tasks. Re-submitting a link whose task has already completed or is still running is ignored; a link whose task ended in `error` can be re-submitted to queue it again.
 
 </details>
 

@@ -215,10 +215,15 @@ def canonicalize_youtube_url(url: str) -> str:
         "m.youtube.com",
         "music.youtube.com",
     }:
-        if parsed.path != "/watch":
+        # Shorts, live replays and embeds are ordinary videos under another
+        # path; they were refused with "must use /watch" before.
+        other_form = re.fullmatch(r"/(?:shorts|live|embed|v)/([^/]+)/?", parsed.path)
+        if parsed.path == "/watch":
+            video_id = parse_qs(parsed.query).get("v", [None])[0]
+        elif other_form:
+            video_id = other_form.group(1)
+        else:
             raise ValueError("YouTube URL must use /watch?v=VIDEO_ID")
-
-        video_id = parse_qs(parsed.query).get("v", [None])[0]
 
     elif hostname in {"youtu.be", "www.youtu.be"}:
         video_id = parsed.path.lstrip("/").split("/", 1)[0]
