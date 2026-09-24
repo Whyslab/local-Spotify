@@ -35,8 +35,10 @@ LIBRARY_PATH_VALUE="${LIBRARY_PATH_VALUE:-$HOME/Music/Normalized Library}"
 # Keep the library path quoted in the generated unit so paths containing
 # spaces remain a single systemd argument.
 UNIT_TEMPLATE="$(cat "$REPO/deploy/music-adder.service.template")"
-UNIT_CONTENT="${UNIT_TEMPLATE//%REPO%/$REPO}"
-UNIT_CONTENT="${UNIT_CONTENT//%LIBRARY%/$LIBRARY_PATH_VALUE}"
+# Quoted replacements: bash 5.2 otherwise expands "&" in them to the match,
+# turning a library path like "Rock & Roll" into "Rock %LIBRARY% Roll".
+UNIT_CONTENT="${UNIT_TEMPLATE//%REPO%/"$REPO"}"
+UNIT_CONTENT="${UNIT_CONTENT//%LIBRARY%/"$LIBRARY_PATH_VALUE"}"
 
 printf '%s\n' "$UNIT_CONTENT" \
     > "$HOME/.config/systemd/user/music-adder.service"
@@ -67,10 +69,16 @@ if command -v navidrome >/dev/null; then
   # Только если настроек ещё нет: повторный запуск установщика молча
   # затирал живые (например, Subsonic.ArtistParticipations — без неё Amperfy
   # перестаёт показывать альбомы с фитами).
+  # MusicFolder — тот же LIBRARY_PATH, что у службы: раньше подставлялся
+  # $HOME/Music/Normalized Library, и при своём пути Navidrome смотрел не туда.
   if [[ ! -f /etc/navidrome/navidrome.toml ]]; then
-    sed "s|/home/USER|$HOME|g" "$REPO/deploy/navidrome.toml.example" | sudo tee /etc/navidrome/navidrome.toml >/dev/null
+    NAVIDROME_TEMPLATE="$(cat "$REPO/deploy/navidrome.toml.example")"
+    NAVIDROME_CONTENT="${NAVIDROME_TEMPLATE//\/home\/USER\/Music\/Normalized Library/"$LIBRARY_PATH_VALUE"}"
+    printf '%s\n' "$NAVIDROME_CONTENT" | sudo tee /etc/navidrome/navidrome.toml >/dev/null
+    echo "Wrote /etc/navidrome/navidrome.toml (MusicFolder = $LIBRARY_PATH_VALUE)"
   else
     echo "Keeping existing /etc/navidrome/navidrome.toml (compare with deploy/navidrome.toml.example)"
+    echo "  Check that it contains: MusicFolder = \"$LIBRARY_PATH_VALUE\""
   fi
   sudo install -d /etc/systemd/system/navidrome.service.d
   sudo cp "$REPO/deploy/navidrome-override.conf" /etc/systemd/system/navidrome.service.d/override.conf
