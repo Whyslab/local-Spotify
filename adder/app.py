@@ -70,7 +70,7 @@ class TaskIdFormatter(logging.Formatter):
 
 logging.basicConfig(
     level=logging.INFO,
-    format="[%(asctime)s] [task=%(task_id)s] %(message)s",
+    format="[%(asctime)s] %(levelname)s [task=%(task_id)s] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 
@@ -78,7 +78,10 @@ logging.basicConfig(
 # libraries (httpx, uvicorn, etc.) cannot trigger KeyError.
 for handler in logging.getLogger().handlers:
     handler.setFormatter(
-        TaskIdFormatter("[%(asctime)s] [task=%(task_id)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+        TaskIdFormatter(
+            "[%(asctime)s] %(levelname)s [task=%(task_id)s] %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
     )
 
 logger = logging.getLogger(__name__)
