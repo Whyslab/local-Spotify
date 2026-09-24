@@ -77,6 +77,10 @@ def process(tid: int, url: str):
             logger.info("Task finished: %s", outcome, extra={"task_id": tid})
             if url.startswith("file:"):
                 ingest.forget_upload(url)
+            # Released here too, not only after a failure: /api/add skips any
+            # URL still in the set, so a deleted track could not be re-added.
+            with runtime.FILE_LOCK:
+                runtime.PROCESSING_URLS.discard(url)
             return  # Success, exit retry loop
 
         except runtime.ShutdownRequested:

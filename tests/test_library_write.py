@@ -452,3 +452,28 @@ def test_a_full_library_disk_stops_the_download(tmp_path, monkeypatch):
     monkeypatch.setattr(ingest.shutil, "disk_usage", usage)
 
     assert ingest.check_disk_space() == (False, 10)
+
+
+def test_a_finished_link_is_released_so_it_can_be_added_again(app, monkeypatch):
+    # After a successful task the URL stayed in PROCESSING_URLS, and /api/add
+    # skips anything in that set: deleting the track and re-adding the link
+    # (which the API allows) was silently ignored until a restart.
+    youtube(app, monkeypatch, {"title": "A - B", "uploader": "x"})
+    deezer(app, monkeypatch, None)
+    covers(app, monkeypatch)
+    runtime.PROCESSING_URLS.add(URL)
+
+    assert run(app)["status"] == "done"
+    assert URL not in runtime.PROCESSING_URLS
+
+
+def test_a_duplicate_result_also_releases_the_link(app, monkeypatch):
+    youtube(app, monkeypatch, {"title": "A - B", "uploader": "x"})
+    deezer(app, monkeypatch, None)
+    covers(app, monkeypatch)
+    run(app, "https://www.youtube.com/watch?v=first")
+
+    runtime.PROCESSING_URLS.add(URL)
+    run(app)  # byte-identical audio: stored as a duplicate, not a new file
+
+    assert URL not in runtime.PROCESSING_URLS
