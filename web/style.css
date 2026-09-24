@@ -345,6 +345,13 @@ button:disabled { opacity: .5; cursor: default; }
     white-space: nowrap;
 }
 
+/* «Похоже на уже имеющийся трек» — путь целиком, иначе не понять, какой. */
+.track-warning {
+    color: var(--warn);
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+
 .track-status {
     flex-shrink: 0;
     font-size: 11px;

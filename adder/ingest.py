@@ -567,6 +567,49 @@ def find_duplicate_library_file(filepath: Path) -> Path | None:
     return None
 
 
+# How far apart two recordings of one song may be and still count as the same.
+SIMILAR_DURATION_SECONDS = 3.0
+
+
+def audio_duration(path: Path) -> float | None:
+    try:
+        parsed = mutagen.File(path)
+    except Exception:
+        return None
+    length = getattr(getattr(parsed, "info", None), "length", 0) or 0
+    return float(length) or None
+
+
+def find_similar_library_track(
+    artists: list[str], title: str, duration: float | None
+) -> str | None:
+    """A library track that is probably the same song, or None.
+
+    The content hash only catches byte-identical files; the same song from a
+    second video (official clip, lyric video, a Topic upload) never matches it
+    and used to land silently as "Song (1)". This compares what a listener
+    would: the title and lead artist, folded by enrich.normalize, and the
+    length within a few seconds when both are known. A version marker such as
+    "(Live)" is part of the title, so a live take is not flagged.
+    """
+    want_title = enrich.normalize(title)
+    want_artist = enrich.normalize(artists[0]) if artists else ""
+    if not want_title:
+        return None
+    for row in library.library_index():
+        if enrich.normalize(row.get("title") or "") != want_title:
+            continue
+        row_artists = [enrich.normalize(a) for a in enrich.split_artists(row.get("artist") or "")]
+        row_artists.append(enrich.normalize(row.get("albumartist") or ""))
+        if want_artist and want_artist not in row_artists:
+            continue
+        other = row.get("duration")
+        if duration and other and abs(duration - other) > SIMILAR_DURATION_SECONDS:
+            continue
+        return row["path"]
+    return None
+
+
 def unique_path(base: Path) -> Path:
     p, n = base, 1
     while p.exists():
@@ -1228,6 +1271,10 @@ def ingest_temp_file(tid: int, temp_path: Path, names: TrackNames, thumbnail: st
     if not is_valid:
         raise RuntimeError(f"Final validation failed: {error_msg}")
 
+    # Outside the lock: the library index may read every file's tags, and a
+    # race here costs at most a missed warning, never a wrong file.
+    similar = find_similar_library_track(info.artists, names.meta_title, audio_duration(temp_path))
+
     # Content-based duplicate detection must happen while holding the same
     # lock as the final move. This prevents concurrent workers from both
     # accepting identical audio.
@@ -1262,6 +1309,16 @@ def ingest_temp_file(tid: int, temp_path: Path, names: TrackNames, thumbnail: st
     # и названию, иначе в корзину уедет не тот.
     relative = str(final_target.relative_to(config.LIBRARY.resolve()))
     db.task_update(tid, result_path=relative)
+    if similar:
+        # Kept on purpose: it may be a better recording, and which one to keep
+        # is the listener's call. The panel shows this next to the task.
+        logger.warning(
+            "Stored %s, but the library already has a similar track: %s",
+            relative,
+            similar,
+            extra={"task_id": tid},
+        )
+        db.task_update(tid, warning=f"Похоже на уже имеющийся трек: {similar}")
     _apply_replacement(tid, relative)
 
     # Текст — сразу, чтобы он был уже при первом включении. В своём потоке:

@@ -576,6 +576,7 @@ def _reset_task(tid: int) -> None:
         title=None,
         error=None,
         error_type=None,
+        warning=None,
         retry_count=0,
         replace_of=None,
         result_path=None,

@@ -349,6 +349,7 @@ async function tasks() {
                 artist: t.artist || "",
                 status: t.status,
                 error: t.error,
+                warning: t.warning,
             }));
         }
 
@@ -361,6 +362,7 @@ async function tasks() {
                     artist: t.artist || "",
                     status: t.status,
                     error: t.error,
+                    warning: t.warning,
                 }));
             }
         }
@@ -369,7 +371,7 @@ async function tasks() {
     }
 }
 
-function trackRow({ title, artist, status, error }) {
+function trackRow({ title, artist, status, error, warning }) {
     const card = document.createElement("div");
     card.className = "track";
 
@@ -396,6 +398,15 @@ function trackRow({ title, artist, status, error }) {
         errEl.className = "track-album";
         errEl.textContent = error;
         info.appendChild(errEl);
+    }
+
+    /* Трек сохранён, но похож на уже имеющийся: оставить оба или удалить
+     * лишний — решает человек, поэтому это предупреждение, а не ошибка. */
+    if (warning) {
+        const warnEl = document.createElement("div");
+        warnEl.className = "track-album track-warning";
+        warnEl.textContent = "⚠ " + warning;
+        info.appendChild(warnEl);
     }
 
     const badge = document.createElement("div");

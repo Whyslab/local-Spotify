@@ -65,6 +65,10 @@ def db_init():
         db_exec("ALTER TABLE tasks ADD COLUMN replace_of TEXT")
     with suppress(sqlite3.OperationalError):
         db_exec("ALTER TABLE tasks ADD COLUMN result_path TEXT")
+    # Трек сохранён, но в фонотеке уже есть очень похожий — панель об этом
+    # предупреждает, а решать, какой оставить, человеку.
+    with suppress(sqlite3.OperationalError):
+        db_exec("ALTER TABLE tasks ADD COLUMN warning TEXT")
 
     db_exec("CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT)")
 

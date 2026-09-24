@@ -252,3 +252,90 @@ def test_new_track_is_searchable_immediately(app, monkeypatch):
     run(app)
 
     assert [row["title"] for row in library.library_index()] == ["B"]
+
+
+# ---------------------------------------------------------------------------
+# The same song from a second video: kept, but flagged
+# ---------------------------------------------------------------------------
+
+
+def _task(tid):
+    return db.db_query("SELECT * FROM tasks WHERE id = ?", (tid,))[0]
+
+
+def test_same_song_from_another_video_is_kept_with_a_warning(app, monkeypatch, caplog):
+    deezer(app, monkeypatch, None)
+    covers(app, monkeypatch)
+    youtube(app, monkeypatch, {"title": "Artist - Song (Official Video)", "uploader": "x"})
+    first = run(app, "https://www.youtube.com/watch?v=clip")
+
+    other = runtime.TMP_DIR.parent / "other.m4a"
+    shutil.copy(FIXTURE, other)
+    audio = MP4(other)
+    audio["\xa9cmt"] = ["lyric video upload"]
+    audio.save()
+    youtube(
+        app, monkeypatch, {"title": "Artist - Song (Lyric Video)", "uploader": "x"}, audio=other
+    )
+    with caplog.at_level("WARNING"):
+        second = run(app, "https://www.youtube.com/watch?v=lyrics")
+
+    assert first["status"] == second["status"] == "done"
+    assert not first["warning"]
+    assert library_files(app) == [
+        Path("Artist/Singles/Song (1).m4a"),
+        Path("Artist/Singles/Song.m4a"),
+    ]
+    assert second["warning"] == "Похоже на уже имеющийся трек: Artist/Singles/Song.m4a"
+    assert any("similar track" in r.getMessage() for r in caplog.records)
+
+
+def test_a_live_version_is_not_flagged(app, monkeypatch):
+    deezer(app, monkeypatch, None)
+    covers(app, monkeypatch)
+    youtube(app, monkeypatch, {"title": "Artist - Song", "uploader": "x"})
+    run(app, "https://www.youtube.com/watch?v=studio")
+
+    other = runtime.TMP_DIR.parent / "live.m4a"
+    shutil.copy(FIXTURE, other)
+    audio = MP4(other)
+    audio["\xa9cmt"] = ["live"]
+    audio.save()
+    youtube(app, monkeypatch, {"title": "Artist - Song (Live)", "uploader": "x"}, audio=other)
+    live = run(app, "https://www.youtube.com/watch?v=live")
+
+    assert live["status"] == "done"
+    assert not live["warning"]
+
+
+def test_a_different_length_is_not_the_same_recording(app, monkeypatch):
+    monkeypatch.setattr(
+        library,
+        "library_index",
+        lambda: [
+            {
+                "path": "A/Singles/B.m4a",
+                "artist": "A",
+                "albumartist": "A",
+                "title": "B",
+                "duration": 240.0,
+            }
+        ],
+    )
+
+    assert ingest.find_similar_library_track(["A"], "B", 239.0) == "A/Singles/B.m4a"
+    assert ingest.find_similar_library_track(["A"], "B", 180.0) is None
+    assert ingest.find_similar_library_track(["Someone Else"], "B", 240.0) is None
+    assert ingest.find_similar_library_track(["A"], "B", None) == "A/Singles/B.m4a"
+
+
+def test_resubmitting_clears_an_old_warning(app):
+    tid = db.db_exec(
+        "INSERT INTO tasks(url, status, warning) VALUES('u', 'error', 'old')"
+    ).lastrowid
+
+    from adder import app as app_module
+
+    app_module._reset_task(tid)
+
+    assert not _task(tid)["warning"]
