@@ -407,6 +407,7 @@ git pull
 .venv/bin/python -m playwright install chromium  # один раз, для браузерных тестов
 .venv/bin/pytest -q
 .venv/bin/ruff check . && .venv/bin/ruff format --check adder scripts tests desktop
+.venv/bin/mypy                                   # проверка типов, настройки в mypy.ini
 ```
 
 Тесты полностью офлайн и не требуют настоящего `.env`; тестам импорта и потоков нужен `ffmpeg` (CI его ставит). `tests/conftest.py` роняет любой тест, который открывает сетевое соединение, поэтому YouTube, Deezer, MusicBrainz и iTunes всегда замоканы. Покрыто:
@@ -418,7 +419,7 @@ git pull
 * **панель и плеер в настоящем браузере** (`tests/test_ui.py`, Playwright + Chromium): правка тегов, громкость ReplayGain, затухание, таймер сна, повтор, состояние фонотеки, выбор альбома, дубликаты и вывод названий как текста;
 * подборки, синхронизация с Navidrome, подписи потоков, импорт файлов, тексты песен, перемешивания и скачивания умного перемешивания.
 
-CI (`.github/workflows/ci.yml`) на каждый push и pull request запускает `ruff check`, `ruff format --check`, `compileall` и весь набор тестов в чистом окружении.
+CI (`.github/workflows/ci.yml`) на каждый push и pull request запускает `ruff check`, `ruff format --check`, `mypy`, `compileall` и весь набор тестов в чистом окружении.
 
 ---
 

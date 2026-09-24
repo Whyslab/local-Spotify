@@ -62,6 +62,7 @@ cp .env.example adder/.env    # then set API_TOKEN
 .venv/bin/pytest -q
 .venv/bin/ruff check .
 .venv/bin/ruff format --check adder scripts tests desktop
+.venv/bin/mypy                                  # settings in mypy.ini
 .venv/bin/python -m compileall -q adder scripts tests desktop
 
 # production

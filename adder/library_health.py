@@ -64,6 +64,7 @@ def report() -> dict:
 
 def _run(what: str) -> None:
     started = time.time()
+    result: dict[str, int | str]
     try:
         if what == "covers":
             added, missed = fix_covers.backfill(

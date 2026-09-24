@@ -324,7 +324,7 @@ def run_yt_dlp(cmd: list[str], timeout: float) -> subprocess.CompletedProcess:
 
             while True:
                 try:
-                    chunk = os.read(stream.fileno(), 65536)
+                    chunk = os.read(key.fd, 65536)
                 except BlockingIOError:
                     break
                 except OSError:
@@ -351,7 +351,7 @@ def run_yt_dlp(cmd: list[str], timeout: float) -> subprocess.CompletedProcess:
 
                 while True:
                     try:
-                        chunk = os.read(stream.fileno(), 65536)
+                        chunk = os.read(key.fd, 65536)
                     except BlockingIOError:
                         break
                     except OSError:
@@ -583,7 +583,7 @@ def _itunes_match(results: list[dict], artist: str, title: str) -> dict | None:
 def get_hd_cover(artist: str, title: str):
     """Возвращает (bytes, fmt) или (None, None)."""
     try:
-        params = {"term": f"{artist} {title}", "limit": 5, "entity": "song"}
+        params: dict[str, str | int] = {"term": f"{artist} {title}", "limit": 5, "entity": "song"}
         r = requests.get("https://itunes.apple.com/search", params=params, timeout=10)
         if not r.ok:
             return None, None
@@ -1062,10 +1062,11 @@ def write_tags(path: Path, info, title: str, cover: bytes | None, cover_fmt: str
         from mutagen.id3 import APIC, TALB, TDRC, TIT2, TPE1, TPE2, TRCK
         from mutagen.mp3 import MP3
 
-        audio = MP3(path)
-        if audio.tags is None:
-            audio.add_tags()
-        tags = audio.tags
+        mp3 = MP3(path)
+        if mp3.tags is None:
+            mp3.add_tags()
+        tags = mp3.tags
+        assert tags is not None  # add_tags() above guarantees it
         tags.setall("TIT2", [TIT2(encoding=3, text=[title])])
         tags.setall("TPE1", [TPE1(encoding=3, text=info.artists)])
         tags.setall("TPE2", [TPE2(encoding=3, text=[info.artists[0]])])
@@ -1078,42 +1079,42 @@ def write_tags(path: Path, info, title: str, cover: bytes | None, cover_fmt: str
         if cover:
             tags.delall("APIC")
             tags.add(APIC(encoding=3, mime=mime, type=3, desc="Cover", data=cover))
-        audio.save()
+        mp3.save()
         return
 
     if suffix == ".flac":
         from mutagen.flac import FLAC, Picture
 
-        audio = FLAC(path)
-        audio["title"] = [title]
-        audio["artist"] = info.artists
-        audio["albumartist"] = [info.artists[0]]
-        audio["album"] = [info.album]
+        flac = FLAC(path)
+        flac["title"] = [title]
+        flac["artist"] = info.artists
+        flac["albumartist"] = [info.artists[0]]
+        flac["album"] = [info.album]
         if info.date:
-            audio["date"] = [info.date]
+            flac["date"] = [info.date]
         if info.track_number:
-            audio["tracknumber"] = [str(info.track_number)]
+            flac["tracknumber"] = [str(info.track_number)]
         if cover:
             picture = Picture()
             picture.type, picture.mime, picture.data = 3, mime, cover
-            audio.clear_pictures()
-            audio.add_picture(picture)
-        audio.save()
+            flac.clear_pictures()
+            flac.add_picture(picture)
+        flac.save()
         return
 
     # Ogg and Opus: text tags are plain comments, the cover is a base64 FLAC
     # picture block, which is the convention every player expects here.
-    audio = mutagen.File(path)
-    if audio is None:
+    ogg = mutagen.File(path)
+    if ogg is None:
         raise RuntimeError(f"Cannot tag {path.name}: unrecognised format")
-    audio["title"] = [title]
-    audio["artist"] = list(info.artists)
-    audio["albumartist"] = [info.artists[0]]
-    audio["album"] = [info.album]
+    ogg["title"] = [title]
+    ogg["artist"] = list(info.artists)
+    ogg["albumartist"] = [info.artists[0]]
+    ogg["album"] = [info.album]
     if info.date:
-        audio["date"] = [info.date]
+        ogg["date"] = [info.date]
     if info.track_number:
-        audio["tracknumber"] = [str(info.track_number)]
+        ogg["tracknumber"] = [str(info.track_number)]
     if cover:
         import base64
 
@@ -1121,8 +1122,8 @@ def write_tags(path: Path, info, title: str, cover: bytes | None, cover_fmt: str
 
         picture = Picture()
         picture.type, picture.mime, picture.data = 3, mime, cover
-        audio["metadata_block_picture"] = [base64.b64encode(picture.write()).decode("ascii")]
-    audio.save()
+        ogg["metadata_block_picture"] = [base64.b64encode(picture.write()).decode("ascii")]
+    ogg.save()
 
 
 SOURCE_TAG = "SOURCE_URL"
@@ -1147,17 +1148,18 @@ def write_source(path: Path, url: str) -> None:
         from mutagen.id3 import TXXX
         from mutagen.mp3 import MP3
 
-        audio = MP3(path)
-        if audio.tags is None:
-            audio.add_tags()
-        audio.tags.setall(f"TXXX:{SOURCE_TAG}", [TXXX(encoding=3, desc=SOURCE_TAG, text=[url])])
-        audio.save()
+        mp3 = MP3(path)
+        if mp3.tags is None:
+            mp3.add_tags()
+        assert mp3.tags is not None
+        mp3.tags.setall(f"TXXX:{SOURCE_TAG}", [TXXX(encoding=3, desc=SOURCE_TAG, text=[url])])
+        mp3.save()
     else:
-        audio = mutagen.File(path)
-        if audio is None:
+        other = mutagen.File(path)
+        if other is None:
             return
-        audio[SOURCE_TAG.lower()] = [url]
-        audio.save()
+        other[SOURCE_TAG.lower()] = [url]
+        other.save()
 
 
 def edit_track(
@@ -1478,9 +1480,10 @@ def ingest_temp_file(tid: int, temp_path: Path, names: TrackNames, thumbnail: st
     base_target = target_dir / f"{names.fs_title}{temp_path.suffix.lower()}"
 
     write_tags(temp_path, info, names.meta_title, cover, fmt)
-    source = _task_source(tid)
-    if source:
-        write_source(temp_path, source)
+    # Not "source": that name already holds where the metadata came from.
+    source_url = _task_source(tid)
+    if source_url:
+        write_source(temp_path, source_url)
     # Loudness, so a shuffle does not jump between quiet and loud uploads. A
     # failed measurement only means no ReplayGain tag, never a failed task.
     try:

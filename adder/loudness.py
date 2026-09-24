@@ -79,19 +79,20 @@ def write(path: Path, gain: float, peak: float) -> None:
         from mutagen.id3 import TXXX
         from mutagen.mp3 import MP3
 
-        audio = MP3(path)
-        if audio.tags is None:
-            audio.add_tags()
+        mp3 = MP3(path)
+        if mp3.tags is None:
+            mp3.add_tags()
+        assert mp3.tags is not None
         for tag, text in ((GAIN_TAG, gain_text), (PEAK_TAG, peak_text)):
-            audio.tags.setall(f"TXXX:{tag}", [TXXX(encoding=3, desc=tag, text=[text])])
-        audio.save()
+            mp3.tags.setall(f"TXXX:{tag}", [TXXX(encoding=3, desc=tag, text=[text])])
+        mp3.save()
     else:
-        audio = mutagen.File(path)
-        if audio is None:
+        other = mutagen.File(path)
+        if other is None:
             return
-        audio[GAIN_TAG.lower()] = [gain_text]
-        audio[PEAK_TAG.lower()] = [peak_text]
-        audio.save()
+        other[GAIN_TAG.lower()] = [gain_text]
+        other[PEAK_TAG.lower()] = [peak_text]
+        other.save()
 
 
 def parse_gain(text: str | bytes | None) -> float | None:

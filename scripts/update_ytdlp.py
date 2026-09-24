@@ -34,7 +34,7 @@ logger = logging.getLogger("update_ytdlp")
 
 
 def versions() -> dict[str, str | None]:
-    found = {}
+    found: dict[str, str | None] = {}
     for name in PACKAGES:
         try:
             found[name] = metadata.version(name)

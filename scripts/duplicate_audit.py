@@ -19,6 +19,7 @@ import json
 import sys
 from collections import defaultdict
 from pathlib import Path
+from typing import Any
 
 try:
     from mutagen.mp4 import MP4
@@ -29,7 +30,7 @@ except ImportError:
 # Add parent directory to path to import config
 sys.path.insert(0, str(Path(__file__).parent.parent / "adder"))
 try:
-    from config import LIBRARY
+    from config import LIBRARY  # type: ignore[import-not-found]  # adder/ on sys.path
 except ImportError:
     LIBRARY = Path.home() / "Music" / "Normalized Library"
 
@@ -169,7 +170,7 @@ def find_duplicate_groups(files: list[Path], use_hash: bool = False) -> list[dic
 
 def audit_duplicates(library_path: Path, use_hash: bool = False) -> dict:
     """Perform duplicate audit on library."""
-    result = {
+    result: dict[str, Any] = {
         "library_path": str(library_path),
         "total_files_scanned": 0,
         "duplicate_groups_found": 0,
@@ -214,7 +215,7 @@ def audit_duplicates(library_path: Path, use_hash: bool = False) -> dict:
     return result
 
 
-def format_size(bytes_val: int) -> str:
+def format_size(bytes_val: float) -> str:
     """Format bytes as human-readable size."""
     for unit in ["B", "KB", "MB", "GB"]:
         if abs(bytes_val) < 1024:

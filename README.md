@@ -407,6 +407,7 @@ Back up state (SQLite plus `.env`):
 .venv/bin/python -m playwright install chromium  # once, for the browser tests
 .venv/bin/pytest -q
 .venv/bin/ruff check . && .venv/bin/ruff format --check adder scripts tests desktop
+.venv/bin/mypy                                   # type check, settings in mypy.ini
 ```
 
 The suite runs fully offline and needs no real `.env`; the import and streaming tests need `ffmpeg`, which CI installs. `tests/conftest.py` fails any test that opens a network connection, so YouTube, Deezer, MusicBrainz and iTunes are always mocked. It covers:
@@ -418,7 +419,7 @@ The suite runs fully offline and needs no real `.env`; the import and streaming 
 * **the panel and player in a real browser** (`tests/test_ui.py`, Playwright + Chromium): tag editing, ReplayGain volume, fades, the sleep timer, retry, library health, album choice, duplicates, and titles rendered as text;
 * playlists, Navidrome synchronisation, streaming signatures, file import, lyrics, shuffles and the smart-shuffle downloads.
 
-CI (`.github/workflows/ci.yml`) runs `ruff check`, `ruff format --check`, `compileall` and the full suite on a clean environment for every push and pull request.
+CI (`.github/workflows/ci.yml`) runs `ruff check`, `ruff format --check`, `mypy`, `compileall` and the full suite on a clean environment for every push and pull request.
 
 ---
 

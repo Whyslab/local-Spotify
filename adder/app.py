@@ -13,7 +13,7 @@ import threading
 import time
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import Depends, FastAPI, File, HTTPException, Security, UploadFile, status
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
@@ -1061,7 +1061,8 @@ def get_stream_url(path: str, authenticated: bool = Depends(verify_token)):
         from mutagen.mp4 import MP4
 
         with suppress(Exception):
-            duration = MP4(track).info.length
+            info = MP4(track).info
+            duration = info.length if info else None
     # ReplayGain travels with the link: the player turns the track down by it.
     return {**signing.stream_url(path, duration), "gain": gain}
 
@@ -1676,7 +1677,7 @@ def play_stats(authenticated: bool = Depends(verify_token)):
     total = overall["total"] or 0
     skipped = overall["skipped"] or 0
 
-    by_mode = {}
+    by_mode: dict[str, dict[str, Any]] = {}
     for row in db.db_query(
         "SELECT mode, COUNT(*) AS total, SUM(skipped) AS skipped FROM plays GROUP BY mode"
     ):

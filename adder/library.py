@@ -9,6 +9,7 @@ import shutil
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 import mutagen
 from fastapi import HTTPException
@@ -59,7 +60,7 @@ def read_tags(path: Path) -> dict:
     suffix = path.suffix.lower()
     if suffix == ".m4a":
         parsed = MP4(path)
-        tags = parsed.tags or {}
+        tags: Any = parsed.tags or {}
         track = tags.get("trkn") or []
         source = tags.get("----:com.apple.iTunes:SOURCE_URL") or []
         gain = tags.get("----:com.apple.iTunes:replaygain_track_gain") or tags.get(
@@ -134,7 +135,7 @@ LIBRARY_INDEX_TTL = 60
 UNREADABLE: list[str] = []
 # Parsed row per file, keyed by path and valid while (mtime_ns, size, ctime_ns) match.
 _FILE_ROWS: dict[str, tuple[tuple[int, int, int], dict]] = {}
-_LIBRARY_INDEX: dict[str, object] = {"at": 0.0, "rows": [], "generation": 0}
+_LIBRARY_INDEX: dict[str, Any] = {"at": 0.0, "rows": [], "generation": 0}
 _LIBRARY_INDEX_LOCK = threading.Lock()
 
 

@@ -9,3 +9,6 @@ ruff
 # Browser tests (tests/test_ui.py). Pinned exactly: each Playwright release
 # drives one Chromium build, installed by `python -m playwright install chromium`.
 playwright==1.56.0
+# Type checking (mypy.ini); CI runs `mypy` with no arguments.
+mypy>=1.10
+types-requests

@@ -92,7 +92,10 @@ def queue_listen(path: str, played_seconds: float | None, duration: float | None
 
 
 def _payload(row: dict) -> dict:
-    info = {"submission_client": "local-Spotify", "media_player": "local-Spotify web player"}
+    info: dict[str, str | int] = {
+        "submission_client": "local-Spotify",
+        "media_player": "local-Spotify web player",
+    }
     if row.get("duration"):
         info["duration_ms"] = int(row["duration"] * 1000)
     if row.get("origin_url"):

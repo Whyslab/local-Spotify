@@ -196,7 +196,7 @@ class MprisService(dbus.service.Object):
         self.status = {
             "playing": "Playing",
             "paused": "Paused",
-        }.get(state.get("status"), "Stopped")
+        }.get(str(state.get("status")), "Stopped")
         self.position = int(float(state.get("position") or 0) * 1_000_000)
 
         title = state.get("title") or ""

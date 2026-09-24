@@ -17,6 +17,7 @@ import json
 import sys
 from collections import defaultdict
 from pathlib import Path
+from typing import Any
 
 try:
     from mutagen.mp4 import MP4, MP4StreamInfoError
@@ -27,7 +28,7 @@ except ImportError:
 # Add parent directory to path to import config
 sys.path.insert(0, str(Path(__file__).parent.parent / "adder"))
 try:
-    from config import LIBRARY
+    from config import LIBRARY  # type: ignore[import-not-found]  # adder/ on sys.path
 except ImportError:
     LIBRARY = Path.home() / "Music" / "Normalized Library"
 
@@ -100,7 +101,7 @@ def find_duplicates(files: list[Path]) -> list[list[Path]]:
 
 def audit_library(library_path: Path) -> dict:
     """Perform full library audit."""
-    result = {
+    result: dict[str, Any] = {
         "library_path": str(library_path),
         "total_files": 0,
         "valid_files": 0,

@@ -37,6 +37,9 @@ jobs:
           ruff check .
           ruff format --check adder scripts tests desktop
 
+      - name: Type check
+        run: mypy
+
       - name: Compile Python sources
         run: python -m compileall -q adder scripts tests desktop
 
