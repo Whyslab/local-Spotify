@@ -224,3 +224,19 @@ def test_lead_artist_folder_splits_on_whole_words_only(monkeypatch, artist, fold
 
     assert fs_artist == folder
     assert full_artist == artist
+
+
+def test_artist_is_not_repeated_in_the_title_when_track_is_missing():
+    meta = {"artist": "Adele", "title": "Adele - Hello (Official Video)"}
+
+    fs_artist, fs_title, full_artist, meta_title = split_artist_title(meta)
+
+    assert (full_artist, meta_title, fs_title) == ("Adele", "Hello", "Hello")
+
+
+def test_a_dash_that_is_part_of_the_title_is_kept():
+    meta = {"artist": "Adele", "title": "Someone - Like You"}
+
+    _, _, _, meta_title = split_artist_title(meta)
+
+    assert meta_title == "Someone - Like You"

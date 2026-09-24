@@ -127,6 +127,12 @@ def split_artist_title(meta: dict):
     title = meta.get("track") or meta.get("title") or "Unknown"
     if not artist and " - " in title:
         artist, title = title.split(" - ", 1)
+    elif artist and not meta.get("track"):
+        # YouTube Music fills "artist" but not always "track"; the video title
+        # then repeats the artist, which used to end up inside the title tag.
+        prefix = re.match(rf"\s*{re.escape(artist)}\s+[-–—]\s+", title, flags=re.IGNORECASE)
+        if prefix:
+            title = title[prefix.end() :]
     if not artist:
         artist = channel_artist(meta.get("uploader") or "") or "Unknown Artist"
 
