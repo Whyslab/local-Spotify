@@ -280,6 +280,7 @@ Authorise with an `Authorization: Bearer <API_TOKEN>` header. `/health` without 
 | `GET` | `/api/sync` | What the last synchronisation pass found |
 | `POST` | `/api/sync` | Run a pass now; `?apply=false` reports only |
 | `GET` | `/api/track` | A track's tags plus its tempo, key and energy |
+| `PATCH` | `/api/track` | Correct title, artists and album; `refetch_cover` looks the cover up again |
 | `GET` | `/api/cover` | The artwork inside the file; `?size=96\|300\|600` for a cached thumbnail |
 | `GET` `DELETE` | `/api/library` | The library (search, sort, paging) / move a track to `trash/` |
 | `POST` | `/api/replace` `/api/replace-file` | Replace a track by a better version, keeping its place in every playlist |
