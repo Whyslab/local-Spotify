@@ -430,3 +430,25 @@ def test_duration_limit_can_be_switched_off(app, monkeypatch):
     covers(app, monkeypatch)
 
     assert run(app)["status"] == "done"
+
+
+# ---------------------------------------------------------------------------
+# Free space is checked where the file is going, not only where it lands first
+# ---------------------------------------------------------------------------
+
+
+def test_a_full_library_disk_stops_the_download(tmp_path, monkeypatch):
+    library_disk = tmp_path / "library-disk"
+    monkeypatch.setattr(runtime, "TMP_DIR", tmp_path / "tmp")
+    monkeypatch.setattr(config, "LIBRARY", library_disk / "Music")
+    monkeypatch.setattr(config, "MIN_FREE_SPACE_MB", 100)
+    runtime.TMP_DIR.mkdir()
+    library_disk.mkdir()
+
+    def usage(path):
+        free = 10 if Path(path).is_relative_to(library_disk) else 10_000
+        return shutil._ntuple_diskusage(0, 0, free * 1024 * 1024)
+
+    monkeypatch.setattr(ingest.shutil, "disk_usage", usage)
+
+    assert ingest.check_disk_space() == (False, 10)

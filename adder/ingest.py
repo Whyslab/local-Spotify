@@ -704,17 +704,28 @@ def unique_path(base: Path) -> Path:
 def check_disk_space() -> tuple[bool, int]:
     """Check if there's enough free disk space (Problem #30).
 
+    Both ends of the move count: the temp directory the download lands in and
+    the library it ends up in, which is often another disk. The smaller of
+    the two is what decides.
+
     Returns:
         (has_space, free_mb)
     """
-    try:
-        import shutil
-
-        stat = shutil.disk_usage(runtime.TMP_DIR)
-        free_mb = stat.free // (1024 * 1024)
-        return free_mb >= config.MIN_FREE_SPACE_MB, free_mb
-    except Exception:
+    free = []
+    for path in (runtime.TMP_DIR, config.LIBRARY):
+        # The library may not exist yet on a first run; its parent is the disk.
+        while not path.exists() and path != path.parent:
+            path = path.parent
+        try:
+            free.append(shutil.disk_usage(path).free // (1024 * 1024))
+        except OSError as exc:
+            logger.warning(
+                "Could not check free space on %s: %s", path, exc, extra={"task_id": "system"}
+            )
+    if not free:
         return True, 0  # If we can't check, allow operation
+    free_mb = min(free)
+    return free_mb >= config.MIN_FREE_SPACE_MB, free_mb
 
 
 def validate_m4a_integrity(filepath: Path) -> tuple[bool, str]:
