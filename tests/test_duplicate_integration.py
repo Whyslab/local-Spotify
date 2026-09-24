@@ -27,6 +27,10 @@ def app_module(tmp_path, monkeypatch):
 
     app_module.PROCESSING_URLS.clear()
 
+    # process() asks Deezer for album metadata. Answer "not found" offline, so
+    # it takes the fallback path instead of making a real HTTP request.
+    monkeypatch.setattr(app_module.enrich, "lookup", lambda artist, title: None)
+
     app_module.db_init()
 
     return app_module
