@@ -1,0 +1,12 @@
+[Unit]
+Description=local-Spotify: weekly yt-dlp update
+
+[Timer]
+# YouTube breaks old yt-dlp versions every few weeks; weekly keeps ahead of
+# that without chasing every nightly build.
+OnCalendar=Mon *-*-* 04:30:00
+Persistent=true
+RandomizedDelaySec=1h
+
+[Install]
+WantedBy=timers.target

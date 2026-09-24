@@ -361,7 +361,7 @@ curl -X POST http://127.0.0.1:8787/api/add \
 ./deploy/install.sh
 ```
 
-Скрипт не продолжит без `.venv` или с пустым/заглушечным `API_TOKEN`; запишет юнит для `LIBRARY_PATH` и включит lingering; если установлен `navidrome` и у него ещё нет конфига — запишет `/etc/navidrome/navidrome.toml` с тем же `MusicFolder` (существующий конфиг не трогается); если активен `ufw` — откроет Navidrome и сервис для подсети LAN (`LAN_SUBNET=192.168.1.0/24`, чтобы выбрать её самому).
+Скрипт не продолжит без `.venv` или с пустым/заглушечным `API_TOKEN`; запишет юнит для `LIBRARY_PATH` и включит lingering; поставит три таймера — ночной анализ аудио, ночную выгрузку полок и еженедельное обновление yt-dlp, которое само откатывается, если новая версия не читает YouTube; если установлен `navidrome` и у него ещё нет конфига — запишет `/etc/navidrome/navidrome.toml` с тем же `MusicFolder` (существующий конфиг не трогается); если активен `ufw` — откроет Navidrome и сервис для подсети LAN (`LAN_SUBNET=192.168.1.0/24`, чтобы выбрать её самому).
 
 ```bash
 systemctl --user status music-adder
@@ -419,7 +419,7 @@ CI (`.github/workflows/ci.yml`) на каждый push и pull request запу�
 | `/health` → `"js_runtime": "missing"`, в логе предупреждение про Deno | Поставь Deno в `/usr/local/bin`, как в [шаге 1](#1-системные-пакеты). Deno из `~/.deno/bin` работает в шелле, но не в systemd-сервисе. |
 | `youtube_auth_required`: «Sign in to confirm you're not a bot» | YouTube не доверяет этому IP. Войди в YouTube в браузере на этой же машине, задай `COOKIES_FROM_BROWSER=firefox` (или `chrome`, или `firefox:/путь/к/профилю`) в `adder/.env`, перезапусти, отправь ссылку заново. |
 | Много ошибок `rate_limited` | YouTube ограничивает запросы; сервис уже ставит все скачивания на паузу на `RATE_LIMIT_BACKOFF` секунд за попытку. Если не проходит — уменьши `MAX_WORKERS` до `1`, подожди час, отправь упавшие ссылки заново. |
-| Скачивания, которые работали, начали падать | YouTube что-то поменял; обнови yt-dlp: `.venv/bin/pip install -U yt-dlp yt-dlp-ejs` и перезапусти. |
+| Скачивания, которые работали, начали падать | YouTube что-то поменял. yt-dlp обновляется сам раз в неделю; обновить сейчас: `.venv/bin/python scripts/update_ytdlp.py` (перезапуск не нужен). Прошлые запуски — `journalctl --user -u music-ytdlp-update`. |
 | Задача `done`, но в Navidrome трека нет | Navidrome читает другую папку: его `MusicFolder` (`/etc/navidrome/navidrome.toml`) должен совпадать с `library_path` из `/health`. Проверь, что пользователь Navidrome может её читать: `sudo -u navidrome ls "<library_path>"`. Затем *Settings → Scan* в Navidrome. |
 | Удаление трека из веб-интерфейса не работает | Удалённые файлы попадают в `trash/` в корне репозитория. После `git pull` запусти `./deploy/install.sh` заново, чтобы у юнита был `ReadWritePaths` для неё. |
 | Веб-интерфейс говорит, что токен неверный | Вставь значение `API_TOKEN` из `adder/.env` без `API_TOKEN=`. |
