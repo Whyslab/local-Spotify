@@ -822,3 +822,29 @@ def test_the_panel_offers_retry_only_for_failures():
     js = (Path(__file__).resolve().parents[1] / "web" / "app.js").read_text()
 
     assert 'retry.hidden = !queue.some(t => t.status === "error")' in js
+
+
+def test_the_iphone_shortcut_request_is_accepted(client, app_module):
+    """The exact request docs/iphone-shortcut.md builds: JSON {"links": [url]}.
+
+    A link shared from the YouTube app carries a ?si= tracking parameter; it
+    must land as the same canonical task as the plain link.
+    """
+    _drain()
+    runtime.PROCESSING_URLS.clear()
+
+    first = client.post(
+        "/api/add",
+        json={"links": ["https://youtu.be/dQw4w9WgXcQ?si=AbCdEf123"]},
+        headers={**auth_headers(), "Content-Type": "application/json"},
+    )
+    again = client.post(
+        "/api/add",
+        json={"links": ["https://www.youtube.com/watch?v=dQw4w9WgXcQ"]},
+        headers=auth_headers(),
+    )
+
+    assert first.status_code == 200 and len(first.json()["added"]) == 1
+    # The shortcut reads an empty "added" as "already there".
+    assert again.json()["added"] == []
+    _drain()
