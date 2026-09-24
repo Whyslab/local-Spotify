@@ -1021,7 +1021,9 @@ def write_tags(path: Path, info, title: str, cover: bytes | None, cover_fmt: str
             audio["\xa9day"] = [info.date]
         if info.track_number:
             audio["trkn"] = [(info.track_number, info.track_total)]
-            audio["disk"] = [(info.disc_number, 1)]
+            # Deezer gives the disc a track is on, not how many the album has;
+            # 0 means "unknown", where a fixed 1 made the second disc read "2/1".
+            audio["disk"] = [(info.disc_number, 0)]
         if cover:
             fmt_const = MP4Cover.FORMAT_PNG if cover_fmt == "png" else MP4Cover.FORMAT_JPEG
             audio["covr"] = [MP4Cover(cover, imageformat=fmt_const)]

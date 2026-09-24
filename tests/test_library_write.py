@@ -116,7 +116,7 @@ def test_deezer_match_is_tagged_and_filed_for_navidrome(app, monkeypatch, caplog
     assert tags["\xa9alb"] == ["Random Access Memories"]
     assert tags["\xa9day"] == ["2013-05-17"]
     assert tags["trkn"] == [(8, 13)]
-    assert tags["disk"] == [(1, 1)]
+    assert tags["disk"] == [(1, 0)]  # disc 1 of an unknown number
     assert bytes(tags["covr"][0]) == JPEG
     assert tags["covr"][0].imageformat == MP4Cover.FORMAT_JPEG
 
@@ -477,3 +477,17 @@ def test_a_duplicate_result_also_releases_the_link(app, monkeypatch):
     run(app)  # byte-identical audio: stored as a duplicate, not a new file
 
     assert URL not in runtime.PROCESSING_URLS
+
+
+def test_second_disc_is_not_written_as_2_of_1(app, monkeypatch):
+    youtube(app, monkeypatch, {"title": "A - B", "uploader": "x"})
+    deezer(
+        app,
+        monkeypatch,
+        enrich.TrackInfo(album="Double", artists=["A"], track_number=3, disc_number=2),
+    )
+    covers(app, monkeypatch)
+
+    run(app)
+
+    assert MP4(config.LIBRARY / "A/Singles/B.m4a").tags["disk"] == [(2, 0)]
