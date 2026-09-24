@@ -51,7 +51,7 @@ check has passed.
 ```bash
 # setup
 python3 -m venv .venv
-.venv/bin/pip install -r adder/requirements.txt ruff
+.venv/bin/pip install -r requirements-dev.txt   # service deps + pytest + ruff
 cp .env.example adder/.env    # then set API_TOKEN
 
 # run

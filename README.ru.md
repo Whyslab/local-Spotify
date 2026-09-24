@@ -390,9 +390,9 @@ git pull
 ## 🧪 Тесты
 
 ```bash
-.venv/bin/pip install ruff               # только для линтера; pytest уже в requirements.txt
+.venv/bin/pip install -r requirements-dev.txt   # pytest и ruff
 .venv/bin/pytest -q
-.venv/bin/ruff check . && .venv/bin/ruff format --check adder scripts tests
+.venv/bin/ruff check . && .venv/bin/ruff format --check adder scripts tests desktop
 ```
 
 Тесты полностью офлайн и не требуют настоящего `.env`; тестам импорта и потоков нужен `ffmpeg` (CI его ставит). `tests/conftest.py` роняет любой тест, который открывает сетевое соединение, поэтому YouTube, Deezer и iTunes всегда замоканы. Покрыто:

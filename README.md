@@ -390,9 +390,9 @@ Back up state (SQLite plus `.env`):
 ## 🧪 Tests
 
 ```bash
-.venv/bin/pip install ruff               # lint only; pytest is already in requirements.txt
+.venv/bin/pip install -r requirements-dev.txt   # pytest and ruff
 .venv/bin/pytest -q
-.venv/bin/ruff check . && .venv/bin/ruff format --check adder scripts tests
+.venv/bin/ruff check . && .venv/bin/ruff format --check adder scripts tests desktop
 ```
 
 The suite runs fully offline and needs no real `.env`; the import and streaming tests need `ffmpeg`, which CI installs. `tests/conftest.py` fails any test that opens a network connection, so YouTube, Deezer and iTunes are always mocked. It covers:

@@ -1,0 +1,8 @@
+# Tests and lint, on top of what the service itself needs.
+# Kept out of adder/requirements.txt so a production install does not pull them.
+#
+#   .venv/bin/pip install -r requirements-dev.txt
+-r adder/requirements.txt
+pytest>=8.0,<9
+# Unpinned on purpose, as in CI: ruff format output follows the latest release.
+ruff
