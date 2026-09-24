@@ -16,7 +16,21 @@ if [[ ! -f "$REPO/adder/.env" ]]; then
   exit 1
 fi
 
-API_TOKEN_VALUE="$(sed -n 's/^API_TOKEN=//p' "$REPO/adder/.env" | head -n1 | tr -d '\r')"
+# One value from adder/.env, read the way python-dotenv reads it: surrounding
+# whitespace and one pair of matching quotes removed. A plain sed kept the
+# quotes, so LIBRARY_PATH="/srv/music" reached the unit with them.
+env_value() {
+  local value
+  value="$(sed -n "s/^[[:space:]]*$1[[:space:]]*=//p" "$REPO/adder/.env" | head -n1 | tr -d '\r')"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  if [[ ${#value} -ge 2 && ( ( "${value:0:1}" == '"' && "${value: -1}" == '"' ) || ( "${value:0:1}" == "'" && "${value: -1}" == "'" ) ) ]]; then
+    value="${value:1:${#value}-2}"
+  fi
+  printf '%s' "$value"
+}
+
+API_TOKEN_VALUE="$(env_value API_TOKEN)"
 if [[ -z "$API_TOKEN_VALUE" || "$API_TOKEN_VALUE" == "CHANGE_ME_TO_A_LONG_RANDOM_SECRET" ]]; then
   echo "ERROR: API_TOKEN must be configured in adder/.env before deployment." >&2
   exit 1
@@ -27,7 +41,7 @@ mkdir -p "$HOME/.config/systemd/user"
 # Keep systemd in sync with the same configurable library path used by Python.
 LIBRARY_PATH_VALUE="${LIBRARY_PATH:-}"
 if [[ -z "$LIBRARY_PATH_VALUE" ]]; then
-  LIBRARY_PATH_VALUE="$(sed -n 's/^LIBRARY_PATH=//p' "$REPO/adder/.env" | head -n1)"
+  LIBRARY_PATH_VALUE="$(env_value LIBRARY_PATH)"
 fi
 LIBRARY_PATH_VALUE="${LIBRARY_PATH_VALUE:-$HOME/Music/Normalized Library}"
 
@@ -86,6 +100,9 @@ if command -v navidrome >/dev/null; then
   sudo systemctl restart navidrome
 fi
 
+PORT_VALUE="$(env_value PORT)"
+PORT_VALUE="${PORT_VALUE:-8787}"
+
 # Firewall rules are intentionally explicit and failure is not hidden.
 if command -v ufw >/dev/null && sudo ufw status | grep -q "Status: active"; then
   LAN_SUBNET="${LAN_SUBNET:-}"
@@ -97,8 +114,7 @@ if command -v ufw >/dev/null && sudo ufw status | grep -q "Status: active"; then
     exit 1
   fi
   sudo ufw allow from "$LAN_SUBNET" to any port 4533 proto tcp comment "Navidrome LAN"
-  PORT_VALUE="$(sed -n 's/^PORT=//p' "$REPO/adder/.env" | head -n1 | tr -d '\r')"
-  sudo ufw allow from "$LAN_SUBNET" to any port "${PORT_VALUE:-8787}" proto tcp comment "Adder LAN"
+  sudo ufw allow from "$LAN_SUBNET" to any port "$PORT_VALUE" proto tcp comment "Adder LAN"
 fi
 
-echo "OK: adder http://localhost:8787 | navidrome http://localhost:4533"
+echo "OK: adder http://localhost:$PORT_VALUE | navidrome http://localhost:4533"
