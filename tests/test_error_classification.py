@@ -125,6 +125,14 @@ class TestYouTubeFailures:
         assert classify_error(message) == "dependency_error"
         assert classify_error(message) not in RETRYABLE_ERRORS
 
+    def test_an_ffmpeg_conversion_failure_is_not_a_missing_ffmpeg(self):
+        message = "ERROR: Postprocessing: ffmpeg exited with code 1"
+        assert classify_error(message) != "dependency_error"
+
+    def test_missing_ffprobe_alone_is_a_dependency_error(self):
+        message = "ERROR: Postprocessing: ffprobe not found. Please install"
+        assert classify_error(message) == "dependency_error"
+
     @pytest.mark.parametrize(
         "message",
         [

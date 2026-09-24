@@ -819,7 +819,7 @@ def classify_error(message: str) -> str:
 
     # A tool missing on this machine, not a problem with the video. yt-dlp says
     # "ffprobe and ffmpeg not found", which must not read as a missing video.
-    if "ffmpeg" in text or "ffprobe" in text:
+    if "ffmpeg not found" in text or "ffprobe not found" in text:
         return "dependency_error"
 
     # YouTube throttling this client. "This content isn't available, try again
