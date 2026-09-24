@@ -43,6 +43,8 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(playlists, "HISTORY_DIR", tmp_path / "history")
     monkeypatch.setattr(covers, "COVERS_DIR", tmp_path / "covers")
     monkeypatch.setattr(navidrome, "configured", lambda: False)
+    # Файл без обложки ищет её в iTunes — в тестах сети нет (см. conftest).
+    monkeypatch.setattr(ingest, "get_hd_cover", lambda artist, title: (None, None))
     config.LIBRARY.mkdir(parents=True)
     runtime.TMP_DIR.mkdir(parents=True)
     runtime.PROCESSING_URLS.clear()

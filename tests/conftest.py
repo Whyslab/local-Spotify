@@ -7,6 +7,7 @@ already set, which is why this lives in conftest rather than in a fixture.
 """
 
 import os
+import socket
 import sys
 from pathlib import Path
 
@@ -56,3 +57,59 @@ def _outside_stays_offline(monkeypatch, tmp_path):
     # Очередь скачиваний — состояние модуля; каждому тесту своя.
     monkeypatch.setattr(outside, "_jobs", queue.Queue())
     monkeypatch.setattr(outside, "_pending", set())
+
+
+_real_connect = socket.socket.connect
+_real_connect_ex = socket.socket.connect_ex
+
+
+@pytest.fixture(autouse=True)
+def no_network(monkeypatch):
+    """Tests must never reach YouTube, Deezer, iTunes, LRCLIB or Navidrome.
+
+    The service swallows network errors on purpose (a failed cover lookup must
+    not fail a download), so simply blocking sockets would hide a test that
+    forgot to mock something. Every attempted connection is recorded instead,
+    and the test that made it fails at teardown, naming the address. Loopback
+    stays open for tests that start a local server on purpose.
+    """
+    attempts = []
+
+    def allowed(sock, address):
+        if sock.family == socket.AF_UNIX:
+            return True
+        host = address[0] if isinstance(address, tuple) else address
+        return host in ("127.0.0.1", "::1", "localhost") and not _is_proxy(address)
+
+    def refuse(self, address):
+        if allowed(self, address):
+            return _real_connect(self, address)
+        attempts.append(address)
+        raise ConnectionRefusedError(f"network access in tests is blocked: {address}")
+
+    def refuse_ex(self, address):
+        if allowed(self, address):
+            return _real_connect_ex(self, address)
+        attempts.append(address)
+        return 111  # ECONNREFUSED
+
+    monkeypatch.setattr(socket.socket, "connect", refuse)
+    monkeypatch.setattr(socket.socket, "connect_ex", refuse_ex)
+
+    yield
+
+    assert not attempts, (
+        f"test tried to open network connections {attempts}; "
+        "mock the call (yt-dlp, enrich, requests, httpx) instead"
+    )
+
+
+def _is_proxy(address) -> bool:
+    """An HTTP(S) proxy on loopback still leads to the internet."""
+    from urllib.parse import urlparse
+
+    for name in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
+        proxy = urlparse(os.environ.get(name, ""))
+        if proxy.port and proxy.port == address[1]:
+            return True
+    return False
