@@ -93,3 +93,5 @@ adder/numba-cache/
 adder/outside-cache/
 # Уменьшенные обложки для списков — кэш, собирается сам.
 adder/thumb-cache/
+# yt-dlp and Deno caches (XDG_CACHE_HOME for yt-dlp calls)
+adder/cache/

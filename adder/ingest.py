@@ -234,6 +234,12 @@ def canonicalize_youtube_url(url: str) -> str:
     return f"https://www.youtube.com/watch?v={video_id}"
 
 
+def ytdlp_env() -> dict[str, str]:
+    """The environment for yt-dlp: its own and Deno's cache in a writable place."""
+    runtime.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    return {**os.environ, "XDG_CACHE_HOME": str(runtime.CACHE_DIR)}
+
+
 def run_yt_dlp(cmd: list[str], timeout: float) -> subprocess.CompletedProcess:
     """Run yt-dlp with timeout and shutdown-aware subprocess handling.
 
@@ -258,6 +264,7 @@ def run_yt_dlp(cmd: list[str], timeout: float) -> subprocess.CompletedProcess:
         stderr=subprocess.PIPE,
         text=False,
         start_new_session=True,
+        env=ytdlp_env(),
     )
 
     selector = selectors.DefaultSelector()

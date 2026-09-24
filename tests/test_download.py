@@ -178,3 +178,13 @@ def test_run_stops_the_process_on_shutdown(app):
             app.run_yt_dlp(python("import time; time.sleep(30)"), timeout=30)
     finally:
         runtime.shutdown_event.clear()
+
+
+def test_yt_dlp_and_deno_cache_in_a_writable_place(app, tmp_path, monkeypatch):
+    # ~/.cache is read-only under the systemd unit; adder/ is writable.
+    monkeypatch.setattr(runtime, "CACHE_DIR", tmp_path / "cache")
+
+    result = app.run_yt_dlp(python("import os; print(os.environ['XDG_CACHE_HOME'])"), timeout=30)
+
+    assert result.stdout.strip() == str(tmp_path / "cache")
+    assert (tmp_path / "cache").is_dir()

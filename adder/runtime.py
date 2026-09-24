@@ -29,6 +29,10 @@ OUTSIDE_DIR = PROJECT / "outside-cache"
 # Уменьшенные обложки треков для списков: полноразмерные весили до 7 МБ при
 # показе в 34 пикселя, и первые двести строк фонотеки тянули 81 МБ.
 THUMB_DIR = PROJECT / "thumb-cache"
+# yt-dlp keeps player data here and Deno its compiled scripts (both honour
+# XDG_CACHE_HOME). Their default, ~/.cache, is read-only under the systemd
+# unit's ProtectHome=read-only, so each call started from scratch.
+CACHE_DIR = PROJECT / "cache"
 
 TMP_TTL_SECONDS = TMP_TTL_HOURS * 3600
 
