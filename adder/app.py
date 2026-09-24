@@ -862,6 +862,7 @@ def process(tid: int, url: str):
     temp_path = None
     retry_count = 0
     last_error_type = None
+    logger.info("Processing %s", url, extra={"task_id": tid})
 
     while retry_count == 0 or retry_count < MAX_RETRIES:
         try:
@@ -909,6 +910,7 @@ def process(tid: int, url: str):
                 info.album,
                 info.track_number,
                 "deezer" if from_deezer else "fallback",
+                extra={"task_id": tid},
             )
 
             cover, fmt = None, None
@@ -980,6 +982,8 @@ def process(tid: int, url: str):
             tmp_file = None  # Successfully moved, don't cleanup in finally
             invalidate_library_index()  # a new track must show up in search now
 
+            logger.info("Added to library: %s", final_target, extra={"task_id": tid})
+
             # Problem #24: Clear error fields on success
             task_update(tid, status="done", error="", error_type="")
             return  # Success, exit retry loop
@@ -1044,6 +1048,13 @@ def process(tid: int, url: str):
                 continue
 
             # Not retryable or max retries reached
+            logger.error(
+                "Failed after %d attempt(s) [%s]: %s",
+                retry_count + 1,
+                last_error_type,
+                error_str,
+                extra={"task_id": tid},
+            )
             task_update(
                 tid,
                 status="error",

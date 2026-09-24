@@ -809,3 +809,22 @@ def test_delete_refuses_paths_outside_the_library(client, app_module, path):
 
     assert response.status_code in (400, 404)
     assert (app_module.LIBRARY.parent / "outside.m4a").exists()
+
+
+def test_final_failure_is_logged_with_its_type(app_module, monkeypatch, caplog):
+    # Before, a task that gave up was only visible in SQLite, never in journalctl.
+    def fake_yt_meta(_url):
+        raise RuntimeError("ERROR: [youtube] abc: Video unavailable")
+
+    monkeypatch.setattr(app_module, "yt_meta", fake_yt_meta)
+    monkeypatch.setattr(app_module, "task_update", lambda *a, **k: None)
+    monkeypatch.setattr(app_module, "check_disk_space", lambda: (True, 10_000))
+
+    with caplog.at_level("INFO"):
+        app_module.process(7, "https://www.youtube.com/watch?v=abc")
+
+    failures = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert len(failures) == 1
+    assert failures[0].task_id == 7
+    assert "youtube_not_found" in failures[0].getMessage()
+    assert "Video unavailable" in failures[0].getMessage()
