@@ -12,9 +12,13 @@ from pathlib import Path
 
 import mutagen
 from fastapi import HTTPException
+from mutagen.easyid3 import EasyID3
 from mutagen.mp4 import MP4
 
 from . import config, runtime
+
+# Lets read_tags see ingest.write_source's TXXX frame in an MP3 as "source_url".
+EasyID3.RegisterTXXXKey("source_url", "SOURCE_URL")
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +41,9 @@ def read_tags(path: Path) -> dict:
         parsed = MP4(path)
         tags = parsed.tags or {}
         track = tags.get("trkn") or []
+        source = tags.get("----:com.apple.iTunes:SOURCE_URL") or []
         return {
+            "source": bytes(source[0]).decode("utf-8", "replace") if source else "",
             "artist": " \u2022 ".join(tags.get("\xa9ART") or []),
             "title": (tags.get("\xa9nam") or [path.stem])[0],
             "album": (tags.get("\xa9alb") or [""])[0],
@@ -63,6 +69,7 @@ def read_tags(path: Path) -> dict:
         track_number = None
 
     return {
+        "source": first("source_url"),
         "artist": " \u2022 ".join(tags.get("artist") or []),
         "title": first("title") or path.stem,
         "album": first("album"),
@@ -70,6 +77,14 @@ def read_tags(path: Path) -> dict:
         "track": track_number,
         "duration": getattr(getattr(parsed, "info", None), "length", None),
     }
+
+
+def find_by_source(url: str) -> str | None:
+    """Library path of the track downloaded from ``url``, if there is one."""
+    for row in library_index():
+        if row.get("source") == url:
+            return row["path"]
+    return None
 
 
 def library_track(rel_path: str) -> Path:
@@ -159,6 +174,7 @@ def library_index() -> list[dict]:
                     # Сдвигается при перетегировании, и это честнее, чем ничего:
                     # иначе свежие треки не отличить от собранных в августе.
                     "added": added,
+                    "source": meta.get("source") or "",
                     "haystack": f"{artist} {title} {album}".lower(),
                 }
             )

@@ -9,7 +9,7 @@ import queue as _queue
 from contextlib import suppress
 from pathlib import Path
 
-from . import config, db, ingest, runtime
+from . import config, db, ingest, library, runtime
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +65,21 @@ def process(tid: int, url: str):
                     tid, source, ingest.stashed_name(url) or source.name
                 )
             else:
+                # The file itself says where it came from, so a link already in
+                # the library is recognised even when the task table was lost.
+                existing = library.find_by_source(url)
+                if existing:
+                    logger.info(
+                        "Already in the library as %s; not downloading again",
+                        existing,
+                        extra={"task_id": tid},
+                    )
+                    db.task_update(
+                        tid, status="done", error="", error_type="", result_path=existing
+                    )
+                    with runtime.FILE_LOCK:
+                        runtime.PROCESSING_URLS.discard(url)
+                    return
                 downloaded = ingest.download_to_temp(tid, url)
             temp_path = downloaded.temp_path
 

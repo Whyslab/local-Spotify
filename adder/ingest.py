@@ -1125,6 +1125,41 @@ def write_tags(path: Path, info, title: str, cover: bytes | None, cover_fmt: str
     audio.save()
 
 
+SOURCE_TAG = "SOURCE_URL"
+
+
+def write_source(path: Path, url: str) -> None:
+    """Record where a track came from inside the file itself.
+
+    The link lived only in the task table, so losing adder.db lost the
+    connection between a file and its video: no re-download, no "open on
+    YouTube", no way to tell a re-submitted link was already here. A freeform
+    tag travels with the file. Navidrome ignores it.
+    """
+    suffix = path.suffix.lower()
+    if suffix == ".m4a":
+        from mutagen.mp4 import MP4FreeForm
+
+        audio = MP4(path)
+        audio[f"----:com.apple.iTunes:{SOURCE_TAG}"] = [MP4FreeForm(url.encode("utf-8"))]
+        audio.save()
+    elif suffix == ".mp3":
+        from mutagen.id3 import TXXX
+        from mutagen.mp3 import MP3
+
+        audio = MP3(path)
+        if audio.tags is None:
+            audio.add_tags()
+        audio.tags.setall(f"TXXX:{SOURCE_TAG}", [TXXX(encoding=3, desc=SOURCE_TAG, text=[url])])
+        audio.save()
+    else:
+        audio = mutagen.File(path)
+        if audio is None:
+            return
+        audio[SOURCE_TAG.lower()] = [url]
+        audio.save()
+
+
 def verify_tags_written(path: Path, expected_title: str) -> bool:
     """Read the title back out. A save that silently did nothing is a real failure mode."""
     try:
@@ -1361,6 +1396,13 @@ def _apply_replacement(tid: int, new_path: str) -> None:
     )
 
 
+def _task_source(tid: int) -> str | None:
+    """The link a task was queued for, if it is a web link (uploads are not)."""
+    rows = db.db_query("SELECT url FROM tasks WHERE id = ?", (tid,))
+    url = rows[0]["url"] if rows else None
+    return url if url and url.startswith(("http://", "https://")) else None
+
+
 def ingest_temp_file(tid: int, temp_path: Path, names: TrackNames, thumbnail: str | None) -> str:
     """Tag a staged file and move it into the library, or discard it as a duplicate.
 
@@ -1400,6 +1442,9 @@ def ingest_temp_file(tid: int, temp_path: Path, names: TrackNames, thumbnail: st
     base_target = target_dir / f"{names.fs_title}{temp_path.suffix.lower()}"
 
     write_tags(temp_path, info, names.meta_title, cover, fmt)
+    source = _task_source(tid)
+    if source:
+        write_source(temp_path, source)
 
     if not verify_tags_written(temp_path, names.meta_title):
         raise RuntimeError("Metadata write failed verification")

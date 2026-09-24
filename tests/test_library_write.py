@@ -491,3 +491,53 @@ def test_second_disc_is_not_written_as_2_of_1(app, monkeypatch):
     run(app)
 
     assert MP4(config.LIBRARY / "A/Singles/B.m4a").tags["disk"] == [(2, 0)]
+
+
+# ---------------------------------------------------------------------------
+# The source link travels inside the file
+# ---------------------------------------------------------------------------
+
+
+def test_the_video_link_is_written_into_the_file(app, monkeypatch):
+    youtube(app, monkeypatch, {"title": "A - B", "uploader": "x"})
+    deezer(app, monkeypatch, None)
+    covers(app, monkeypatch)
+
+    run(app)
+
+    assert library.read_tags(config.LIBRARY / "A/Singles/B.m4a")["source"] == URL
+    library.invalidate_library_index()
+    assert library.find_by_source(URL) == "A/Singles/B.m4a"
+
+
+@pytest.mark.parametrize("suffix", [".mp3", ".flac", ".opus"])
+def test_the_link_round_trips_in_every_format(tmp_path, suffix):
+    import subprocess
+
+    path = tmp_path / f"t{suffix}"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(FIXTURE), str(path)], check=True)
+
+    ingest.write_source(path, URL)
+
+    assert library.read_tags(path)["source"] == URL
+
+
+def test_a_link_already_in_the_library_is_not_downloaded_again(app, monkeypatch):
+    youtube(app, monkeypatch, {"title": "A - B", "uploader": "x"})
+    deezer(app, monkeypatch, None)
+    covers(app, monkeypatch)
+    run(app)
+
+    # The task table is lost (a new database), the file is still there.
+    runtime.DB_PATH.unlink()
+    db.db_init()
+    library.invalidate_library_index()
+    downloads = []
+    monkeypatch.setattr(ingest, "yt_meta", lambda url: downloads.append(url))
+
+    task = run(app)
+
+    assert downloads == []
+    assert task["status"] == "done"
+    assert task["result_path"] == "A/Singles/B.m4a"
+    assert URL not in runtime.PROCESSING_URLS
