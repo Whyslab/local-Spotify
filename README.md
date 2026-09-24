@@ -231,6 +231,7 @@ Everything is read from `adder/.env` (see `.env.example`); real environment vari
 | `MAX_RETRIES` | `3` | Attempts per task on transient errors (network, HTTP 429) |
 | `RETRY_BACKOFF_BASE` | `2.0` | Exponential backoff base, in seconds |
 | `RATE_LIMIT_BACKOFF` | `60` | After YouTube rate-limits (HTTP 429), seconds to wait per attempt; no yt-dlp call starts meanwhile |
+| `MAX_DURATION_MINUTES` | `30` | Longest video accepted, in minutes; `0` for no limit. Live streams are always refused |
 | `SHUTDOWN_TIMEOUT` | `30` | Graceful shutdown timeout, in seconds |
 | `MIN_FREE_SPACE_MB` | `2048` | Free disk space required before downloading |
 | `TMP_TTL_HOURS` | `24` | Age at which stranded temp files are cleaned up |
@@ -320,6 +321,7 @@ Only links to `youtube.com`, `m.youtube.com`, `music.youtube.com` and `youtu.be`
 | `network_error`, `download_error`, `artwork_error` | yes | Transient failure |
 | `rate_limited` | yes | YouTube is throttling (HTTP 429 / "try again later") |
 | `youtube_not_found` | no | Video removed, private or blocked in your region |
+| `unsupported_video` | no | A live stream, or longer than `MAX_DURATION_MINUTES` |
 | `youtube_auth_required` | no | Bot check, age gate, members-only: set `COOKIES_FROM_BROWSER` |
 | `dependency_error` | no | ffmpeg/ffprobe missing on this machine |
 | `invalid_url`, `filesystem_error`, `database_error`, `metadata_error`, `internal_error`, `unknown_error` | no | See the service log for the task id |

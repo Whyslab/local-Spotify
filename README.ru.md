@@ -231,6 +231,7 @@ curl -s http://127.0.0.1:8787/health     # {"status":"healthy"}
 | `MAX_RETRIES`              | `3`                               | Число попыток на задачу при временных ошибках (сеть, HTTP 429) |
 | `RETRY_BACKOFF_BASE`       | `2.0`                             | База экспоненциального backoff (сек.)                   |
 | `RATE_LIMIT_BACKOFF` | `60` | После ограничения от YouTube (HTTP 429) — секунд ожидания на попытку; всё это время yt-dlp не запускается |
+| `MAX_DURATION_MINUTES` | `30` | Самое длинное видео, которое принимается, в минутах; `0` — без ограничения. Прямые эфиры не принимаются никогда |
 | `SHUTDOWN_TIMEOUT`         | `30`                              | Таймаут graceful shutdown (сек.)                        |
 | `MIN_FREE_SPACE_MB`        | `2048`                            | Минимум свободного места на диске перед загрузкой        |
 | `TMP_TTL_HOURS`            | `24`                              | Через сколько часов удаляются зависшие временные файлы   |
@@ -320,6 +321,7 @@ curl -X POST http://127.0.0.1:8787/api/add \
 | `network_error`, `download_error`, `artwork_error` | да | Временный сбой |
 | `rate_limited` | да | YouTube ограничивает запросы (HTTP 429 / «try again later») |
 | `youtube_not_found` | нет | Видео удалено, приватное или заблокировано в регионе |
+| `unsupported_video` | нет | Прямой эфир или видео длиннее `MAX_DURATION_MINUTES` |
 | `youtube_auth_required` | нет | Проверка на бота, возрастное ограничение, только для спонсоров: задай `COOKIES_FROM_BROWSER` |
 | `dependency_error` | нет | На машине нет ffmpeg/ffprobe |
 | `invalid_url`, `filesystem_error`, `database_error`, `metadata_error`, `internal_error`, `unknown_error` | нет | Смотри лог сервиса по id задачи |

@@ -394,3 +394,39 @@ def test_shutdown_interrupts_a_rate_limit_pause(app):
             ingest.run_yt_dlp([sys.executable, "-c", "pass"], timeout=10)
     finally:
         runtime.shutdown_event.clear()
+
+
+# ---------------------------------------------------------------------------
+# Live streams and over-long videos are refused before downloading
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "meta",
+    [
+        {"is_live": True},
+        {"live_status": "is_upcoming"},
+        {"duration": 31 * 60},
+    ],
+)
+def test_unsuitable_videos_are_refused_without_downloading(app, monkeypatch, meta):
+    downloads = []
+    youtube(app, monkeypatch, {"title": "A - B", "uploader": "x", **meta})
+    monkeypatch.setattr(ingest, "yt_download", lambda *a: downloads.append(a))
+    monkeypatch.setattr(config, "MAX_DURATION_MINUTES", 30)
+    monkeypatch.setattr(config, "MAX_RETRIES", 3)
+
+    task = run(app)
+
+    assert task["status"] == "error"
+    assert task["error_type"] == "unsupported_video"
+    assert downloads == []
+
+
+def test_duration_limit_can_be_switched_off(app, monkeypatch):
+    youtube(app, monkeypatch, {"title": "A - B", "uploader": "x", "duration": 5 * 3600})
+    monkeypatch.setattr(config, "MAX_DURATION_MINUTES", 0)
+    deezer(app, monkeypatch, None)
+    covers(app, monkeypatch)
+
+    assert run(app)["status"] == "done"

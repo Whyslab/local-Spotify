@@ -74,6 +74,10 @@ RETRY_BACKOFF_BASE = _positive_float("RETRY_BACKOFF_BASE", "2.0")
 # backoff only extends the ban.
 RATE_LIMIT_BACKOFF = _positive_float("RATE_LIMIT_BACKOFF", "60")
 
+# Longest video accepted, in minutes; 0 means no limit. A ten-hour mix would
+# otherwise hold a worker until the download timeout, three times over.
+MAX_DURATION_MINUTES = _nonnegative_int("MAX_DURATION_MINUTES", "30")
+
 # Graceful shutdown timeout (Problem #22)
 SHUTDOWN_TIMEOUT = _positive_int("SHUTDOWN_TIMEOUT", "30")
 

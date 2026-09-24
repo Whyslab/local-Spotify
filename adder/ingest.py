@@ -442,6 +442,23 @@ def yt_meta(url: str) -> dict:
     return json.loads(p.stdout)
 
 
+def check_downloadable(meta: dict) -> None:
+    """Refuse live streams and over-long videos before downloading anything.
+
+    A stream never ends, so it ran into the 10-minute download timeout and was
+    then retried; a many-hour mix did the same. Both held a worker for half an
+    hour to produce nothing useful as a track.
+    """
+    if meta.get("is_live") or meta.get("live_status") in ("is_live", "is_upcoming"):
+        raise RuntimeError("Unsupported video: live streams cannot be added as tracks")
+    limit = config.MAX_DURATION_MINUTES
+    duration = meta.get("duration") or 0
+    if limit and duration > limit * 60:
+        raise RuntimeError(
+            f"Unsupported video: {duration // 60} min is longer than MAX_DURATION_MINUTES={limit}"
+        )
+
+
 # YouTube's best audio is usually Opus. Converting that to AAC is a second
 # lossy pass; most videos also carry a native AAC stream, which "-x" then only
 # remuxes into .m4a. Conversion remains the fallback when there is none.
@@ -889,6 +906,9 @@ def classify_error(message: str) -> str:
     if "database" in text or "sqlite" in text:
         return "database_error"
 
+    if "unsupported video" in text:
+        return "unsupported_video"
+
     # Permanently wrong link, as opposed to one that merely failed to load.
     if "invalid url" in text or "unsupported url" in text or "malformed" in text:
         return "invalid_url"
@@ -1062,6 +1082,7 @@ def download_to_temp(tid: int, url: str) -> Downloaded:
 
     db.task_update(tid, status="downloading")
     meta = yt_meta(url)
+    check_downloadable(meta)
     fs_artist, fs_title, full_artist, meta_title = split_artist_title(meta)
 
     downloaded = yt_download(url, meta["id"])
