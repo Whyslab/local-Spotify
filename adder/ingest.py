@@ -1013,6 +1013,9 @@ def download_to_temp(tid: int, url: str) -> Downloaded:
 
     is_valid, error_msg = validate_audio_integrity(downloaded)
     if not is_valid:
+        # Not staged yet, so process() knows nothing to clean up: without this
+        # a broken download sat in tmp/ until the 24-hour sweep.
+        downloaded.unlink(missing_ok=True)
         raise RuntimeError(error_msg)
 
     return Downloaded(
