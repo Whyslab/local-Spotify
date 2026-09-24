@@ -164,6 +164,7 @@ function switchView(id) {
     for (const section of document.querySelectorAll(".view")) {
         section.hidden = section.id !== id;
     }
+    if (id === "viewService") libraryHealth();
     /* Внутри подборки подсвечен раздел «Подборки», откуда в неё пришли. */
     const section = id === "viewPlaylist" ? "viewPlaylists" : id;
     for (const tab of document.querySelectorAll(".tab")) {
@@ -591,10 +592,96 @@ async function health() {
         for (const [label, value, bad] of rows) {
             box.appendChild(fact(label, value, bad));
         }
+        libraryHealth();
     } catch (e) {
         pill.className = "pill pill-error";
         text.textContent = "нет связи";
     }
+}
+
+/* ---------------- Состояние фонотеки ---------------- */
+
+const LIBRARY_PROBLEMS = [
+    ["no_cover", "Без обложки", "covers", "Найти обложки"],
+    ["no_loudness", "Без выравнивания громкости", "loudness", "Измерить громкость"],
+    ["fallback_single", "Альбом не найден (записан как сингл)", null, null],
+    ["no_album", "Без альбома", null, null],
+    ["unreadable", "Файл не читается", null, null],
+];
+
+let libraryHealthRunning = false;
+
+async function libraryHealth() {
+    const box = document.getElementById("libraryHealth");
+    const jobNote = document.getElementById("libraryHealthJob");
+    const view = document.getElementById("viewService");
+    if (!box || !view || view.hidden) return;
+    try {
+        const r = await fetch("/api/library/health", { headers: headers() });
+        if (!r.ok) return;
+        const data = await r.json();
+        const job = data.job || {};
+        libraryHealthRunning = Boolean(job.running);
+        box.replaceChildren(fact("Треков", String(data.tracks), false));
+
+        for (const [key, label, fix, fixLabel] of LIBRARY_PROBLEMS) {
+            const problem = data.problems[key];
+            if (!problem) continue;
+            const row = fact(label, String(problem.count), problem.count > 0);
+            if (problem.count > 0) {
+                /* Примеры — под строкой, свёрнутыми: полный список не нужен,
+                 * а понять, о каких файлах речь, нужно. */
+                const details = document.createElement("details");
+                details.className = "health-examples";
+                const summary = document.createElement("summary");
+                summary.textContent = "примеры";
+                details.appendChild(summary);
+                for (const path of problem.examples) {
+                    const line = document.createElement("div");
+                    line.className = "track-album";
+                    line.textContent = path;
+                    details.appendChild(line);
+                }
+                row.appendChild(details);
+                if (fix) {
+                    const button = document.createElement("button");
+                    button.className = "ghost small";
+                    button.textContent = fixLabel;
+                    button.disabled = libraryHealthRunning;
+                    button.onclick = () => startLibraryFix(fix);
+                    row.appendChild(button);
+                }
+            }
+            box.appendChild(row);
+        }
+
+        if (job.running) {
+            jobNote.textContent = (job.what === "covers" ? "Ищу обложки" : "Измеряю громкость") + "… Это может занять долго.";
+        } else if (job.result) {
+            const res = job.result;
+            jobNote.textContent = res.error ? "Не удалось: " + res.error
+                : job.what === "covers" ? `Обложек добавлено: ${res.added}, не найдено: ${res.not_found}`
+                : `Измерено: ${res.measured}, не удалось: ${res.failed}`;
+        } else {
+            jobNote.textContent = "";
+        }
+    } catch (e) {
+        // Следующий опрос повторит.
+    }
+}
+
+async function startLibraryFix(what) {
+    const r = await fetch("/api/library/health/fix", {
+        method: "POST",
+        headers: { ...headers(), "Content-Type": "application/json" },
+        body: JSON.stringify({ what }),
+    });
+    if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        document.getElementById("libraryHealthJob").textContent = err.detail || "Не удалось запустить";
+        return;
+    }
+    await libraryHealth();
 }
 
 function fact(label, value, bad) {

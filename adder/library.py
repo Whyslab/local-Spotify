@@ -31,6 +31,24 @@ logger = logging.getLogger(__name__)
 AUDIO_SUFFIXES = (".m4a", ".mp3", ".flac", ".opus", ".ogg")
 
 
+def _has_picture(path: Path) -> bool:
+    """Whether a non-MP4 file carries a cover. The easy tag view hides pictures."""
+    try:
+        raw = mutagen.File(path)
+    except Exception:
+        return False
+    if raw is None:
+        return False
+    if getattr(raw, "pictures", None):  # FLAC
+        return True
+    tags = raw.tags
+    if tags is None:
+        return False
+    if hasattr(tags, "getall"):  # ID3
+        return bool(tags.getall("APIC"))
+    return "metadata_block_picture" in tags  # Ogg / Opus
+
+
 def read_tags(path: Path) -> dict:
     """Artist, title, album, track number and duration, whatever the container.
 
@@ -48,6 +66,7 @@ def read_tags(path: Path) -> dict:
             "----:com.apple.iTunes:REPLAYGAIN_TRACK_GAIN"
         )
         return {
+            "has_cover": bool(tags.get("covr")),
             "gain": loudness.parse_gain(bytes(gain[0])) if gain else None,
             "source": bytes(source[0]).decode("utf-8", "replace") if source else "",
             "artist": " \u2022 ".join(tags.get("\xa9ART") or []),
@@ -75,6 +94,7 @@ def read_tags(path: Path) -> dict:
         track_number = None
 
     return {
+        "has_cover": _has_picture(path),
         "gain": loudness.parse_gain(first("replaygain_track_gain") or first("rg_track_gain")),
         "source": first("source_url"),
         "artist": " \u2022 ".join(tags.get("artist") or []),
@@ -110,6 +130,8 @@ def library_track(rel_path: str) -> Path:
 
 
 LIBRARY_INDEX_TTL = 60
+# Files the last index pass could not read, relative to the library.
+UNREADABLE: list[str] = []
 # Parsed row per file, keyed by path and valid while (mtime_ns, size, ctime_ns) match.
 _FILE_ROWS: dict[str, tuple[tuple[int, int, int], dict]] = {}
 _LIBRARY_INDEX: dict[str, object] = {"at": 0.0, "rows": []}
@@ -136,6 +158,7 @@ def library_index() -> list[dict]:
             p for suffix in AUDIO_SUFFIXES for p in root.rglob(f"*{suffix}") if p.is_file()
         )
         seen = set()
+        unreadable: list[str] = []
         for f in files:
             try:
                 stat = f.stat()
@@ -165,6 +188,9 @@ def library_index() -> list[dict]:
                 # иначе ронял весь список ошибкой 500.
                 added = int(stat.st_mtime)
             except Exception:
+                # Left out of the index, but remembered: the health report
+                # lists files that cannot be read instead of hiding them.
+                unreadable.append(str(f.relative_to(root)))
                 continue
             artist, title, album = meta["artist"], meta["title"], meta["album"]
             rows.append(
@@ -185,6 +211,7 @@ def library_index() -> list[dict]:
                     "added": added,
                     "source": meta.get("source") or "",
                     "gain": meta.get("gain"),
+                    "has_cover": meta.get("has_cover", False),
                     "haystack": f"{artist} {title} {album}".lower(),
                 }
             )
@@ -192,6 +219,7 @@ def library_index() -> list[dict]:
 
         for gone in set(_FILE_ROWS) - seen:
             del _FILE_ROWS[gone]
+        UNREADABLE[:] = unreadable
 
         _LIBRARY_INDEX.update({"at": time.time(), "rows": rows})
         return list(rows)

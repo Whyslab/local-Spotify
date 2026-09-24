@@ -28,6 +28,7 @@ from . import (
     duplicates,
     ingest,
     library,
+    library_health,
     lyrics,
     moods,
     navidrome,
@@ -463,6 +464,27 @@ def track_details(path: str, authenticated: bool = Depends(verify_token)):
         **{key: value for key, value in row.items() if key != "haystack"},
         "features": measured[0] if measured else None,
     }
+
+
+@app.get("/api/library/health")
+def library_health_report(authenticated: bool = Depends(verify_token)):
+    """Counts and examples of library problems, and the state of a running fix."""
+    return library_health.report()
+
+
+class LibraryFix(BaseModel):
+    what: str
+
+
+@app.post("/api/library/health/fix")
+def library_health_fix(req: LibraryFix, authenticated: bool = Depends(verify_token)):
+    """Start the automatic fix for one problem: "covers" or "loudness"."""
+    try:
+        return library_health.start_fix(req.what)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 class DuplicateChoice(BaseModel):

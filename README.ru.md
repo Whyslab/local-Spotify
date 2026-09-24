@@ -260,6 +260,8 @@ curl -s http://127.0.0.1:8787/health     # {"status":"healthy"}
 | `POST` | `/api/tasks/retry-failed` | Поставить все упавшие задачи заново (есть и кнопка в панели) |
 | `GET` | `/api/duplicates` | Треки с предупреждением «похоже на имеющийся», каждый рядом со своим двойником |
 | `POST` | `/api/duplicates/resolve` | `{"task", "keep": "new"\|"existing"\|"both"}`: второй экземпляр — в `trash/`, подборки следуют за оставленным |
+| `GET` | `/api/library/health` | Треки без обложки, альбома или ReplayGain, нечитаемые файлы и ход запущенного исправления |
+| `POST` | `/api/library/health/fix` | `{"what": "covers"\|"loudness"}`: найти недостающие обложки или измерить громкость в фоне |
 | `GET`  | `/`            | Веб-интерфейс                                |
 | `GET`  | `/api/playlists` | Список подборок |
 | `POST` | `/api/playlists` | Создать подборку |

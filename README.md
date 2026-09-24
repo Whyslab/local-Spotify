@@ -260,6 +260,8 @@ Authorise with an `Authorization: Bearer <API_TOKEN>` header. `/health` without 
 | `POST` | `/api/tasks/retry-failed` | Queue every failed task again (also a button in the panel) |
 | `GET` | `/api/duplicates` | Tracks stored with a "looks like one you have" warning, each beside its twin |
 | `POST` | `/api/duplicates/resolve` | `{"task", "keep": "new"\|"existing"\|"both"}`: the other copy goes to `trash/`, playlists follow |
+| `GET` | `/api/library/health` | Tracks without cover, album or ReplayGain, unreadable files, and the state of a running fix |
+| `POST` | `/api/library/health/fix` | `{"what": "covers"\|"loudness"}`: find missing covers or measure missing loudness in the background |
 | `GET` | `/` | Web interface |
 | `GET` | `/api/playlists` | List playlists |
 | `POST` | `/api/playlists` | Create a playlist |
