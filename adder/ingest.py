@@ -1540,7 +1540,7 @@ def ingest_temp_file(tid: int, temp_path: Path, names: TrackNames, thumbnail: st
             similar,
             extra={"task_id": tid},
         )
-        db.task_update(tid, warning=f"Похоже на уже имеющийся трек: {similar}")
+        db.task_update(tid, warning=f"Похоже на уже имеющийся трек: {similar}", similar_to=similar)
     _apply_replacement(tid, relative)
 
     # Текст — сразу, чтобы он был уже при первом включении. В своём потоке:

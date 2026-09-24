@@ -342,6 +342,14 @@ async function tasks() {
         count.textContent = queue.length ? `${queue.length}` : "";
         const retry = document.getElementById("retryFailed");
         if (retry) retry.hidden = !queue.some(t => t.status === "error");
+
+        /* Список пар перечитывается, только когда меняется число
+         * предупреждений, а не на каждом опросе. */
+        const warned = data.filter(t => t.warning).map(t => t.id).join(",");
+        if (warned !== lastWarned) {
+            lastWarned = warned;
+            duplicates();
+        }
         empty.hidden = queue.length > 0;
         box.replaceChildren();
 
@@ -370,6 +378,116 @@ async function tasks() {
         }
     } catch (e) {
         // Polling loop - a transient network hiccup shouldn't throw to console.
+    }
+}
+
+/* ---------------- Похожие треки ---------------- */
+
+let lastWarned = null;
+
+function formatBytes(size) {
+    return size >= 1048576 ? (size / 1048576).toFixed(1) + " МБ" : Math.round(size / 1024) + " КБ";
+}
+
+function formatSeconds(total) {
+    if (typeof total !== "number") return "—";
+    const s = Math.round(total);
+    return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+}
+
+/* Одна сторона пары: всё, по чему выбирают, — длина, качество, откуда. */
+function duplicateSide(label, t) {
+    const side = document.createElement("div");
+    side.className = "dup-side";
+    const head = document.createElement("div");
+    head.className = "track-artist";
+    head.textContent = label;
+    const title = document.createElement("div");
+    title.className = "track-title";
+    title.textContent = t.title;
+    const artist = document.createElement("div");
+    artist.className = "track-artist";
+    artist.textContent = t.artist;
+    const facts = document.createElement("div");
+    facts.className = "track-album";
+    facts.textContent = [
+        formatSeconds(t.duration),
+        t.bitrate ? t.bitrate + " кбит/с" : null,
+        t.codec,
+        formatBytes(t.size),
+    ].filter(Boolean).join(" · ");
+    const path = document.createElement("div");
+    path.className = "track-album";
+    path.textContent = t.path;
+    side.append(head, title, artist, facts, path);
+    if (t.source) {
+        const link = document.createElement("a");
+        link.href = t.source;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.className = "track-album";
+        link.textContent = "Источник";
+        side.appendChild(link);
+    }
+    return side;
+}
+
+async function resolveDuplicate(task, keep, box) {
+    for (const b of box.querySelectorAll("button")) b.disabled = true;
+    try {
+        const r = await fetch("/api/duplicates/resolve", {
+            method: "POST",
+            headers: { ...headers(), "Content-Type": "application/json" },
+            body: JSON.stringify({ task, keep }),
+        });
+        if (!r.ok) throw new Error();
+        box.remove();
+        lastWarned = null;
+        await tasks();
+    } catch (e) {
+        for (const b of box.querySelectorAll("button")) b.disabled = false;
+    }
+}
+
+async function duplicates() {
+    const box = document.getElementById("duplicates");
+    const head = document.getElementById("duplicatesHead");
+    const count = document.getElementById("duplicatesCount");
+    if (!box || !head) return;
+    try {
+        const r = await fetch("/api/duplicates", { headers: headers() });
+        if (!r.ok) return;
+        const found = await r.json();
+        head.hidden = found.length === 0;
+        count.textContent = found.length ? String(found.length) : "";
+        box.replaceChildren();
+        for (const pair of found) {
+            const card = document.createElement("div");
+            card.className = "confirm duplicate";
+            const sides = document.createElement("div");
+            sides.className = "dup-sides";
+            sides.append(duplicateSide("Новый", pair.new), duplicateSide("Был в фонотеке", pair.existing));
+            const row = document.createElement("div");
+            row.className = "row";
+            const choices = [
+                ["Оставить новый", "new", "ghost grow"],
+                ["Оставить прежний", "existing", "ghost grow"],
+                ["Оставить оба", "both", "ghost grow"],
+            ];
+            for (const [label, keep, cls] of choices) {
+                const b = document.createElement("button");
+                b.className = cls;
+                b.textContent = label;
+                b.onclick = () => resolveDuplicate(pair.task, keep, card);
+                row.appendChild(b);
+            }
+            const note = document.createElement("p");
+            note.textContent = "Лишний уедет в корзину; в подборках его место займёт оставленный.";
+            card.append(sides, note, row);
+            box.appendChild(card);
+        }
+    } catch (e) {
+        // Как и tasks(): следующий опрос повторит.
     }
 }
 

@@ -258,6 +258,8 @@ curl -s http://127.0.0.1:8787/health     # {"status":"healthy"}
 | `POST` | `/api/add`     | Добавить одну или несколько YouTube-ссылок   |
 | `GET`  | `/api/tasks`   | Последние 50 задач и их статус               |
 | `POST` | `/api/tasks/retry-failed` | Поставить все упавшие задачи заново (есть и кнопка в панели) |
+| `GET` | `/api/duplicates` | Треки с предупреждением «похоже на имеющийся», каждый рядом со своим двойником |
+| `POST` | `/api/duplicates/resolve` | `{"task", "keep": "new"\|"existing"\|"both"}`: второй экземпляр — в `trash/`, подборки следуют за оставленным |
 | `GET`  | `/`            | Веб-интерфейс                                |
 | `GET`  | `/api/playlists` | Список подборок |
 | `POST` | `/api/playlists` | Создать подборку |

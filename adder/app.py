@@ -25,6 +25,7 @@ from . import (
     config,
     covers,
     db,
+    duplicates,
     ingest,
     library,
     lyrics,
@@ -464,6 +465,28 @@ def track_details(path: str, authenticated: bool = Depends(verify_token)):
     }
 
 
+class DuplicateChoice(BaseModel):
+    task: int
+    keep: str
+
+
+@app.get("/api/duplicates")
+def list_duplicates(authenticated: bool = Depends(verify_token)):
+    """Tracks stored with a "looks like one you have" warning, each beside its twin."""
+    return duplicates.pairs()
+
+
+@app.post("/api/duplicates/resolve")
+def resolve_duplicate(req: DuplicateChoice, authenticated: bool = Depends(verify_token)):
+    """Keep one copy (the other goes to the trash, playlists follow) or both."""
+    try:
+        return duplicates.resolve(req.task, req.keep)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 class TrackEdit(BaseModel):
     path: str
     title: str
@@ -677,6 +700,7 @@ def _reset_task(tid: int) -> None:
         error=None,
         error_type=None,
         warning=None,
+        similar_to=None,
         retry_count=0,
         replace_of=None,
         result_path=None,

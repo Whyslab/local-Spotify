@@ -69,6 +69,9 @@ def db_init():
     # предупреждает, а решать, какой оставить, человеку.
     with suppress(sqlite3.OperationalError):
         db_exec("ALTER TABLE tasks ADD COLUMN warning TEXT")
+    # Путь того трека, на который похож новый, — для экрана дубликатов.
+    with suppress(sqlite3.OperationalError):
+        db_exec("ALTER TABLE tasks ADD COLUMN similar_to TEXT")
     # Сколько раз задачу, упавшую из-за ограничения YouTube, поставили заново
     # сами, без человека: больше трёх — значит, дело не в паузе.
     with suppress(sqlite3.OperationalError):

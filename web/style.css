@@ -405,6 +405,13 @@ button:disabled { opacity: .5; cursor: default; }
 .confirm h3 { margin: 0; font-size: 14px; font-weight: 650; letter-spacing: -0.2px; }
 .confirm p  { margin: 6px 0 0; font-size: 12px; color: var(--text-2); }
 
+/* Похожие треки: две стороны рядом, на узком экране — одна под другой. */
+.dup-sides { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (max-width: 520px) { .dup-sides { grid-template-columns: 1fr; } }
+.dup-side { min-width: 0; }
+.dup-side .track-album, .dup-side .track-title { white-space: normal; overflow-wrap: anywhere; }
+.duplicate .row { margin-top: 10px; flex-wrap: wrap; }
+
 /* Правка тегов: подписи над полями, поля во всю ширину. */
 .edit-tags .field { display: flex; flex-direction: column; gap: 4px; margin-top: 10px; }
 .edit-tags .field span { font-size: 12px; color: var(--text-2); }
