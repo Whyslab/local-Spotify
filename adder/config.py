@@ -56,16 +56,27 @@ PRESERVE_FEAT_ARTISTS = os.environ.get("PRESERVE_FEAT_ARTISTS", "true").lower() 
 
 # API Authentication (Problem #19)
 # The API is reachable from the LAN, so an empty token must fail closed.
+# The placeholder from .env.example is public, so it is as good as no token.
+PLACEHOLDER_API_TOKEN = "CHANGE_ME_TO_A_LONG_RANDOM_SECRET"
 API_TOKEN = os.environ.get("API_TOKEN", "").strip()
-if not API_TOKEN:
+if not API_TOKEN or API_TOKEN == PLACEHOLDER_API_TOKEN:
     raise RuntimeError(
         "API_TOKEN is required. Set a strong random token in adder/.env "
-        "or the systemd environment before starting local-Spotify."
+        "or the systemd environment before starting local-Spotify. Generate one with: "
+        "python -c 'import secrets; print(secrets.token_urlsafe(32))'"
     )
 
 # Retry settings (Problem #23)
 MAX_RETRIES = _nonnegative_int("MAX_RETRIES", "3")
 RETRY_BACKOFF_BASE = _positive_float("RETRY_BACKOFF_BASE", "2.0")
+# After YouTube answers 429 / "try again later", seconds to wait per attempt
+# (60, 120, ...), during which no yt-dlp call starts at all. A 2-4 second
+# backoff only extends the ban.
+RATE_LIMIT_BACKOFF = _positive_float("RATE_LIMIT_BACKOFF", "60")
+
+# Longest video accepted, in minutes; 0 means no limit. A ten-hour mix would
+# otherwise hold a worker until the download timeout, three times over.
+MAX_DURATION_MINUTES = _nonnegative_int("MAX_DURATION_MINUTES", "30")
 
 # Graceful shutdown timeout (Problem #22)
 SHUTDOWN_TIMEOUT = _positive_int("SHUTDOWN_TIMEOUT", "30")
@@ -83,3 +94,23 @@ TMP_TTL_HOURS = _positive_int("TMP_TTL_HOURS", "24")
 # (needed here because this machine keeps Firefox profiles under ~/.config).
 # Empty means no cookies, which is the right default for anyone not hitting it.
 COOKIES_FROM_BROWSER = os.environ.get("COOKIES_FROM_BROWSER", "").strip()
+
+# Navidrome, for the things only it can hold.
+#
+# Playlist covers live in its database -- there is nowhere else to put them
+# that a Subsonic client will read -- and a playlist whose .m3u disappears has
+# to be deleted through its API, because it does not notice the file is gone.
+# Both are optional: without credentials the service still runs, playlists
+# still work, and the Navidrome side of the work is queued until it can be
+# delivered. Losing covers is not a reason to refuse to start.
+NAVIDROME_URL = os.environ.get("NAVIDROME_URL", "http://127.0.0.1:4533").rstrip("/")
+NAVIDROME_USER = os.environ.get("NAVIDROME_USER", "").strip()
+NAVIDROME_PASSWORD = os.environ.get("NAVIDROME_PASSWORD", "")
+
+# Playlist cover uploads. 8 MB clears a phone photo comfortably, and Navidrome
+# re-encodes anyway under its own coverArtQuality setting.
+MAX_COVER_BYTES = _positive_int("MAX_COVER_BYTES", str(8 * 1024 * 1024))
+
+# How long the play journal is kept. A year plus a margin, so a year-on-year
+# comparison still has both ends.
+PLAY_HISTORY_DAYS = _positive_int("PLAY_HISTORY_DAYS", "400")

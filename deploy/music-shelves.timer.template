@@ -1,0 +1,13 @@
+[Unit]
+Description=local-Spotify: nightly shelf export
+
+[Timer]
+# 04:30 and not 03:30, when the audio analysis starts: the shelves are built
+# out of audio_features, so running them first would rebuild every shelf from
+# yesterday's measurements and today's new tracks would wait a day.
+OnCalendar=*-*-* 04:30:00
+Persistent=true
+RandomizedDelaySec=30m
+
+[Install]
+WantedBy=timers.target

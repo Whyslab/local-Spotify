@@ -1,0 +1,13 @@
+[Unit]
+Description=local-Spotify: nightly audio analysis
+
+[Timer]
+# Nightly, and only for what is new: the script skips anything already
+# measured whose content has not changed, so a second run costs a hash per
+# file rather than an hour.
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+RandomizedDelaySec=30m
+
+[Install]
+WantedBy=timers.target

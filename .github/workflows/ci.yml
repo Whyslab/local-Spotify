@@ -16,18 +16,25 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: adder/requirements.txt
+          cache-dependency-path: |
+            adder/requirements.txt
+            requirements-dev.txt
+
+      # ffmpeg — не для тестов, а для самого сервиса: им проверяются и
+      # перекодируются загрузки. Тесты импорта и потоков делают им файлы.
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
 
       - name: Install dependencies
-        run: python -m pip install -r adder/requirements.txt ruff
+        run: python -m pip install -r requirements-dev.txt
 
       - name: Lint
         run: |
           ruff check .
-          ruff format --check adder scripts tests
+          ruff format --check adder scripts tests desktop
 
       - name: Compile Python sources
-        run: python -m compileall -q adder scripts tests
+        run: python -m compileall -q adder scripts tests desktop
 
       - name: Run tests
         env:

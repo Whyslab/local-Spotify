@@ -1,0 +1,40 @@
+[Unit]
+Description=local-Spotify: measure tempo, energy and key across the library
+After=music-adder.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=%REPO%
+ExecStart=%REPO%/.venv/bin/python %REPO%/scripts/analyze_audio.py --jobs %JOBS%
+
+# The whole point of running this as its own unit. One analysis process peaks
+# at about 376 MB; this machine has under two gigabytes free, and an unbounded
+# run is how earlyoom ends up killing the browser instead. Three processes fit
+# inside this ceiling.
+MemoryMax=1500M
+
+# A soft ceiling below the hard one. Past this the kernel squeezes the job
+# instead of killing it, and the difference matters: the run that gets near the
+# limit is the one after a librosa update, when three processes compile at once
+# on a machine with under two gigabytes free.
+MemoryHigh=800M
+
+# systemd disables the start timeout for Type=oneshot, so without this line a
+# stuck pass sits in `activating` forever -- and a timer never starts a unit
+# that is already running, so the nightly analysis would quietly stop for good.
+# Two hours is well past a full cold pass over this library.
+TimeoutStartSec=2h
+
+# It yields to everything else. A pass takes roughly an hour and there is no
+# hurry: a track measured tomorrow is only unplaceable by tempo until then.
+Nice=15
+IOSchedulingClass=idle
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%REPO%/adder
+
+[Install]
+WantedBy=default.target

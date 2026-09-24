@@ -20,7 +20,23 @@ mkdir -p "$BACKUP_DIR"
 
 # Backup SQLite database (Problem #20)
 if [ -f "$ADDER_DIR/adder.db" ]; then
-    sqlite3 "$ADDER_DIR/adder.db" ".backup '$BACKUP_DIR/adder_$TIMESTAMP.db'"
+    # The online backup API copies a consistent snapshot even while the
+    # service is writing. Python's sqlite3 module has the same API, so the
+    # sqlite3 command-line tool is used when present but not required.
+    if command -v sqlite3 >/dev/null; then
+        sqlite3 "$ADDER_DIR/adder.db" ".backup '$BACKUP_DIR/adder_$TIMESTAMP.db'"
+    else
+        PYTHON="$PROJECT_ROOT/.venv/bin/python"
+        [[ -x "$PYTHON" ]] || PYTHON=python3
+        "$PYTHON" - "$ADDER_DIR/adder.db" "$BACKUP_DIR/adder_$TIMESTAMP.db" <<'PY'
+import sqlite3
+import sys
+
+source, target = sys.argv[1], sys.argv[2]
+with sqlite3.connect(source) as src, sqlite3.connect(target) as dst:
+    src.backup(dst)
+PY
+    fi
     chmod 600 "$BACKUP_DIR/adder_$TIMESTAMP.db"
     echo "✓ Database backed up: adder_$TIMESTAMP.db"
 else
@@ -35,15 +51,28 @@ else
     echo "ℹ No .env file found"
 fi
 
+# Обложки подборок и прежние версии подборок: своего источника у них нет,
+# потерянное не восстановить ни из фонотеки, ни из Navidrome.
+PLAYLIST_STATE=()
+for dir in playlist-covers playlist-history; do
+    [ -d "$ADDER_DIR/$dir" ] && PLAYLIST_STATE+=("$dir")
+done
+if [ ${#PLAYLIST_STATE[@]} -gt 0 ]; then
+    tar -czf "$BACKUP_DIR/playlists_$TIMESTAMP.tar.gz" -C "$ADDER_DIR" "${PLAYLIST_STATE[@]}"
+    echo "✓ Playlist covers and history backed up: playlists_$TIMESTAMP.tar.gz"
+fi
+
 # Keep only last 10 backups (cleanup old ones)
 cd "$BACKUP_DIR"
 ls -t adder_*.db 2>/dev/null | tail -n +11 | xargs -r rm --
 ls -t env_* 2>/dev/null | tail -n +11 | xargs -r rm --
+ls -t playlists_*.tar.gz 2>/dev/null | tail -n +11 | xargs -r rm --
 
 echo ""
 echo "=== Backup Summary ==="
 echo "Music Library = primary data (backed up separately)"
-echo "SQLite DB = task state (backed up above)"
+echo "SQLite DB = tasks, play journal, audio measurements, blind trials (backed up above)"
+echo "Playlist covers and history = backed up above"
 echo ".env = configuration/secrets (backed up above)"
 echo ""
 echo "Latest backups:"

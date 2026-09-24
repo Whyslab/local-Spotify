@@ -72,3 +72,26 @@ design/*.html
 
 # graphify knowledge graph (regenerate with: graphify update .)
 graphify-out/
+
+# Runtime data: previous versions of playlists and the covers uploaded for them.
+adder/playlist-history/
+adder/playlist-covers/
+
+# The design canvas is seeded from the .dc.html artboards beside it;
+# 2.7MB of editor code does not belong in the history.
+design/desktop/local-spotify-desktop.html
+
+# OMC session state, written wherever a session happens to start.
+.omc/
+lyrics-cache/
+
+# Список похожих артистов от Deezer: кэш, а не исходники.
+similar-cache/
+adder/numba-cache/
+
+# Треки не из фонотеки для умного перемешивания: временный кэш, чистится сам.
+adder/outside-cache/
+# Уменьшенные обложки для списков — кэш, собирается сам.
+adder/thumb-cache/
+# yt-dlp and Deno caches (XDG_CACHE_HOME for yt-dlp calls)
+adder/cache/

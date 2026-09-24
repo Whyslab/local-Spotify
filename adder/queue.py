@@ -1,0 +1,207 @@
+"""The background queue: retry policy, worker threads, recovery after a restart.
+
+This module owns *when* a track is processed and what happens when that fails.
+What actually happens to the bytes lives in :mod:`adder.ingest`.
+"""
+
+import logging
+import queue as _queue
+from contextlib import suppress
+from pathlib import Path
+
+from . import config, db, ingest, runtime
+
+logger = logging.getLogger(__name__)
+
+
+def recover_queued_tasks():
+    """Requeue tasks that were in flight when the service last stopped."""
+    queued = db.db_query(
+        "SELECT id, url, status FROM tasks WHERE status IN ('queued', 'downloading', 'tagging')"
+    )
+    recovered = 0
+    for task in queued:
+        # Reset interrupted tasks to queued
+        if task["status"] in ("downloading", "tagging"):
+            db.task_update(task["id"], status="queued")
+        # Add to queue (avoiding duplicates)
+        with runtime.FILE_LOCK:
+            if task["url"] not in runtime.PROCESSING_URLS:
+                runtime.TASK_QUEUE.put((task["id"], task["url"]))
+                runtime.PROCESSING_URLS.add(task["url"])
+                recovered += 1
+    if recovered > 0:
+        logger.info(
+            f"Recovered {recovered} tasks from previous session", extra={"task_id": "system"}
+        )
+
+
+def _discard_temp(temp_path: Path | None, tid: int) -> None:
+    if temp_path and temp_path.exists():
+        try:
+            temp_path.unlink()
+        except OSError as cleanup_error:
+            logger.warning(
+                f"Could not remove temporary file {temp_path}: {cleanup_error}",
+                extra={"task_id": tid},
+            )
+
+
+def process(tid: int, url: str):
+    temp_path = None
+    retry_count = 0
+    last_error_type = None
+    logger.info("Processing %s", url, extra={"task_id": tid})
+
+    while retry_count == 0 or retry_count < config.MAX_RETRIES:
+        try:
+            if url.startswith("file:"):
+                # An uploaded file: a different way of obtaining the bytes,
+                # handing over to exactly the same library half below.
+                source = ingest.stashed_upload(url)
+                if source is None:
+                    raise RuntimeError("Uploaded file is no longer in the import folder")
+                downloaded = ingest.import_local_file(
+                    tid, source, ingest.stashed_name(url) or source.name
+                )
+            else:
+                downloaded = ingest.download_to_temp(tid, url)
+            temp_path = downloaded.temp_path
+
+            outcome = ingest.ingest_temp_file(
+                tid, temp_path, downloaded.names, downloaded.thumbnail
+            )
+            temp_path = None  # consumed by the ingest half, nothing left to clean up
+
+            db.task_update(tid, status="done", error="", error_type="")
+            logger.info("Task finished: %s", outcome, extra={"task_id": tid})
+            if url.startswith("file:"):
+                ingest.forget_upload(url)
+            # Released here too, not only after a failure: /api/add skips any
+            # URL still in the set, so a deleted track could not be re-added.
+            with runtime.FILE_LOCK:
+                runtime.PROCESSING_URLS.discard(url)
+            return  # Success, exit retry loop
+
+        except runtime.ShutdownRequested:
+            logger.info(
+                "Task interrupted by shutdown; returning task to queued state",
+                extra={"task_id": tid},
+            )
+
+            db.task_update(
+                tid,
+                status="queued",
+                error="",
+                error_type="",
+                retry_count=retry_count,
+            )
+
+            _discard_temp(temp_path, tid)
+
+            with runtime.FILE_LOCK:
+                runtime.PROCESSING_URLS.discard(url)
+
+            return
+
+        except Exception as e:
+            error_str = str(e)[:300]
+
+            last_error_type = ingest.classify_error(error_str)
+            if last_error_type == "rate_limited":
+                # Every worker backs off, not just this one: a second worker
+                # still calling YouTube would only extend the ban.
+                runtime.pause_youtube(config.RATE_LIMIT_BACKOFF * (retry_count + 1))
+            if last_error_type == "youtube_auth_required":
+                hint = ingest.AUTH_REQUIRED_HINT
+                error_str = f"{error_str[: 299 - len(hint)]} {hint}"
+
+            if last_error_type in ingest.RETRYABLE_ERRORS and retry_count < config.MAX_RETRIES - 1:
+                retry_count += 1
+                backoff_time = config.RETRY_BACKOFF_BASE**retry_count
+                if last_error_type == "rate_limited":
+                    backoff_time = max(backoff_time, config.RATE_LIMIT_BACKOFF * retry_count)
+                logger.warning(
+                    f"Retry {retry_count}/{config.MAX_RETRIES} after {backoff_time}s: {error_str}",
+                    extra={"task_id": tid},
+                )
+
+                # Allow SIGTERM/shutdown to interrupt retry backoff immediately.
+                if runtime.shutdown_event.wait(backoff_time):
+                    logger.info(
+                        "Shutdown requested during retry backoff",
+                        extra={"task_id": tid},
+                    )
+
+                    # The normal cleanup below the retry loop is skipped by
+                    # this early return, so release the processing lock here.
+                    with runtime.FILE_LOCK:
+                        runtime.PROCESSING_URLS.discard(url)
+
+                    return
+
+                continue
+
+            # Not retryable or max retries reached. Without this line a task that
+            # gave up was visible only in SQLite, never in journalctl.
+            logger.error(
+                "Failed after %d attempt(s) [%s]: %s",
+                retry_count + 1,
+                last_error_type,
+                error_str,
+                extra={"task_id": tid},
+            )
+            db.task_update(
+                tid,
+                status="error",
+                error=error_str,
+                error_type=last_error_type,
+                retry_count=retry_count,
+            )
+
+            _discard_temp(temp_path, tid)
+            if url.startswith("file:"):
+                # Не прошёл — повторить можно, только загрузив файл заново.
+                ingest.forget_upload(url)
+
+            break  # Exit retry loop
+
+    # Remove URL from processing set only after the entire task
+    # (including all retry attempts) has finished.
+    with runtime.FILE_LOCK:
+        runtime.PROCESSING_URLS.discard(url)
+
+
+def worker():
+    while not runtime.shutdown_event.is_set():
+        try:
+            tid, url = runtime.TASK_QUEUE.get(timeout=1)
+        except _queue.Empty:
+            continue
+
+        try:
+            if runtime.shutdown_event.is_set():
+                db.task_update(
+                    tid,
+                    status="queued",
+                    error="",
+                    error_type="",
+                )
+
+                with runtime.FILE_LOCK:
+                    runtime.PROCESSING_URLS.discard(url)
+
+                return
+
+            process(tid, url)
+        except Exception as exc:  # noqa: BLE001
+            # Сбой в самой обработке ошибки (диск полон, база заперта) раньше
+            # убивал поток насовсем, а ссылка оставалась «в работе» — повторить
+            # её было нельзя до перезапуска службы.
+            logger.exception("Worker survived a failure in task handling", extra={"task_id": tid})
+            with suppress(Exception):
+                db.task_update(tid, status="error", error=str(exc)[:300], error_type="internal")
+            with runtime.FILE_LOCK:
+                runtime.PROCESSING_URLS.discard(url)
+        finally:
+            runtime.TASK_QUEUE.task_done()

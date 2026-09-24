@@ -39,7 +39,11 @@ class TrackInfo:
 def normalize(s: str) -> str:
     """Fold a title or artist down to what two spellings of it have in common."""
     s = unicodedata.normalize("NFKD", (s or "").lower())
-    s = s.replace("ё", "е").replace("&", "and").replace("'", "").replace("’", "")
+    # Надстрочные знаки — прочь, а не в пробел: NFKD раскладывает «ё» на «е»
+    # и знак, и прежняя замена «ё»→«е» после неё уже ничего не находила —
+    # «Ёлка» становилась «е лка» и не сходилась с «Елкой» у Deezer.
+    s = "".join(char for char in s if not unicodedata.combining(char))
+    s = s.replace("&", "and").replace("'", "").replace("’", "")
     s = re.sub(r"\((?:feat|ft|with)\.?[^)]*\)", " ", s)
     s = re.sub(r"\b(?:feat|ft)\.?\s.*$", " ", s)
     s = re.sub(r"[^\w\s]", " ", s)
