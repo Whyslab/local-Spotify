@@ -1091,6 +1091,22 @@ def worker():
                 return
 
             process(tid, url)
+        except Exception:
+            # process() records its own failures, so getting here means even
+            # that failed - typically the database was locked while writing the
+            # error. Letting the exception out would end this thread for good:
+            # once every worker has died, the queue stalls silently and the URL
+            # stays reserved, so re-submitting it is ignored until a restart.
+            logger.exception("Worker hit an unexpected error", extra={"task_id": tid})
+            with suppress(Exception):
+                task_update(
+                    tid,
+                    status="error",
+                    error="Internal error while processing; see the service log",
+                    error_type="internal_error",
+                )
+            with FILE_LOCK:
+                PROCESSING_URLS.discard(url)
         finally:
             TASK_QUEUE.task_done()
 

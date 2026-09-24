@@ -732,3 +732,39 @@ def test_equivalent_youtube_urls_are_not_added_twice(
     )
 
     assert len(rows) == 1
+
+
+def test_worker_survives_an_unexpected_error_and_releases_the_url(app_module, monkeypatch):
+    import sqlite3
+    import threading
+
+    first = (1, "https://www.youtube.com/watch?v=crashes")
+    second = (2, "https://www.youtube.com/watch?v=still-runs")
+    processed = []
+
+    def fake_process(tid, task_url):
+        processed.append(tid)
+        if tid == 1:
+            # What process() lets escape when writing the error itself fails.
+            raise sqlite3.OperationalError("database is locked")
+        app_module.shutdown_event.set()
+
+    monkeypatch.setattr(app_module, "process", fake_process)
+    app_module.shutdown_event.clear()
+
+    # TASK_QUEUE is module-global; earlier API tests leave tasks in it.
+    while not app_module.TASK_QUEUE.empty():
+        app_module.TASK_QUEUE.get_nowait()
+        app_module.TASK_QUEUE.task_done()
+
+    app_module.PROCESSING_URLS.update({first[1], second[1]})
+    app_module.TASK_QUEUE.put(first)
+    app_module.TASK_QUEUE.put(second)
+
+    worker_thread = threading.Thread(target=app_module.worker, daemon=True)
+    worker_thread.start()
+    worker_thread.join(timeout=5)
+
+    assert processed == [1, 2], "the worker died after the first task"
+    assert first[1] not in app_module.PROCESSING_URLS
+    app_module.TASK_QUEUE.join()
