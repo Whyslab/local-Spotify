@@ -103,6 +103,9 @@ def process(tid: int, url: str):
             error_str = str(e)[:300]
 
             last_error_type = ingest.classify_error(error_str)
+            if last_error_type == "youtube_auth_required":
+                hint = ingest.AUTH_REQUIRED_HINT
+                error_str = f"{error_str[: 299 - len(hint)]} {hint}"
 
             if last_error_type in ingest.RETRYABLE_ERRORS and retry_count < config.MAX_RETRIES - 1:
                 retry_count += 1

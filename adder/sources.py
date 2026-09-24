@@ -80,7 +80,7 @@ def search_youtube(query: str, limit: int = 8) -> list[dict]:
         timeout=90,
     )
     if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip()[-300:] or "yt-dlp search failed")
+        raise RuntimeError(ingest.ytdlp_error(result.stderr))
 
     payload = json.loads(result.stdout or "{}")
     found = []
@@ -106,7 +106,7 @@ def youtube_playlist(url: str) -> list[str]:
         timeout=180,
     )
     if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip()[-300:] or "yt-dlp could not read the playlist")
+        raise RuntimeError(ingest.ytdlp_error(result.stderr))
 
     payload = json.loads(result.stdout or "{}")
     urls = []

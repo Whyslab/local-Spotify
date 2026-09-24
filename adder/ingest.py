@@ -374,13 +374,26 @@ def ytdlp_base() -> list[str]:
     return command
 
 
+def ytdlp_error(stderr: str) -> str:
+    """The reason yt-dlp gave for failing, not just the tail of its output.
+
+    yt-dlp states the cause on an ``ERROR:`` line that is often longer than
+    the 300 characters kept for a task, so taking the tail of stderr kept the
+    trailing FAQ links and cut off the cause itself.
+    """
+    errors = [line.strip() for line in stderr.splitlines() if line.strip().startswith("ERROR:")]
+    if errors:
+        return errors[-1]
+    return stderr.strip()[-300:] or "yt-dlp failed without an error message"
+
+
 def yt_meta(url: str) -> dict:
     p = run_yt_dlp(
         [*ytdlp_base(), "-J", "--no-playlist", url],
         timeout=120,
     )
     if p.returncode != 0:
-        raise RuntimeError(p.stderr.strip()[-300:])
+        raise RuntimeError(ytdlp_error(p.stderr))
     return json.loads(p.stdout)
 
 
@@ -400,7 +413,7 @@ def yt_download(url: str, vid: str) -> Path:
 
     p = run_yt_dlp(command, timeout=600)
     if p.returncode != 0:
-        raise RuntimeError(p.stderr.strip()[-300:])
+        raise RuntimeError(ytdlp_error(p.stderr))
     target = runtime.TMP_DIR / f"{vid}.m4a"
     if not target.exists():
         found = list(runtime.TMP_DIR.glob(f"{vid}.*"))
@@ -737,7 +750,11 @@ def _cleanup_stale_uploads(now: float) -> int:
 
 # Errors worth trying again. Everything else is treated as permanent, so a
 # genuinely broken link is not retried three times before giving up.
-RETRYABLE_ERRORS = {"network_error", "download_error", "artwork_error"}
+RETRYABLE_ERRORS = {"network_error", "rate_limited", "download_error", "artwork_error"}
+
+# Appended to a task's error when YouTube wants a signed-in session, since the
+# fix is a setting of this service rather than anything wrong with the link.
+AUTH_REQUIRED_HINT = "Set COOKIES_FROM_BROWSER in adder/.env (see README, Troubleshooting)."
 
 
 def classify_error(message: str) -> str:
@@ -752,11 +769,23 @@ def classify_error(message: str) -> str:
     """
     text = message.lower()
 
+    # A tool missing on this machine, not a problem with the video. yt-dlp says
+    # "ffprobe and ffmpeg not found", which must not read as a missing video.
+    if "ffmpeg not found" in text or "ffprobe not found" in text:
+        return "dependency_error"
+
+    # YouTube throttling this client. "This content isn't available, try again
+    # later" is how YouTube reports a rate-limited session, so it is matched
+    # before the generic "unavailable" below.
+    if "http error 429" in text or "too many requests" in text or "try again later" in text:
+        return "rate_limited"
+
     if "timeout" in text or "timed out" in text or "network" in text:
         return "network_error"
     if "connection" in text or "unreachable" in text or "temporarily" in text:
         return "network_error"
-    if "http error 5" in text or "502" in text or "503" in text or "504" in text:
+    # Only as an HTTP status: a bare "503" also matches video IDs and URLs.
+    if re.search(r"http error 5\d\d", text):
         return "network_error"
 
     if "disk" in text or "space" in text or "no space left" in text:
@@ -767,6 +796,9 @@ def classify_error(message: str) -> str:
     # Permanently wrong link, as opposed to one that merely failed to load.
     if "invalid url" in text or "unsupported url" in text or "malformed" in text:
         return "invalid_url"
+    # YouTube wants a signed-in session: bot check, age gate, members-only.
+    if "not a bot" in text or "sign in to confirm" in text or "members-only" in text:
+        return "youtube_auth_required"
     if "not found" in text or "unavailable" in text or "private video" in text:
         return "youtube_not_found"
 

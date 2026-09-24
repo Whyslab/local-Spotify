@@ -564,7 +564,7 @@ def _search(query: str) -> list[dict]:
         timeout=60,
     )
     if done.returncode != 0:
-        raise RuntimeError(done.stderr.strip()[-300:])
+        raise RuntimeError(ingest.ytdlp_error(done.stderr))
     return (json.loads(done.stdout) or {}).get("entries") or []
 
 
@@ -589,7 +589,7 @@ def _download(video_id: str, key: str) -> Path:
         timeout=300,
     )
     if done.returncode != 0:
-        raise RuntimeError(done.stderr.strip()[-300:])
+        raise RuntimeError(ingest.ytdlp_error(done.stderr))
     produced = folder / f"{key}.dl.m4a"
     if not produced.is_file():
         found = sorted(folder.glob(f"{key}.dl.*"))
