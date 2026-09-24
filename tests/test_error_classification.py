@@ -108,6 +108,71 @@ class TestRetryableSetIsCoherent:
                 "connection reset",
                 "Download failed",
                 "Could not fetch artwork",
+                "HTTP Error 429: Too Many Requests",
             ]
         }
         assert produced >= RETRYABLE_ERRORS, "a retryable type no classifier branch can return"
+
+
+class TestYouTubeFailures:
+    """Real yt-dlp messages that the classifier used to get wrong."""
+
+    def test_missing_ffmpeg_is_not_reported_as_a_missing_video(self):
+        message = (
+            "ERROR: Postprocessing: ffprobe and ffmpeg not found. "
+            "Please install or provide the path using --ffmpeg-location"
+        )
+        assert classify_error(message) == "dependency_error"
+        assert classify_error(message) not in RETRYABLE_ERRORS
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "ERROR: [youtube] abc: HTTP Error 429: Too Many Requests",
+            "ERROR: [youtube] abc: Unable to download API page: HTTP Error 429: Too Many Requests",
+            "ERROR: [youtube] abc: Video unavailable. This content isn't available, try again later.",
+        ],
+    )
+    def test_rate_limiting_is_retried(self, message):
+        assert classify_error(message) == "rate_limited"
+        assert classify_error(message) in RETRYABLE_ERRORS
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "ERROR: [youtube] abc: Sign in to confirm you're not a bot. Use --cookies-from-browser",
+            "ERROR: [youtube] abc: Sign in to confirm your age. This video may be inappropriate",
+            "ERROR: [youtube] abc: This video is available to this channel's members-only content",
+        ],
+    )
+    def test_sign_in_walls_are_permanent(self, message):
+        assert classify_error(message) == "youtube_auth_required"
+        assert classify_error(message) not in RETRYABLE_ERRORS
+
+    def test_status_code_digits_in_a_video_id_are_not_a_server_error(self):
+        message = "ERROR: [youtube] x5031: Private video. Sign in if you've been granted access"
+        assert classify_error(message) == "youtube_not_found"
+
+
+class TestYtdlpErrorExtraction:
+    def test_keeps_the_error_line_rather_than_the_tail(self):
+        cause = (
+            "ERROR: [youtube] abc: Sign in to confirm you're not a bot. " + "See https://x " * 40
+        )
+        stderr = f"WARNING: something minor\n{cause}\n"
+
+        message = app_module.ytdlp_error(stderr)
+
+        assert message.startswith("ERROR: [youtube] abc: Sign in to confirm")
+
+    def test_last_error_line_wins(self):
+        stderr = "ERROR: first\nWARNING: x\nERROR: second\n"
+        assert app_module.ytdlp_error(stderr) == "ERROR: second"
+
+    def test_falls_back_to_the_tail_without_an_error_line(self):
+        assert (
+            app_module.ytdlp_error("Traceback...\nKeyError: 'id'") == "Traceback...\nKeyError: 'id'"
+        )
+
+    def test_empty_stderr_still_explains_itself(self):
+        assert app_module.ytdlp_error("") == "yt-dlp failed without an error message"
