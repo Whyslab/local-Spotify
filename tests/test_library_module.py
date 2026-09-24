@@ -149,3 +149,36 @@ def test_a_retag_that_keeps_the_date_is_still_noticed(tmp_path, monkeypatch):
     library.invalidate_library_index()
 
     assert library.library_index()[0]["title"] == "Renamed"
+
+
+def test_a_change_during_a_rebuild_is_not_hidden_behind_the_cache(tmp_path, monkeypatch):
+    import shutil
+
+    from mutagen.mp4 import MP4
+
+    from adder import config, library
+
+    fixture = Path(__file__).parent / "fixtures" / "tone.m4a"
+    monkeypatch.setattr(config, "LIBRARY", tmp_path)
+    monkeypatch.setattr(library, "_FILE_ROWS", {})
+    path = tmp_path / "t.m4a"
+    shutil.copy(fixture, path)
+
+    real = library.read_tags
+
+    def read_then_change(f):
+        # The file changes, and the change is announced, while the rebuild is
+        # still reading it - what a worker finishing a track does in real life.
+        row = real(f)
+        audio = MP4(f)
+        audio["\xa9nam"] = ["Changed"]
+        audio.save()
+        library.invalidate_library_index()
+        return row
+
+    monkeypatch.setattr(library, "read_tags", read_then_change)
+    library.invalidate_library_index()
+    library.library_index()
+    monkeypatch.setattr(library, "read_tags", real)
+
+    assert library.library_index()[0]["title"] == "Changed"

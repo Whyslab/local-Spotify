@@ -134,7 +134,7 @@ LIBRARY_INDEX_TTL = 60
 UNREADABLE: list[str] = []
 # Parsed row per file, keyed by path and valid while (mtime_ns, size, ctime_ns) match.
 _FILE_ROWS: dict[str, tuple[tuple[int, int, int], dict]] = {}
-_LIBRARY_INDEX: dict[str, object] = {"at": 0.0, "rows": []}
+_LIBRARY_INDEX: dict[str, object] = {"at": 0.0, "rows": [], "generation": 0}
 _LIBRARY_INDEX_LOCK = threading.Lock()
 
 
@@ -149,6 +149,7 @@ def library_index() -> list[dict]:
     with _LIBRARY_INDEX_LOCK:
         if time.time() - float(_LIBRARY_INDEX["at"]) < LIBRARY_INDEX_TTL:
             return list(_LIBRARY_INDEX["rows"])
+        generation = _LIBRARY_INDEX["generation"]
 
         root = config.LIBRARY.resolve()
         rows = []
@@ -221,11 +222,18 @@ def library_index() -> list[dict]:
             del _FILE_ROWS[gone]
         UNREADABLE[:] = unreadable
 
-        _LIBRARY_INDEX.update({"at": time.time(), "rows": rows})
+        # An invalidation that arrived while this pass was reading the disk
+        # means some of what it read is already stale: keep the rows, but do
+        # not mark them fresh, or the change would stay invisible for a TTL.
+        fresh = _LIBRARY_INDEX["generation"] == generation
+        _LIBRARY_INDEX.update({"at": time.time() if fresh else 0.0, "rows": rows})
         return list(rows)
 
 
 def invalidate_library_index() -> None:
+    # Not under the lock on purpose: a writer must not wait for a rebuild. The
+    # generation tells a rebuild in progress that it started too early.
+    _LIBRARY_INDEX["generation"] = int(_LIBRARY_INDEX["generation"]) + 1
     _LIBRARY_INDEX["at"] = 0.0
 
 
