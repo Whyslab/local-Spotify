@@ -403,7 +403,8 @@ Back up state (SQLite plus `.env`):
 ## 🧪 Tests
 
 ```bash
-.venv/bin/pip install -r requirements-dev.txt   # pytest and ruff
+.venv/bin/pip install -r requirements-dev.txt   # pytest, ruff, playwright
+.venv/bin/python -m playwright install chromium  # once, for the browser tests
 .venv/bin/pytest -q
 .venv/bin/ruff check . && .venv/bin/ruff format --check adder scripts tests desktop
 ```
@@ -414,6 +415,7 @@ The suite runs fully offline and needs no real `.env`; the import and streaming 
 * **metadata** — splitting YouTube titles into artist and title, and Deezer and MusicBrainz enrichment against canned API responses;
 * **writing into the library** — `process()` end to end on a real one-second AAC file (`tests/fixtures/tone.m4a`): tags read back with mutagen, the `Artist/Singles/Title.m4a` layout, cover fallback, corrupt downloads, content deduplication;
 * the API: authorisation, link validation and canonicalisation, deletion and path traversal, `/health`, task recovery after a restart, graceful shutdown, and an XSS regression in the frontend;
+* **the panel and player in a real browser** (`tests/test_ui.py`, Playwright + Chromium): tag editing, ReplayGain volume, fades, the sleep timer, retry, library health, album choice, duplicates, and titles rendered as text;
 * playlists, Navidrome synchronisation, streaming signatures, file import, lyrics, shuffles and the smart-shuffle downloads.
 
 CI (`.github/workflows/ci.yml`) runs `ruff check`, `ruff format --check`, `compileall` and the full suite on a clean environment for every push and pull request.

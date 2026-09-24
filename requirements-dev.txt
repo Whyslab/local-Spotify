@@ -6,3 +6,6 @@
 pytest>=8.0,<9
 # Unpinned on purpose, as in CI: ruff format output follows the latest release.
 ruff
+# Browser tests (tests/test_ui.py). Pinned exactly: each Playwright release
+# drives one Chromium build, installed by `python -m playwright install chromium`.
+playwright==1.56.0

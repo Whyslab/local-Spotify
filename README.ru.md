@@ -403,7 +403,8 @@ git pull
 ## 🧪 Тесты
 
 ```bash
-.venv/bin/pip install -r requirements-dev.txt   # pytest и ruff
+.venv/bin/pip install -r requirements-dev.txt   # pytest, ruff, playwright
+.venv/bin/python -m playwright install chromium  # один раз, для браузерных тестов
 .venv/bin/pytest -q
 .venv/bin/ruff check . && .venv/bin/ruff format --check adder scripts tests desktop
 ```
@@ -414,6 +415,7 @@ git pull
 * **метаданные** — разбор заголовков YouTube на исполнителя и название, обогащение из Deezer и MusicBrainz на подготовленных ответах API;
 * **запись в библиотеку** — `process()` целиком на настоящем AAC-файле длиной 1 с (`tests/fixtures/tone.m4a`): теги читаются обратно через mutagen, раскладка `Artist/Singles/Title.m4a`, запасная обложка, битые файлы, дедупликация по содержимому;
 * API: авторизация, валидация и канонизация ссылок, удаление и path traversal, `/health`, восстановление задач после рестарта, graceful shutdown и XSS-регрессия во фронтенде;
+* **панель и плеер в настоящем браузере** (`tests/test_ui.py`, Playwright + Chromium): правка тегов, громкость ReplayGain, затухание, таймер сна, повтор, состояние фонотеки, выбор альбома, дубликаты и вывод названий как текста;
 * подборки, синхронизация с Navidrome, подписи потоков, импорт файлов, тексты песен, перемешивания и скачивания умного перемешивания.
 
 CI (`.github/workflows/ci.yml`) на каждый push и pull request запускает `ruff check`, `ruff format --check`, `compileall` и весь набор тестов в чистом окружении.

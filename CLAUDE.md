@@ -51,7 +51,8 @@ check has passed.
 ```bash
 # setup
 python3 -m venv .venv
-.venv/bin/pip install -r requirements-dev.txt   # service deps + pytest + ruff
+.venv/bin/pip install -r requirements-dev.txt   # service deps + pytest + ruff + playwright
+.venv/bin/python -m playwright install chromium  # browser tests (tests/test_ui.py)
 cp .env.example adder/.env    # then set API_TOKEN
 
 # run
@@ -90,5 +91,8 @@ journalctl --user -u music-adder -f
   only to `adder/`, `trash/` and `LIBRARY_PATH`. A new writable path must live there or be added
   to `deploy/music-adder.service.template`.
 - Log with `extra={"task_id": ...}` (`"system"` outside a task).
+- `tests/test_ui.py` runs the real service in a thread and drives it with Chromium. Played tracks
+  there are Opus: Playwright's Chromium has no AAC decoder. Stub anything the page triggers that
+  reaches the network (e.g. `similar._ask` for the home page) in its module fixture.
 - Keep `ruff format` clean; CI fails on formatting before it runs the tests.
 - `README.md` and `README.ru.md` are kept in sync line for line.
