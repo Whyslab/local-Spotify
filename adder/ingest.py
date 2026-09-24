@@ -105,13 +105,26 @@ def clean_title(s: str, for_filename: bool = True) -> str:
     return s or "Unknown"
 
 
+def channel_artist(uploader: str) -> str:
+    """The artist behind a channel name, as far as the name itself tells.
+
+    YouTube's auto-generated channels are "<Artist> - Topic" and label-run
+    ones "<Artist>VEVO"; used verbatim, those became the artist folder and
+    the Deezer query, which then found nothing. Camel case is left alone:
+    "TaylorSwift" could be split, "McFly" could not.
+    """
+    name = re.sub(r"\s+-\s+topic$", "", uploader.strip(), flags=re.IGNORECASE)
+    name = re.sub(r"\s*vevo$", "", name, flags=re.IGNORECASE)
+    return name.strip()
+
+
 def split_artist_title(meta: dict):
     artist = meta.get("artist") or meta.get("creator") or ""
     title = meta.get("track") or meta.get("title") or "Unknown"
     if not artist and " - " in title:
         artist, title = title.split(" - ", 1)
     if not artist:
-        artist = meta.get("uploader", "Unknown Artist")
+        artist = channel_artist(meta.get("uploader") or "") or "Unknown Artist"
 
     # Problem #12: Preserve full artist metadata
     full_artist = artist.strip()

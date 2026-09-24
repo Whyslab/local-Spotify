@@ -185,3 +185,19 @@ def test_missing_everything_does_not_crash():
     assert fs_artist == "Unknown Artist"
     assert fs_title == "Unknown"
     assert meta_title == "Unknown"
+
+
+@pytest.mark.parametrize(
+    ("uploader", "artist"),
+    [
+        ("Adele - Topic", "Adele"),
+        ("AdeleVEVO", "Adele"),
+        ("Adele VEVO", "Adele"),
+        ("Small Band", "Small Band"),
+        ("Vevo", "Unknown Artist"),
+    ],
+)
+def test_channel_suffixes_are_not_part_of_the_artist(uploader, artist):
+    _, _, full_artist, _ = split_artist_title({"title": "Song", "uploader": uploader})
+
+    assert full_artist == artist
