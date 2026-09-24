@@ -92,3 +92,34 @@ def test_index_carries_duration(temp_library):
     assert len(rows) == 1
     assert rows[0]["title"] == "Song"
     assert rows[0]["duration"] == pytest.approx(2.0, abs=0.2)
+
+
+def test_rebuilding_the_index_rereads_only_changed_files(tmp_path, monkeypatch):
+    import os
+    import shutil
+
+    from adder import config, library
+
+    fixture = Path(__file__).parent / "fixtures" / "tone.m4a"
+    monkeypatch.setattr(config, "LIBRARY", tmp_path)
+    monkeypatch.setattr(library, "_FILE_ROWS", {})
+    for name in ("a", "b", "c"):
+        (tmp_path / name).mkdir()
+        shutil.copy(fixture, tmp_path / name / "t.m4a")
+
+    reads = []
+    real = library.read_tags
+    monkeypatch.setattr(library, "read_tags", lambda f: reads.append(f.parent.name) or real(f))
+
+    library.invalidate_library_index()
+    assert len(library.library_index()) == 3
+    assert sorted(reads) == ["a", "b", "c"]
+
+    reads.clear()
+    later = (tmp_path / "b" / "t.m4a").stat().st_mtime + 10
+    os.utime(tmp_path / "b" / "t.m4a", (later, later))
+    (tmp_path / "c" / "t.m4a").unlink()
+    library.invalidate_library_index()
+
+    assert [row["path"] for row in library.library_index()] == ["a/t.m4a", "b/t.m4a"]
+    assert reads == ["b"]

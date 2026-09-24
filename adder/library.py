@@ -88,6 +88,8 @@ def library_track(rel_path: str) -> Path:
 
 
 LIBRARY_INDEX_TTL = 60
+# Parsed row per file, keyed by path and valid while (mtime_ns, size) match.
+_FILE_ROWS: dict[str, tuple[tuple[int, int], dict]] = {}
 _LIBRARY_INDEX: dict[str, object] = {"at": 0.0, "rows": []}
 _LIBRARY_INDEX_LOCK = threading.Lock()
 
@@ -111,7 +113,22 @@ def library_index() -> list[dict]:
         files = sorted(
             p for suffix in AUDIO_SUFFIXES for p in root.rglob(f"*{suffix}") if p.is_file()
         )
+        seen = set()
         for f in files:
+            try:
+                stat = f.stat()
+            except OSError:
+                continue
+            key = str(f)
+            seen.add(key)
+            stamp = (stat.st_mtime_ns, stat.st_size)
+            cached = _FILE_ROWS.get(key)
+            if cached and cached[0] == stamp:
+                # Unchanged since the last pass: reading its tags again is what
+                # made every rebuild (each add, each delete, /health once a
+                # minute) cost a full pass over the library.
+                rows.append(cached[1])
+                continue
             try:
                 # Duration comes from here too. Three things need it -- the
                 # #EXTINF line of a playlist, the search results that let you
@@ -122,7 +139,7 @@ def library_index() -> list[dict]:
                 meta = read_tags(f)
                 # stat — тоже здесь: файл, удалённый посреди перестройки,
                 # иначе ронял весь список ошибкой 500.
-                added = int(f.stat().st_mtime)
+                added = int(stat.st_mtime)
             except Exception:
                 continue
             artist, title, album = meta["artist"], meta["title"], meta["album"]
@@ -145,6 +162,10 @@ def library_index() -> list[dict]:
                     "haystack": f"{artist} {title} {album}".lower(),
                 }
             )
+            _FILE_ROWS[key] = (stamp, rows[-1])
+
+        for gone in set(_FILE_ROWS) - seen:
+            del _FILE_ROWS[gone]
 
         _LIBRARY_INDEX.update({"at": time.time(), "rows": rows})
         return list(rows)
