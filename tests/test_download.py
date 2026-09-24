@@ -188,3 +188,17 @@ def test_yt_dlp_and_deno_cache_in_a_writable_place(app, tmp_path, monkeypatch):
 
     assert result.stdout.strip() == str(tmp_path / "cache")
     assert (tmp_path / "cache").is_dir()
+
+
+def test_an_unfinished_part_file_is_never_taken_for_the_result(app, monkeypatch):
+    def reply(cmd):
+        (runtime.TMP_DIR / "abc123.webm.part").write_bytes(b"half")
+        (runtime.TMP_DIR / "abc123.ytdl").write_bytes(b"state")
+        return completed(cmd)
+
+    monkeypatch.setattr(app, "run_yt_dlp", FakeYtDlp(reply))
+
+    with pytest.raises(RuntimeError, match="produced no audio file") as excinfo:
+        app.yt_download("u", "abc123")
+    # Not a missing video: this must not read as youtube_not_found.
+    assert app.classify_error(str(excinfo.value)) != "youtube_not_found"

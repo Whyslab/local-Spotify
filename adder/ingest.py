@@ -498,6 +498,9 @@ def check_downloadable(meta: dict) -> None:
 AUDIO_FORMAT = "bestaudio[ext=m4a]/bestaudio/best"
 
 
+YTDLP_LEFTOVERS = {".part", ".ytdl", ".temp", ".tmp"}
+
+
 def yt_download(url: str, vid: str) -> Path:
     command = [
         *ytdlp_base(),
@@ -519,9 +522,15 @@ def yt_download(url: str, vid: str) -> Path:
         raise RuntimeError(ytdlp_error(p.stderr))
     target = runtime.TMP_DIR / f"{vid}.m4a"
     if not target.exists():
-        found = list(runtime.TMP_DIR.glob(f"{vid}.*"))
+        # yt-dlp's own leftovers are never the result: a .part is an unfinished
+        # download, .ytdl its resume state, .temp a half-written conversion.
+        found = sorted(
+            p
+            for p in runtime.TMP_DIR.glob(f"{vid}.*")
+            if p.is_file() and p.suffix not in YTDLP_LEFTOVERS
+        )
         if not found:
-            raise RuntimeError("Файл не найден после скачивания")
+            raise RuntimeError("yt-dlp finished but produced no audio file")
         target = found[0]
     return target
 
