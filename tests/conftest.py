@@ -54,6 +54,8 @@ def _outside_stays_offline(monkeypatch, tmp_path):
     # /health не должен зависеть от того, стоят ли на машине с тестами
     # ffmpeg и Deno (настоящая проверка — в test_dependencies.py).
     monkeypatch.setattr(ingest, "check_dependencies", lambda: {"ffmpeg": "ok", "js_runtime": "ok"})
+    # Пауза после ограничения YouTube — состояние процесса; каждому тесту своя.
+    monkeypatch.setattr(runtime, "_yt_pause_until", 0.0)
     # Очередь скачиваний — состояние модуля; каждому тесту своя.
     monkeypatch.setattr(outside, "_jobs", queue.Queue())
     monkeypatch.setattr(outside, "_pending", set())

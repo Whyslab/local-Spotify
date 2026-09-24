@@ -7,6 +7,8 @@ the library layout Navidrome watches.
 """
 
 import shutil
+import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -339,3 +341,56 @@ def test_resubmitting_clears_an_old_warning(app):
     app_module._reset_task(tid)
 
     assert not _task(tid)["warning"]
+
+
+# ---------------------------------------------------------------------------
+# Rate limiting: a long backoff, shared by every worker
+# ---------------------------------------------------------------------------
+
+
+def test_rate_limit_backs_off_for_a_minute_and_pauses_youtube(app, monkeypatch):
+    waits = []
+
+    def throttled_once(url):
+        if not waits:
+            raise RuntimeError("ERROR: [youtube] abc123: HTTP Error 429: Too Many Requests")
+        return {"id": "abc123", "title": "A - B", "uploader": "x"}
+
+    def record_wait(seconds):
+        waits.append((seconds, runtime.youtube_pause_left()))
+        return False
+
+    youtube(app, monkeypatch, {})
+    monkeypatch.setattr(ingest, "yt_meta", throttled_once)
+    monkeypatch.setattr(config, "MAX_RETRIES", 2)
+    monkeypatch.setattr(config, "RATE_LIMIT_BACKOFF", 60.0)
+    monkeypatch.setattr(runtime.shutdown_event, "wait", record_wait)
+    deezer(app, monkeypatch, None)
+    covers(app, monkeypatch)
+
+    task = run(app)
+
+    assert task["status"] == "done", task["error"]
+    ((backoff, pause_left),) = waits
+    assert backoff == 60.0
+    assert 55 < pause_left <= 60  # the other workers are held too
+
+
+def test_yt_dlp_waits_out_a_rate_limit_pause(app):
+    runtime.pause_youtube(0.4)
+
+    started = time.monotonic()
+    result = ingest.run_yt_dlp([sys.executable, "-c", "pass"], timeout=10)
+
+    assert result.returncode == 0
+    assert time.monotonic() - started >= 0.35
+
+
+def test_shutdown_interrupts_a_rate_limit_pause(app):
+    runtime.pause_youtube(30)
+    runtime.shutdown_event.set()
+    try:
+        with pytest.raises(runtime.ShutdownRequested):
+            ingest.run_yt_dlp([sys.executable, "-c", "pass"], timeout=10)
+    finally:
+        runtime.shutdown_event.clear()

@@ -104,6 +104,10 @@ def process(tid: int, url: str):
             error_str = str(e)[:300]
 
             last_error_type = ingest.classify_error(error_str)
+            if last_error_type == "rate_limited":
+                # Every worker backs off, not just this one: a second worker
+                # still calling YouTube would only extend the ban.
+                runtime.pause_youtube(config.RATE_LIMIT_BACKOFF * (retry_count + 1))
             if last_error_type == "youtube_auth_required":
                 hint = ingest.AUTH_REQUIRED_HINT
                 error_str = f"{error_str[: 299 - len(hint)]} {hint}"
@@ -111,6 +115,8 @@ def process(tid: int, url: str):
             if last_error_type in ingest.RETRYABLE_ERRORS and retry_count < config.MAX_RETRIES - 1:
                 retry_count += 1
                 backoff_time = config.RETRY_BACKOFF_BASE**retry_count
+                if last_error_type == "rate_limited":
+                    backoff_time = max(backoff_time, config.RATE_LIMIT_BACKOFF * retry_count)
                 logger.warning(
                     f"Retry {retry_count}/{config.MAX_RETRIES} after {backoff_time}s: {error_str}",
                     extra={"task_id": tid},

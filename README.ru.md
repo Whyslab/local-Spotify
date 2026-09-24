@@ -230,6 +230,7 @@ curl -s http://127.0.0.1:8787/health     # {"status":"healthy"}
 | `PRESERVE_FEAT_ARTISTS`    | `true`                            | Сохранять `feat./ft.` в имени папки исполнителя         |
 | `MAX_RETRIES`              | `3`                               | Число попыток на задачу при временных ошибках (сеть, HTTP 429) |
 | `RETRY_BACKOFF_BASE`       | `2.0`                             | База экспоненциального backoff (сек.)                   |
+| `RATE_LIMIT_BACKOFF` | `60` | После ограничения от YouTube (HTTP 429) — секунд ожидания на попытку; всё это время yt-dlp не запускается |
 | `SHUTDOWN_TIMEOUT`         | `30`                              | Таймаут graceful shutdown (сек.)                        |
 | `MIN_FREE_SPACE_MB`        | `2048`                            | Минимум свободного места на диске перед загрузкой        |
 | `TMP_TTL_HOURS`            | `24`                              | Через сколько часов удаляются зависшие временные файлы   |
@@ -415,7 +416,7 @@ CI (`.github/workflows/ci.yml`) на каждый push и pull request запу�
 | `/health` → `"ffmpeg": "missing"`, задачи падают с `dependency_error` | `sudo apt install ffmpeg`, затем перезапусти сервис. |
 | `/health` → `"js_runtime": "missing"`, в логе предупреждение про Deno | Поставь Deno в `/usr/local/bin`, как в [шаге 1](#1-системные-пакеты). Deno из `~/.deno/bin` работает в шелле, но не в systemd-сервисе. |
 | `youtube_auth_required`: «Sign in to confirm you're not a bot» | YouTube не доверяет этому IP. Войди в YouTube в браузере на этой же машине, задай `COOKIES_FROM_BROWSER=firefox` (или `chrome`, или `firefox:/путь/к/профилю`) в `adder/.env`, перезапусти, отправь ссылку заново. |
-| Много ошибок `rate_limited` | YouTube ограничивает запросы. Уменьши `MAX_WORKERS` до `1`, подожди час, отправь упавшие ссылки заново. |
+| Много ошибок `rate_limited` | YouTube ограничивает запросы; сервис уже ставит все скачивания на паузу на `RATE_LIMIT_BACKOFF` секунд за попытку. Если не проходит — уменьши `MAX_WORKERS` до `1`, подожди час, отправь упавшие ссылки заново. |
 | Скачивания, которые работали, начали падать | YouTube что-то поменял; обнови yt-dlp: `.venv/bin/pip install -U yt-dlp yt-dlp-ejs` и перезапусти. |
 | Задача `done`, но в Navidrome трека нет | Navidrome читает другую папку: его `MusicFolder` (`/etc/navidrome/navidrome.toml`) должен совпадать с `library_path` из `/health`. Проверь, что пользователь Navidrome может её читать: `sudo -u navidrome ls "<library_path>"`. Затем *Settings → Scan* в Navidrome. |
 | Удаление трека из веб-интерфейса не работает | Удалённые файлы попадают в `trash/` в корне репозитория. После `git pull` запусти `./deploy/install.sh` заново, чтобы у юнита был `ReadWritePaths` для неё. |

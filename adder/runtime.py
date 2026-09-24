@@ -11,6 +11,7 @@ import logging
 import os
 import queue
 import threading
+import time
 from pathlib import Path
 
 from .config import TMP_TTL_HOURS
@@ -40,6 +41,23 @@ PROCESSING_URLS: set = set()
 
 shutdown_event = threading.Event()
 active_workers: list = []
+
+# Monotonic time before which no yt-dlp call may start: set when YouTube
+# rate-limits us, so the other workers stop hammering it too.
+_yt_pause_until = 0.0
+_yt_pause_lock = threading.Lock()
+
+
+def pause_youtube(seconds: float) -> None:
+    """Hold every yt-dlp call for at least ``seconds`` from now."""
+    global _yt_pause_until
+    with _yt_pause_lock:
+        _yt_pause_until = max(_yt_pause_until, time.monotonic() + seconds)
+
+
+def youtube_pause_left() -> float:
+    with _yt_pause_lock:
+        return max(0.0, _yt_pause_until - time.monotonic())
 
 
 class ShutdownRequested(Exception):

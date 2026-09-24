@@ -233,6 +233,12 @@ def run_yt_dlp(cmd: list[str], timeout: float) -> subprocess.CompletedProcess:
     """
     import selectors
 
+    # YouTube rate-limited an earlier call: wait it out here, before the
+    # timeout starts counting, and give way at once to a shutdown.
+    left = runtime.youtube_pause_left()
+    if left and runtime.shutdown_event.wait(left):
+        raise runtime.ShutdownRequested()
+
     process = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,

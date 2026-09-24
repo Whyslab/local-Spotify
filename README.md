@@ -230,6 +230,7 @@ Everything is read from `adder/.env` (see `.env.example`); real environment vari
 | `PRESERVE_FEAT_ARTISTS` | `true` | Keep `feat./ft.` in the artist directory name |
 | `MAX_RETRIES` | `3` | Attempts per task on transient errors (network, HTTP 429) |
 | `RETRY_BACKOFF_BASE` | `2.0` | Exponential backoff base, in seconds |
+| `RATE_LIMIT_BACKOFF` | `60` | After YouTube rate-limits (HTTP 429), seconds to wait per attempt; no yt-dlp call starts meanwhile |
 | `SHUTDOWN_TIMEOUT` | `30` | Graceful shutdown timeout, in seconds |
 | `MIN_FREE_SPACE_MB` | `2048` | Free disk space required before downloading |
 | `TMP_TTL_HOURS` | `24` | Age at which stranded temp files are cleaned up |
@@ -415,7 +416,7 @@ Start with `curl -s http://127.0.0.1:8787/health -H "Authorization: Bearer $TOKE
 | `/health` → `"ffmpeg": "missing"`, tasks fail with `dependency_error` | `sudo apt install ffmpeg`, then restart the service. |
 | `/health` → `"js_runtime": "missing"`, log warns about Deno | Install Deno into `/usr/local/bin` as in [step 1](#1-system-packages). A Deno under `~/.deno/bin` works in your shell but not in the systemd service. |
 | `youtube_auth_required`: "Sign in to confirm you're not a bot" | YouTube distrusts this IP. Log in to YouTube in a browser on the same machine and set `COOKIES_FROM_BROWSER=firefox` (or `chrome`, or `firefox:/path/to/profile`) in `adder/.env`, restart, re-submit the link. |
-| Many `rate_limited` errors | YouTube is throttling. Lower `MAX_WORKERS` to `1`, wait an hour, re-submit the failed links. |
+| Many `rate_limited` errors | YouTube is throttling; the service already pauses all downloads for `RATE_LIMIT_BACKOFF` seconds per attempt. If it persists, lower `MAX_WORKERS` to `1`, wait an hour and re-submit the failed links. |
 | Downloads that used to work start failing | YouTube changed something; update yt-dlp: `.venv/bin/pip install -U yt-dlp yt-dlp-ejs` and restart. |
 | Task is `done` but Navidrome doesn't show the track | Navidrome reads another folder: its `MusicFolder` (`/etc/navidrome/navidrome.toml`) must equal `library_path` from `/health`. Check that the Navidrome user can read it: `sudo -u navidrome ls "<library_path>"`. Then *Settings → Scan* in Navidrome. |
 | Deleting a track from the web interface fails | Deleted files go to `trash/` in the repository root. After `git pull`, re-run `./deploy/install.sh` so the unit has `ReadWritePaths` for it. |

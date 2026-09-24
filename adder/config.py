@@ -69,6 +69,10 @@ if not API_TOKEN or API_TOKEN == PLACEHOLDER_API_TOKEN:
 # Retry settings (Problem #23)
 MAX_RETRIES = _nonnegative_int("MAX_RETRIES", "3")
 RETRY_BACKOFF_BASE = _positive_float("RETRY_BACKOFF_BASE", "2.0")
+# After YouTube answers 429 / "try again later", seconds to wait per attempt
+# (60, 120, ...), during which no yt-dlp call starts at all. A 2-4 second
+# backoff only extends the ban.
+RATE_LIMIT_BACKOFF = _positive_float("RATE_LIMIT_BACKOFF", "60")
 
 # Graceful shutdown timeout (Problem #22)
 SHUTDOWN_TIMEOUT = _positive_int("SHUTDOWN_TIMEOUT", "30")
