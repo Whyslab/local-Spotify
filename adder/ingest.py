@@ -32,6 +32,10 @@ from . import config, db, enrich, library, runtime
 logger = logging.getLogger(__name__)
 
 
+# Linux allows 255 bytes per path component. Leave room for " (12).m4a".
+MAX_NAME_BYTES = 200
+
+
 def sanitize_filename(name: str) -> str:
     if not name:
         return "Unknown"
@@ -40,6 +44,11 @@ def sanitize_filename(name: str) -> str:
     # Управляющие символы из тегов и ведущие точки: «..» уводил бы из папки,
     # «.m4a» становился скрытым файлом без имени.
     name = re.sub(r"[\x00-\x1f\x7f]", "", name).strip().lstrip(".").strip()
+    # Длинное имя из эмодзи или кириллицы не влезало в 255 байт и роняло
+    # задачу с «File name too long». Режем по границе символа.
+    encoded = name.encode("utf-8")
+    if len(encoded) > MAX_NAME_BYTES:
+        name = encoded[:MAX_NAME_BYTES].decode("utf-8", errors="ignore").strip()
     return name or "Unknown"
 
 
