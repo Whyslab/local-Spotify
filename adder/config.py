@@ -78,6 +78,10 @@ RATE_LIMIT_BACKOFF = _positive_float("RATE_LIMIT_BACKOFF", "60")
 # otherwise hold a worker until the download timeout, three times over.
 MAX_DURATION_MINUTES = _nonnegative_int("MAX_DURATION_MINUTES", "30")
 
+# Pop-up notifications on this machine's desktop: tracks added, downloads that
+# failed, a yt-dlp update rolled back. Needs notify-send (libnotify-bin).
+DESKTOP_NOTIFICATIONS = os.environ.get("DESKTOP_NOTIFICATIONS", "true").strip().lower() != "false"
+
 # Graceful shutdown timeout (Problem #22)
 SHUTDOWN_TIMEOUT = _positive_int("SHUTDOWN_TIMEOUT", "30")
 

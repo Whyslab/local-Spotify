@@ -104,7 +104,7 @@
 
 ```bash
 sudo apt update
-sudo apt install -y python3 python3-venv ffmpeg git curl unzip
+sudo apt install -y python3 python3-venv ffmpeg git curl unzip libnotify-bin
 
 # Deno в /usr/local/bin, чтобы systemd-сервис нашёл его в своём PATH по умолчанию.
 # (Официальный установщик кладёт его в ~/.deno/bin — он есть в PATH шелла, но не сервиса.)
@@ -232,6 +232,7 @@ curl -s http://127.0.0.1:8787/health     # {"status":"healthy"}
 | `RETRY_BACKOFF_BASE`       | `2.0`                             | База экспоненциального backoff (сек.)                   |
 | `RATE_LIMIT_BACKOFF` | `60` | После ограничения от YouTube (HTTP 429) — секунд ожидания на попытку; всё это время yt-dlp не запускается |
 | `MAX_DURATION_MINUTES` | `30` | Самое длинное видео, которое принимается, в минутах; `0` — без ограничения. Прямые эфиры не принимаются никогда |
+| `DESKTOP_NOTIFICATIONS` | `true` | Уведомления на рабочем столе этого компьютера: треки добавлены (пачкой), загрузка упала, обновление yt-dlp откатено. Нужен `notify-send` |
 | `SHUTDOWN_TIMEOUT`         | `30`                              | Таймаут graceful shutdown (сек.)                        |
 | `MIN_FREE_SPACE_MB`        | `2048`                            | Минимум свободного места на диске перед загрузкой        |
 | `TMP_TTL_HOURS`            | `24`                              | Через сколько часов удаляются зависшие временные файлы   |

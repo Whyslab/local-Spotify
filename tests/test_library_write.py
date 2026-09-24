@@ -541,3 +541,24 @@ def test_a_link_already_in_the_library_is_not_downloaded_again(app, monkeypatch)
     assert task["status"] == "done"
     assert task["result_path"] == "A/Singles/B.m4a"
     assert URL not in runtime.PROCESSING_URLS
+
+
+def test_a_finished_and_a_failed_task_reach_the_desktop(app, monkeypatch):
+    from adder import notify
+
+    added, failed = [], []
+    monkeypatch.setattr(notify, "track_added", lambda a, t: added.append((a, t)))
+    monkeypatch.setattr(notify, "track_failed", lambda n, r: failed.append((n, r)))
+    youtube(app, monkeypatch, {"title": "A - B", "uploader": "x"})
+    deezer(app, monkeypatch, None)
+    covers(app, monkeypatch)
+    run(app)
+
+    def private(url):
+        raise RuntimeError("ERROR: [youtube] x: Private video")
+
+    monkeypatch.setattr(ingest, "yt_meta", private)
+    run(app, "https://www.youtube.com/watch?v=gone")
+
+    assert added == [("A", "B")]
+    assert failed == [("https://www.youtube.com/watch?v=gone", "видео недоступно")]

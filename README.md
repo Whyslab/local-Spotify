@@ -104,7 +104,7 @@ Tested on Debian/Ubuntu. Every step ends with a command that proves it worked â€
 
 ```bash
 sudo apt update
-sudo apt install -y python3 python3-venv ffmpeg git curl unzip
+sudo apt install -y python3 python3-venv ffmpeg git curl unzip libnotify-bin
 
 # Deno into /usr/local/bin, so the systemd service finds it on its default PATH.
 # (The official installer's default, ~/.deno/bin, is on your shell's PATH but not the service's.)
@@ -232,6 +232,7 @@ Everything is read from `adder/.env` (see `.env.example`); real environment vari
 | `RETRY_BACKOFF_BASE` | `2.0` | Exponential backoff base, in seconds |
 | `RATE_LIMIT_BACKOFF` | `60` | After YouTube rate-limits (HTTP 429), seconds to wait per attempt; no yt-dlp call starts meanwhile |
 | `MAX_DURATION_MINUTES` | `30` | Longest video accepted, in minutes; `0` for no limit. Live streams are always refused |
+| `DESKTOP_NOTIFICATIONS` | `true` | Pop-up notifications on this machine: tracks added (batched), downloads failed, a yt-dlp update rolled back. Needs `notify-send` |
 | `SHUTDOWN_TIMEOUT` | `30` | Graceful shutdown timeout, in seconds |
 | `MIN_FREE_SPACE_MB` | `2048` | Free disk space required before downloading |
 | `TMP_TTL_HOURS` | `24` | Age at which stranded temp files are cleaned up |

@@ -30,6 +30,7 @@ from . import (
     lyrics,
     moods,
     navidrome,
+    notify,
     outside,
     playlists,
     runtime,
@@ -145,6 +146,9 @@ async def lifespan(app: FastAPI):
             worker_thread.join(timeout=remaining)
 
         runtime.active_workers.clear()
+
+    # Whatever the last seconds gathered is shown rather than lost.
+    notify.flush_now()
 
     # Cleanup temporary files after workers have stopped.
     if runtime.TMP_DIR.exists():
