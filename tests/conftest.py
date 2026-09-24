@@ -60,6 +60,8 @@ def _outside_stays_offline(monkeypatch, tmp_path):
     from adder import config
 
     monkeypatch.setattr(config, "DESKTOP_NOTIFICATIONS", False)
+    # И ListenBrainz — только в своих тестах, с подменённым requests.
+    monkeypatch.setattr(config, "LISTENBRAINZ_TOKEN", "")
     # Пауза после ограничения YouTube — состояние процесса; каждому тесту своя.
     monkeypatch.setattr(runtime, "_yt_pause_until", 0.0)
     # Очередь скачиваний — состояние модуля; каждому тесту своя.

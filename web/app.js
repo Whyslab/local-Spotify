@@ -586,6 +586,8 @@ async function health() {
             ["Фонотека", data.library ?? "—", data.library !== undefined && data.library !== "ok"],
             ["ffmpeg", data.ffmpeg ?? "—", data.ffmpeg === "missing"],
             ["Deno", data.js_runtime ?? "—", data.js_runtime === "missing"],
+            ["ListenBrainz", data.listenbrainz === "off" ? "выключен" : (data.listenbrainz ?? "—"),
+                data.listenbrainz === "token rejected"],
             ["В очереди", String(data.queue_size ?? "—"), false],
             ["Воркеров", String(data.workers ?? "—"), false],
             ["Путь", data.library_path || "—", false],

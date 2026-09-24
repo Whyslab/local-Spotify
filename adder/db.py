@@ -94,6 +94,17 @@ def db_init():
     # The play journal. Navidrome keeps a play count and the date of the last
     # play, not a log, so "what was playing on Wednesday evenings" cannot be
     # asked of it at all. Anything that wants to know has to record its own.
+    # Прослушивания, которые ждут отправки в ListenBrainz — см. listenbrainz.py.
+    db_exec("""CREATE TABLE IF NOT EXISTS listens(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        listened_at INTEGER NOT NULL,
+        artist TEXT NOT NULL,
+        title TEXT NOT NULL,
+        album TEXT,
+        duration REAL,
+        origin_url TEXT,
+        sent INTEGER DEFAULT 0,
+        attempts INTEGER DEFAULT 0)""")
     db_exec("""CREATE TABLE IF NOT EXISTS plays(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         path TEXT NOT NULL,

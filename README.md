@@ -236,6 +236,7 @@ Everything is read from `adder/.env` (see `.env.example`); real environment vari
 | `RATE_LIMIT_BACKOFF` | `60` | After YouTube rate-limits (HTTP 429), seconds to wait per attempt; no yt-dlp call starts meanwhile |
 | `MAX_DURATION_MINUTES` | `30` | Longest video accepted, in minutes; `0` for no limit. Live streams are always refused |
 | `DESKTOP_NOTIFICATIONS` | `true` | Pop-up notifications on this machine: tracks added (batched), downloads failed, a yt-dlp update rolled back. Needs `notify-send` |
+| `LISTENBRAINZ_TOKEN` | *(empty)* | User token from listenbrainz.org/settings: listens in the web player (half a track or 4 minutes) are sent to ListenBrainz, queued so none are lost offline |
 | `SHUTDOWN_TIMEOUT` | `30` | Graceful shutdown timeout, in seconds |
 | `MIN_FREE_SPACE_MB` | `2048` | Free disk space required before downloading |
 | `TMP_TTL_HOURS` | `24` | Age at which stranded temp files are cleaned up |

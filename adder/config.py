@@ -82,6 +82,10 @@ MAX_DURATION_MINUTES = _nonnegative_int("MAX_DURATION_MINUTES", "30")
 # failed, a yt-dlp update rolled back. Needs notify-send (libnotify-bin).
 DESKTOP_NOTIFICATIONS = os.environ.get("DESKTOP_NOTIFICATIONS", "true").strip().lower() != "false"
 
+# ListenBrainz user token (https://listenbrainz.org/settings/). Empty: listens
+# from the web player are not sent anywhere.
+LISTENBRAINZ_TOKEN = os.environ.get("LISTENBRAINZ_TOKEN", "").strip()
+
 # Graceful shutdown timeout (Problem #22)
 SHUTDOWN_TIMEOUT = _positive_int("SHUTDOWN_TIMEOUT", "30")
 

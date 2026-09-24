@@ -29,6 +29,7 @@ from . import (
     ingest,
     library,
     library_health,
+    listenbrainz,
     lyrics,
     moods,
     navidrome,
@@ -119,6 +120,8 @@ async def lifespan(app: FastAPI):
     # Тексты ищутся заранее, для всей фонотеки: иначе у трека, который ещё не
     # включали, текста нет, а промах не перепроверяется. См. lyrics.backfill.
     lyrics.start_backfill()
+
+    listenbrainz.start()
 
     # Задачи, упавшие из-за ограничения YouTube, через час пробуют снова сами.
     threading.Thread(target=_auto_requeue_loop, name="auto-requeue", daemon=True).start()
@@ -1651,6 +1654,9 @@ def record_play(req: PlayRequest, authenticated: bool = Depends(verify_token)):
             req.mode,
         ),
     )
+    # A listen by ListenBrainz's rule is queued for sending; never fails the journal.
+    with suppress(Exception):
+        listenbrainz.queue_listen(req.path, req.played_seconds, req.duration)
     return {"recorded": req.path}
 
 
@@ -1742,6 +1748,7 @@ def health(credentials: HTTPAuthorizationCredentials = Security(security)):
         "library": library_status,
         "library_path": str(config.LIBRARY),
         **dependencies,
+        "listenbrainz": listenbrainz.status(),
         "workers": config.MAX_WORKERS,
         "queue_size": queue_size,
         "max_queue_size": config.MAX_QUEUE_SIZE,
