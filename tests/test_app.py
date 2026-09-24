@@ -693,3 +693,25 @@ def test_equivalent_youtube_urls_are_not_added_twice(
     )
 
     assert len(rows) == 1
+
+
+def test_health_is_unhealthy_without_ffmpeg(client, monkeypatch):
+    monkeypatch.setattr(
+        ingest, "check_dependencies", lambda: {"ffmpeg": "missing", "js_runtime": "ok"}
+    )
+
+    response = client.get("/health", headers=auth_headers())
+
+    assert response.status_code == 503
+    assert response.json()["ffmpeg"] == "missing"
+
+
+def test_health_stays_healthy_without_deno(client, monkeypatch):
+    monkeypatch.setattr(
+        ingest, "check_dependencies", lambda: {"ffmpeg": "ok", "js_runtime": "missing"}
+    )
+
+    response = client.get("/health", headers=auth_headers())
+
+    assert response.status_code == 200
+    assert response.json()["js_runtime"] == "missing"

@@ -440,6 +440,8 @@ async function health() {
             ["Сервис", ok ? "работает" : data.status, !ok],
             ["База", data.database ?? "—", data.database !== undefined && data.database !== "ok"],
             ["Фонотека", data.library ?? "—", data.library !== undefined && data.library !== "ok"],
+            ["ffmpeg", data.ffmpeg ?? "—", data.ffmpeg === "missing"],
+            ["Deno", data.js_runtime ?? "—", data.js_runtime === "missing"],
             ["В очереди", String(data.queue_size ?? "—"), false],
             ["Воркеров", String(data.workers ?? "—"), false],
             ["Путь", data.library_path || "—", false],

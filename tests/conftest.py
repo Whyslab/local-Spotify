@@ -37,7 +37,7 @@ def _outside_stays_offline(monkeypatch, tmp_path):
     monkeypatch.setattr(outside, "candidates", lambda *args, **kwargs: [])
     # Добавление трека измеряет его отдельным процессом и спрашивает Deezer
     # об альбоме — в тестах ни того, ни другого.
-    from adder import analysis, enrich
+    from adder import analysis, enrich, ingest
 
     monkeypatch.setattr(analysis, "analyse_track", lambda path: None)
     monkeypatch.setattr(enrich, "lookup", lambda artist, title: None)
@@ -50,6 +50,9 @@ def _outside_stays_offline(monkeypatch, tmp_path):
     monkeypatch.setattr(lyrics, "CACHE_DIR", tmp_path / "lyrics-cache")
     monkeypatch.setattr(lyrics, "_ask", lambda *args, **kwargs: {})
     monkeypatch.setattr(lyrics, "_search", lambda *args, **kwargs: {})
+    # /health не должен зависеть от того, стоят ли на машине с тестами
+    # ffmpeg и Deno (настоящая проверка — в test_dependencies.py).
+    monkeypatch.setattr(ingest, "check_dependencies", lambda: {"ffmpeg": "ok", "js_runtime": "ok"})
     # Очередь скачиваний — состояние модуля; каждому тесту своя.
     monkeypatch.setattr(outside, "_jobs", queue.Queue())
     monkeypatch.setattr(outside, "_pending", set())

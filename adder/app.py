@@ -80,6 +80,8 @@ async def lifespan(app: FastAPI):
     runtime.shutdown_event.clear()
     runtime.active_workers.clear()
 
+    ingest.log_missing_dependencies()
+
     # Recover tasks left unfinished by a previous process.
     task_queue.recover_queued_tasks()
 
@@ -1523,7 +1525,10 @@ def health(credentials: HTTPAuthorizationCredentials = Security(security)):
     # Queue stats
     queue_size = runtime.TASK_QUEUE.qsize()
 
-    healthy = db_status == "ok" and library_status == "ok"
+    # Without ffmpeg nothing can be downloaded, so the service is not healthy.
+    # A missing JS runtime degrades YouTube downloads but does not stop them.
+    dependencies = ingest.check_dependencies()
+    healthy = db_status == "ok" and library_status == "ok" and dependencies["ffmpeg"] == "ok"
     if not _token_matches(credentials):
         short = {"status": "healthy" if healthy else "unhealthy"}
         if healthy:
@@ -1536,6 +1541,7 @@ def health(credentials: HTTPAuthorizationCredentials = Security(security)):
         "database": db_status,
         "library": library_status,
         "library_path": str(config.LIBRARY),
+        **dependencies,
         "workers": config.MAX_WORKERS,
         "queue_size": queue_size,
         "max_queue_size": config.MAX_QUEUE_SIZE,

@@ -374,6 +374,36 @@ def ytdlp_base() -> list[str]:
     return command
 
 
+def check_dependencies() -> dict[str, str]:
+    """Report the external programs yt-dlp relies on that are missing from PATH.
+
+    ffmpeg and ffprobe are required: yt-dlp needs them to extract the audio, so
+    without them every task fails in post-processing. Deno is the JavaScript
+    runtime yt-dlp uses by default to solve YouTube's player challenges;
+    without it some videos still download, others lose formats or fail.
+    """
+    return {
+        "ffmpeg": "ok" if shutil.which("ffmpeg") and shutil.which("ffprobe") else "missing",
+        "js_runtime": "ok" if shutil.which("deno") else "missing",
+    }
+
+
+def log_missing_dependencies() -> None:
+    deps = check_dependencies()
+    if deps["ffmpeg"] != "ok":
+        logger.error(
+            "ffmpeg/ffprobe not found on PATH: every download will fail. "
+            "Install ffmpeg (e.g. sudo apt install ffmpeg) and restart the service.",
+            extra={"task_id": "system"},
+        )
+    if deps["js_runtime"] != "ok":
+        logger.warning(
+            "Deno not found on PATH: yt-dlp needs it to solve YouTube's JavaScript "
+            "challenges, so some downloads may fail. See README, Quick start.",
+            extra={"task_id": "system"},
+        )
+
+
 def ytdlp_error(stderr: str) -> str:
     """The reason yt-dlp gave for failing, not just the tail of its output.
 
