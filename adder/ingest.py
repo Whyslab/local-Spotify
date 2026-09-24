@@ -506,18 +506,57 @@ def yt_download(url: str, vid: str) -> Path:
     return target
 
 
+def image_format(data: bytes | None) -> str | None:
+    """ "jpg" or "png" when the bytes really are that image, else None.
+
+    A cover source can answer 200 with an HTML error page, and YouTube
+    thumbnails are often WebP; either used to be embedded labelled as JPEG.
+    """
+    if not data:
+        return None
+    if data.startswith(b"\xff\xd8\xff"):
+        return "jpg"
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    return None
+
+
+def _download_image(url: str):
+    try:
+        img = requests.get(url, timeout=15)
+    except Exception:
+        return None, None
+    fmt = image_format(img.content) if img.ok else None
+    return (img.content, fmt) if fmt else (None, None)
+
+
+def _itunes_match(results: list[dict], artist: str, title: str) -> dict | None:
+    """The result that is this song, not merely the top hit for the words."""
+    want_title = enrich.normalize(title)
+    want_artist = enrich.normalize((enrich.split_artists(artist) or [artist])[0])
+    for result in results:
+        if enrich.normalize(result.get("trackName") or "") != want_title:
+            continue
+        listed = result.get("artistName") or ""
+        names = {enrich.normalize(n) for n in [listed, *enrich.split_artists(listed)]}
+        if want_artist and want_artist not in names:
+            continue
+        return result
+    return None
+
+
 def get_hd_cover(artist: str, title: str):
     """Возвращает (bytes, fmt) или (None, None)."""
     try:
-        params = {"term": f"{artist} {title}", "limit": 1, "entity": "song"}
+        params = {"term": f"{artist} {title}", "limit": 5, "entity": "song"}
         r = requests.get("https://itunes.apple.com/search", params=params, timeout=10)
-        if r.ok and r.json().get("resultCount", 0) > 0:
-            art = (
-                r.json()["results"][0].get("artworkUrl100", "").replace("100x100bb", "3000x3000bb")
-            )
-            img = requests.get(art, timeout=15)
-            if img.ok:
-                return img.content, "jpg"
+        if not r.ok:
+            return None, None
+        # The top hit alone gave obscure tracks someone else's artwork.
+        match = _itunes_match(r.json().get("results") or [], artist, title)
+        art = (match or {}).get("artworkUrl100", "")
+        if art:
+            return _download_image(art.replace("100x100bb", "3000x3000bb"))
     except Exception:
         pass
     return None, None
@@ -525,13 +564,18 @@ def get_hd_cover(artist: str, title: str):
 
 def fetch_cover_url(url: str):
     """Download album art from a known-good URL (Deezer gives us one per album)."""
-    try:
-        img = requests.get(url, timeout=15)
-        if img.ok and img.content:
-            return img.content, ("png" if img.content.startswith(b"\x89PNG") else "jpg")
-    except Exception:
-        pass
-    return None, None
+    return _download_image(url)
+
+
+def youtube_jpeg_thumbnail(url: str) -> str:
+    """The JPEG rendition of a YouTube thumbnail URL that points at WebP.
+
+    i.ytimg.com serves every thumbnail both ways: /vi_webp/ID/x.webp and
+    /vi/ID/x.jpg. MP4 cover art can only be JPEG or PNG.
+    """
+    if "/vi_webp/" in url and url.endswith(".webp"):
+        return url.replace("/vi_webp/", "/vi/")[: -len(".webp")] + ".jpg"
+    return url
 
 
 def fetch_cover(artist: str, title: str, thumb_url: str | None):
@@ -539,12 +583,7 @@ def fetch_cover(artist: str, title: str, thumb_url: str | None):
     if data:
         return data, fmt
     if thumb_url:  # fallback: превью YouTube
-        try:
-            img = requests.get(thumb_url, timeout=15)
-            if img.ok:
-                return img.content, ("png" if img.content.startswith(b"\x89PNG") else "jpg")
-        except Exception:
-            pass
+        return _download_image(youtube_jpeg_thumbnail(thumb_url))
     return None, None
 
 
