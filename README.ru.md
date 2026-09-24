@@ -100,11 +100,11 @@
 | Python **3.12+** с `venv` | сам сервис | `python3 --version` |
 | **FFmpeg** (с `ffprobe`) | yt-dlp извлекает им аудио; без него падает каждое скачивание | `ffmpeg -version && ffprobe -version` |
 | **Deno** | yt-dlp нужен JavaScript-рантайм для JS-проверок плеера YouTube; по умолчанию он использует Deno | `deno --version` |
-| git, sqlite3 | клонирование; `deploy/backup.sh` | `git --version && sqlite3 --version` |
+| git | клонирование | `git --version` |
 
 ```bash
 sudo apt update
-sudo apt install -y python3 python3-venv ffmpeg git sqlite3 curl unzip
+sudo apt install -y python3 python3-venv ffmpeg git curl unzip
 
 # Deno в /usr/local/bin, чтобы systemd-сервис нашёл его в своём PATH по умолчанию.
 # (Официальный установщик кладёт его в ~/.deno/bin — он есть в PATH шелла, но не сервиса.)
@@ -379,7 +379,7 @@ git pull
 
 Юнит запускает сервис с `WorkingDirectory` в корне репозитория и разрешает запись только в `adder/` (БД и временные файлы), `trash/` (удалённые треки) и путь библиотеки. Одного `ProtectSystem=strict` для этого мало: он монтирует `/` только для чтения, но `/home` — отдельная точка монтирования и остаётся доступной на запись. Закрывает её `ProtectHome=read-only`, а нужные каталоги возвращаются через `ReadWritePaths`.
 
-Резервное копирование состояния (SQLite + `.env`; нужен пакет `sqlite3`):
+Резервное копирование состояния (SQLite + `.env`):
 
 ```bash
 ./deploy/backup.sh      # в ~/local-spotify-backups, хранит последние 10

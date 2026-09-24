@@ -20,7 +20,23 @@ mkdir -p "$BACKUP_DIR"
 
 # Backup SQLite database (Problem #20)
 if [ -f "$ADDER_DIR/adder.db" ]; then
-    sqlite3 "$ADDER_DIR/adder.db" ".backup '$BACKUP_DIR/adder_$TIMESTAMP.db'"
+    # The online backup API copies a consistent snapshot even while the
+    # service is writing. Python's sqlite3 module has the same API, so the
+    # sqlite3 command-line tool is used when present but not required.
+    if command -v sqlite3 >/dev/null; then
+        sqlite3 "$ADDER_DIR/adder.db" ".backup '$BACKUP_DIR/adder_$TIMESTAMP.db'"
+    else
+        PYTHON="$PROJECT_ROOT/.venv/bin/python"
+        [[ -x "$PYTHON" ]] || PYTHON=python3
+        "$PYTHON" - "$ADDER_DIR/adder.db" "$BACKUP_DIR/adder_$TIMESTAMP.db" <<'PY'
+import sqlite3
+import sys
+
+source, target = sys.argv[1], sys.argv[2]
+with sqlite3.connect(source) as src, sqlite3.connect(target) as dst:
+    src.backup(dst)
+PY
+    fi
     chmod 600 "$BACKUP_DIR/adder_$TIMESTAMP.db"
     echo "✓ Database backed up: adder_$TIMESTAMP.db"
 else

@@ -100,11 +100,11 @@ Tested on Debian/Ubuntu. Every step ends with a command that proves it worked â€
 | Python **3.12+** with `venv` | the service | `python3 --version` |
 | **FFmpeg** (with `ffprobe`) | yt-dlp extracts the audio with it; without it every download fails | `ffmpeg -version && ffprobe -version` |
 | **Deno** | yt-dlp needs a JavaScript runtime to solve YouTube's player challenges; Deno is the one it uses by default | `deno --version` |
-| git, sqlite3 | cloning; `deploy/backup.sh` | `git --version && sqlite3 --version` |
+| git | cloning | `git --version` |
 
 ```bash
 sudo apt update
-sudo apt install -y python3 python3-venv ffmpeg git sqlite3 curl unzip
+sudo apt install -y python3 python3-venv ffmpeg git curl unzip
 
 # Deno into /usr/local/bin, so the systemd service finds it on its default PATH.
 # (The official installer's default, ~/.deno/bin, is on your shell's PATH but not the service's.)
@@ -379,7 +379,7 @@ git pull
 
 The unit runs with `WorkingDirectory` at the repository root and permits writes only to `adder/` (database and temp files), `trash/` (deleted tracks) and the library path. `ProtectSystem=strict` alone is not enough for that: it mounts `/` read-only but leaves `/home` writable, since `/home` is a separate mount point. `ProtectHome=read-only` closes it, and the paths above are carved back out with `ReadWritePaths`.
 
-Back up state (SQLite plus `.env`; needs the `sqlite3` package):
+Back up state (SQLite plus `.env`):
 
 ```bash
 ./deploy/backup.sh      # to ~/local-spotify-backups, keeps the last 10
