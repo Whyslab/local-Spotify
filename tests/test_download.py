@@ -1,0 +1,178 @@
+"""Downloading: how yt-dlp is invoked and how its results and failures are read.
+
+run_yt_dlp is mocked wherever YouTube would be involved. The tests of
+run_yt_dlp itself start a local Python child process, never yt-dlp.
+"""
+
+import json
+import subprocess
+import sys
+
+import pytest
+
+from adder import config, runtime
+
+
+@pytest.fixture()
+def app(tmp_path, monkeypatch):
+    from adder import config, ingest, runtime
+
+    monkeypatch.setattr(runtime, "TMP_DIR", tmp_path / "tmp")
+    monkeypatch.setattr(config, "COOKIES_FROM_BROWSER", "")
+    runtime.TMP_DIR.mkdir()
+    runtime.shutdown_event.clear()
+    return ingest
+
+
+def completed(cmd, returncode=0, stdout="", stderr=""):
+    return subprocess.CompletedProcess(cmd, returncode, stdout, stderr)
+
+
+class FakeYtDlp:
+    """Stands in for run_yt_dlp; records each command and replies as configured."""
+
+    def __init__(self, reply):
+        self.reply = reply
+        self.commands = []
+
+    def __call__(self, cmd, timeout):
+        self.commands.append(cmd)
+        return self.reply(cmd)
+
+
+# ---------------------------------------------------------------------------
+# yt_meta
+# ---------------------------------------------------------------------------
+
+
+def test_meta_parses_json_and_never_expands_playlists(app, monkeypatch):
+    info = {"id": "abc123", "title": "Artist - Song", "uploader": "Artist"}
+    fake = FakeYtDlp(lambda cmd: completed(cmd, stdout=json.dumps(info)))
+    monkeypatch.setattr(app, "run_yt_dlp", fake)
+
+    assert app.yt_meta("https://www.youtube.com/watch?v=abc123") == info
+
+    cmd = fake.commands[0]
+    assert cmd[cmd.index(sys.executable) :][:3] == [sys.executable, "-m", "yt_dlp"]
+    assert "-J" in cmd
+    assert "--no-playlist" in cmd
+    assert cmd[-1] == "https://www.youtube.com/watch?v=abc123"
+    assert "--cookies-from-browser" not in cmd
+
+
+def test_cookies_are_sent_with_the_metadata_request(app, monkeypatch):
+    # YouTube's bot check applies to the metadata request, which runs first.
+    monkeypatch.setattr(config, "COOKIES_FROM_BROWSER", "firefox")
+    fake = FakeYtDlp(lambda cmd: completed(cmd, stdout="{}"))
+    monkeypatch.setattr(app, "run_yt_dlp", fake)
+
+    app.yt_meta("https://www.youtube.com/watch?v=abc123")
+
+    cmd = fake.commands[0]
+    assert cmd[cmd.index("--cookies-from-browser") + 1] == "firefox"
+
+
+def test_meta_failure_reports_the_error_line(app, monkeypatch):
+    stderr = (
+        "WARNING: [youtube] No supported JavaScript runtime could be found\n"
+        "ERROR: [youtube] abc123: Video unavailable. This video has been removed by the uploader\n"
+    )
+    monkeypatch.setattr(app, "run_yt_dlp", FakeYtDlp(lambda cmd: completed(cmd, 1, "", stderr)))
+
+    with pytest.raises(RuntimeError) as excinfo:
+        app.yt_meta("https://www.youtube.com/watch?v=abc123")
+
+    assert str(excinfo.value).startswith("ERROR: [youtube] abc123: Video unavailable")
+    assert app.classify_error(str(excinfo.value)) == "youtube_not_found"
+
+
+# ---------------------------------------------------------------------------
+# yt_download
+# ---------------------------------------------------------------------------
+
+
+def test_download_extracts_m4a_into_tmp_and_returns_it(app, monkeypatch):
+    def reply(cmd):
+        (runtime.TMP_DIR / "abc123.m4a").write_bytes(b"audio")
+        return completed(cmd)
+
+    fake = FakeYtDlp(reply)
+    monkeypatch.setattr(app, "run_yt_dlp", fake)
+
+    result = app.yt_download("https://www.youtube.com/watch?v=abc123", "abc123")
+
+    assert result == runtime.TMP_DIR / "abc123.m4a"
+    cmd = fake.commands[0]
+    assert cmd[cmd.index("--audio-format") + 1] == "m4a"
+    assert cmd[cmd.index("-o") + 1] == str(runtime.TMP_DIR / "abc123.%(ext)s")
+    assert "--no-playlist" in cmd
+
+
+def test_download_accepts_another_extension_when_m4a_is_missing(app, monkeypatch):
+    def reply(cmd):
+        (runtime.TMP_DIR / "abc123.mp4").write_bytes(b"audio")
+        return completed(cmd)
+
+    monkeypatch.setattr(app, "run_yt_dlp", FakeYtDlp(reply))
+
+    assert app.yt_download("u", "abc123") == runtime.TMP_DIR / "abc123.mp4"
+
+
+def test_download_without_output_file_is_an_error(app, monkeypatch):
+    monkeypatch.setattr(app, "run_yt_dlp", FakeYtDlp(lambda cmd: completed(cmd)))
+
+    with pytest.raises(RuntimeError):
+        app.yt_download("u", "abc123")
+
+
+def test_missing_ffmpeg_surfaces_as_a_dependency_error(app, monkeypatch):
+    stderr = "ERROR: Postprocessing: ffprobe and ffmpeg not found. Please install\n"
+    monkeypatch.setattr(app, "run_yt_dlp", FakeYtDlp(lambda cmd: completed(cmd, 1, "", stderr)))
+
+    with pytest.raises(RuntimeError) as excinfo:
+        app.yt_download("u", "abc123")
+
+    assert app.classify_error(str(excinfo.value)) == "dependency_error"
+
+
+# ---------------------------------------------------------------------------
+# run_yt_dlp, with a local child process standing in for yt-dlp
+# ---------------------------------------------------------------------------
+
+
+def python(code):
+    return [sys.executable, "-c", code]
+
+
+def test_run_collects_large_output_without_deadlocking(app):
+    # More than a pipe buffer on both streams at once.
+    code = "import sys; sys.stdout.write('o' * 300000); sys.stderr.write('e' * 300000)"
+
+    result = app.run_yt_dlp(python(code), timeout=30)
+
+    assert result.returncode == 0
+    assert len(result.stdout) == 300000
+    assert len(result.stderr) == 300000
+
+
+def test_run_reports_a_non_zero_exit(app):
+    result = app.run_yt_dlp(
+        python("import sys; print('ERROR: boom', file=sys.stderr); sys.exit(1)"), 30
+    )
+
+    assert result.returncode == 1
+    assert app.ytdlp_error(result.stderr) == "ERROR: boom"
+
+
+def test_run_kills_a_hung_process_on_timeout(app):
+    with pytest.raises(subprocess.TimeoutExpired):
+        app.run_yt_dlp(python("import time; time.sleep(30)"), timeout=0.5)
+
+
+def test_run_stops_the_process_on_shutdown(app):
+    runtime.shutdown_event.set()
+    try:
+        with pytest.raises(runtime.ShutdownRequested):
+            app.run_yt_dlp(python("import time; time.sleep(30)"), timeout=30)
+    finally:
+        runtime.shutdown_event.clear()
