@@ -255,7 +255,8 @@ function clearInput() {
 /* A playlist link is not a track link: it names many, and Spotify names them
  * without giving anything downloadable at all. Both go to their own endpoint. */
 function isPlaylistLink(link) {
-    return /open\.spotify\.com\/playlist\//.test(link) || /[?&]list=/.test(link);
+    return /open\.spotify\.com\/playlist\//.test(link) || /[?&]list=/.test(link)
+        || /deezer\.com\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?album\/\d+/.test(link);
 }
 
 async function addTracks() {
@@ -1899,6 +1900,86 @@ async function importPlaylists(links, result) {
         }
     }
     tasks();
+}
+
+/* ---------------- Albums ---------------- */
+
+/* Альбом по названию: список найденного в Deezer, скачивается выбранный.
+ * Сразу качать первый найденный опасно — у альбома бывают переиздания,
+ * концертные версии и одноимённые синглы. */
+async function runAlbumSearch() {
+    const query = document.getElementById("searchQuery").value.trim();
+    const note = document.getElementById("searchNote");
+    const box = document.getElementById("searchResults");
+    const ticket = ++searchTicket;
+    box.replaceChildren();
+    if (!query) { note.textContent = "Введи исполнителя и альбом"; return; }
+    note.textContent = "Ищу альбомы…";
+    try {
+        const r = await fetch("/api/albums/search?q=" + encodeURIComponent(query), { headers: headers() });
+        const albums = await r.json();
+        if (ticket !== searchTicket) return;
+        if (!r.ok) { note.textContent = albums.detail || ("Ошибка " + r.status); return; }
+        note.textContent = albums.length ? "" : "Альбомов не нашлось";
+        for (const album of albums) box.appendChild(albumRow(album, note));
+    } catch (e) {
+        if (ticket === searchTicket) note.textContent = e.message;
+    }
+}
+
+function albumRow(album, note) {
+    const card = document.createElement("div");
+    card.className = "track";
+    const cover = document.createElement("div");
+    cover.className = "cover";
+    if (album.cover) {
+        const img = document.createElement("img");
+        img.src = album.cover;  // Deezer CDN, публичная картинка
+        img.alt = "";
+        img.loading = "lazy";
+        cover.appendChild(img);
+    }
+    const info = document.createElement("div");
+    info.className = "track-info";
+    const title = document.createElement("div");
+    title.className = "track-title";
+    title.textContent = album.title;
+    const artist = document.createElement("div");
+    artist.className = "track-artist";
+    artist.textContent = album.artist;
+    const facts = document.createElement("div");
+    facts.className = "track-album";
+    facts.textContent = [album.type, album.tracks ? album.tracks + " тр." : null].filter(Boolean).join(" · ");
+    info.append(title, artist, facts);
+    const take = document.createElement("button");
+    take.className = "ghost";
+    take.textContent = "Скачать альбом";
+    take.onclick = async () => {
+        take.disabled = true;
+        note.textContent = `Ищу треки «${album.title}» на YouTube… Это займёт с минуту.`;
+        try {
+            const r = await fetch("/api/import-album", {
+                method: "POST",
+                headers: { ...headers(), "Content-Type": "application/json" },
+                body: JSON.stringify({ id: album.id }),
+            });
+            const data = await r.json();
+            if (!r.ok) throw new Error(data.detail || ("Ошибка " + r.status));
+            const parts = [`«${album.title}»: треков ${data.read}, в очередь ${data.queued}`];
+            if (data.unmatched && data.unmatched.length) {
+                parts.push(`не нашлось на YouTube: ` +
+                    data.unmatched.slice(0, 3).map(t => t.title).join("; ") +
+                    (data.unmatched.length > 3 ? " и другие" : ""));
+            }
+            note.textContent = parts.join(". ");
+            tasks();
+        } catch (e) {
+            note.textContent = e.message;
+            take.disabled = false;
+        }
+    };
+    card.append(cover, info, take);
+    return card;
 }
 
 /* ---------------- Search ---------------- */

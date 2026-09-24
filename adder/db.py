@@ -72,6 +72,10 @@ def db_init():
     # Путь того трека, на который похож новый, — для экрана дубликатов.
     with suppress(sqlite3.OperationalError):
         db_exec("ALTER TABLE tasks ADD COLUMN similar_to TEXT")
+    # Deezer id альбома, если задача — трек из импорта альбома целиком: теги
+    # берутся именно с этого релиза.
+    with suppress(sqlite3.OperationalError):
+        db_exec("ALTER TABLE tasks ADD COLUMN album_hint TEXT")
     # Сколько раз задачу, упавшую из-за ограничения YouTube, поставили заново
     # сами, без человека: больше трёх — значит, дело не в паузе.
     with suppress(sqlite3.OperationalError):

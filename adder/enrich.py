@@ -111,6 +111,34 @@ def lookup(artist: str, title: str) -> TrackInfo | None:
     )
 
 
+def lookup_in_album(album_id: str, artist: str, title: str) -> TrackInfo | None:
+    """The track as it appears on one particular Deezer album.
+
+    A whole-album import knows which release it is filling in. Looking each
+    track up on its own could land on a single or a compilation instead, and
+    the album would come out scattered across several.
+    """
+    listing = _get(f"{DEEZER}/album/{album_id}/tracks?limit=500")
+    want = normalize(title)
+    match = next(
+        (t for t in (listing or {}).get("data") or [] if normalize(t.get("title", "")) == want),
+        None,
+    )
+    if match is None:
+        return None
+    album = _get(f"{DEEZER}/album/{album_id}") or {}
+    full = _get(f"{DEEZER}/track/{match['id']}") or {}
+    return TrackInfo(
+        album=album.get("title") or title,
+        artists=[c["name"] for c in full.get("contributors", [])] or split_artists(artist),
+        track_number=full.get("track_position") or match.get("track_position"),
+        track_total=album.get("nb_tracks") or 0,
+        disc_number=full.get("disk_number") or match.get("disk_number") or 1,
+        date=album.get("release_date") or "",
+        cover_url=album.get("cover_xl") or album.get("cover_big") or "",
+    )
+
+
 def fallback(artist: str, title: str) -> TrackInfo:
     """When Deezer draws a blank, treat the track as its own single.
 
@@ -219,8 +247,12 @@ def musicbrainz_lookup(artist: str, title: str) -> TrackInfo | None:
     return None
 
 
-def describe(artist: str, title: str) -> tuple[TrackInfo, str]:
+def describe(artist: str, title: str, album_id: str | None = None) -> tuple[TrackInfo, str]:
     """Metadata for a track, and where it came from: deezer, musicbrainz or fallback."""
+    if album_id:
+        info = lookup_in_album(album_id, artist, title)
+        if info:
+            return info, "deezer"
     info = lookup(artist, title)
     if info:
         return info, "deezer"

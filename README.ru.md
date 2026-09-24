@@ -277,7 +277,9 @@ curl -s http://127.0.0.1:8787/health     # {"status":"healthy"}
 | `GET`  | `/api/plays/stats` | Доля пропусков — общая и по режимам очереди |
 | `POST` | `/api/import`  | Принять файлы с диска через тот же конвейер |
 | `GET`  | `/api/search`  | Найти трек на YouTube, ничего не скачивая |
-| `POST` | `/api/import-playlist` | Поставить в очередь плейлист по одной ссылке |
+| `POST` | `/api/import-playlist` | Поставить в очередь плейлист по одной ссылке: YouTube (в том числе альбом YouTube Music), Spotify или альбом Deezer |
+| `GET` | `/api/albums/search?q=` | Альбомы Deezer по тексту — чтобы выбрать нужный |
+| `POST` | `/api/import-album` | `{"id"}`: поставить в очередь все треки этого альбома Deezer с его тегами |
 | `GET`  | `/api/shuffle` | Собрать очередь (`mode=smart` или `plain`) |
 | `POST` | `/api/shuffle/blind` | Две очереди, по одной каждого вида, без подписей |
 | `POST` | `/api/shuffle/blind/{id}` | Записать, какая понравилась |

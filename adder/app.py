@@ -723,6 +723,7 @@ def _reset_task(tid: int) -> None:
         error_type=None,
         warning=None,
         similar_to=None,
+        album_hint=None,
         retry_count=0,
         replace_of=None,
         result_path=None,
@@ -892,6 +893,59 @@ class PlaylistImportRequest(BaseModel):
     url: str
 
 
+def _queue_candidates(
+    candidates: list, album_hint: str | None = None
+) -> tuple[list[int], list[dict]]:
+    """Find each named track on YouTube and queue it. Returns (queued, unmatched)."""
+    queued, unmatched = [], []
+    for candidate in candidates:
+        match = sources.best_youtube_match(candidate)
+        if match is None:
+            unmatched.append({"artist": candidate.artist, "title": candidate.title})
+            continue
+        tid = _queue_source(ingest.canonicalize_youtube_url(match["url"]))
+        if tid is not None:
+            if album_hint:
+                db.task_update(tid, album_hint=album_hint)
+            queued.append(tid)
+    return queued, unmatched
+
+
+def _import_deezer_album(album_id: str) -> dict:
+    try:
+        about, candidates = sources.deezer_album(album_id)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)[:300]) from exc
+    queued, unmatched = _queue_candidates(candidates, album_hint=about["id"])
+    return {
+        "source": "deezer-album",
+        "album": about,
+        "read": len(candidates),
+        "queued": len(queued),
+        "unmatched": unmatched,
+        "truncated": False,
+        "note": "",
+    }
+
+
+@app.get("/api/albums/search")
+def album_search(q: str, authenticated: bool = Depends(verify_token)):
+    """Albums on Deezer matching free text, to pick one before downloading it."""
+    return sources.search_albums(q)
+
+
+class AlbumImportRequest(BaseModel):
+    id: str
+
+
+@app.post("/api/import-album")
+def import_album(req: AlbumImportRequest, authenticated: bool = Depends(verify_token)):
+    """Queue every track of one Deezer album, each found on YouTube by the strict match."""
+    if not req.id.isdigit():
+        raise HTTPException(status_code=400, detail="Album id must be a Deezer number")
+    return _import_deezer_album(req.id)
+
+
 @app.post("/api/import-playlist")
 def import_playlist(req: PlaylistImportRequest, authenticated: bool = Depends(verify_token)):
     """Queue a whole playlist from one link, YouTube or Spotify.
@@ -910,15 +964,7 @@ def import_playlist(req: PlaylistImportRequest, authenticated: bool = Depends(ve
         except Exception as exc:
             raise HTTPException(status_code=502, detail=str(exc)[:300]) from exc
 
-        queued, unmatched = [], []
-        for candidate in candidates:
-            match = sources.best_youtube_match(candidate)
-            if match is None:
-                unmatched.append({"artist": candidate.artist, "title": candidate.title})
-                continue
-            tid = _queue_source(ingest.canonicalize_youtube_url(match["url"]))
-            if tid is not None:
-                queued.append(tid)
+        queued, unmatched = _queue_candidates(candidates)
 
         return {
             "source": "spotify",
@@ -935,6 +981,10 @@ def import_playlist(req: PlaylistImportRequest, authenticated: bool = Depends(ve
                 else ""
             ),
         }
+
+    album_id = sources.deezer_album_id(url)
+    if album_id:
+        return _import_deezer_album(album_id)
 
     is_valid, error_msg = ingest.validate_url(url)
     if not is_valid:

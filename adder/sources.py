@@ -8,12 +8,13 @@ the awkward case and most of this file is about it.
 import json
 import logging
 import re
+import urllib.parse
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
 import requests
 
-from . import ingest
+from . import enrich, ingest
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +149,74 @@ def best_youtube_match(candidate: Candidate) -> dict | None:
             continue
         return result
     return None
+
+
+# ---------------------------------------------------------------------------
+# Deezer albums: a whole album by link or by name
+# ---------------------------------------------------------------------------
+#
+# The track list comes from Deezer, which knows track order and lengths; each
+# track is then found on YouTube by best_youtube_match, the same strict rule the
+# Spotify import uses. The album's id travels with every task (album_hint), so
+# the tracks are tagged as this album rather than whichever release a per-track
+# lookup happens to find first.
+
+
+def deezer_album_id(url: str) -> str | None:
+    parsed = urlparse(url.strip())
+    if (parsed.hostname or "").lower().rstrip(".") not in {"deezer.com", "www.deezer.com"}:
+        return None
+    match = re.fullmatch(r"/(?:[a-z]{2}(?:-[a-z]{2})?/)?album/(\d+)/?", parsed.path)
+    return match.group(1) if match else None
+
+
+def search_albums(query: str, limit: int = 8) -> list[dict]:
+    """Albums on Deezer matching free text, for the listener to choose from."""
+    query = query.strip()
+    if not query:
+        return []
+    found = enrich._get(
+        f"{enrich.DEEZER}/search/album?q={urllib.parse.quote(query)}&limit={max(1, min(limit, 25))}"
+    )
+    albums = []
+    for album in (found or {}).get("data") or []:
+        if not album.get("id"):
+            continue
+        albums.append(
+            {
+                "id": str(album["id"]),
+                "title": album.get("title") or "",
+                "artist": (album.get("artist") or {}).get("name") or "",
+                "tracks": album.get("nb_tracks"),
+                "cover": album.get("cover_medium") or "",
+                "type": album.get("record_type") or "",
+            }
+        )
+    return albums
+
+
+def deezer_album(album_id: str) -> tuple[dict, list[Candidate]]:
+    """The album's title and artist, and its tracks in order."""
+    album = enrich._get(f"{enrich.DEEZER}/album/{album_id}")
+    if not album or "id" not in album:
+        raise RuntimeError("Deezer does not know this album")
+    listing = enrich._get(f"{enrich.DEEZER}/album/{album_id}/tracks?limit=500")
+    tracks = (listing or {}).get("data") or ((album.get("tracks") or {}).get("data") or [])
+    candidates = [
+        Candidate(
+            artist=(track.get("artist") or {}).get("name") or "",
+            title=track.get("title") or "",
+            duration=track.get("duration"),
+        )
+        for track in tracks
+        if track.get("title")
+    ]
+    about = {
+        "id": str(album["id"]),
+        "title": album.get("title") or "",
+        "artist": (album.get("artist") or {}).get("name") or "",
+    }
+    return about, candidates
 
 
 # ---------------------------------------------------------------------------

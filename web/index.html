@@ -75,6 +75,8 @@
           <input id="searchQuery" class="grow" type="text" placeholder="Артист — название"
                  autocomplete="off" onkeydown="if(event.key==='Enter')runSearch()">
           <button class="primary" onclick="runSearch()">Искать</button>
+          <!-- Альбом целиком: сначала выбрать из найденного, потом скачать. -->
+          <button class="ghost" onclick="runAlbumSearch()">Альбом</button>
         </div>
         <p id="searchNote" class="note"></p>
         <div id="searchResults" class="rows"></div>

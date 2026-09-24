@@ -277,7 +277,9 @@ Authorise with an `Authorization: Bearer <API_TOKEN>` header. `/health` without 
 | `GET` | `/api/plays/stats` | Skip rate overall and per queue kind |
 | `POST` | `/api/import` | Take audio files from disk through the same pipeline |
 | `GET` | `/api/search` | Look for a track on YouTube without downloading |
-| `POST` | `/api/import-playlist` | Queue a whole playlist from one link, YouTube or Spotify |
+| `POST` | `/api/import-playlist` | Queue a whole playlist from one link: YouTube (including YouTube Music albums), Spotify, or a Deezer album |
+| `GET` | `/api/albums/search?q=` | Albums on Deezer matching free text, to choose one |
+| `POST` | `/api/import-album` | `{"id"}`: queue every track of that Deezer album, tagged as that album |
 | `GET` | `/api/shuffle` | Build a queue (`mode=smart` or `plain`) |
 | `POST` | `/api/shuffle/blind` | Two queues, one of each kind, unlabelled |
 | `POST` | `/api/shuffle/blind/{id}` | Record which one was preferred |
