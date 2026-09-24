@@ -1160,6 +1160,40 @@ def write_source(path: Path, url: str) -> None:
         audio.save()
 
 
+def edit_track(
+    path: Path, title: str, artists: list[str], album: str, refetch_cover: bool = False
+) -> str:
+    """Correct a track's tags by hand. Returns what happened to the cover.
+
+    YouTube metadata is often a little wrong and Deezer sometimes matches the
+    wrong release; until now fixing that took a separate tag editor. The file
+    stays where it is: Navidrome groups by tags, not folders.
+
+    The modification time is kept. The library reads it as "when this track
+    arrived", and correcting a typo is not an arrival.
+    """
+    runtime.guard_real_library(config.LIBRARY, "edit tags")
+    title, album = title.strip(), album.strip()
+    artists = [a.strip() for a in artists if a and a.strip()]
+    if not title or not artists:
+        raise ValueError("Title and at least one artist are required")
+
+    cover, fmt, cover_result = None, None, "kept"
+    if refetch_cover:
+        info = enrich.lookup(artists[0], title)
+        if info and info.cover_url:
+            cover, fmt = fetch_cover_url(info.cover_url)
+        if not cover:
+            cover, fmt = get_hd_cover(artists[0], title)
+        cover_result = "updated" if cover else "not found"
+
+    stat = path.stat()
+    write_tags(path, enrich.TrackInfo(album=album or title, artists=artists), title, cover, fmt)
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    library.invalidate_library_index()
+    return cover_result
+
+
 def verify_tags_written(path: Path, expected_title: str) -> bool:
     """Read the title back out. A save that silently did nothing is a real failure mode."""
     try:

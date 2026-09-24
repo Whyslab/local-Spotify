@@ -409,6 +409,7 @@ def list_library(
                     "track",
                     "duration",
                     "added",
+                    "source",
                 )
             }
         )
@@ -460,6 +461,37 @@ def track_details(path: str, authenticated: bool = Depends(verify_token)):
     return {
         **{key: value for key, value in row.items() if key != "haystack"},
         "features": measured[0] if measured else None,
+    }
+
+
+class TrackEdit(BaseModel):
+    path: str
+    title: str
+    artists: list[str]
+    album: str = ""
+    refetch_cover: bool = False
+
+
+@app.patch("/api/track")
+def edit_track(req: TrackEdit, authenticated: bool = Depends(verify_token)):
+    """Correct title, artists and album by hand; optionally look the cover up again."""
+    if outside.is_outside(req.path):
+        raise HTTPException(status_code=400, detail="Only library tracks can be edited")
+    if len(req.title) > 300 or len(req.album) > 300 or len(req.artists) > 20:
+        raise HTTPException(status_code=400, detail="Too long")
+    absolute = library.library_track(req.path)
+    try:
+        cover = ingest.edit_track(
+            absolute, req.title, req.artists, req.album, refetch_cover=req.refetch_cover
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    relative = str(absolute.relative_to(config.LIBRARY.resolve()))
+    row = next((r for r in library.library_index() if r["path"] == relative), {})
+    logger.info("Edited tags of %s", relative, extra={"task_id": "system"})
+    return {
+        **{key: value for key, value in row.items() if key != "haystack"},
+        "cover": cover,
     }
 
 

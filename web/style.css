@@ -405,6 +405,14 @@ button:disabled { opacity: .5; cursor: default; }
 .confirm h3 { margin: 0; font-size: 14px; font-weight: 650; letter-spacing: -0.2px; }
 .confirm p  { margin: 6px 0 0; font-size: 12px; color: var(--text-2); }
 
+/* Правка тегов: подписи над полями, поля во всю ширину. */
+.edit-tags .field { display: flex; flex-direction: column; gap: 4px; margin-top: 10px; }
+.edit-tags .field span { font-size: 12px; color: var(--text-2); }
+.edit-tags .field input { width: 100%; box-sizing: border-box; }
+.edit-tags .check { display: flex; align-items: center; gap: 6px; margin-top: 10px; font-size: 13px; }
+.edit-tags a { color: var(--text-2); }
+.edit-tags .row { margin-top: 12px; }
+
 /* ---------------- Service ---------------- */
 
 .facts { display: flex; flex-direction: column; gap: 1px; }

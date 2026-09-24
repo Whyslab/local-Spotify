@@ -1459,8 +1459,114 @@ function libraryRow(t, rows) {
     svg.appendChild(path);
     del.appendChild(svg);
 
-    card.append(cover, info, play, toPlaylist, del);
+    const editButton = document.createElement("button");
+    editButton.className = "icon-button";
+    editButton.setAttribute("aria-label", "Изменить теги");
+    editButton.title = "Изменить теги";
+    editButton.onclick = () => askEdit(card, t, rows);
+    const editSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    editSvg.setAttribute("class", "icon");
+    editSvg.setAttribute("viewBox", "0 0 24 24");
+    const editPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    editPath.setAttribute("d", "M4 20h4L19 9l-4-4L4 16zM14 6l4 4");
+    editSvg.appendChild(editPath);
+    editButton.appendChild(editSvg);
+
+    card.append(cover, info, play, toPlaylist, editButton, del);
     return card;
+}
+
+/* Правка тегов — на месте строки, как и удаление. Исполнители через «;»:
+ * запятая встречается в самих именах («Tyler, The Creator»). Файл не
+ * переезжает: Navidrome группирует по тегам, а не по папкам. */
+function askEdit(card, t, rows) {
+    const form = document.createElement("form");
+    form.className = "confirm edit-tags";
+
+    const head = document.createElement("h3");
+    head.textContent = "Теги трека";
+
+    const field = (label, value) => {
+        const wrap = document.createElement("label");
+        wrap.className = "field";
+        const caption = document.createElement("span");
+        caption.textContent = label;
+        const input = document.createElement("input");
+        input.value = value || "";
+        input.spellcheck = false;
+        wrap.append(caption, input);
+        return { wrap, input };
+    };
+    const title = field("Название", t.title);
+    const artists = field("Исполнители (через ;)", (t.artist || "").split(" \u2022 ").join("; "));
+    const album = field("Альбом", t.album);
+
+    const refetch = document.createElement("label");
+    refetch.className = "check";
+    const refetchBox = document.createElement("input");
+    refetchBox.type = "checkbox";
+    refetch.append(refetchBox, document.createTextNode(" Найти обложку заново"));
+
+    const note = document.createElement("p");
+    note.className = "muted";
+    if (t.source) {
+        const link = document.createElement("a");
+        link.href = t.source;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.textContent = "Открыть источник";
+        note.appendChild(link);
+    }
+
+    const row = document.createElement("div");
+    row.className = "row";
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.className = "ghost grow";
+    cancel.textContent = "Отмена";
+    cancel.onclick = () => form.replaceWith(card);
+    const save = document.createElement("button");
+    save.type = "submit";
+    save.className = "primary grow";
+    save.textContent = "Сохранить";
+    row.append(cancel, save);
+
+    form.onsubmit = async (event) => {
+        event.preventDefault();
+        save.disabled = cancel.disabled = true;
+        save.textContent = "Сохраняю…";
+        const body = {
+            path: t.path,
+            title: title.input.value,
+            artists: artists.input.value.split(";").map(s => s.trim()).filter(Boolean),
+            album: album.input.value,
+            refetch_cover: refetchBox.checked,
+        };
+        try {
+            const r = await fetch("/api/track", {
+                method: "PATCH",
+                headers: { ...headers(), "Content-Type": "application/json" },
+                body: JSON.stringify(body),
+            });
+            const data = await r.json().catch(() => ({}));
+            if (!r.ok) throw new Error(data.detail || ("Не удалось сохранить: " + r.status));
+            const updated = { ...t, ...data };
+            const index = rows.indexOf(t);
+            if (index >= 0) rows[index] = updated;
+            form.replaceWith(libraryRow(updated, rows));
+            if (data.cover === "not found" && typeof setPlayerNote === "function") {
+                setPlayerNote("Новая обложка не нашлась — оставлена прежняя");
+            }
+        } catch (e) {
+            note.textContent = e.message;
+            save.disabled = cancel.disabled = false;
+            save.textContent = "Сохранить";
+        }
+    };
+
+    form.append(head, title.wrap, artists.wrap, album.wrap, refetch, note, row);
+    card.replaceWith(form);
+    title.input.focus();
 }
 
 /* Deleting is the one destructive thing this panel does, so it confirms in
