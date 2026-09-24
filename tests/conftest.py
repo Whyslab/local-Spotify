@@ -43,6 +43,7 @@ def _outside_stays_offline(monkeypatch, tmp_path):
 
     monkeypatch.setattr(analysis, "analyse_track", lambda path: None)
     monkeypatch.setattr(enrich, "lookup", lambda artist, title: None)
+    monkeypatch.setattr(enrich, "musicbrainz_lookup", lambda artist, title: None)
     # И обход текстов в фоне — тоже сеть.
     from adder import lyrics
 

@@ -1450,14 +1450,14 @@ def ingest_temp_file(tid: int, temp_path: Path, names: TrackNames, thumbnail: st
     # the track number and the real list of artists. Without this the track
     # lands in a nameless bucket with no position, which is what made every
     # album in the library read "Singles" in the first place.
-    info, from_deezer = enrich.describe(names.full_artist, names.meta_title)
+    info, source = enrich.describe(names.full_artist, names.meta_title)
     logger.info(
         "Metadata for %r by %r: album=%r track=%s source=%s",
         names.meta_title,
         names.full_artist,
         info.album,
         info.track_number,
-        "deezer" if from_deezer else "fallback",
+        source,
     )
 
     cover, fmt = None, None

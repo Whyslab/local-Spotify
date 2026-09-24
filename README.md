@@ -38,6 +38,7 @@ It is not built to be a public SaaS or to work around YouTube's restrictions —
 * **Background queue with multiple workers** — downloads run in parallel (`MAX_WORKERS`) and never block the API.
 * **Automatic metadata cleanup** — `Song (Official Video) [4K]` becomes a clean `Artist / Song`, while genuine variants like `(Live)` or `(Remix)` are preserved in the tags.
 * **Even loudness (ReplayGain)** — every track is measured with ffmpeg (EBU R 128) and tagged; Navidrome, Subsonic clients that honour ReplayGain and the built-in desktop player play everything at the same level. On an iPhone the browser does not let a page change volume, so there it is up to the Subsonic client.
+* **Real album data** — album, track number, release date and every credited artist come from Deezer, and from MusicBrainz (with the Cover Art Archive) when Deezer does not know the track; only when both miss is a track filed as its own single.
 * **HD cover art** — iTunes Search API with a fallback to the YouTube thumbnail; a separate script (`fix_covers.py`) backfills missing artwork afterwards via iTunes → Deezer.
 * **Content-based deduplication** — each track is hashed (SHA-256) and compared against what is already in the library, rather than matched on filename.
 * **Retry with exponential backoff** — transient network and download failures are retried automatically; permanent ones are not.
@@ -403,10 +404,10 @@ Back up state (SQLite plus `.env`):
 .venv/bin/ruff check . && .venv/bin/ruff format --check adder scripts tests desktop
 ```
 
-The suite runs fully offline and needs no real `.env`; the import and streaming tests need `ffmpeg`, which CI installs. `tests/conftest.py` fails any test that opens a network connection, so YouTube, Deezer and iTunes are always mocked. It covers:
+The suite runs fully offline and needs no real `.env`; the import and streaming tests need `ffmpeg`, which CI installs. `tests/conftest.py` fails any test that opens a network connection, so YouTube, Deezer, MusicBrainz and iTunes are always mocked. It covers:
 
 * **downloading** — the yt-dlp commands, reading its JSON and its `ERROR:` line, the subprocess runner (timeouts, shutdown, large output), and which failures are retried;
-* **metadata** — splitting YouTube titles into artist and title, and Deezer enrichment against canned API responses;
+* **metadata** — splitting YouTube titles into artist and title, and Deezer and MusicBrainz enrichment against canned API responses;
 * **writing into the library** — `process()` end to end on a real one-second AAC file (`tests/fixtures/tone.m4a`): tags read back with mutagen, the `Artist/Singles/Title.m4a` layout, cover fallback, corrupt downloads, content deduplication;
 * the API: authorisation, link validation and canonicalisation, deletion and path traversal, `/health`, task recovery after a restart, graceful shutdown, and an XSS regression in the frontend;
 * playlists, Navidrome synchronisation, streaming signatures, file import, lyrics, shuffles and the smart-shuffle downloads.
