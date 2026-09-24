@@ -824,7 +824,10 @@ def process(tid: int, url: str):
             info, from_deezer = enrich.describe(full_artist, meta_title)
             logger.info(
                 "Metadata for %r by %r: album=%r track=%s source=%s",
-                meta_title, full_artist, info.album, info.track_number,
+                meta_title,
+                full_artist,
+                info.album,
+                info.track_number,
                 "deezer" if from_deezer else "fallback",
             )
 
@@ -1224,15 +1227,17 @@ def library_index() -> list[dict]:
             title = (tags.get("\xa9nam") or [f.stem])[0]
             album = (tags.get("\xa9alb") or [""])[0]
             track = tags.get("trkn") or []
-            rows.append({
-                "path": str(f.relative_to(root)),
-                "artist": artist,
-                "title": title,
-                "album": album,
-                "track": track[0][0] if track else None,
-                "albumartist": (tags.get("aART") or [""])[0],
-                "haystack": f"{artist} {title} {album}".lower(),
-            })
+            rows.append(
+                {
+                    "path": str(f.relative_to(root)),
+                    "artist": artist,
+                    "title": title,
+                    "album": album,
+                    "track": track[0][0] if track else None,
+                    "albumartist": (tags.get("aART") or [""])[0],
+                    "haystack": f"{artist} {title} {album}".lower(),
+                }
+            )
 
         _LIBRARY_INDEX.update({"at": time.time(), "rows": rows})
         return list(rows)
