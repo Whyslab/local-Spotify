@@ -2,6 +2,8 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
+
 # from adder.app import ... below is a package-qualified import, which
 # needs the project root (parent of tests/) on sys.path. This file used
 # to rely entirely on an external PYTHONPATH being set - true when run
@@ -16,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 os.environ.setdefault("API_TOKEN", "test-secret")
 
-from adder.app import clean_title
+from adder.app import MAX_NAME_BYTES, clean_title, sanitize_filename, split_artist_title
 
 
 def test_empty_parentheses_are_removed():
@@ -67,3 +69,48 @@ def test_metadata_keeps_version_information():
         )
         == "Song (Live)"
     )
+
+
+# ---------------------------------------------------------------------------
+# sanitize_filename: channel names and titles are untrusted input
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", ["..", ".", "...", " .. "])
+def test_dot_names_cannot_step_out_of_the_library(name):
+    assert sanitize_filename(name) == "Unknown"
+
+
+def test_leading_dot_would_hide_the_track_from_navidrome():
+    assert sanitize_filename(".hidden") == "hidden"
+
+
+@pytest.mark.parametrize("name", ["", "?", '""', "***", "\x00\x01"])
+def test_names_with_nothing_safe_left_become_unknown(name):
+    assert sanitize_filename(name) == "Unknown"
+
+
+def test_separators_are_removed():
+    assert sanitize_filename("AC/DC") == "ACDC"
+    assert sanitize_filename("a\\b") == "ab"
+
+
+def test_trailing_dots_are_kept_so_existing_folders_still_match():
+    assert sanitize_filename("R.E.M.") == "R.E.M."
+
+
+def test_long_names_fit_the_filesystem_without_splitting_characters():
+    name = "🎵" * 100 + "Я" * 100  # 600 bytes of UTF-8
+
+    result = sanitize_filename(name)
+
+    assert len(result.encode("utf-8")) <= MAX_NAME_BYTES
+    result.encode("utf-8").decode("utf-8")  # a split character would raise here
+    assert result.startswith("🎵")
+
+
+def test_malicious_channel_name_stays_one_path_component():
+    fs_artist, fs_title, _, _ = split_artist_title({"title": "Song", "uploader": ".."})
+
+    assert fs_artist == "Unknown"
+    assert "/" not in fs_title

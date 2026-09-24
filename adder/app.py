@@ -177,11 +177,29 @@ def recover_queued_tasks():
 
 
 # ---------------- Текст / метаданные ----------------
+# Linux allows 255 bytes per path component. Leave room for " (12).m4a".
+MAX_NAME_BYTES = 200
+
+
 def sanitize_filename(name: str) -> str:
+    """Turn untrusted metadata (a channel name, a video title) into one path component.
+
+    Besides dropping characters that are unsafe in a filename, this refuses the
+    results that are dangerous as a whole: "." and ".." (which step out of the
+    artist folder or the library), names starting with a dot (hidden, so
+    Navidrome never shows the track), empty names, and names too long for the
+    filesystem.
+    """
     if not name:
         return "Unknown"
     name = re.sub(r"[\[\]'\"]", "", str(name))
-    return re.sub(r'[\\/*?:"<>|]', "", name).strip()
+    name = re.sub(r'[\\/*?:"<>|\x00-\x1f]', "", name)
+    name = name.strip().lstrip(".").strip()
+    encoded = name.encode("utf-8")
+    if len(encoded) > MAX_NAME_BYTES:
+        # Cut on a character boundary, never through a multi-byte character.
+        name = encoded[:MAX_NAME_BYTES].decode("utf-8", errors="ignore").strip()
+    return name or "Unknown"
 
 
 JUNK = [
