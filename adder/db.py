@@ -69,6 +69,10 @@ def db_init():
     # предупреждает, а решать, какой оставить, человеку.
     with suppress(sqlite3.OperationalError):
         db_exec("ALTER TABLE tasks ADD COLUMN warning TEXT")
+    # Сколько раз задачу, упавшую из-за ограничения YouTube, поставили заново
+    # сами, без человека: больше трёх — значит, дело не в паузе.
+    with suppress(sqlite3.OperationalError):
+        db_exec("ALTER TABLE tasks ADD COLUMN auto_requeues INTEGER DEFAULT 0")
 
     db_exec("CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT)")
 

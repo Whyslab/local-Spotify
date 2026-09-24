@@ -96,6 +96,8 @@
       <div class="list-head">
         <!-- «Загрузки», а не «Очередь»: очередью зовётся то, что играет дальше. -->
         <span>Загрузки</span>
+        <!-- Только когда есть упавшие: иначе кнопке нечего делать. -->
+        <button id="retryFailed" class="ghost small" onclick="retryFailed()" hidden>Повторить упавшие</button>
         <span id="queueCount" class="muted"></span>
       </div>
       <div id="tasks" class="rows"></div>

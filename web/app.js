@@ -340,6 +340,8 @@ async function tasks() {
         const recent = data.filter(t => t.status === "done").slice(0, RECENT_DONE_LIMIT);
 
         count.textContent = queue.length ? `${queue.length}` : "";
+        const retry = document.getElementById("retryFailed");
+        if (retry) retry.hidden = !queue.some(t => t.status === "error");
         empty.hidden = queue.length > 0;
         box.replaceChildren();
 
@@ -368,6 +370,17 @@ async function tasks() {
         }
     } catch (e) {
         // Polling loop - a transient network hiccup shouldn't throw to console.
+    }
+}
+
+async function retryFailed() {
+    const button = document.getElementById("retryFailed");
+    button.disabled = true;
+    try {
+        const r = await fetch("/api/tasks/retry-failed", { method: "POST", headers: headers() });
+        if (r.ok) await tasks();
+    } finally {
+        button.disabled = false;
     }
 }
 

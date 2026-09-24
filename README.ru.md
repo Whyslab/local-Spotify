@@ -256,6 +256,7 @@ curl -s http://127.0.0.1:8787/health     # {"status":"healthy"}
 | `GET`  | `/health`      | Статус сервиса, БД, библиотеки, ffmpeg, JS-рантайма и очереди |
 | `POST` | `/api/add`     | Добавить одну или несколько YouTube-ссылок   |
 | `GET`  | `/api/tasks`   | Последние 50 задач и их статус               |
+| `POST` | `/api/tasks/retry-failed` | Поставить все упавшие задачи заново (есть и кнопка в панели) |
 | `GET`  | `/`            | Веб-интерфейс                                |
 | `GET`  | `/api/playlists` | Список подборок |
 | `POST` | `/api/playlists` | Создать подборку |
@@ -320,7 +321,7 @@ curl -X POST http://127.0.0.1:8787/api/add \
 | `error_type` | Повтор автоматически | Значение |
 | --- | --- | --- |
 | `network_error`, `download_error`, `artwork_error` | да | Временный сбой |
-| `rate_limited` | да | YouTube ограничивает запросы (HTTP 429 / «try again later») |
+| `rate_limited` | да, и ещё раз сама через час (до 3 раз) | YouTube ограничивает запросы (HTTP 429 / «try again later») |
 | `youtube_not_found` | нет | Видео удалено, приватное или заблокировано в регионе |
 | `unsupported_video` | нет | Прямой эфир или видео длиннее `MAX_DURATION_MINUTES` |
 | `youtube_auth_required` | нет | Проверка на бота, возрастное ограничение, только для спонсоров: задай `COOKIES_FROM_BROWSER` |

@@ -118,6 +118,9 @@ async def lifespan(app: FastAPI):
     # включали, текста нет, а промах не перепроверяется. См. lyrics.backfill.
     lyrics.start_backfill()
 
+    # Задачи, упавшие из-за ограничения YouTube, через час пробуют снова сами.
+    threading.Thread(target=_auto_requeue_loop, name="auto-requeue", daemon=True).start()
+
     for i in range(config.MAX_WORKERS):
         worker_thread = threading.Thread(
             target=task_queue.worker,
@@ -307,6 +310,67 @@ def add(req: AddRequest, authenticated: bool = Depends(verify_token)):
 @app.get("/api/tasks")
 def tasks(authenticated: bool = Depends(verify_token)):
     return db.db_query("SELECT * FROM tasks ORDER BY id DESC LIMIT 50")
+
+
+# A rate-limited task is tried again by itself this long after it failed, at
+# most this many times; past that the pause is not what it is missing.
+AUTO_REQUEUE_AFTER_MINUTES = 60
+AUTO_REQUEUE_LIMIT = 3
+AUTO_REQUEUE_CHECK_SECONDS = 600
+
+
+def requeue_failed(auto: bool = False) -> list[int]:
+    """Queue failed tasks again. Returns the ids that were queued.
+
+    By hand (auto=False): every failed task that can be retried. Automatically:
+    only rate-limited ones, an hour after they failed, at most three times.
+
+    Two kinds are left out on purpose. A failed upload can be retried only while
+    its file is still in the import folder. A failed replacement is not retried
+    here: _queue_source would reset it into a plain add, and the "replace that
+    track" half of the request would be silently lost.
+    """
+    sql = "SELECT id, url, auto_requeues FROM tasks WHERE status = 'error' AND replace_of IS NULL"
+    params: tuple = ()
+    if auto:
+        sql += (
+            " AND error_type = 'rate_limited' AND COALESCE(auto_requeues, 0) < ?"
+            " AND updated_at <= datetime('now', 'localtime', ?)"
+        )
+        params = (AUTO_REQUEUE_LIMIT, f"-{AUTO_REQUEUE_AFTER_MINUTES} minutes")
+    queued = []
+    for row in db.db_query(sql + " ORDER BY id", params):
+        url = row["url"]
+        if url.startswith("file:") and ingest.stashed_upload(url) is None:
+            continue
+        tid = _queue_source(url)
+        if tid is None:
+            continue
+        count = (row["auto_requeues"] or 0) + 1 if auto else 0
+        db.task_update(tid, auto_requeues=count)
+        queued.append(tid)
+    if queued:
+        logger.info(
+            "Requeued %d failed task(s)%s",
+            len(queued),
+            " after a rate limit" if auto else "",
+            extra={"task_id": "system"},
+        )
+    return queued
+
+
+def _auto_requeue_loop() -> None:
+    while not runtime.shutdown_event.wait(AUTO_REQUEUE_CHECK_SECONDS):
+        try:
+            requeue_failed(auto=True)
+        except Exception:
+            logger.exception("Automatic requeue failed", extra={"task_id": "system"})
+
+
+@app.post("/api/tasks/retry-failed")
+def retry_failed(authenticated: bool = Depends(verify_token)):
+    """Queue every failed task again, as re-submitting each link would."""
+    return {"requeued": requeue_failed()}
 
 
 @app.get("/api/library")

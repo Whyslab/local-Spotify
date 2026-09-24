@@ -256,6 +256,7 @@ Authorise with an `Authorization: Bearer <API_TOKEN>` header. `/health` without 
 | `GET` | `/health` | Status of the service, database, library, ffmpeg, JS runtime and queue |
 | `POST` | `/api/add` | Add one or more YouTube links |
 | `GET` | `/api/tasks` | The 50 most recent tasks and their status |
+| `POST` | `/api/tasks/retry-failed` | Queue every failed task again (also a button in the panel) |
 | `GET` | `/` | Web interface |
 | `GET` | `/api/playlists` | List playlists |
 | `POST` | `/api/playlists` | Create a playlist |
@@ -320,7 +321,7 @@ Only links to `youtube.com`, `m.youtube.com`, `music.youtube.com` and `youtu.be`
 | `error_type` | Retried automatically | Meaning |
 | --- | --- | --- |
 | `network_error`, `download_error`, `artwork_error` | yes | Transient failure |
-| `rate_limited` | yes | YouTube is throttling (HTTP 429 / "try again later") |
+| `rate_limited` | yes, and again by itself an hour later (up to 3 times) | YouTube is throttling (HTTP 429 / "try again later") |
 | `youtube_not_found` | no | Video removed, private or blocked in your region |
 | `unsupported_video` | no | A live stream, or longer than `MAX_DURATION_MINUTES` |
 | `youtube_auth_required` | no | Bot check, age gate, members-only: set `COOKIES_FROM_BROWSER` |
