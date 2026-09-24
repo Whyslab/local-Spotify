@@ -768,3 +768,44 @@ def test_worker_survives_an_unexpected_error_and_releases_the_url(app_module, mo
     assert processed == [1, 2], "the worker died after the first task"
     assert first[1] not in app_module.PROCESSING_URLS
     app_module.TASK_QUEUE.join()
+
+
+# ---------------------------------------------------------------------------
+# Track deletion
+# ---------------------------------------------------------------------------
+
+
+def test_trash_lives_where_the_systemd_unit_can_write(app_module):
+    # music-adder.service.template grants ReadWritePaths only to adder/ and the
+    # library; anywhere else in the repository is read-only in production.
+    assert app_module.TRASH_DIR.is_relative_to(app_module.PROJECT)
+
+
+def test_delete_moves_track_to_trash_and_prunes_empty_folders(client, app_module, monkeypatch):
+    monkeypatch.setattr(app_module, "TRASH_DIR", app_module.TMP_DIR.parent / "trash")
+    track = app_module.LIBRARY / "Artist" / "Singles" / "Song.m4a"
+    track.parent.mkdir(parents=True)
+    track.write_bytes(b"audio")
+
+    response = client.request(
+        "DELETE",
+        "/api/library",
+        json={"path": "Artist/Singles/Song.m4a"},
+        headers=auth_headers(),
+    )
+
+    assert response.status_code == 200
+    assert not track.exists()
+    assert (app_module.TRASH_DIR / "Artist" / "Singles" / "Song.m4a").read_bytes() == b"audio"
+    assert not (app_module.LIBRARY / "Artist").exists()
+    assert app_module.LIBRARY.exists()
+
+
+@pytest.mark.parametrize("path", ["../outside.m4a", "/etc/passwd"])
+def test_delete_refuses_paths_outside_the_library(client, app_module, path):
+    (app_module.LIBRARY.parent / "outside.m4a").write_bytes(b"x")
+
+    response = client.request("DELETE", "/api/library", json={"path": path}, headers=auth_headers())
+
+    assert response.status_code in (400, 404)
+    assert (app_module.LIBRARY.parent / "outside.m4a").exists()

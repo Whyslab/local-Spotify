@@ -1277,7 +1277,10 @@ def tasks(authenticated: bool = Depends(verify_token)):
     return db_query("SELECT * FROM tasks ORDER BY id DESC LIMIT 50")
 
 
-TRASH_DIR = PROJECT.parent / "trash"
+# Inside adder/ because that is the only part of the repository the systemd
+# unit may write to (ReadWritePaths); a trash folder at the repository root
+# made every delete fail with a read-only file system error in production.
+TRASH_DIR = PROJECT / "trash"
 
 
 class DeleteRequest(BaseModel):
