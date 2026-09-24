@@ -9,12 +9,19 @@ import shutil
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 import mutagen
 from fastapi import HTTPException
+from mutagen.easyid3 import EasyID3
 from mutagen.mp4 import MP4
 
-from . import config, runtime
+from . import config, loudness, runtime
+
+# Lets read_tags see ingest.write_source's TXXX frame in an MP3 as "source_url".
+EasyID3.RegisterTXXXKey("source_url", "SOURCE_URL")
+# EasyID3's own replaygain_* keys map to RVA2 frames; players write TXXX.
+EasyID3.RegisterTXXXKey("rg_track_gain", "REPLAYGAIN_TRACK_GAIN")
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +30,24 @@ logger = logging.getLogger(__name__)
 # another lossy format to make the folder tidy costs quality and buys nothing,
 # since Navidrome serves all of these already.
 AUDIO_SUFFIXES = (".m4a", ".mp3", ".flac", ".opus", ".ogg")
+
+
+def _has_picture(path: Path) -> bool:
+    """Whether a non-MP4 file carries a cover. The easy tag view hides pictures."""
+    try:
+        raw = mutagen.File(path)
+    except Exception:
+        return False
+    if raw is None:
+        return False
+    if getattr(raw, "pictures", None):  # FLAC
+        return True
+    tags = raw.tags
+    if tags is None:
+        return False
+    if hasattr(tags, "getall"):  # ID3
+        return bool(tags.getall("APIC"))
+    return "metadata_block_picture" in tags  # Ogg / Opus
 
 
 def read_tags(path: Path) -> dict:
@@ -35,9 +60,16 @@ def read_tags(path: Path) -> dict:
     suffix = path.suffix.lower()
     if suffix == ".m4a":
         parsed = MP4(path)
-        tags = parsed.tags or {}
+        tags: Any = parsed.tags or {}
         track = tags.get("trkn") or []
+        source = tags.get("----:com.apple.iTunes:SOURCE_URL") or []
+        gain = tags.get("----:com.apple.iTunes:replaygain_track_gain") or tags.get(
+            "----:com.apple.iTunes:REPLAYGAIN_TRACK_GAIN"
+        )
         return {
+            "has_cover": bool(tags.get("covr")),
+            "gain": loudness.parse_gain(bytes(gain[0])) if gain else None,
+            "source": bytes(source[0]).decode("utf-8", "replace") if source else "",
             "artist": " \u2022 ".join(tags.get("\xa9ART") or []),
             "title": (tags.get("\xa9nam") or [path.stem])[0],
             "album": (tags.get("\xa9alb") or [""])[0],
@@ -63,6 +95,9 @@ def read_tags(path: Path) -> dict:
         track_number = None
 
     return {
+        "has_cover": _has_picture(path),
+        "gain": loudness.parse_gain(first("replaygain_track_gain") or first("rg_track_gain")),
+        "source": first("source_url"),
         "artist": " \u2022 ".join(tags.get("artist") or []),
         "title": first("title") or path.stem,
         "album": first("album"),
@@ -70,6 +105,14 @@ def read_tags(path: Path) -> dict:
         "track": track_number,
         "duration": getattr(getattr(parsed, "info", None), "length", None),
     }
+
+
+def find_by_source(url: str) -> str | None:
+    """Library path of the track downloaded from ``url``, if there is one."""
+    for row in library_index():
+        if row.get("source") == url:
+            return row["path"]
+    return None
 
 
 def library_track(rel_path: str) -> Path:
@@ -88,9 +131,11 @@ def library_track(rel_path: str) -> Path:
 
 
 LIBRARY_INDEX_TTL = 60
-# Parsed row per file, keyed by path and valid while (mtime_ns, size) match.
-_FILE_ROWS: dict[str, tuple[tuple[int, int], dict]] = {}
-_LIBRARY_INDEX: dict[str, object] = {"at": 0.0, "rows": []}
+# Files the last index pass could not read, relative to the library.
+UNREADABLE: list[str] = []
+# Parsed row per file, keyed by path and valid while (mtime_ns, size, ctime_ns) match.
+_FILE_ROWS: dict[str, tuple[tuple[int, int, int], dict]] = {}
+_LIBRARY_INDEX: dict[str, Any] = {"at": 0.0, "rows": [], "generation": 0}
 _LIBRARY_INDEX_LOCK = threading.Lock()
 
 
@@ -105,6 +150,7 @@ def library_index() -> list[dict]:
     with _LIBRARY_INDEX_LOCK:
         if time.time() - float(_LIBRARY_INDEX["at"]) < LIBRARY_INDEX_TTL:
             return list(_LIBRARY_INDEX["rows"])
+        generation = _LIBRARY_INDEX["generation"]
 
         root = config.LIBRARY.resolve()
         rows = []
@@ -114,6 +160,7 @@ def library_index() -> list[dict]:
             p for suffix in AUDIO_SUFFIXES for p in root.rglob(f"*{suffix}") if p.is_file()
         )
         seen = set()
+        unreadable: list[str] = []
         for f in files:
             try:
                 stat = f.stat()
@@ -121,7 +168,9 @@ def library_index() -> list[dict]:
                 continue
             key = str(f)
             seen.add(key)
-            stamp = (stat.st_mtime_ns, stat.st_size)
+            # ctime as well as mtime: tag edits and ReplayGain keep mtime on
+            # purpose (it is the "added" date), but no write can keep ctime.
+            stamp = (stat.st_mtime_ns, stat.st_size, stat.st_ctime_ns)
             cached = _FILE_ROWS.get(key)
             if cached and cached[0] == stamp:
                 # Unchanged since the last pass: reading its tags again is what
@@ -141,6 +190,9 @@ def library_index() -> list[dict]:
                 # иначе ронял весь список ошибкой 500.
                 added = int(stat.st_mtime)
             except Exception:
+                # Left out of the index, but remembered: the health report
+                # lists files that cannot be read instead of hiding them.
+                unreadable.append(str(f.relative_to(root)))
                 continue
             artist, title, album = meta["artist"], meta["title"], meta["album"]
             rows.append(
@@ -159,6 +211,9 @@ def library_index() -> list[dict]:
                     # Сдвигается при перетегировании, и это честнее, чем ничего:
                     # иначе свежие треки не отличить от собранных в августе.
                     "added": added,
+                    "source": meta.get("source") or "",
+                    "gain": meta.get("gain"),
+                    "has_cover": meta.get("has_cover", False),
                     "haystack": f"{artist} {title} {album}".lower(),
                 }
             )
@@ -166,12 +221,20 @@ def library_index() -> list[dict]:
 
         for gone in set(_FILE_ROWS) - seen:
             del _FILE_ROWS[gone]
+        UNREADABLE[:] = unreadable
 
-        _LIBRARY_INDEX.update({"at": time.time(), "rows": rows})
+        # An invalidation that arrived while this pass was reading the disk
+        # means some of what it read is already stale: keep the rows, but do
+        # not mark them fresh, or the change would stay invisible for a TTL.
+        fresh = _LIBRARY_INDEX["generation"] == generation
+        _LIBRARY_INDEX.update({"at": time.time() if fresh else 0.0, "rows": rows})
         return list(rows)
 
 
 def invalidate_library_index() -> None:
+    # Not under the lock on purpose: a writer must not wait for a rebuild. The
+    # generation tells a rebuild in progress that it started too early.
+    _LIBRARY_INDEX["generation"] = int(_LIBRARY_INDEX["generation"]) + 1
     _LIBRARY_INDEX["at"] = 0.0
 
 

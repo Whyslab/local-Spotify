@@ -69,6 +69,17 @@ def db_init():
     # предупреждает, а решать, какой оставить, человеку.
     with suppress(sqlite3.OperationalError):
         db_exec("ALTER TABLE tasks ADD COLUMN warning TEXT")
+    # Путь того трека, на который похож новый, — для экрана дубликатов.
+    with suppress(sqlite3.OperationalError):
+        db_exec("ALTER TABLE tasks ADD COLUMN similar_to TEXT")
+    # Deezer id альбома, если задача — трек из импорта альбома целиком: теги
+    # берутся именно с этого релиза.
+    with suppress(sqlite3.OperationalError):
+        db_exec("ALTER TABLE tasks ADD COLUMN album_hint TEXT")
+    # Сколько раз задачу, упавшую из-за ограничения YouTube, поставили заново
+    # сами, без человека: больше трёх — значит, дело не в паузе.
+    with suppress(sqlite3.OperationalError):
+        db_exec("ALTER TABLE tasks ADD COLUMN auto_requeues INTEGER DEFAULT 0")
 
     db_exec("CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT)")
 
@@ -83,6 +94,17 @@ def db_init():
     # The play journal. Navidrome keeps a play count and the date of the last
     # play, not a log, so "what was playing on Wednesday evenings" cannot be
     # asked of it at all. Anything that wants to know has to record its own.
+    # Прослушивания, которые ждут отправки в ListenBrainz — см. listenbrainz.py.
+    db_exec("""CREATE TABLE IF NOT EXISTS listens(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        listened_at INTEGER NOT NULL,
+        artist TEXT NOT NULL,
+        title TEXT NOT NULL,
+        album TEXT,
+        duration REAL,
+        origin_url TEXT,
+        sent INTEGER DEFAULT 0,
+        attempts INTEGER DEFAULT 0)""")
     db_exec("""CREATE TABLE IF NOT EXISTS plays(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         path TEXT NOT NULL,

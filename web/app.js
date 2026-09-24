@@ -164,6 +164,7 @@ function switchView(id) {
     for (const section of document.querySelectorAll(".view")) {
         section.hidden = section.id !== id;
     }
+    if (id === "viewService") libraryHealth();
     /* Внутри подборки подсвечен раздел «Подборки», откуда в неё пришли. */
     const section = id === "viewPlaylist" ? "viewPlaylists" : id;
     for (const tab of document.querySelectorAll(".tab")) {
@@ -254,7 +255,8 @@ function clearInput() {
 /* A playlist link is not a track link: it names many, and Spotify names them
  * without giving anything downloadable at all. Both go to their own endpoint. */
 function isPlaylistLink(link) {
-    return /open\.spotify\.com\/playlist\//.test(link) || /[?&]list=/.test(link);
+    return /open\.spotify\.com\/playlist\//.test(link) || /[?&]list=/.test(link)
+        || /deezer\.com\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?album\/\d+/.test(link);
 }
 
 async function addTracks() {
@@ -340,6 +342,16 @@ async function tasks() {
         const recent = data.filter(t => t.status === "done").slice(0, RECENT_DONE_LIMIT);
 
         count.textContent = queue.length ? `${queue.length}` : "";
+        const retry = document.getElementById("retryFailed");
+        if (retry) retry.hidden = !queue.some(t => t.status === "error");
+
+        /* Список пар перечитывается, только когда меняется число
+         * предупреждений, а не на каждом опросе. */
+        const warned = data.filter(t => t.warning).map(t => t.id).join(",");
+        if (warned !== lastWarned) {
+            lastWarned = warned;
+            duplicates();
+        }
         empty.hidden = queue.length > 0;
         box.replaceChildren();
 
@@ -368,6 +380,127 @@ async function tasks() {
         }
     } catch (e) {
         // Polling loop - a transient network hiccup shouldn't throw to console.
+    }
+}
+
+/* ---------------- Похожие треки ---------------- */
+
+let lastWarned = null;
+
+function formatBytes(size) {
+    return size >= 1048576 ? (size / 1048576).toFixed(1) + " МБ" : Math.round(size / 1024) + " КБ";
+}
+
+function formatSeconds(total) {
+    if (typeof total !== "number") return "—";
+    const s = Math.round(total);
+    return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+}
+
+/* Одна сторона пары: всё, по чему выбирают, — длина, качество, откуда. */
+function duplicateSide(label, t) {
+    const side = document.createElement("div");
+    side.className = "dup-side";
+    const head = document.createElement("div");
+    head.className = "track-artist";
+    head.textContent = label;
+    const title = document.createElement("div");
+    title.className = "track-title";
+    title.textContent = t.title;
+    const artist = document.createElement("div");
+    artist.className = "track-artist";
+    artist.textContent = t.artist;
+    const facts = document.createElement("div");
+    facts.className = "track-album";
+    facts.textContent = [
+        formatSeconds(t.duration),
+        t.bitrate ? t.bitrate + " кбит/с" : null,
+        t.codec,
+        formatBytes(t.size),
+    ].filter(Boolean).join(" · ");
+    const path = document.createElement("div");
+    path.className = "track-album";
+    path.textContent = t.path;
+    side.append(head, title, artist, facts, path);
+    if (t.source) {
+        const link = document.createElement("a");
+        link.href = t.source;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.className = "track-album";
+        link.textContent = "Источник";
+        side.appendChild(link);
+    }
+    return side;
+}
+
+async function resolveDuplicate(task, keep, box) {
+    for (const b of box.querySelectorAll("button")) b.disabled = true;
+    try {
+        const r = await fetch("/api/duplicates/resolve", {
+            method: "POST",
+            headers: { ...headers(), "Content-Type": "application/json" },
+            body: JSON.stringify({ task, keep }),
+        });
+        if (!r.ok) throw new Error();
+        box.remove();
+        lastWarned = null;
+        await tasks();
+    } catch (e) {
+        for (const b of box.querySelectorAll("button")) b.disabled = false;
+    }
+}
+
+async function duplicates() {
+    const box = document.getElementById("duplicates");
+    const head = document.getElementById("duplicatesHead");
+    const count = document.getElementById("duplicatesCount");
+    if (!box || !head) return;
+    try {
+        const r = await fetch("/api/duplicates", { headers: headers() });
+        if (!r.ok) return;
+        const found = await r.json();
+        head.hidden = found.length === 0;
+        count.textContent = found.length ? String(found.length) : "";
+        box.replaceChildren();
+        for (const pair of found) {
+            const card = document.createElement("div");
+            card.className = "confirm duplicate";
+            const sides = document.createElement("div");
+            sides.className = "dup-sides";
+            sides.append(duplicateSide("Новый", pair.new), duplicateSide("Был в фонотеке", pair.existing));
+            const row = document.createElement("div");
+            row.className = "row";
+            const choices = [
+                ["Оставить новый", "new", "ghost grow"],
+                ["Оставить прежний", "existing", "ghost grow"],
+                ["Оставить оба", "both", "ghost grow"],
+            ];
+            for (const [label, keep, cls] of choices) {
+                const b = document.createElement("button");
+                b.className = cls;
+                b.textContent = label;
+                b.onclick = () => resolveDuplicate(pair.task, keep, card);
+                row.appendChild(b);
+            }
+            const note = document.createElement("p");
+            note.textContent = "Лишний уедет в корзину; в подборках его место займёт оставленный.";
+            card.append(sides, note, row);
+            box.appendChild(card);
+        }
+    } catch (e) {
+        // Как и tasks(): следующий опрос повторит.
+    }
+}
+
+async function retryFailed() {
+    const button = document.getElementById("retryFailed");
+    button.disabled = true;
+    try {
+        const r = await fetch("/api/tasks/retry-failed", { method: "POST", headers: headers() });
+        if (r.ok) await tasks();
+    } finally {
+        button.disabled = false;
     }
 }
 
@@ -453,6 +586,8 @@ async function health() {
             ["Фонотека", data.library ?? "—", data.library !== undefined && data.library !== "ok"],
             ["ffmpeg", data.ffmpeg ?? "—", data.ffmpeg === "missing"],
             ["Deno", data.js_runtime ?? "—", data.js_runtime === "missing"],
+            ["ListenBrainz", data.listenbrainz === "off" ? "выключен" : (data.listenbrainz ?? "—"),
+                data.listenbrainz === "token rejected"],
             ["В очереди", String(data.queue_size ?? "—"), false],
             ["Воркеров", String(data.workers ?? "—"), false],
             ["Путь", data.library_path || "—", false],
@@ -460,10 +595,96 @@ async function health() {
         for (const [label, value, bad] of rows) {
             box.appendChild(fact(label, value, bad));
         }
+        libraryHealth();
     } catch (e) {
         pill.className = "pill pill-error";
         text.textContent = "нет связи";
     }
+}
+
+/* ---------------- Состояние фонотеки ---------------- */
+
+const LIBRARY_PROBLEMS = [
+    ["no_cover", "Без обложки", "covers", "Найти обложки"],
+    ["no_loudness", "Без выравнивания громкости", "loudness", "Измерить громкость"],
+    ["fallback_single", "Альбом не найден (записан как сингл)", null, null],
+    ["no_album", "Без альбома", null, null],
+    ["unreadable", "Файл не читается", null, null],
+];
+
+let libraryHealthRunning = false;
+
+async function libraryHealth() {
+    const box = document.getElementById("libraryHealth");
+    const jobNote = document.getElementById("libraryHealthJob");
+    const view = document.getElementById("viewService");
+    if (!box || !view || view.hidden) return;
+    try {
+        const r = await fetch("/api/library/health", { headers: headers() });
+        if (!r.ok) return;
+        const data = await r.json();
+        const job = data.job || {};
+        libraryHealthRunning = Boolean(job.running);
+        box.replaceChildren(fact("Треков", String(data.tracks), false));
+
+        for (const [key, label, fix, fixLabel] of LIBRARY_PROBLEMS) {
+            const problem = data.problems[key];
+            if (!problem) continue;
+            const row = fact(label, String(problem.count), problem.count > 0);
+            if (problem.count > 0) {
+                /* Примеры — под строкой, свёрнутыми: полный список не нужен,
+                 * а понять, о каких файлах речь, нужно. */
+                const details = document.createElement("details");
+                details.className = "health-examples";
+                const summary = document.createElement("summary");
+                summary.textContent = "примеры";
+                details.appendChild(summary);
+                for (const path of problem.examples) {
+                    const line = document.createElement("div");
+                    line.className = "track-album";
+                    line.textContent = path;
+                    details.appendChild(line);
+                }
+                row.appendChild(details);
+                if (fix) {
+                    const button = document.createElement("button");
+                    button.className = "ghost small";
+                    button.textContent = fixLabel;
+                    button.disabled = libraryHealthRunning;
+                    button.onclick = () => startLibraryFix(fix);
+                    row.appendChild(button);
+                }
+            }
+            box.appendChild(row);
+        }
+
+        if (job.running) {
+            jobNote.textContent = (job.what === "covers" ? "Ищу обложки" : "Измеряю громкость") + "… Это может занять долго.";
+        } else if (job.result) {
+            const res = job.result;
+            jobNote.textContent = res.error ? "Не удалось: " + res.error
+                : job.what === "covers" ? `Обложек добавлено: ${res.added}, не найдено: ${res.not_found}`
+                : `Измерено: ${res.measured}, не удалось: ${res.failed}`;
+        } else {
+            jobNote.textContent = "";
+        }
+    } catch (e) {
+        // Следующий опрос повторит.
+    }
+}
+
+async function startLibraryFix(what) {
+    const r = await fetch("/api/library/health/fix", {
+        method: "POST",
+        headers: { ...headers(), "Content-Type": "application/json" },
+        body: JSON.stringify({ what }),
+    });
+    if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        document.getElementById("libraryHealthJob").textContent = err.detail || "Не удалось запустить";
+        return;
+    }
+    await libraryHealth();
 }
 
 function fact(label, value, bad) {
@@ -1446,8 +1667,114 @@ function libraryRow(t, rows) {
     svg.appendChild(path);
     del.appendChild(svg);
 
-    card.append(cover, info, play, toPlaylist, del);
+    const editButton = document.createElement("button");
+    editButton.className = "icon-button";
+    editButton.setAttribute("aria-label", "Изменить теги");
+    editButton.title = "Изменить теги";
+    editButton.onclick = () => askEdit(card, t, rows);
+    const editSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    editSvg.setAttribute("class", "icon");
+    editSvg.setAttribute("viewBox", "0 0 24 24");
+    const editPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    editPath.setAttribute("d", "M4 20h4L19 9l-4-4L4 16zM14 6l4 4");
+    editSvg.appendChild(editPath);
+    editButton.appendChild(editSvg);
+
+    card.append(cover, info, play, toPlaylist, editButton, del);
     return card;
+}
+
+/* Правка тегов — на месте строки, как и удаление. Исполнители через «;»:
+ * запятая встречается в самих именах («Tyler, The Creator»). Файл не
+ * переезжает: Navidrome группирует по тегам, а не по папкам. */
+function askEdit(card, t, rows) {
+    const form = document.createElement("form");
+    form.className = "confirm edit-tags";
+
+    const head = document.createElement("h3");
+    head.textContent = "Теги трека";
+
+    const field = (label, value) => {
+        const wrap = document.createElement("label");
+        wrap.className = "field";
+        const caption = document.createElement("span");
+        caption.textContent = label;
+        const input = document.createElement("input");
+        input.value = value || "";
+        input.spellcheck = false;
+        wrap.append(caption, input);
+        return { wrap, input };
+    };
+    const title = field("Название", t.title);
+    const artists = field("Исполнители (через ;)", (t.artist || "").split(" \u2022 ").join("; "));
+    const album = field("Альбом", t.album);
+
+    const refetch = document.createElement("label");
+    refetch.className = "check";
+    const refetchBox = document.createElement("input");
+    refetchBox.type = "checkbox";
+    refetch.append(refetchBox, document.createTextNode(" Найти обложку заново"));
+
+    const note = document.createElement("p");
+    note.className = "muted";
+    if (t.source) {
+        const link = document.createElement("a");
+        link.href = t.source;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.textContent = "Открыть источник";
+        note.appendChild(link);
+    }
+
+    const row = document.createElement("div");
+    row.className = "row";
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.className = "ghost grow";
+    cancel.textContent = "Отмена";
+    cancel.onclick = () => form.replaceWith(card);
+    const save = document.createElement("button");
+    save.type = "submit";
+    save.className = "primary grow";
+    save.textContent = "Сохранить";
+    row.append(cancel, save);
+
+    form.onsubmit = async (event) => {
+        event.preventDefault();
+        save.disabled = cancel.disabled = true;
+        save.textContent = "Сохраняю…";
+        const body = {
+            path: t.path,
+            title: title.input.value,
+            artists: artists.input.value.split(";").map(s => s.trim()).filter(Boolean),
+            album: album.input.value,
+            refetch_cover: refetchBox.checked,
+        };
+        try {
+            const r = await fetch("/api/track", {
+                method: "PATCH",
+                headers: { ...headers(), "Content-Type": "application/json" },
+                body: JSON.stringify(body),
+            });
+            const data = await r.json().catch(() => ({}));
+            if (!r.ok) throw new Error(data.detail || ("Не удалось сохранить: " + r.status));
+            const updated = { ...t, ...data };
+            const index = rows.indexOf(t);
+            if (index >= 0) rows[index] = updated;
+            form.replaceWith(libraryRow(updated, rows));
+            if (data.cover === "not found" && typeof setPlayerNote === "function") {
+                setPlayerNote("Новая обложка не нашлась — оставлена прежняя");
+            }
+        } catch (e) {
+            note.textContent = e.message;
+            save.disabled = cancel.disabled = false;
+            save.textContent = "Сохранить";
+        }
+    };
+
+    form.append(head, title.wrap, artists.wrap, album.wrap, refetch, note, row);
+    card.replaceWith(form);
+    title.input.focus();
 }
 
 /* Deleting is the one destructive thing this panel does, so it confirms in
@@ -1575,6 +1902,86 @@ async function importPlaylists(links, result) {
         }
     }
     tasks();
+}
+
+/* ---------------- Albums ---------------- */
+
+/* Альбом по названию: список найденного в Deezer, скачивается выбранный.
+ * Сразу качать первый найденный опасно — у альбома бывают переиздания,
+ * концертные версии и одноимённые синглы. */
+async function runAlbumSearch() {
+    const query = document.getElementById("searchQuery").value.trim();
+    const note = document.getElementById("searchNote");
+    const box = document.getElementById("searchResults");
+    const ticket = ++searchTicket;
+    box.replaceChildren();
+    if (!query) { note.textContent = "Введи исполнителя и альбом"; return; }
+    note.textContent = "Ищу альбомы…";
+    try {
+        const r = await fetch("/api/albums/search?q=" + encodeURIComponent(query), { headers: headers() });
+        const albums = await r.json();
+        if (ticket !== searchTicket) return;
+        if (!r.ok) { note.textContent = albums.detail || ("Ошибка " + r.status); return; }
+        note.textContent = albums.length ? "" : "Альбомов не нашлось";
+        for (const album of albums) box.appendChild(albumRow(album, note));
+    } catch (e) {
+        if (ticket === searchTicket) note.textContent = e.message;
+    }
+}
+
+function albumRow(album, note) {
+    const card = document.createElement("div");
+    card.className = "track";
+    const cover = document.createElement("div");
+    cover.className = "cover";
+    if (album.cover) {
+        const img = document.createElement("img");
+        img.src = album.cover;  // Deezer CDN, публичная картинка
+        img.alt = "";
+        img.loading = "lazy";
+        cover.appendChild(img);
+    }
+    const info = document.createElement("div");
+    info.className = "track-info";
+    const title = document.createElement("div");
+    title.className = "track-title";
+    title.textContent = album.title;
+    const artist = document.createElement("div");
+    artist.className = "track-artist";
+    artist.textContent = album.artist;
+    const facts = document.createElement("div");
+    facts.className = "track-album";
+    facts.textContent = [album.type, album.tracks ? album.tracks + " тр." : null].filter(Boolean).join(" · ");
+    info.append(title, artist, facts);
+    const take = document.createElement("button");
+    take.className = "ghost";
+    take.textContent = "Скачать альбом";
+    take.onclick = async () => {
+        take.disabled = true;
+        note.textContent = `Ищу треки «${album.title}» на YouTube… Это займёт с минуту.`;
+        try {
+            const r = await fetch("/api/import-album", {
+                method: "POST",
+                headers: { ...headers(), "Content-Type": "application/json" },
+                body: JSON.stringify({ id: album.id }),
+            });
+            const data = await r.json();
+            if (!r.ok) throw new Error(data.detail || ("Ошибка " + r.status));
+            const parts = [`«${album.title}»: треков ${data.read}, в очередь ${data.queued}`];
+            if (data.unmatched && data.unmatched.length) {
+                parts.push(`не нашлось на YouTube: ` +
+                    data.unmatched.slice(0, 3).map(t => t.title).join("; ") +
+                    (data.unmatched.length > 3 ? " и другие" : ""));
+            }
+            note.textContent = parts.join(". ");
+            tasks();
+        } catch (e) {
+            note.textContent = e.message;
+            take.disabled = false;
+        }
+    };
+    card.append(cover, info, take);
+    return card;
 }
 
 /* ---------------- Search ---------------- */

@@ -68,19 +68,22 @@ printf '%s\n' "$UNIT_CONTENT" \
 render() {
   local text
   text="$(cat "$1")"
-  text="${text//%REPO%/$REPO}"
-  text="${text//%LIBRARY%/$LIBRARY_PATH_VALUE}"
-  text="${text//%JOBS%/${ANALYSIS_JOBS:-3}}"
+  # Quoted replacements, for the same "&" reason as the main unit above.
+  text="${text//%REPO%/"$REPO"}"
+  text="${text//%LIBRARY%/"$LIBRARY_PATH_VALUE"}"
+  text="${text//%JOBS%/"${ANALYSIS_JOBS:-3}"}"
   printf '%s\n' "$text"
 }
-for unit in music-analysis music-shelves; do
+# music-ytdlp-update: weekly yt-dlp upgrade that rolls itself back if the new
+# version cannot read YouTube.
+for unit in music-analysis music-shelves music-ytdlp-update; do
   render "$REPO/deploy/$unit.service.template" > "$HOME/.config/systemd/user/$unit.service"
   render "$REPO/deploy/$unit.timer.template" > "$HOME/.config/systemd/user/$unit.timer"
 done
 
 systemctl --user daemon-reload
 systemctl --user enable --now music-adder
-systemctl --user enable --now music-analysis.timer music-shelves.timer
+systemctl --user enable --now music-analysis.timer music-shelves.timer music-ytdlp-update.timer
 loginctl enable-linger "$USER"
 
 if command -v navidrome >/dev/null; then

@@ -9,7 +9,7 @@ import queue as _queue
 from contextlib import suppress
 from pathlib import Path
 
-from . import config, db, ingest, runtime
+from . import config, db, ingest, library, notify, runtime
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +47,36 @@ def _discard_temp(temp_path: Path | None, tid: int) -> None:
             )
 
 
+# What a failure means to someone looking at a pop-up, not a log.
+_FAILURE_WORDS = {
+    "youtube_not_found": "видео недоступно",
+    "youtube_auth_required": "YouTube просит вход — задайте COOKIES_FROM_BROWSER",
+    "rate_limited": "YouTube ограничил запросы, повторится позже",
+    "dependency_error": "не установлен ffmpeg",
+    "unsupported_video": "эфир или слишком длинное видео",
+    "network_error": "нет сети",
+}
+
+
+def _task_names(tid: int) -> tuple[str, str]:
+    rows = db.db_query("SELECT artist, title FROM tasks WHERE id = ?", (tid,))
+    row = rows[0] if rows else {}
+    return row.get("artist") or "", row.get("title") or ""
+
+
+def _notify_added(tid: int) -> None:
+    with suppress(Exception):
+        artist, title = _task_names(tid)
+        notify.track_added(artist, title or "без названия")
+
+
+def _notify_failed(tid: int, url: str, error_type: str | None) -> None:
+    with suppress(Exception):
+        artist, title = _task_names(tid)
+        name = f"{artist} — {title}" if title else url
+        notify.track_failed(name, _FAILURE_WORDS.get(error_type or "", "ошибка, см. панель"))
+
+
 def process(tid: int, url: str):
     temp_path = None
     retry_count = 0
@@ -65,6 +95,21 @@ def process(tid: int, url: str):
                     tid, source, ingest.stashed_name(url) or source.name
                 )
             else:
+                # The file itself says where it came from, so a link already in
+                # the library is recognised even when the task table was lost.
+                existing = library.find_by_source(url)
+                if existing:
+                    logger.info(
+                        "Already in the library as %s; not downloading again",
+                        existing,
+                        extra={"task_id": tid},
+                    )
+                    db.task_update(
+                        tid, status="done", error="", error_type="", result_path=existing
+                    )
+                    with runtime.FILE_LOCK:
+                        runtime.PROCESSING_URLS.discard(url)
+                    return
                 downloaded = ingest.download_to_temp(tid, url)
             temp_path = downloaded.temp_path
 
@@ -75,6 +120,8 @@ def process(tid: int, url: str):
 
             db.task_update(tid, status="done", error="", error_type="")
             logger.info("Task finished: %s", outcome, extra={"task_id": tid})
+            if outcome == "stored":
+                _notify_added(tid)
             if url.startswith("file:"):
                 ingest.forget_upload(url)
             # Released here too, not only after a failure: /api/add skips any
@@ -158,6 +205,7 @@ def process(tid: int, url: str):
                 error_type=last_error_type,
                 retry_count=retry_count,
             )
+            _notify_failed(tid, url, last_error_type)
 
             _discard_temp(temp_path, tid)
             if url.startswith("file:"):

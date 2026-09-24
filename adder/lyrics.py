@@ -258,7 +258,7 @@ def parse_synced(text: str) -> list[dict]:
 
 
 def _ask(artist: str, title: str, album: str, duration: float | None) -> dict | None:
-    params = {
+    params: dict[str, str | int] = {
         "artist_name": primary_artist(artist),
         "track_name": clean_title(title),
         "album_name": album or "",
@@ -443,6 +443,8 @@ def candidates(row: dict, query: str = "") -> list[dict] | None:
         return any(_pick([item], row["artist"], v, duration) for v in variants)
 
     def distance(item: dict) -> float:
+        if duration is None:
+            return 1e9
         try:
             return abs(float(item["duration"]) - float(duration))
         except (KeyError, TypeError, ValueError):

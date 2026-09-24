@@ -405,6 +405,27 @@ button:disabled { opacity: .5; cursor: default; }
 .confirm h3 { margin: 0; font-size: 14px; font-weight: 650; letter-spacing: -0.2px; }
 .confirm p  { margin: 6px 0 0; font-size: 12px; color: var(--text-2); }
 
+/* Состояние фонотеки: примеры и кнопка — под строкой счётчика. */
+.fact:has(.health-examples) { flex-wrap: wrap; }
+.health-examples { flex-basis: 100%; margin-top: 4px; font-size: 12px; color: var(--text-2); }
+.health-examples summary { cursor: pointer; }
+.fact .ghost.small { min-height: 28px; padding: 0 10px; font-size: 12px; margin-top: 6px; }
+
+/* Похожие треки: две стороны рядом, на узком экране — одна под другой. */
+.dup-sides { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (max-width: 520px) { .dup-sides { grid-template-columns: 1fr; } }
+.dup-side { min-width: 0; }
+.dup-side .track-album, .dup-side .track-title { white-space: normal; overflow-wrap: anywhere; }
+.duplicate .row { margin-top: 10px; flex-wrap: wrap; }
+
+/* Правка тегов: подписи над полями, поля во всю ширину. */
+.edit-tags .field { display: flex; flex-direction: column; gap: 4px; margin-top: 10px; }
+.edit-tags .field span { font-size: 12px; color: var(--text-2); }
+.edit-tags .field input { width: 100%; box-sizing: border-box; }
+.edit-tags .check { display: flex; align-items: center; gap: 6px; margin-top: 10px; font-size: 13px; }
+.edit-tags a { color: var(--text-2); }
+.edit-tags .row { margin-top: 12px; }
+
 /* ---------------- Service ---------------- */
 
 .facts { display: flex; flex-direction: column; gap: 1px; }
@@ -803,6 +824,16 @@ button.danger {
     margin-bottom: 4px;
 }
 .lyrics-head .ghost { min-height: 32px; padding: 0 12px; font-size: 13px; }
+/* «Повторить упавшие» в заголовке загрузок: заголовок набран капсом, кнопка — нет. */
+.list-head .ghost.small {
+    min-height: 28px;
+    padding: 0 10px;
+    font-size: 12px;
+    text-transform: none;
+    letter-spacing: 0;
+    margin-left: auto;
+    margin-right: 8px;
+}
 
 /* Текст на всё свободное место. Высота — окно минус шапка, вкладки и панель
    плеера (её настоящая высота в --player). position: relative обязателен:
@@ -1908,3 +1939,33 @@ button.ghost.is-on { color: var(--text); border-color: var(--text); font-weight:
         font-size: 18px;
     }
 }
+
+
+/* Таймер сна: меню над кнопкой, число оставшихся минут — как «1» у повтора. */
+.sleep-wrap { position: relative; display: inline-flex; }
+.sleep-menu {
+    position: absolute;
+    bottom: calc(100% + 8px);
+    right: 0;
+    z-index: 30;
+    min-width: 180px;
+    padding: 6px;
+    display: flex;
+    flex-direction: column;
+    background: var(--surface-2);
+    border: 1px solid var(--line-2);
+    border-radius: 10px;
+    box-shadow: 0 8px 24px #0008;
+}
+.sleep-menu[hidden] { display: none; }
+.sleep-menu button {
+    text-align: left;
+    background: none;
+    border: 0;
+    color: var(--text);
+    padding: 7px 10px;
+    border-radius: 6px;
+    font-size: 13px;
+}
+.sleep-menu button:hover { background: var(--line); }
+.sleep-title { font-size: 11px; color: var(--text-3); text-transform: uppercase; padding: 6px 10px 2px; }

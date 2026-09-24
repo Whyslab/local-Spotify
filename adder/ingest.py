@@ -27,7 +27,7 @@ import mutagen
 import requests
 from mutagen.mp4 import MP4, MP4Cover
 
-from . import config, db, enrich, library, runtime
+from . import config, db, enrich, library, loudness, runtime
 
 logger = logging.getLogger(__name__)
 
@@ -324,7 +324,7 @@ def run_yt_dlp(cmd: list[str], timeout: float) -> subprocess.CompletedProcess:
 
             while True:
                 try:
-                    chunk = os.read(stream.fileno(), 65536)
+                    chunk = os.read(key.fd, 65536)
                 except BlockingIOError:
                     break
                 except OSError:
@@ -351,7 +351,7 @@ def run_yt_dlp(cmd: list[str], timeout: float) -> subprocess.CompletedProcess:
 
                 while True:
                     try:
-                        chunk = os.read(stream.fileno(), 65536)
+                        chunk = os.read(key.fd, 65536)
                     except BlockingIOError:
                         break
                     except OSError:
@@ -583,7 +583,7 @@ def _itunes_match(results: list[dict], artist: str, title: str) -> dict | None:
 def get_hd_cover(artist: str, title: str):
     """Возвращает (bytes, fmt) или (None, None)."""
     try:
-        params = {"term": f"{artist} {title}", "limit": 5, "entity": "song"}
+        params: dict[str, str | int] = {"term": f"{artist} {title}", "limit": 5, "entity": "song"}
         r = requests.get("https://itunes.apple.com/search", params=params, timeout=10)
         if not r.ok:
             return None, None
@@ -1062,10 +1062,11 @@ def write_tags(path: Path, info, title: str, cover: bytes | None, cover_fmt: str
         from mutagen.id3 import APIC, TALB, TDRC, TIT2, TPE1, TPE2, TRCK
         from mutagen.mp3 import MP3
 
-        audio = MP3(path)
-        if audio.tags is None:
-            audio.add_tags()
-        tags = audio.tags
+        mp3 = MP3(path)
+        if mp3.tags is None:
+            mp3.add_tags()
+        tags = mp3.tags
+        assert tags is not None  # add_tags() above guarantees it
         tags.setall("TIT2", [TIT2(encoding=3, text=[title])])
         tags.setall("TPE1", [TPE1(encoding=3, text=info.artists)])
         tags.setall("TPE2", [TPE2(encoding=3, text=[info.artists[0]])])
@@ -1078,42 +1079,42 @@ def write_tags(path: Path, info, title: str, cover: bytes | None, cover_fmt: str
         if cover:
             tags.delall("APIC")
             tags.add(APIC(encoding=3, mime=mime, type=3, desc="Cover", data=cover))
-        audio.save()
+        mp3.save()
         return
 
     if suffix == ".flac":
         from mutagen.flac import FLAC, Picture
 
-        audio = FLAC(path)
-        audio["title"] = [title]
-        audio["artist"] = info.artists
-        audio["albumartist"] = [info.artists[0]]
-        audio["album"] = [info.album]
+        flac = FLAC(path)
+        flac["title"] = [title]
+        flac["artist"] = info.artists
+        flac["albumartist"] = [info.artists[0]]
+        flac["album"] = [info.album]
         if info.date:
-            audio["date"] = [info.date]
+            flac["date"] = [info.date]
         if info.track_number:
-            audio["tracknumber"] = [str(info.track_number)]
+            flac["tracknumber"] = [str(info.track_number)]
         if cover:
             picture = Picture()
             picture.type, picture.mime, picture.data = 3, mime, cover
-            audio.clear_pictures()
-            audio.add_picture(picture)
-        audio.save()
+            flac.clear_pictures()
+            flac.add_picture(picture)
+        flac.save()
         return
 
     # Ogg and Opus: text tags are plain comments, the cover is a base64 FLAC
     # picture block, which is the convention every player expects here.
-    audio = mutagen.File(path)
-    if audio is None:
+    ogg = mutagen.File(path)
+    if ogg is None:
         raise RuntimeError(f"Cannot tag {path.name}: unrecognised format")
-    audio["title"] = [title]
-    audio["artist"] = list(info.artists)
-    audio["albumartist"] = [info.artists[0]]
-    audio["album"] = [info.album]
+    ogg["title"] = [title]
+    ogg["artist"] = list(info.artists)
+    ogg["albumartist"] = [info.artists[0]]
+    ogg["album"] = [info.album]
     if info.date:
-        audio["date"] = [info.date]
+        ogg["date"] = [info.date]
     if info.track_number:
-        audio["tracknumber"] = [str(info.track_number)]
+        ogg["tracknumber"] = [str(info.track_number)]
     if cover:
         import base64
 
@@ -1121,8 +1122,78 @@ def write_tags(path: Path, info, title: str, cover: bytes | None, cover_fmt: str
 
         picture = Picture()
         picture.type, picture.mime, picture.data = 3, mime, cover
-        audio["metadata_block_picture"] = [base64.b64encode(picture.write()).decode("ascii")]
-    audio.save()
+        ogg["metadata_block_picture"] = [base64.b64encode(picture.write()).decode("ascii")]
+    ogg.save()
+
+
+SOURCE_TAG = "SOURCE_URL"
+
+
+def write_source(path: Path, url: str) -> None:
+    """Record where a track came from inside the file itself.
+
+    The link lived only in the task table, so losing adder.db lost the
+    connection between a file and its video: no re-download, no "open on
+    YouTube", no way to tell a re-submitted link was already here. A freeform
+    tag travels with the file. Navidrome ignores it.
+    """
+    suffix = path.suffix.lower()
+    if suffix == ".m4a":
+        from mutagen.mp4 import MP4FreeForm
+
+        audio = MP4(path)
+        audio[f"----:com.apple.iTunes:{SOURCE_TAG}"] = [MP4FreeForm(url.encode("utf-8"))]
+        audio.save()
+    elif suffix == ".mp3":
+        from mutagen.id3 import TXXX
+        from mutagen.mp3 import MP3
+
+        mp3 = MP3(path)
+        if mp3.tags is None:
+            mp3.add_tags()
+        assert mp3.tags is not None
+        mp3.tags.setall(f"TXXX:{SOURCE_TAG}", [TXXX(encoding=3, desc=SOURCE_TAG, text=[url])])
+        mp3.save()
+    else:
+        other = mutagen.File(path)
+        if other is None:
+            return
+        other[SOURCE_TAG.lower()] = [url]
+        other.save()
+
+
+def edit_track(
+    path: Path, title: str, artists: list[str], album: str, refetch_cover: bool = False
+) -> str:
+    """Correct a track's tags by hand. Returns what happened to the cover.
+
+    YouTube metadata is often a little wrong and Deezer sometimes matches the
+    wrong release; until now fixing that took a separate tag editor. The file
+    stays where it is: Navidrome groups by tags, not folders.
+
+    The modification time is kept. The library reads it as "when this track
+    arrived", and correcting a typo is not an arrival.
+    """
+    runtime.guard_real_library(config.LIBRARY, "edit tags")
+    title, album = title.strip(), album.strip()
+    artists = [a.strip() for a in artists if a and a.strip()]
+    if not title or not artists:
+        raise ValueError("Title and at least one artist are required")
+
+    cover, fmt, cover_result = None, None, "kept"
+    if refetch_cover:
+        info = enrich.lookup(artists[0], title)
+        if info and info.cover_url:
+            cover, fmt = fetch_cover_url(info.cover_url)
+        if not cover:
+            cover, fmt = get_hd_cover(artists[0], title)
+        cover_result = "updated" if cover else "not found"
+
+    stat = path.stat()
+    write_tags(path, enrich.TrackInfo(album=album or title, artists=artists), title, cover, fmt)
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    library.invalidate_library_index()
+    return cover_result
 
 
 def verify_tags_written(path: Path, expected_title: str) -> bool:
@@ -1361,6 +1432,13 @@ def _apply_replacement(tid: int, new_path: str) -> None:
     )
 
 
+def _task_source(tid: int) -> str | None:
+    """The link a task was queued for, if it is a web link (uploads are not)."""
+    rows = db.db_query("SELECT url FROM tasks WHERE id = ?", (tid,))
+    url = rows[0]["url"] if rows else None
+    return url if url and url.startswith(("http://", "https://")) else None
+
+
 def ingest_temp_file(tid: int, temp_path: Path, names: TrackNames, thumbnail: str | None) -> str:
     """Tag a staged file and move it into the library, or discard it as a duplicate.
 
@@ -1374,14 +1452,16 @@ def ingest_temp_file(tid: int, temp_path: Path, names: TrackNames, thumbnail: st
     # the track number and the real list of artists. Without this the track
     # lands in a nameless bucket with no position, which is what made every
     # album in the library read "Singles" in the first place.
-    info, from_deezer = enrich.describe(names.full_artist, names.meta_title)
+    hint = db.db_query("SELECT album_hint FROM tasks WHERE id = ?", (tid,))
+    album_id = hint[0]["album_hint"] if hint else None
+    info, source = enrich.describe(names.full_artist, names.meta_title, album_id)
     logger.info(
         "Metadata for %r by %r: album=%r track=%s source=%s",
         names.meta_title,
         names.full_artist,
         info.album,
         info.track_number,
-        "deezer" if from_deezer else "fallback",
+        source,
     )
 
     cover, fmt = None, None
@@ -1400,6 +1480,16 @@ def ingest_temp_file(tid: int, temp_path: Path, names: TrackNames, thumbnail: st
     base_target = target_dir / f"{names.fs_title}{temp_path.suffix.lower()}"
 
     write_tags(temp_path, info, names.meta_title, cover, fmt)
+    # Not "source": that name already holds where the metadata came from.
+    source_url = _task_source(tid)
+    if source_url:
+        write_source(temp_path, source_url)
+    # Loudness, so a shuffle does not jump between quiet and loud uploads. A
+    # failed measurement only means no ReplayGain tag, never a failed task.
+    try:
+        loudness.apply(temp_path)
+    except Exception as exc:
+        logger.warning("ReplayGain not written: %s", exc, extra={"task_id": tid})
 
     if not verify_tags_written(temp_path, names.meta_title):
         raise RuntimeError("Metadata write failed verification")
@@ -1455,7 +1545,7 @@ def ingest_temp_file(tid: int, temp_path: Path, names: TrackNames, thumbnail: st
             similar,
             extra={"task_id": tid},
         )
-        db.task_update(tid, warning=f"Похоже на уже имеющийся трек: {similar}")
+        db.task_update(tid, warning=f"Похоже на уже имеющийся трек: {similar}", similar_to=similar)
     _apply_replacement(tid, relative)
 
     # Текст — сразу, чтобы он был уже при первом включении. В своём потоке:

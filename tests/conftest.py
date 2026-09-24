@@ -43,6 +43,7 @@ def _outside_stays_offline(monkeypatch, tmp_path):
 
     monkeypatch.setattr(analysis, "analyse_track", lambda path: None)
     monkeypatch.setattr(enrich, "lookup", lambda artist, title: None)
+    monkeypatch.setattr(enrich, "musicbrainz_lookup", lambda artist, title: None)
     # И обход текстов в фоне — тоже сеть.
     from adder import lyrics
 
@@ -55,6 +56,12 @@ def _outside_stays_offline(monkeypatch, tmp_path):
     # /health не должен зависеть от того, стоят ли на машине с тестами
     # ffmpeg и Deno (настоящая проверка — в test_dependencies.py).
     monkeypatch.setattr(ingest, "check_dependencies", lambda: {"ffmpeg": "ok", "js_runtime": "ok"})
+    # Всплывающие уведомления на рабочем столе — не во время тестов.
+    from adder import config
+
+    monkeypatch.setattr(config, "DESKTOP_NOTIFICATIONS", False)
+    # И ListenBrainz — только в своих тестах, с подменённым requests.
+    monkeypatch.setattr(config, "LISTENBRAINZ_TOKEN", "")
     # Пауза после ограничения YouTube — состояние процесса; каждому тесту своя.
     monkeypatch.setattr(runtime, "_yt_pause_until", 0.0)
     # Очередь скачиваний — состояние модуля; каждому тесту своя.

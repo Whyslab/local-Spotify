@@ -23,6 +23,10 @@ import sqlite3
 import subprocess
 import sys
 import time
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # numpy comes with librosa, imported only when a pass runs
+    import numpy as np
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -95,7 +99,7 @@ def estimate_key(chroma) -> tuple[str, str]:
     return best[1], best[2]
 
 
-def decode(path: Path) -> "np.ndarray":  # noqa: F821
+def decode(path: Path) -> "np.ndarray":
     """Decode the middle of a track to mono float32 with ffmpeg.
 
     Not librosa's own loader: that reads through libsndfile, which does not

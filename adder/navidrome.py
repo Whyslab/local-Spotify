@@ -21,6 +21,7 @@ import os
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 import requests
 
@@ -28,7 +29,7 @@ from . import config, db
 
 logger = logging.getLogger(__name__)
 
-_TOKEN: dict[str, object] = {"value": None, "at": 0.0}
+_TOKEN: dict[str, Any] = {"value": None, "at": 0.0}
 _TOKEN_TTL = 1800
 _TOKEN_LOCK = threading.Lock()
 
@@ -286,7 +287,12 @@ def remote_tracks(playlist_id: str, expected: int) -> list[str]:
         response = requests.get(
             f"{config.NAVIDROME_URL}/api/playlist/{playlist_id}/tracks",
             headers=_headers(),
-            params={"_start": start, "_end": start + PAGE, "_sort": "id", "_order": "ASC"},
+            params={
+                "_start": str(start),
+                "_end": str(start + PAGE),
+                "_sort": "id",
+                "_order": "ASC",
+            },
             timeout=TIMEOUT * 3,
         )
         response.raise_for_status()

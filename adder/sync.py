@@ -39,6 +39,7 @@ import logging
 import threading
 import time
 from datetime import datetime
+from typing import Any
 
 from . import library, navidrome, playlists
 
@@ -77,7 +78,7 @@ FRESH_SECONDS = 7 * 24 * 3600
 # track the user removed on the phone came back for a week.
 _REMOTE: dict[str, set[str]] = {}
 
-_LAST: dict[str, object] = {"at": 0.0, "result": None, "error": None}
+_LAST: dict[str, Any] = {"at": 0.0, "result": None, "error": None}
 _LOCK = threading.Lock()
 _stop = threading.Event()
 

@@ -37,6 +37,9 @@ It is not built to be a public SaaS or to work around YouTube's restrictions —
 * **Add music by link** — POST a list of YouTube URLs; the service handles the rest.
 * **Background queue with multiple workers** — downloads run in parallel (`MAX_WORKERS`) and never block the API.
 * **Automatic metadata cleanup** — `Song (Official Video) [4K]` becomes a clean `Artist / Song`, while genuine variants like `(Live)` or `(Remix)` are preserved in the tags.
+* **Sleep timer and fades** — the player stops after 15, 30 or 60 minutes or at the end of the track, lowering the volume over the last ten seconds; track changes can fade out and in over 3 or 6 seconds (a fade, not an overlapping crossfade; not on an iPhone, where a page cannot set volume).
+* **Even loudness (ReplayGain)** — every track is measured with ffmpeg (EBU R 128) and tagged; Navidrome, Subsonic clients that honour ReplayGain and the built-in desktop player play everything at the same level. On an iPhone the browser does not let a page change volume, so there it is up to the Subsonic client.
+* **Real album data** — album, track number, release date and every credited artist come from Deezer, and from MusicBrainz (with the Cover Art Archive) when Deezer does not know the track; only when both miss is a track filed as its own single.
 * **HD cover art** — iTunes Search API with a fallback to the YouTube thumbnail; a separate script (`fix_covers.py`) backfills missing artwork afterwards via iTunes → Deezer.
 * **Content-based deduplication** — each track is hashed (SHA-256) and compared against what is already in the library, rather than matched on filename.
 * **Retry with exponential backoff** — transient network and download failures are retried automatically; permanent ones are not.
@@ -104,7 +107,7 @@ Tested on Debian/Ubuntu. Every step ends with a command that proves it worked �
 
 ```bash
 sudo apt update
-sudo apt install -y python3 python3-venv ffmpeg git curl unzip
+sudo apt install -y python3 python3-venv ffmpeg git curl unzip libnotify-bin
 
 # Deno into /usr/local/bin, so the systemd service finds it on its default PATH.
 # (The official installer's default, ~/.deno/bin, is on your shell's PATH but not the service's.)
@@ -189,7 +192,7 @@ curl -s http://127.0.0.1:8787/api/tasks -H "Authorization: Bearer $TOKEN"
 
 The file appears as `<LIBRARY_PATH>/<Artist>/Singles/<Title>.m4a`. The log line `Task finished: stored` marks it; on failure the log has an `ERROR` line with the cause and `/api/tasks` has it in `error` / `error_type`.
 
-The web interface is at `http://<host>:8787/`: paste the token once, then add links and watch the queue from a phone.
+The web interface is at `http://<host>:8787/`: paste the token once, then add links and watch the queue from a phone. On an iPhone, a Shortcuts action puts **Share → local-Spotify** straight into the YouTube app: see [docs/iphone-shortcut.md](docs/iphone-shortcut.md) (in Russian).
 
 Stop the service with `Ctrl+C` before step 7.
 
@@ -232,6 +235,8 @@ Everything is read from `adder/.env` (see `.env.example`); real environment vari
 | `RETRY_BACKOFF_BASE` | `2.0` | Exponential backoff base, in seconds |
 | `RATE_LIMIT_BACKOFF` | `60` | After YouTube rate-limits (HTTP 429), seconds to wait per attempt; no yt-dlp call starts meanwhile |
 | `MAX_DURATION_MINUTES` | `30` | Longest video accepted, in minutes; `0` for no limit. Live streams are always refused |
+| `DESKTOP_NOTIFICATIONS` | `true` | Pop-up notifications on this machine: tracks added (batched), downloads failed, a yt-dlp update rolled back. Needs `notify-send` |
+| `LISTENBRAINZ_TOKEN` | *(empty)* | User token from listenbrainz.org/settings: listens in the web player (half a track or 4 minutes) are sent to ListenBrainz, queued so none are lost offline |
 | `SHUTDOWN_TIMEOUT` | `30` | Graceful shutdown timeout, in seconds |
 | `MIN_FREE_SPACE_MB` | `2048` | Free disk space required before downloading |
 | `TMP_TTL_HOURS` | `24` | Age at which stranded temp files are cleaned up |
@@ -255,6 +260,11 @@ Authorise with an `Authorization: Bearer <API_TOKEN>` header. `/health` without 
 | `GET` | `/health` | Status of the service, database, library, ffmpeg, JS runtime and queue |
 | `POST` | `/api/add` | Add one or more YouTube links |
 | `GET` | `/api/tasks` | The 50 most recent tasks and their status |
+| `POST` | `/api/tasks/retry-failed` | Queue every failed task again (also a button in the panel) |
+| `GET` | `/api/duplicates` | Tracks stored with a "looks like one you have" warning, each beside its twin |
+| `POST` | `/api/duplicates/resolve` | `{"task", "keep": "new"\|"existing"\|"both"}`: the other copy goes to `trash/`, playlists follow |
+| `GET` | `/api/library/health` | Tracks without cover, album or ReplayGain, unreadable files, and the state of a running fix |
+| `POST` | `/api/library/health/fix` | `{"what": "covers"\|"loudness"}`: find missing covers or measure missing loudness in the background |
 | `GET` | `/` | Web interface |
 | `GET` | `/api/playlists` | List playlists |
 | `POST` | `/api/playlists` | Create a playlist |
@@ -269,7 +279,9 @@ Authorise with an `Authorization: Bearer <API_TOKEN>` header. `/health` without 
 | `GET` | `/api/plays/stats` | Skip rate overall and per queue kind |
 | `POST` | `/api/import` | Take audio files from disk through the same pipeline |
 | `GET` | `/api/search` | Look for a track on YouTube without downloading |
-| `POST` | `/api/import-playlist` | Queue a whole playlist from one link, YouTube or Spotify |
+| `POST` | `/api/import-playlist` | Queue a whole playlist from one link: YouTube (including YouTube Music albums), Spotify, or a Deezer album |
+| `GET` | `/api/albums/search?q=` | Albums on Deezer matching free text, to choose one |
+| `POST` | `/api/import-album` | `{"id"}`: queue every track of that Deezer album, tagged as that album |
 | `GET` | `/api/shuffle` | Build a queue (`mode=smart` or `plain`) |
 | `POST` | `/api/shuffle/blind` | Two queues, one of each kind, unlabelled |
 | `POST` | `/api/shuffle/blind/{id}` | Record which one was preferred |
@@ -277,6 +289,7 @@ Authorise with an `Authorization: Bearer <API_TOKEN>` header. `/health` without 
 | `GET` | `/api/sync` | What the last synchronisation pass found |
 | `POST` | `/api/sync` | Run a pass now; `?apply=false` reports only |
 | `GET` | `/api/track` | A track's tags plus its tempo, key and energy |
+| `PATCH` | `/api/track` | Correct title, artists and album; `refetch_cover` looks the cover up again |
 | `GET` | `/api/cover` | The artwork inside the file; `?size=96\|300\|600` for a cached thumbnail |
 | `GET` `DELETE` | `/api/library` | The library (search, sort, paging) / move a track to `trash/` |
 | `POST` | `/api/replace` `/api/replace-file` | Replace a track by a better version, keeping its place in every playlist |
@@ -319,7 +332,7 @@ Only links to `youtube.com`, `m.youtube.com`, `music.youtube.com` and `youtu.be`
 | `error_type` | Retried automatically | Meaning |
 | --- | --- | --- |
 | `network_error`, `download_error`, `artwork_error` | yes | Transient failure |
-| `rate_limited` | yes | YouTube is throttling (HTTP 429 / "try again later") |
+| `rate_limited` | yes, and again by itself an hour later (up to 3 times) | YouTube is throttling (HTTP 429 / "try again later") |
 | `youtube_not_found` | no | Video removed, private or blocked in your region |
 | `unsupported_video` | no | A live stream, or longer than `MAX_DURATION_MINUTES` |
 | `youtube_auth_required` | no | Bot check, age gate, members-only: set `COOKIES_FROM_BROWSER` |
@@ -361,7 +374,7 @@ For continuous background operation the service runs as a systemd user unit. The
 ./deploy/install.sh
 ```
 
-The script refuses to continue without `.venv` or with an unset/placeholder `API_TOKEN`; writes the unit for `LIBRARY_PATH` and enables lingering; if `navidrome` is installed and has no config yet, writes `/etc/navidrome/navidrome.toml` with the same `MusicFolder` (an existing config is left alone); and, if `ufw` is active, opens Navidrome and the service to the LAN subnet (`LAN_SUBNET=192.168.1.0/24` to choose it).
+The script refuses to continue without `.venv` or with an unset/placeholder `API_TOKEN`; writes the unit for `LIBRARY_PATH` and enables lingering; installs three timers — nightly ReplayGain tagging and audio analysis, nightly shelf export, and a weekly yt-dlp update that rolls itself back if the new version cannot read YouTube; if `navidrome` is installed and has no config yet, writes `/etc/navidrome/navidrome.toml` with the same `MusicFolder` (an existing config is left alone); and, if `ufw` is active, opens Navidrome and the service to the LAN subnet (`LAN_SUBNET=192.168.1.0/24` to choose it).
 
 ```bash
 systemctl --user status music-adder
@@ -390,20 +403,23 @@ Back up state (SQLite plus `.env`):
 ## 🧪 Tests
 
 ```bash
-.venv/bin/pip install -r requirements-dev.txt   # pytest and ruff
+.venv/bin/pip install -r requirements-dev.txt   # pytest, ruff, playwright
+.venv/bin/python -m playwright install chromium  # once, for the browser tests
 .venv/bin/pytest -q
 .venv/bin/ruff check . && .venv/bin/ruff format --check adder scripts tests desktop
+.venv/bin/mypy                                   # type check, settings in mypy.ini
 ```
 
-The suite runs fully offline and needs no real `.env`; the import and streaming tests need `ffmpeg`, which CI installs. `tests/conftest.py` fails any test that opens a network connection, so YouTube, Deezer and iTunes are always mocked. It covers:
+The suite runs fully offline and needs no real `.env`; the import and streaming tests need `ffmpeg`, which CI installs. `tests/conftest.py` fails any test that opens a network connection, so YouTube, Deezer, MusicBrainz and iTunes are always mocked. It covers:
 
 * **downloading** — the yt-dlp commands, reading its JSON and its `ERROR:` line, the subprocess runner (timeouts, shutdown, large output), and which failures are retried;
-* **metadata** — splitting YouTube titles into artist and title, and Deezer enrichment against canned API responses;
+* **metadata** — splitting YouTube titles into artist and title, and Deezer and MusicBrainz enrichment against canned API responses;
 * **writing into the library** — `process()` end to end on a real one-second AAC file (`tests/fixtures/tone.m4a`): tags read back with mutagen, the `Artist/Singles/Title.m4a` layout, cover fallback, corrupt downloads, content deduplication;
 * the API: authorisation, link validation and canonicalisation, deletion and path traversal, `/health`, task recovery after a restart, graceful shutdown, and an XSS regression in the frontend;
+* **the panel and player in a real browser** (`tests/test_ui.py`, Playwright + Chromium): tag editing, ReplayGain volume, fades, the sleep timer, retry, library health, album choice, duplicates, and titles rendered as text;
 * playlists, Navidrome synchronisation, streaming signatures, file import, lyrics, shuffles and the smart-shuffle downloads.
 
-CI (`.github/workflows/ci.yml`) runs `ruff check`, `ruff format --check`, `compileall` and the full suite on a clean environment for every push and pull request.
+CI (`.github/workflows/ci.yml`) runs `ruff check`, `ruff format --check`, `mypy`, `compileall` and the full suite on a clean environment for every push and pull request.
 
 ---
 
@@ -419,7 +435,7 @@ Start with `curl -s http://127.0.0.1:8787/health -H "Authorization: Bearer $TOKE
 | `/health` → `"js_runtime": "missing"`, log warns about Deno | Install Deno into `/usr/local/bin` as in [step 1](#1-system-packages). A Deno under `~/.deno/bin` works in your shell but not in the systemd service. |
 | `youtube_auth_required`: "Sign in to confirm you're not a bot" | YouTube distrusts this IP. Log in to YouTube in a browser on the same machine and set `COOKIES_FROM_BROWSER=firefox` (or `chrome`, or `firefox:/path/to/profile`) in `adder/.env`, restart, re-submit the link. |
 | Many `rate_limited` errors | YouTube is throttling; the service already pauses all downloads for `RATE_LIMIT_BACKOFF` seconds per attempt. If it persists, lower `MAX_WORKERS` to `1`, wait an hour and re-submit the failed links. |
-| Downloads that used to work start failing | YouTube changed something; update yt-dlp: `.venv/bin/pip install -U yt-dlp yt-dlp-ejs` and restart. |
+| Downloads that used to work start failing | YouTube changed something. yt-dlp updates itself weekly; to update now run `.venv/bin/python scripts/update_ytdlp.py` (no restart needed). `journalctl --user -u music-ytdlp-update` shows past runs. |
 | Task is `done` but Navidrome doesn't show the track | Navidrome reads another folder: its `MusicFolder` (`/etc/navidrome/navidrome.toml`) must equal `library_path` from `/health`. Check that the Navidrome user can read it: `sudo -u navidrome ls "<library_path>"`. Then *Settings → Scan* in Navidrome. |
 | Deleting a track from the web interface fails | Deleted files go to `trash/` in the repository root. After `git pull`, re-run `./deploy/install.sh` so the unit has `ReadWritePaths` for it. |
 | Web interface says the token is wrong | Paste the value of `API_TOKEN` from `adder/.env`, without `API_TOKEN=`. |

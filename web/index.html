@@ -75,6 +75,8 @@
           <input id="searchQuery" class="grow" type="text" placeholder="Артист — название"
                  autocomplete="off" onkeydown="if(event.key==='Enter')runSearch()">
           <button class="primary" onclick="runSearch()">Искать</button>
+          <!-- Альбом целиком: сначала выбрать из найденного, потом скачать. -->
+          <button class="ghost" onclick="runAlbumSearch()">Альбом</button>
         </div>
         <p id="searchNote" class="note"></p>
         <div id="searchResults" class="rows"></div>
@@ -96,6 +98,8 @@
       <div class="list-head">
         <!-- «Загрузки», а не «Очередь»: очередью зовётся то, что играет дальше. -->
         <span>Загрузки</span>
+        <!-- Только когда есть упавшие: иначе кнопке нечего делать. -->
+        <button id="retryFailed" class="ghost small" onclick="retryFailed()" hidden>Повторить упавшие</button>
         <span id="queueCount" class="muted"></span>
       </div>
       <div id="tasks" class="rows"></div>
@@ -107,6 +111,14 @@
         <span>Недавно добавлены</span>
       </div>
       <div id="recentTasks" class="rows"></div>
+
+      <!-- Похожие треки: второй экземпляр сохранён, решает человек. Раздел
+           виден, только пока есть что решать. -->
+      <div class="list-head" id="duplicatesHead" hidden>
+        <span>Похожие треки</span>
+        <span id="duplicatesCount" class="muted"></span>
+      </div>
+      <div id="duplicates" class="rows"></div>
 
     </section>
 
@@ -248,6 +260,16 @@
         <div id="health" class="facts"></div>
       </div>
 
+      <!-- Что не так с самой фонотекой и кнопка на то, что чинится само. -->
+      <div class="card">
+        <div class="card-head">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+          <h2>Фонотека</h2>
+        </div>
+        <div id="libraryHealth" class="facts"></div>
+        <p id="libraryHealthJob" class="muted"></p>
+      </div>
+
       <div class="card">
         <div class="card-head">
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><path d="M10 17 5 12l5-5M5 12h12"/></svg>
@@ -331,6 +353,28 @@
               aria-label="Очередь" title="Очередь" aria-pressed="false">
         <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h11M4 12h11M4 18h7M17 14v7M21 18l-4 3-4-3"/></svg>
       </button>
+      <!-- Таймер сна и плавный переход: одна кнопка, выбор — во всплывающем меню. -->
+      <div class="sleep-wrap">
+        <button id="playerSleep" class="icon-button" onclick="toggleSleepMenu()"
+                aria-label="Таймер сна" title="Таймер сна" aria-pressed="false" aria-haspopup="true">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/></svg>
+          <span id="playerSleepLeft" class="repeat-one" hidden></span>
+        </button>
+        <div id="playerSleepMenu" class="sleep-menu" role="menu" hidden>
+          <div class="sleep-title">Таймер сна</div>
+          <button role="menuitem" onclick="setSleep(null)">Выключен</button>
+          <button role="menuitem" onclick="setSleep(15)">15 минут</button>
+          <button role="menuitem" onclick="setSleep(30)">30 минут</button>
+          <button role="menuitem" onclick="setSleep(60)">60 минут</button>
+          <button role="menuitem" onclick="setSleep('track')">До конца трека</button>
+          <div id="playerFadeBox" hidden>
+            <div class="sleep-title">Плавный переход</div>
+            <button role="menuitem" onclick="setFade(0)">Нет</button>
+            <button role="menuitem" onclick="setFade(3)">3 секунды</button>
+            <button role="menuitem" onclick="setFade(6)">6 секунд</button>
+          </div>
+        </div>
+      </div>
       </div>
 
       <!-- На iOS громкость страницы задать нельзя: Apple отдаёт её физическим

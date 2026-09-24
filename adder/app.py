@@ -13,7 +13,7 @@ import threading
 import time
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import Depends, FastAPI, File, HTTPException, Security, UploadFile, status
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
@@ -25,11 +25,15 @@ from . import (
     config,
     covers,
     db,
+    duplicates,
     ingest,
     library,
+    library_health,
+    listenbrainz,
     lyrics,
     moods,
     navidrome,
+    notify,
     outside,
     playlists,
     runtime,
@@ -117,6 +121,11 @@ async def lifespan(app: FastAPI):
     # включали, текста нет, а промах не перепроверяется. См. lyrics.backfill.
     lyrics.start_backfill()
 
+    listenbrainz.start()
+
+    # Задачи, упавшие из-за ограничения YouTube, через час пробуют снова сами.
+    threading.Thread(target=_auto_requeue_loop, name="auto-requeue", daemon=True).start()
+
     for i in range(config.MAX_WORKERS):
         worker_thread = threading.Thread(
             target=task_queue.worker,
@@ -145,6 +154,9 @@ async def lifespan(app: FastAPI):
             worker_thread.join(timeout=remaining)
 
         runtime.active_workers.clear()
+
+    # Whatever the last seconds gathered is shown rather than lost.
+    notify.flush_now()
 
     # Cleanup temporary files after workers have stopped.
     if runtime.TMP_DIR.exists():
@@ -305,6 +317,67 @@ def tasks(authenticated: bool = Depends(verify_token)):
     return db.db_query("SELECT * FROM tasks ORDER BY id DESC LIMIT 50")
 
 
+# A rate-limited task is tried again by itself this long after it failed, at
+# most this many times; past that the pause is not what it is missing.
+AUTO_REQUEUE_AFTER_MINUTES = 60
+AUTO_REQUEUE_LIMIT = 3
+AUTO_REQUEUE_CHECK_SECONDS = 600
+
+
+def requeue_failed(auto: bool = False) -> list[int]:
+    """Queue failed tasks again. Returns the ids that were queued.
+
+    By hand (auto=False): every failed task that can be retried. Automatically:
+    only rate-limited ones, an hour after they failed, at most three times.
+
+    Two kinds are left out on purpose. A failed upload can be retried only while
+    its file is still in the import folder. A failed replacement is not retried
+    here: _queue_source would reset it into a plain add, and the "replace that
+    track" half of the request would be silently lost.
+    """
+    sql = "SELECT id, url, auto_requeues FROM tasks WHERE status = 'error' AND replace_of IS NULL"
+    params: tuple = ()
+    if auto:
+        sql += (
+            " AND error_type = 'rate_limited' AND COALESCE(auto_requeues, 0) < ?"
+            " AND updated_at <= datetime('now', 'localtime', ?)"
+        )
+        params = (AUTO_REQUEUE_LIMIT, f"-{AUTO_REQUEUE_AFTER_MINUTES} minutes")
+    queued = []
+    for row in db.db_query(sql + " ORDER BY id", params):
+        url = row["url"]
+        if url.startswith("file:") and ingest.stashed_upload(url) is None:
+            continue
+        tid = _queue_source(url)
+        if tid is None:
+            continue
+        count = (row["auto_requeues"] or 0) + 1 if auto else 0
+        db.task_update(tid, auto_requeues=count)
+        queued.append(tid)
+    if queued:
+        logger.info(
+            "Requeued %d failed task(s)%s",
+            len(queued),
+            " after a rate limit" if auto else "",
+            extra={"task_id": "system"},
+        )
+    return queued
+
+
+def _auto_requeue_loop() -> None:
+    while not runtime.shutdown_event.wait(AUTO_REQUEUE_CHECK_SECONDS):
+        try:
+            requeue_failed(auto=True)
+        except Exception:
+            logger.exception("Automatic requeue failed", extra={"task_id": "system"})
+
+
+@app.post("/api/tasks/retry-failed")
+def retry_failed(authenticated: bool = Depends(verify_token)):
+    """Queue every failed task again, as re-submitting each link would."""
+    return {"requeued": requeue_failed()}
+
+
 @app.get("/api/library")
 def list_library(
     q: str = "",
@@ -341,6 +414,7 @@ def list_library(
                     "track",
                     "duration",
                     "added",
+                    "source",
                 )
             }
         )
@@ -392,6 +466,80 @@ def track_details(path: str, authenticated: bool = Depends(verify_token)):
     return {
         **{key: value for key, value in row.items() if key != "haystack"},
         "features": measured[0] if measured else None,
+    }
+
+
+@app.get("/api/library/health")
+def library_health_report(authenticated: bool = Depends(verify_token)):
+    """Counts and examples of library problems, and the state of a running fix."""
+    return library_health.report()
+
+
+class LibraryFix(BaseModel):
+    what: str
+
+
+@app.post("/api/library/health/fix")
+def library_health_fix(req: LibraryFix, authenticated: bool = Depends(verify_token)):
+    """Start the automatic fix for one problem: "covers" or "loudness"."""
+    try:
+        return library_health.start_fix(req.what)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+class DuplicateChoice(BaseModel):
+    task: int
+    keep: str
+
+
+@app.get("/api/duplicates")
+def list_duplicates(authenticated: bool = Depends(verify_token)):
+    """Tracks stored with a "looks like one you have" warning, each beside its twin."""
+    return duplicates.pairs()
+
+
+@app.post("/api/duplicates/resolve")
+def resolve_duplicate(req: DuplicateChoice, authenticated: bool = Depends(verify_token)):
+    """Keep one copy (the other goes to the trash, playlists follow) or both."""
+    try:
+        return duplicates.resolve(req.task, req.keep)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+class TrackEdit(BaseModel):
+    path: str
+    title: str
+    artists: list[str]
+    album: str = ""
+    refetch_cover: bool = False
+
+
+@app.patch("/api/track")
+def edit_track(req: TrackEdit, authenticated: bool = Depends(verify_token)):
+    """Correct title, artists and album by hand; optionally look the cover up again."""
+    if outside.is_outside(req.path):
+        raise HTTPException(status_code=400, detail="Only library tracks can be edited")
+    if len(req.title) > 300 or len(req.album) > 300 or len(req.artists) > 20:
+        raise HTTPException(status_code=400, detail="Too long")
+    absolute = library.library_track(req.path)
+    try:
+        cover = ingest.edit_track(
+            absolute, req.title, req.artists, req.album, refetch_cover=req.refetch_cover
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    relative = str(absolute.relative_to(config.LIBRARY.resolve()))
+    row = next((r for r in library.library_index() if r["path"] == relative), {})
+    logger.info("Edited tags of %s", relative, extra={"task_id": "system"})
+    return {
+        **{key: value for key, value in row.items() if key != "haystack"},
+        "cover": cover,
     }
 
 
@@ -577,6 +725,8 @@ def _reset_task(tid: int) -> None:
         error=None,
         error_type=None,
         warning=None,
+        similar_to=None,
+        album_hint=None,
         retry_count=0,
         replace_of=None,
         result_path=None,
@@ -746,6 +896,59 @@ class PlaylistImportRequest(BaseModel):
     url: str
 
 
+def _queue_candidates(
+    candidates: list, album_hint: str | None = None
+) -> tuple[list[int], list[dict]]:
+    """Find each named track on YouTube and queue it. Returns (queued, unmatched)."""
+    queued, unmatched = [], []
+    for candidate in candidates:
+        match = sources.best_youtube_match(candidate)
+        if match is None:
+            unmatched.append({"artist": candidate.artist, "title": candidate.title})
+            continue
+        tid = _queue_source(ingest.canonicalize_youtube_url(match["url"]))
+        if tid is not None:
+            if album_hint:
+                db.task_update(tid, album_hint=album_hint)
+            queued.append(tid)
+    return queued, unmatched
+
+
+def _import_deezer_album(album_id: str) -> dict:
+    try:
+        about, candidates = sources.deezer_album(album_id)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)[:300]) from exc
+    queued, unmatched = _queue_candidates(candidates, album_hint=about["id"])
+    return {
+        "source": "deezer-album",
+        "album": about,
+        "read": len(candidates),
+        "queued": len(queued),
+        "unmatched": unmatched,
+        "truncated": False,
+        "note": "",
+    }
+
+
+@app.get("/api/albums/search")
+def album_search(q: str, authenticated: bool = Depends(verify_token)):
+    """Albums on Deezer matching free text, to pick one before downloading it."""
+    return sources.search_albums(q)
+
+
+class AlbumImportRequest(BaseModel):
+    id: str
+
+
+@app.post("/api/import-album")
+def import_album(req: AlbumImportRequest, authenticated: bool = Depends(verify_token)):
+    """Queue every track of one Deezer album, each found on YouTube by the strict match."""
+    if not req.id.isdigit():
+        raise HTTPException(status_code=400, detail="Album id must be a Deezer number")
+    return _import_deezer_album(req.id)
+
+
 @app.post("/api/import-playlist")
 def import_playlist(req: PlaylistImportRequest, authenticated: bool = Depends(verify_token)):
     """Queue a whole playlist from one link, YouTube or Spotify.
@@ -764,15 +967,7 @@ def import_playlist(req: PlaylistImportRequest, authenticated: bool = Depends(ve
         except Exception as exc:
             raise HTTPException(status_code=502, detail=str(exc)[:300]) from exc
 
-        queued, unmatched = [], []
-        for candidate in candidates:
-            match = sources.best_youtube_match(candidate)
-            if match is None:
-                unmatched.append({"artist": candidate.artist, "title": candidate.title})
-                continue
-            tid = _queue_source(ingest.canonicalize_youtube_url(match["url"]))
-            if tid is not None:
-                queued.append(tid)
+        queued, unmatched = _queue_candidates(candidates)
 
         return {
             "source": "spotify",
@@ -789,6 +984,10 @@ def import_playlist(req: PlaylistImportRequest, authenticated: bool = Depends(ve
                 else ""
             ),
         }
+
+    album_id = sources.deezer_album_id(url)
+    if album_id:
+        return _import_deezer_album(album_id)
 
     is_valid, error_msg = ingest.validate_url(url)
     if not is_valid:
@@ -852,16 +1051,20 @@ def get_stream_url(path: str, authenticated: bool = Depends(verify_token)):
         return signing.stream_url(path, meta.get("duration"))
     track = library.library_track(path)
     duration = None
+    gain = None
     for row in library.library_index():
         if row["path"] == path:
             duration = row.get("duration")
+            gain = row.get("gain")
             break
     if duration is None:
         from mutagen.mp4 import MP4
 
         with suppress(Exception):
-            duration = MP4(track).info.length
-    return signing.stream_url(path, duration)
+            info = MP4(track).info
+            duration = info.length if info else None
+    # ReplayGain travels with the link: the player turns the track down by it.
+    return {**signing.stream_url(path, duration), "gain": gain}
 
 
 @app.get("/api/stream")
@@ -1452,6 +1655,9 @@ def record_play(req: PlayRequest, authenticated: bool = Depends(verify_token)):
             req.mode,
         ),
     )
+    # A listen by ListenBrainz's rule is queued for sending; never fails the journal.
+    with suppress(Exception):
+        listenbrainz.queue_listen(req.path, req.played_seconds, req.duration)
     return {"recorded": req.path}
 
 
@@ -1471,7 +1677,7 @@ def play_stats(authenticated: bool = Depends(verify_token)):
     total = overall["total"] or 0
     skipped = overall["skipped"] or 0
 
-    by_mode = {}
+    by_mode: dict[str, dict[str, Any]] = {}
     for row in db.db_query(
         "SELECT mode, COUNT(*) AS total, SUM(skipped) AS skipped FROM plays GROUP BY mode"
     ):
@@ -1543,6 +1749,7 @@ def health(credentials: HTTPAuthorizationCredentials = Security(security)):
         "library": library_status,
         "library_path": str(config.LIBRARY),
         **dependencies,
+        "listenbrainz": listenbrainz.status(),
         "workers": config.MAX_WORKERS,
         "queue_size": queue_size,
         "max_queue_size": config.MAX_QUEUE_SIZE,

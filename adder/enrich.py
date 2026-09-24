@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import json
 import re
+import threading
+import time
 import unicodedata
 import urllib.parse
 import urllib.request
@@ -109,6 +111,34 @@ def lookup(artist: str, title: str) -> TrackInfo | None:
     )
 
 
+def lookup_in_album(album_id: str, artist: str, title: str) -> TrackInfo | None:
+    """The track as it appears on one particular Deezer album.
+
+    A whole-album import knows which release it is filling in. Looking each
+    track up on its own could land on a single or a compilation instead, and
+    the album would come out scattered across several.
+    """
+    listing = _get(f"{DEEZER}/album/{album_id}/tracks?limit=500")
+    want = normalize(title)
+    match = next(
+        (t for t in (listing or {}).get("data") or [] if normalize(t.get("title", "")) == want),
+        None,
+    )
+    if match is None:
+        return None
+    album = _get(f"{DEEZER}/album/{album_id}") or {}
+    full = _get(f"{DEEZER}/track/{match['id']}") or {}
+    return TrackInfo(
+        album=album.get("title") or title,
+        artists=[c["name"] for c in full.get("contributors", [])] or split_artists(artist),
+        track_number=full.get("track_position") or match.get("track_position"),
+        track_total=album.get("nb_tracks") or 0,
+        disc_number=full.get("disk_number") or match.get("disk_number") or 1,
+        date=album.get("release_date") or "",
+        cover_url=album.get("cover_xl") or album.get("cover_big") or "",
+    )
+
+
 def fallback(artist: str, title: str) -> TrackInfo:
     """When Deezer draws a blank, treat the track as its own single.
 
@@ -119,7 +149,114 @@ def fallback(artist: str, title: str) -> TrackInfo:
     return TrackInfo(album=title, artists=split_artists(artist) or [artist or "Unknown Artist"])
 
 
-def describe(artist: str, title: str) -> tuple[TrackInfo, bool]:
-    """Return metadata for a track plus whether it came from Deezer."""
+# ---------------------------------------------------------------------------
+# MusicBrainz, when Deezer does not know the track
+# ---------------------------------------------------------------------------
+#
+# Deezer misses a fair share of what is on YouTube - live cuts, older and
+# smaller releases - and every miss became a "single" named after the track.
+# MusicBrainz is free, needs no key and covers much of what Deezer lacks. Its
+# terms ask for at most one request per second and a User-Agent naming the
+# application and a contact, both honoured here. Covers come from the Cover
+# Art Archive, keyed by the same release id.
+
+MUSICBRAINZ = "https://musicbrainz.org/ws/2"
+COVER_ART = "https://coverartarchive.org/release/{mbid}/front-500"
+_MB_UA = {
+    "User-Agent": "local-Spotify/1.0 ( https://github.com/Whyslab/local-Spotify )",
+    "Accept": "application/json",
+}
+_MB_INTERVAL = 1.1
+_mb_lock = threading.Lock()
+_mb_last = 0.0
+# A search result this far below MusicBrainz's own best score is not the song.
+MIN_SCORE = 85
+
+
+def _mb_get(url: str) -> dict | None:
+    global _mb_last
+    with _mb_lock:
+        wait = _mb_last + _MB_INTERVAL - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        _mb_last = time.monotonic()
+    try:
+        request = urllib.request.Request(url, headers=_MB_UA)
+        with urllib.request.urlopen(request, timeout=TIMEOUT) as r:
+            return json.load(r)
+    except Exception:
+        return None
+
+
+def _mb_quote(text: str) -> str:
+    # Lucene query syntax: quotes and backslashes inside a phrase are escaped.
+    return text.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _pick_release(releases: list[dict]) -> dict | None:
+    """The release a listener would call "the album": official, an album, earliest."""
+
+    def rank(release: dict) -> tuple:
+        group = release.get("release-group") or {}
+        return (
+            release.get("status") != "Official",
+            group.get("primary-type") != "Album",
+            bool(group.get("secondary-types")),  # compilations, live, soundtracks last
+            release.get("date") or "9999",
+        )
+
+    return min(releases, key=rank) if releases else None
+
+
+def musicbrainz_lookup(artist: str, title: str) -> TrackInfo | None:
+    """Find a recording on MusicBrainz. None when it is not found or the network fails."""
+    lead = (split_artists(artist) or [artist])[0]
+    query = f'recording:"{_mb_quote(title)}" AND artist:"{_mb_quote(lead)}"'
+    found = _mb_get(f"{MUSICBRAINZ}/recording?fmt=json&limit=5&query={urllib.parse.quote(query)}")
+    if not found:
+        return None
+
+    want_title, want_artist = normalize(title), normalize(lead)
+    for recording in found.get("recordings") or []:
+        if (recording.get("score") or 0) < MIN_SCORE:
+            continue
+        if normalize(recording.get("title", "")) != want_title:
+            continue
+        credits = [c.get("name", "") for c in recording.get("artist-credit") or []]
+        if want_artist and want_artist not in {normalize(c) for c in credits}:
+            continue
+        release = _pick_release(recording.get("releases") or [])
+        if release is None:
+            continue
+
+        media = (release.get("media") or [{}])[0]
+        track = (media.get("track") or [{}])[0]
+        try:
+            number = int(track.get("number") or track.get("position") or 0) or None
+        except ValueError:
+            number = track.get("position")
+        return TrackInfo(
+            album=release.get("title") or title,
+            artists=[c for c in credits if c] or split_artists(artist),
+            track_number=number,
+            track_total=media.get("track-count") or 0,
+            disc_number=media.get("position") or 1,
+            date=release.get("date") or "",
+            cover_url=COVER_ART.format(mbid=release["id"]) if release.get("id") else "",
+        )
+    return None
+
+
+def describe(artist: str, title: str, album_id: str | None = None) -> tuple[TrackInfo, str]:
+    """Metadata for a track, and where it came from: deezer, musicbrainz or fallback."""
+    if album_id:
+        info = lookup_in_album(album_id, artist, title)
+        if info:
+            return info, "deezer"
     info = lookup(artist, title)
-    return (info, True) if info else (fallback(artist, title), False)
+    if info:
+        return info, "deezer"
+    info = musicbrainz_lookup(artist, title)
+    if info:
+        return info, "musicbrainz"
+    return fallback(artist, title), "fallback"

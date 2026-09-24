@@ -491,3 +491,186 @@ def test_second_disc_is_not_written_as_2_of_1(app, monkeypatch):
     run(app)
 
     assert MP4(config.LIBRARY / "A/Singles/B.m4a").tags["disk"] == [(2, 0)]
+
+
+# ---------------------------------------------------------------------------
+# The source link travels inside the file
+# ---------------------------------------------------------------------------
+
+
+def test_the_video_link_is_written_into_the_file(app, monkeypatch):
+    youtube(app, monkeypatch, {"title": "A - B", "uploader": "x"})
+    deezer(app, monkeypatch, None)
+    covers(app, monkeypatch)
+
+    run(app)
+
+    assert library.read_tags(config.LIBRARY / "A/Singles/B.m4a")["source"] == URL
+    library.invalidate_library_index()
+    assert library.find_by_source(URL) == "A/Singles/B.m4a"
+
+
+@pytest.mark.parametrize("suffix", [".mp3", ".flac", ".opus"])
+def test_the_link_round_trips_in_every_format(tmp_path, suffix):
+    import subprocess
+
+    path = tmp_path / f"t{suffix}"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(FIXTURE), str(path)], check=True)
+
+    ingest.write_source(path, URL)
+
+    assert library.read_tags(path)["source"] == URL
+
+
+def test_a_link_already_in_the_library_is_not_downloaded_again(app, monkeypatch):
+    youtube(app, monkeypatch, {"title": "A - B", "uploader": "x"})
+    deezer(app, monkeypatch, None)
+    covers(app, monkeypatch)
+    run(app)
+
+    # The task table is lost (a new database), the file is still there.
+    runtime.DB_PATH.unlink()
+    db.db_init()
+    library.invalidate_library_index()
+    downloads = []
+    monkeypatch.setattr(ingest, "yt_meta", lambda url: downloads.append(url))
+
+    task = run(app)
+
+    assert downloads == []
+    assert task["status"] == "done"
+    assert task["result_path"] == "A/Singles/B.m4a"
+    assert URL not in runtime.PROCESSING_URLS
+
+
+def test_a_finished_and_a_failed_task_reach_the_desktop(app, monkeypatch):
+    from adder import notify
+
+    added, failed = [], []
+    monkeypatch.setattr(notify, "track_added", lambda a, t: added.append((a, t)))
+    monkeypatch.setattr(notify, "track_failed", lambda n, r: failed.append((n, r)))
+    youtube(app, monkeypatch, {"title": "A - B", "uploader": "x"})
+    deezer(app, monkeypatch, None)
+    covers(app, monkeypatch)
+    run(app)
+
+    def private(url):
+        raise RuntimeError("ERROR: [youtube] x: Private video")
+
+    monkeypatch.setattr(ingest, "yt_meta", private)
+    run(app, "https://www.youtube.com/watch?v=gone")
+
+    assert added == [("A", "B")]
+    assert failed == [("https://www.youtube.com/watch?v=gone", "видео недоступно")]
+
+
+def test_a_new_track_gets_replaygain_and_the_player_gets_it_with_the_link(app, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from adder import app as app_module
+
+    youtube(app, monkeypatch, {"title": "A - B", "uploader": "x"})
+    deezer(app, monkeypatch, None)
+    covers(app, monkeypatch)
+    run(app)
+
+    library.invalidate_library_index()
+    assert library.library_index()[0]["gain"] == pytest.approx(3.9, abs=0.2)
+
+    monkeypatch.setattr(config, "API_TOKEN", "test-secret")
+    with TestClient(app_module.app) as client:
+        response = client.get(
+            "/api/stream-url",
+            params={"path": "A/Singles/B.m4a"},
+            headers={"Authorization": "Bearer test-secret"},
+        )
+    assert response.status_code == 200
+    assert response.json()["gain"] == pytest.approx(3.9, abs=0.2)
+
+
+# ---------------------------------------------------------------------------
+# Editing tags by hand
+# ---------------------------------------------------------------------------
+
+
+def _client(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from adder import app as app_module
+
+    monkeypatch.setattr(config, "API_TOKEN", "test-secret")
+    monkeypatch.setattr(runtime, "guard_real_library", lambda *a, **k: None)
+    return TestClient(app_module.app)
+
+
+AUTH = {"Authorization": "Bearer test-secret"}
+
+
+def test_tags_can_be_corrected_without_moving_the_file_or_its_date(app, monkeypatch):
+    youtube(app, monkeypatch, {"title": "Adele - Helo", "uploader": "x"})
+    deezer(app, monkeypatch, None)
+    covers(app, monkeypatch, fallback_cover=PNG)
+    run(app)
+    path = config.LIBRARY / "Adele/Singles/Helo.m4a"
+    arrived = path.stat().st_mtime_ns
+
+    with _client(monkeypatch) as client:
+        response = client.patch(
+            "/api/track",
+            json={
+                "path": "Adele/Singles/Helo.m4a",
+                "title": "Hello",
+                "artists": ["Adele", "Guest"],
+                "album": "25",
+            },
+            headers=AUTH,
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["title"] == "Hello"
+    assert response.json()["cover"] == "kept"
+    tags = MP4(path).tags
+    assert tags["\xa9nam"] == ["Hello"]
+    assert tags["\xa9ART"] == ["Adele", "Guest"]
+    assert tags["\xa9alb"] == ["25"]
+    assert tags["covr"][0].imageformat == MP4Cover.FORMAT_PNG  # untouched
+    assert path.stat().st_mtime_ns == arrived
+
+
+def test_the_cover_can_be_looked_up_again(app, monkeypatch):
+    youtube(app, monkeypatch, {"title": "A - B", "uploader": "x"})
+    deezer(app, monkeypatch, None)
+    covers(app, monkeypatch)
+    run(app)
+    deezer(app, monkeypatch, enrich.TrackInfo(album="X", artists=["A"], cover_url="https://dz/c"))
+    monkeypatch.setattr(ingest, "fetch_cover_url", lambda url: (JPEG, "jpg"))
+
+    with _client(monkeypatch) as client:
+        response = client.patch(
+            "/api/track",
+            json={"path": "A/Singles/B.m4a", "title": "B", "artists": ["A"], "refetch_cover": True},
+            headers=AUTH,
+        )
+
+    assert response.json()["cover"] == "updated"
+    assert bytes(MP4(config.LIBRARY / "A/Singles/B.m4a").tags["covr"][0]) == JPEG
+
+
+@pytest.mark.parametrize(
+    ("body", "status"),
+    [
+        ({"path": "A/Singles/B.m4a", "title": " ", "artists": ["A"]}, 400),
+        ({"path": "A/Singles/B.m4a", "title": "B", "artists": [" "]}, 400),
+        ({"path": "../outside.m4a", "title": "B", "artists": ["A"]}, 400),
+        ({"path": "A/Singles/missing.m4a", "title": "B", "artists": ["A"]}, 404),
+    ],
+)
+def test_bad_edits_are_refused(app, monkeypatch, body, status):
+    youtube(app, monkeypatch, {"title": "A - B", "uploader": "x"})
+    deezer(app, monkeypatch, None)
+    covers(app, monkeypatch)
+    run(app)
+
+    with _client(monkeypatch) as client:
+        assert client.patch("/api/track", json=body, headers=AUTH).status_code == status
+        assert client.patch("/api/track", json=body).status_code == 401

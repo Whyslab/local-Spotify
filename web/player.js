@@ -34,6 +34,12 @@ const player = {
     playingMode: null,   // из какой очереди начал играть текущий трек — для журнала
     repeat: "off",       // "off" | "all" | "one"
     generation: 0,       // номер последнего включения — см. playAt
+    userVolume: 1,       // ползунок; звучит userVolume × поправка трека — см. applyVolume
+    fadeLevel: 1,        // 0…1: затухание на стыке треков и перед сном — см. fadeTick
+    fadeSeconds: 0,      // длина затухания на стыке, 0 — без него
+    sleep: null,         // {until: мс} | {track: true} | null — таймер сна
+    trackGain: null,     // ReplayGain текущего трека в дБ, null — не измерен
+    volumeAdjustable: false,
 };
 
 /* ---------------- Journal ---------------- */
@@ -67,10 +73,12 @@ function reportPlay(finished) {
 
 /* ---------------- Playback ---------------- */
 
+/* Ссылка и поправка громкости трека (ReplayGain) приходят вместе. */
 async function streamUrlFor(path) {
     const r = await fetch("/api/stream-url?path=" + encodeURIComponent(path), { headers: headers() });
     if (!r.ok) throw new Error("Не удалось получить ссылку на трек");
-    return (await r.json()).url;
+    const data = await r.json();
+    return { url: data.url, gain: typeof data.gain === "number" ? data.gain : null };
 }
 
 /* `direction` — куда листают: пропуск недоступного трека идёт туда же, иначе
@@ -94,7 +102,9 @@ async function playAt(position, skipped = 0, direction = 1) {
 
     let url;
     try {
-        url = await streamUrlFor(track.path);
+        const stream = await streamUrlFor(track.path);
+        url = stream.url;
+        player.trackGain = stream.gain;
     } catch (e) {
         if (generation !== player.generation) return false;
         /* Трек со стороны не успел или не смог скачаться. Тишина вместо
@@ -115,6 +125,7 @@ async function playAt(position, skipped = 0, direction = 1) {
     }
     if (generation !== player.generation) return false;
     try {
+        applyVolume();
         player.audio.src = url;
         await player.audio.play();
     } catch (e) {
@@ -819,6 +830,12 @@ function prevTrack() {
 
 player.audio.addEventListener("ended", () => {
     reportPlay(true);
+    /* «До конца трека»: этот доиграл — дальше тишина. */
+    if (player.sleep && player.sleep.track) {
+        clearSleep();
+        renderPlayer();
+        return;
+    }
     if (player.repeat === "one") {
         /* Тот же трек с начала: позиция в маршруте не двигается. Это новое
          * прослушивание — и в журнал оно пишется отдельно. */
@@ -832,6 +849,7 @@ player.audio.addEventListener("ended", () => {
     else renderPlayer();
 });
 player.audio.addEventListener("timeupdate", renderProgress);
+player.audio.addEventListener("timeupdate", fadeTick);
 player.audio.addEventListener("timeupdate", () => highlightLyric(false));
 player.audio.addEventListener("seeked", () => highlightLyric(true));
 player.audio.addEventListener("play", renderPlayer);
@@ -864,7 +882,7 @@ player.audio.addEventListener("error", async () => {
     if (expired && errorRetry !== generation) {
         errorRetry = generation;
         try {
-            const url = await streamUrlFor(track.path);
+            const { url } = await streamUrlFor(track.path);
             if (generation !== player.generation) return;
             player.audio.src = url;
             player.audio.currentTime = at;
@@ -2267,6 +2285,21 @@ renderPlayerModes();
 
 const VOLUME_KEY = "playerVolume";
 
+/* ReplayGain: трек, измеренный громче опорных −18 LUFS, звучит тише на свою
+ * поправку. Только вниз — громкость <audio> выше 1 не бывает, а поднимать
+ * тихие треки через Web Audio значит потерять фоновое воспроизведение (см.
+ * выше). Треки громче опорного — почти всё с YouTube — выравниваются. */
+function gainFactor() {
+    const gain = player.trackGain;
+    if (typeof gain !== "number") return 1;
+    return Math.min(1, Math.pow(10, gain / 20));
+}
+
+function applyVolume() {
+    if (!player.volumeAdjustable) return;
+    player.audio.volume = player.userVolume * gainFactor() * player.fadeLevel;
+}
+
 function volumeIsAdjustable() {
     const before = player.audio.volume;
     try {
@@ -2296,7 +2329,7 @@ function updateVolumeIcon() {
     const button = document.getElementById("playerMute");
     if (!icon || !button) return;
 
-    const silent = player.audio.muted || player.audio.volume === 0;
+    const silent = player.audio.muted || player.userVolume === 0;
     icon.setAttribute("d", silent
         ? "M4 9v6h4l5 4V5L8 9zM17 9l4 6M21 9l-4 6"
         : "M4 9v6h4l5 4V5L8 9zM16 9a4 4 0 0 1 0 6");
@@ -2308,7 +2341,7 @@ function updateVolumeIcon() {
     if (box) box.classList.toggle("is-muted", player.audio.muted);
     const slider = document.getElementById("playerVolumeRange");
     if (slider) {
-        const percent = Math.round(player.audio.volume * 100) + "%";
+        const percent = Math.round(player.userVolume * 100) + "%";
         slider.setAttribute("aria-valuetext",
             player.audio.muted ? percent + ", звук выключен" : percent);
     }
@@ -2317,7 +2350,8 @@ function updateVolumeIcon() {
 function setVolumeFromSlider(value) {
     const level = Math.min(100, Math.max(0, Number(value) || 0)) / 100;
     player.audio.muted = false;
-    player.audio.volume = level;
+    player.userVolume = level;
+    applyVolume();
     paintVolume(level);
     try { localStorage.setItem(VOLUME_KEY, String(level)); } catch (e) { /* приватное окно */ }
     updateVolumeIcon();
@@ -2327,9 +2361,9 @@ function toggleMute() {
     player.audio.muted = !player.audio.muted;
     /* Нажал «без звука» на нуле — это просьба вернуть звук, а не поставить
      * беззвучное воспроизведение: поднимаем ползунок до половины. */
-    if (!player.audio.muted && player.audio.volume === 0) setVolumeFromSlider(50);
+    if (!player.audio.muted && player.userVolume === 0) setVolumeFromSlider(50);
     const slider = document.getElementById("playerVolumeRange");
-    if (slider) slider.value = String(Math.round(player.audio.volume * 100));
+    if (slider) slider.value = String(Math.round(player.userVolume * 100));
     updateVolumeIcon();
 }
 
@@ -2344,7 +2378,9 @@ function initVolume() {
         if (Number.isFinite(stored) && stored >= 0 && stored <= 1) saved = stored;
     } catch (e) { /* приватное окно — играем на полной */ }
 
-    player.audio.volume = saved;
+    player.volumeAdjustable = true;
+    player.userVolume = saved;
+    applyVolume();
     slider.value = String(Math.round(saved * 100));
     paintVolume(saved);
     box.hidden = false;
@@ -2418,3 +2454,126 @@ document.addEventListener("keydown", (event) => {
     if (event.repeat) return;
     togglePlay();
 });
+
+
+/* ---------------- Sleep timer and fades ----------------
+ *
+ * Плавный переход — затухание, а не наложение двух треков: настоящий
+ * кроссфейд требует второго <audio>, а на iPhone ещё и Web Audio, который
+ * обрывает фоновое воспроизведение. Конец трека уходит в тишину, начало
+ * следующего из неё выходит; считается по позиции в треке, поэтому перемотка
+ * и повтор не сбивают. Там, где громкость странице не подчиняется (iOS),
+ * переход не предлагается, а таймер сна просто ставит паузу.
+ */
+
+const FADE_KEY = "playerFade";
+const SLEEP_FADE_MS = 10000;
+let sleepTimer = null;
+
+function sleepLevel() {
+    if (!player.sleep || !player.sleep.until) return 1;
+    return Math.max(0, Math.min(1, (player.sleep.until - Date.now()) / SLEEP_FADE_MS));
+}
+
+function fadeTick() {
+    const a = player.audio;
+    let level = 1;
+    if (player.fadeSeconds > 0 && Number.isFinite(a.duration) && a.duration > player.fadeSeconds * 2) {
+        const left = a.duration - a.currentTime;
+        if (left < player.fadeSeconds) level = Math.max(0, left / player.fadeSeconds);
+        if (a.currentTime < player.fadeSeconds) level = Math.min(level, a.currentTime / player.fadeSeconds);
+    }
+    level = Math.min(level, sleepLevel());
+    if (level !== player.fadeLevel) {
+        player.fadeLevel = level;
+        applyVolume();
+    }
+}
+
+function renderSleep() {
+    const button = document.getElementById("playerSleep");
+    const left = document.getElementById("playerSleepLeft");
+    if (!button || !left) return;
+    const on = Boolean(player.sleep);
+    button.classList.toggle("is-on", on);
+    button.setAttribute("aria-pressed", String(on));
+    if (!on) {
+        left.hidden = true;
+        button.title = "Таймер сна";
+        return;
+    }
+    if (player.sleep.track) {
+        left.textContent = "1";
+        button.title = "Остановится в конце трека";
+    } else {
+        const minutes = Math.max(1, Math.ceil((player.sleep.until - Date.now()) / 60000));
+        left.textContent = String(minutes);
+        button.title = `Остановится через ${minutes} мин`;
+    }
+    left.hidden = false;
+}
+
+function clearSleep() {
+    player.sleep = null;
+    if (sleepTimer) clearInterval(sleepTimer);
+    sleepTimer = null;
+    fadeTick();
+    renderSleep();
+}
+
+function sleepTick() {
+    if (!player.sleep || !player.sleep.until) return;
+    if (Date.now() >= player.sleep.until) {
+        player.audio.pause();
+        clearSleep();
+        return;
+    }
+    fadeTick();
+    renderSleep();
+}
+
+function setSleep(minutes) {
+    closeSleepMenu();
+    if (sleepTimer) clearInterval(sleepTimer);
+    sleepTimer = null;
+    if (minutes === null) { clearSleep(); return; }
+    if (minutes === "track") {
+        player.sleep = { track: true };
+    } else {
+        player.sleep = { until: Date.now() + minutes * 60000 };
+        sleepTimer = setInterval(sleepTick, 1000);
+    }
+    renderSleep();
+}
+
+function setFade(seconds) {
+    closeSleepMenu();
+    player.fadeSeconds = seconds;
+    try { localStorage.setItem(FADE_KEY, String(seconds)); } catch (e) { /* приватное окно */ }
+    fadeTick();
+}
+
+function closeSleepMenu() {
+    const menu = document.getElementById("playerSleepMenu");
+    if (menu) menu.hidden = true;
+}
+
+function toggleSleepMenu() {
+    const menu = document.getElementById("playerSleepMenu");
+    if (!menu) return;
+    menu.hidden = !menu.hidden;
+    const fadeBox = document.getElementById("playerFadeBox");
+    if (fadeBox) fadeBox.hidden = !player.volumeAdjustable;
+}
+
+document.addEventListener("click", (event) => {
+    const menu = document.getElementById("playerSleepMenu");
+    if (menu && !menu.hidden && !event.target.closest(".sleep-wrap")) menu.hidden = true;
+});
+
+(function initFade() {
+    try {
+        const saved = parseInt(localStorage.getItem(FADE_KEY), 10);
+        if (saved === 3 || saved === 6) player.fadeSeconds = saved;
+    } catch (e) { /* приватное окно — без перехода */ }
+})();

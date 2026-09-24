@@ -28,10 +28,17 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements-dev.txt
 
+      # Chromium for tests/test_ui.py, the version this Playwright release drives.
+      - name: Install browser
+        run: python -m playwright install --with-deps chromium
+
       - name: Lint
         run: |
           ruff check .
           ruff format --check adder scripts tests desktop
+
+      - name: Type check
+        run: mypy
 
       - name: Compile Python sources
         run: python -m compileall -q adder scripts tests desktop

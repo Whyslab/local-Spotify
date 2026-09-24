@@ -732,3 +732,119 @@ def test_final_failure_is_logged_with_its_type(app_module, monkeypatch, caplog):
     assert len(failures) == 1
     assert failures[0].task_id == 7
     assert "youtube_not_found" in failures[0].getMessage()
+
+
+# ---------------------------------------------------------------------------
+# Retrying failed tasks: by hand, and after a rate limit by itself
+# ---------------------------------------------------------------------------
+
+
+def _failed(url, error_type="network_error", minutes_ago=0, **extra):
+    tid = db.db_exec(
+        "INSERT INTO tasks(url, status, error_type, updated_at) "
+        "VALUES(?, 'error', ?, datetime('now', 'localtime', ?))",
+        (url, error_type, f"-{minutes_ago} minutes"),
+    ).lastrowid
+    if extra:
+        db.task_update(tid, **extra)
+        db.db_exec(
+            "UPDATE tasks SET updated_at = datetime('now', 'localtime', ?) WHERE id = ?",
+            (f"-{minutes_ago} minutes", tid),
+        )
+    return tid
+
+
+def _drain():
+    while not runtime.TASK_QUEUE.empty():
+        runtime.TASK_QUEUE.get_nowait()
+        runtime.TASK_QUEUE.task_done()
+
+
+def test_retry_failed_queues_every_failed_link(client, app_module):
+    _drain()
+    runtime.PROCESSING_URLS.clear()
+    a = _failed("https://www.youtube.com/watch?v=a")
+    b = _failed("https://www.youtube.com/watch?v=b", "youtube_not_found")
+    db.db_exec("INSERT INTO tasks(url, status) VALUES('https://www.youtube.com/watch?v=c', 'done')")
+
+    response = client.post("/api/tasks/retry-failed", headers=auth_headers())
+
+    assert response.status_code == 200
+    assert sorted(response.json()["requeued"]) == sorted([a, b])
+    statuses = {r["id"]: r["status"] for r in db.db_query("SELECT id, status FROM tasks")}
+    assert statuses[a] == statuses[b] == "queued"
+    _drain()
+
+
+def test_retry_failed_needs_the_token(client):
+    assert client.post("/api/tasks/retry-failed").status_code == 401
+
+
+def test_a_failed_replacement_and_a_vanished_upload_are_left_alone(client, app_module):
+    _drain()
+    runtime.PROCESSING_URLS.clear()
+    _failed("https://www.youtube.com/watch?v=r", replace_of="A/Singles/B.m4a")
+    _failed("file:" + "0" * 64)
+
+    assert app_module.requeue_failed() == []
+
+
+def test_rate_limited_tasks_come_back_by_themselves_after_an_hour(client, app_module):
+    _drain()
+    runtime.PROCESSING_URLS.clear()
+    old = _failed("https://www.youtube.com/watch?v=old", "rate_limited", minutes_ago=61)
+    _failed("https://www.youtube.com/watch?v=new", "rate_limited", minutes_ago=5)
+    _failed("https://www.youtube.com/watch?v=gone", "youtube_not_found", minutes_ago=120)
+    tired = _failed(
+        "https://www.youtube.com/watch?v=tired", "rate_limited", minutes_ago=90, auto_requeues=3
+    )
+
+    assert app_module.requeue_failed(auto=True) == [old]
+    row = db.db_query("SELECT status, auto_requeues FROM tasks WHERE id = ?", (old,))[0]
+    assert row == {"status": "queued", "auto_requeues": 1}
+    assert db.db_query("SELECT status FROM tasks WHERE id = ?", (tired,))[0]["status"] == "error"
+    _drain()
+
+
+def test_a_manual_retry_resets_the_automatic_count(client, app_module):
+    _drain()
+    runtime.PROCESSING_URLS.clear()
+    tid = _failed("https://www.youtube.com/watch?v=x", "rate_limited", 90, auto_requeues=3)
+
+    assert app_module.requeue_failed() == [tid]
+    assert db.db_query("SELECT auto_requeues FROM tasks WHERE id = ?", (tid,))[0] == {
+        "auto_requeues": 0
+    }
+    _drain()
+
+
+def test_the_panel_offers_retry_only_for_failures():
+    js = (Path(__file__).resolve().parents[1] / "web" / "app.js").read_text()
+
+    assert 'retry.hidden = !queue.some(t => t.status === "error")' in js
+
+
+def test_the_iphone_shortcut_request_is_accepted(client, app_module):
+    """The exact request docs/iphone-shortcut.md builds: JSON {"links": [url]}.
+
+    A link shared from the YouTube app carries a ?si= tracking parameter; it
+    must land as the same canonical task as the plain link.
+    """
+    _drain()
+    runtime.PROCESSING_URLS.clear()
+
+    first = client.post(
+        "/api/add",
+        json={"links": ["https://youtu.be/dQw4w9WgXcQ?si=AbCdEf123"]},
+        headers={**auth_headers(), "Content-Type": "application/json"},
+    )
+    again = client.post(
+        "/api/add",
+        json={"links": ["https://www.youtube.com/watch?v=dQw4w9WgXcQ"]},
+        headers=auth_headers(),
+    )
+
+    assert first.status_code == 200 and len(first.json()["added"]) == 1
+    # The shortcut reads an empty "added" as "already there".
+    assert again.json()["added"] == []
+    _drain()

@@ -37,6 +37,9 @@
 * **Добавление музыки по ссылке** — POST-запрос со списком YouTube URL, остальное сервис делает сам.
 * **Фоновая очередь с несколькими воркерами** — загрузки не блокируют API и выполняются параллельно (`MAX_WORKERS`).
 * **Автоматическая очистка метаданных** — `Song (Official Video) [4K]` превращается в чистые `Artist / Song`, при этом версии вида `(Live)`/`(Remix)` сохраняются в тегах.
+* **Таймер сна и плавный переход** — плеер останавливается через 15, 30 или 60 минут или в конце трека, последние десять секунд убавляя громкость; смена трека может затухать и нарастать за 3 или 6 секунд (затухание, а не наложение треков; не на iPhone, где странице нельзя менять громкость).
+* **Ровная громкость (ReplayGain)** — каждый трек измеряется через ffmpeg (EBU R 128) и получает тег; Navidrome, Subsonic-клиенты с поддержкой ReplayGain и встроенный плеер на компьютере играют всё на одном уровне. На iPhone браузер не даёт странице менять громкость, там это делает Subsonic-клиент.
+* **Настоящие данные об альбоме** — альбом, номер трека, дата выхода и все исполнители берутся из Deezer, а если Deezer трека не знает — из MusicBrainz (обложка из Cover Art Archive); синглом трек записывается, только когда не нашли оба.
 * **HD-обложки** — iTunes Search API с фолбэком на превью YouTube; отдельный скрипт (`fix_covers.py`) добивает обложки постфактум через iTunes → Deezer.
 * **Дедупликация по содержимому** — перед сохранением трек хешируется (SHA-256) и сверяется с уже имеющимися файлами в библиотеке, а не только по имени.
 * **Retry с экспоненциальным backoff** — временные сетевые ошибки и сбои загрузки повторяются автоматически, постоянные — нет.
@@ -104,7 +107,7 @@
 
 ```bash
 sudo apt update
-sudo apt install -y python3 python3-venv ffmpeg git curl unzip
+sudo apt install -y python3 python3-venv ffmpeg git curl unzip libnotify-bin
 
 # Deno в /usr/local/bin, чтобы systemd-сервис нашёл его в своём PATH по умолчанию.
 # (Официальный установщик кладёт его в ~/.deno/bin — он есть в PATH шелла, но не сервиса.)
@@ -189,7 +192,7 @@ curl -s http://127.0.0.1:8787/api/tasks -H "Authorization: Bearer $TOKEN"
 
 Файл появится как `<LIBRARY_PATH>/<Исполнитель>/Singles/<Название>.m4a`. Строка лога `Task finished: stored` отмечает его; при ошибке в логе будет строка `ERROR` с причиной, а в `/api/tasks` — поля `error` / `error_type`.
 
-Веб-интерфейс — `http://<хост>:8787/`: один раз вставь токен, дальше добавляй ссылки и смотри очередь с телефона.
+Веб-интерфейс — `http://<хост>:8787/`: один раз вставь токен, дальше добавляй ссылки и смотри очередь с телефона. На iPhone команда из приложения «Команды» добавляет **Поделиться → В local-Spotify** прямо в YouTube: см. [docs/iphone-shortcut.md](docs/iphone-shortcut.md).
 
 Перед шагом 7 останови сервис (`Ctrl+C`).
 
@@ -232,6 +235,8 @@ curl -s http://127.0.0.1:8787/health     # {"status":"healthy"}
 | `RETRY_BACKOFF_BASE`       | `2.0`                             | База экспоненциального backoff (сек.)                   |
 | `RATE_LIMIT_BACKOFF` | `60` | После ограничения от YouTube (HTTP 429) — секунд ожидания на попытку; всё это время yt-dlp не запускается |
 | `MAX_DURATION_MINUTES` | `30` | Самое длинное видео, которое принимается, в минутах; `0` — без ограничения. Прямые эфиры не принимаются никогда |
+| `DESKTOP_NOTIFICATIONS` | `true` | Уведомления на рабочем столе этого компьютера: треки добавлены (пачкой), загрузка упала, обновление yt-dlp откатено. Нужен `notify-send` |
+| `LISTENBRAINZ_TOKEN` | *(пусто)* | Токен пользователя с listenbrainz.org/settings: прослушивания во встроенном плеере (половина трека или 4 минуты) уходят в ListenBrainz, через очередь — без сети не теряются |
 | `SHUTDOWN_TIMEOUT`         | `30`                              | Таймаут graceful shutdown (сек.)                        |
 | `MIN_FREE_SPACE_MB`        | `2048`                            | Минимум свободного места на диске перед загрузкой        |
 | `TMP_TTL_HOURS`            | `24`                              | Через сколько часов удаляются зависшие временные файлы   |
@@ -255,6 +260,11 @@ curl -s http://127.0.0.1:8787/health     # {"status":"healthy"}
 | `GET`  | `/health`      | Статус сервиса, БД, библиотеки, ffmpeg, JS-рантайма и очереди |
 | `POST` | `/api/add`     | Добавить одну или несколько YouTube-ссылок   |
 | `GET`  | `/api/tasks`   | Последние 50 задач и их статус               |
+| `POST` | `/api/tasks/retry-failed` | Поставить все упавшие задачи заново (есть и кнопка в панели) |
+| `GET` | `/api/duplicates` | Треки с предупреждением «похоже на имеющийся», каждый рядом со своим двойником |
+| `POST` | `/api/duplicates/resolve` | `{"task", "keep": "new"\|"existing"\|"both"}`: второй экземпляр — в `trash/`, подборки следуют за оставленным |
+| `GET` | `/api/library/health` | Треки без обложки, альбома или ReplayGain, нечитаемые файлы и ход запущенного исправления |
+| `POST` | `/api/library/health/fix` | `{"what": "covers"\|"loudness"}`: найти недостающие обложки или измерить громкость в фоне |
 | `GET`  | `/`            | Веб-интерфейс                                |
 | `GET`  | `/api/playlists` | Список подборок |
 | `POST` | `/api/playlists` | Создать подборку |
@@ -269,7 +279,9 @@ curl -s http://127.0.0.1:8787/health     # {"status":"healthy"}
 | `GET`  | `/api/plays/stats` | Доля пропусков — общая и по режимам очереди |
 | `POST` | `/api/import`  | Принять файлы с диска через тот же конвейер |
 | `GET`  | `/api/search`  | Найти трек на YouTube, ничего не скачивая |
-| `POST` | `/api/import-playlist` | Поставить в очередь плейлист по одной ссылке |
+| `POST` | `/api/import-playlist` | Поставить в очередь плейлист по одной ссылке: YouTube (в том числе альбом YouTube Music), Spotify или альбом Deezer |
+| `GET` | `/api/albums/search?q=` | Альбомы Deezer по тексту — чтобы выбрать нужный |
+| `POST` | `/api/import-album` | `{"id"}`: поставить в очередь все треки этого альбома Deezer с его тегами |
 | `GET`  | `/api/shuffle` | Собрать очередь (`mode=smart` или `plain`) |
 | `POST` | `/api/shuffle/blind` | Две очереди, по одной каждого вида, без подписей |
 | `POST` | `/api/shuffle/blind/{id}` | Записать, какая понравилась |
@@ -277,6 +289,7 @@ curl -s http://127.0.0.1:8787/health     # {"status":"healthy"}
 | `GET`  | `/api/sync`    | Что нашёл последний проход синхронизации |
 | `POST` | `/api/sync`    | Пройти сейчас; `?apply=false` — только отчёт |
 | `GET`  | `/api/track`   | Теги трека плюс темп, тональность и энергия |
+| `PATCH` | `/api/track` | Исправить название, исполнителей и альбом; `refetch_cover` ищет обложку заново |
 | `GET`  | `/api/cover`   | Обложка из самого файла; `?size=96\|300\|600` — уменьшенная, из кэша |
 | `GET` `DELETE` | `/api/library` | Фонотека (поиск, сортировка, порции) / трек в `trash/` |
 | `POST` | `/api/replace` `/api/replace-file` | Заменить трек лучшей версией, сохранив его место во всех подборках |
@@ -319,7 +332,7 @@ curl -X POST http://127.0.0.1:8787/api/add \
 | `error_type` | Повтор автоматически | Значение |
 | --- | --- | --- |
 | `network_error`, `download_error`, `artwork_error` | да | Временный сбой |
-| `rate_limited` | да | YouTube ограничивает запросы (HTTP 429 / «try again later») |
+| `rate_limited` | да, и ещё раз сама через час (до 3 раз) | YouTube ограничивает запросы (HTTP 429 / «try again later») |
 | `youtube_not_found` | нет | Видео удалено, приватное или заблокировано в регионе |
 | `unsupported_video` | нет | Прямой эфир или видео длиннее `MAX_DURATION_MINUTES` |
 | `youtube_auth_required` | нет | Проверка на бота, возрастное ограничение, только для спонсоров: задай `COOKIES_FROM_BROWSER` |
@@ -361,7 +374,7 @@ curl -X POST http://127.0.0.1:8787/api/add \
 ./deploy/install.sh
 ```
 
-Скрипт не продолжит без `.venv` или с пустым/заглушечным `API_TOKEN`; запишет юнит для `LIBRARY_PATH` и включит lingering; если установлен `navidrome` и у него ещё нет конфига — запишет `/etc/navidrome/navidrome.toml` с тем же `MusicFolder` (существующий конфиг не трогается); если активен `ufw` — откроет Navidrome и сервис для подсети LAN (`LAN_SUBNET=192.168.1.0/24`, чтобы выбрать её самому).
+Скрипт не продолжит без `.venv` или с пустым/заглушечным `API_TOKEN`; запишет юнит для `LIBRARY_PATH` и включит lingering; поставит три таймера — ночную разметку ReplayGain и анализ аудио, ночную выгрузку полок и еженедельное обновление yt-dlp, которое само откатывается, если новая версия не читает YouTube; если установлен `navidrome` и у него ещё нет конфига — запишет `/etc/navidrome/navidrome.toml` с тем же `MusicFolder` (существующий конфиг не трогается); если активен `ufw` — откроет Navidrome и сервис для подсети LAN (`LAN_SUBNET=192.168.1.0/24`, чтобы выбрать её самому).
 
 ```bash
 systemctl --user status music-adder
@@ -390,20 +403,23 @@ git pull
 ## 🧪 Тесты
 
 ```bash
-.venv/bin/pip install -r requirements-dev.txt   # pytest и ruff
+.venv/bin/pip install -r requirements-dev.txt   # pytest, ruff, playwright
+.venv/bin/python -m playwright install chromium  # один раз, для браузерных тестов
 .venv/bin/pytest -q
 .venv/bin/ruff check . && .venv/bin/ruff format --check adder scripts tests desktop
+.venv/bin/mypy                                   # проверка типов, настройки в mypy.ini
 ```
 
-Тесты полностью офлайн и не требуют настоящего `.env`; тестам импорта и потоков нужен `ffmpeg` (CI его ставит). `tests/conftest.py` роняет любой тест, который открывает сетевое соединение, поэтому YouTube, Deezer и iTunes всегда замоканы. Покрыто:
+Тесты полностью офлайн и не требуют настоящего `.env`; тестам импорта и потоков нужен `ffmpeg` (CI его ставит). `tests/conftest.py` роняет любой тест, который открывает сетевое соединение, поэтому YouTube, Deezer, MusicBrainz и iTunes всегда замоканы. Покрыто:
 
 * **скачивание** — команды yt-dlp, разбор его JSON и строки `ERROR:`, запуск подпроцесса (таймауты, остановка, большой вывод), какие ошибки повторяются;
-* **метаданные** — разбор заголовков YouTube на исполнителя и название, обогащение из Deezer на подготовленных ответах API;
+* **метаданные** — разбор заголовков YouTube на исполнителя и название, обогащение из Deezer и MusicBrainz на подготовленных ответах API;
 * **запись в библиотеку** — `process()` целиком на настоящем AAC-файле длиной 1 с (`tests/fixtures/tone.m4a`): теги читаются обратно через mutagen, раскладка `Artist/Singles/Title.m4a`, запасная обложка, битые файлы, дедупликация по содержимому;
 * API: авторизация, валидация и канонизация ссылок, удаление и path traversal, `/health`, восстановление задач после рестарта, graceful shutdown и XSS-регрессия во фронтенде;
+* **панель и плеер в настоящем браузере** (`tests/test_ui.py`, Playwright + Chromium): правка тегов, громкость ReplayGain, затухание, таймер сна, повтор, состояние фонотеки, выбор альбома, дубликаты и вывод названий как текста;
 * подборки, синхронизация с Navidrome, подписи потоков, импорт файлов, тексты песен, перемешивания и скачивания умного перемешивания.
 
-CI (`.github/workflows/ci.yml`) на каждый push и pull request запускает `ruff check`, `ruff format --check`, `compileall` и весь набор тестов в чистом окружении.
+CI (`.github/workflows/ci.yml`) на каждый push и pull request запускает `ruff check`, `ruff format --check`, `mypy`, `compileall` и весь набор тестов в чистом окружении.
 
 ---
 
@@ -419,7 +435,7 @@ CI (`.github/workflows/ci.yml`) на каждый push и pull request запу�
 | `/health` → `"js_runtime": "missing"`, в логе предупреждение про Deno | Поставь Deno в `/usr/local/bin`, как в [шаге 1](#1-системные-пакеты). Deno из `~/.deno/bin` работает в шелле, но не в systemd-сервисе. |
 | `youtube_auth_required`: «Sign in to confirm you're not a bot» | YouTube не доверяет этому IP. Войди в YouTube в браузере на этой же машине, задай `COOKIES_FROM_BROWSER=firefox` (или `chrome`, или `firefox:/путь/к/профилю`) в `adder/.env`, перезапусти, отправь ссылку заново. |
 | Много ошибок `rate_limited` | YouTube ограничивает запросы; сервис уже ставит все скачивания на паузу на `RATE_LIMIT_BACKOFF` секунд за попытку. Если не проходит — уменьши `MAX_WORKERS` до `1`, подожди час, отправь упавшие ссылки заново. |
-| Скачивания, которые работали, начали падать | YouTube что-то поменял; обнови yt-dlp: `.venv/bin/pip install -U yt-dlp yt-dlp-ejs` и перезапусти. |
+| Скачивания, которые работали, начали падать | YouTube что-то поменял. yt-dlp обновляется сам раз в неделю; обновить сейчас: `.venv/bin/python scripts/update_ytdlp.py` (перезапуск не нужен). Прошлые запуски — `journalctl --user -u music-ytdlp-update`. |
 | Задача `done`, но в Navidrome трека нет | Navidrome читает другую папку: его `MusicFolder` (`/etc/navidrome/navidrome.toml`) должен совпадать с `library_path` из `/health`. Проверь, что пользователь Navidrome может её читать: `sudo -u navidrome ls "<library_path>"`. Затем *Settings → Scan* в Navidrome. |
 | Удаление трека из веб-интерфейса не работает | Удалённые файлы попадают в `trash/` в корне репозитория. После `git pull` запусти `./deploy/install.sh` заново, чтобы у юнита был `ReadWritePaths` для неё. |
 | Веб-интерфейс говорит, что токен неверный | Вставь значение `API_TOKEN` из `adder/.env` без `API_TOKEN=`. |
