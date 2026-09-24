@@ -1,67 +1,45 @@
-"""Добивает обложки для всех треков без covr-тега. iTunes (throttled) -> Deezer fallback."""
+"""Добивает обложки для всех треков без covr-тега: iTunes -> Deezer.
+
+Поиск обложки — тот же, что у службы при добавлении трека (ingest.get_hd_cover
+и Deezer через enrich), а не своя копия: копия уже разошлась с оригиналом и не
+проверяла ни совпадение песни, ни то, что пришла действительно картинка.
+
+Запуск из корня репозитория:
+
+    .venv/bin/python -m adder.fix_covers
+"""
 
 import sys
 import time
 from pathlib import Path
 
-import requests
 from mutagen.mp4 import MP4, MP4Cover
 
-# Explicitly add this file's own directory to sys.path so "import config"
-# resolves whether this script is run directly (python adder/fix_covers.py,
-# where sys.path[0] already happens to be this directory) or as a module
-# (python -m adder.fix_covers, where it does not). Matches the pattern
-# already used by scripts/*.py.
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+# Run as "python adder/fix_covers.py", sys.path[0] is adder/ itself, where
+# adder/queue.py would shadow the standard library's queue. Point it at the
+# repository root instead, which is what "python -m adder.fix_covers" gets.
+if not __package__:
+    sys.path[0] = str(Path(__file__).resolve().parent.parent)
 
-# Import unified configuration
-from config import DELAY_BETWEEN_TRACKS, LIBRARY
-
-DELAY = DELAY_BETWEEN_TRACKS  # защита от rate-limit iTunes
+from adder import config, enrich, ingest  # noqa: E402
 
 
-def itunes_cover(artist: str, title: str):
-    params = {"term": f"{artist} {title}", "limit": 1, "entity": "song"}
-    for _ in range(3):
-        try:
-            r = requests.get("https://itunes.apple.com/search", params=params, timeout=10)
-        except Exception:
-            time.sleep(5)
-            continue
-        if r.status_code in (403, 429):  # rate-limit: ждём и повторяем
-            time.sleep(30)
-            continue
-        if r.ok and r.json().get("resultCount", 0) > 0:
-            art = (
-                r.json()["results"][0].get("artworkUrl100", "").replace("100x100bb", "3000x3000bb")
-            )
-            img = requests.get(art, timeout=15)
-            if img.ok:
-                return img.content, "jpg"
-        return None  # найдено не было — ретраи бессмысленны
+def find_cover(artist: str, title: str):
+    """(bytes, fmt) or None: iTunes first, then the album cover Deezer knows."""
+    data, fmt = ingest.get_hd_cover(artist, title)
+    if data:
+        return data, fmt
+    info = enrich.lookup(artist, title)
+    if info and info.cover_url:
+        data, fmt = ingest.fetch_cover_url(info.cover_url)
+        if data:
+            return data, fmt
     return None
 
 
-def deezer_cover(artist: str, title: str):
-    try:
-        r = requests.get(
-            "https://api.deezer.com/search",
-            params={"q": f"{artist} {title}", "limit": 1},
-            timeout=10,
-        )
-        if r.ok and r.json().get("data"):
-            url = r.json()["data"][0].get("album", {}).get("cover_xl")
-            if url:
-                img = requests.get(url, timeout=15)
-                if img.ok:
-                    return img.content, "jpg"
-    except Exception:
-        pass
-    return None
-
-
-def main():
-    files = sorted(LIBRARY.rglob("*.m4a"))
+def backfill(library: Path, delay: float, sleep=time.sleep) -> tuple[int, int]:
+    """Add covers to every M4A without one. Returns (added, not found)."""
+    files = sorted(library.rglob("*.m4a"))
     missing = []
     for f in files:
         try:
@@ -77,11 +55,7 @@ def main():
         artist = (audio.get("\xa9ART") or [f.parent.parent.name])[0]
         title = (audio.get("\xa9nam") or [f.stem])[0]
 
-        cover = itunes_cover(artist, title)
-        if not cover:
-            cover = deezer_cover(artist, title)
-            time.sleep(0.4)
-
+        cover = find_cover(artist, title)
         if cover:
             data, fmt = cover
             fmt_c = MP4Cover.FORMAT_PNG if fmt == "png" else MP4Cover.FORMAT_JPEG
@@ -92,9 +66,14 @@ def main():
         else:
             miss += 1
             print(f"[{i}/{len(missing)}] MISS {artist} - {title}")
-        time.sleep(DELAY)
+        sleep(delay)  # защита от rate-limit iTunes
 
     print(f"\nГотово: обложек добавлено {ok}, не найдено {miss}")
+    return ok, miss
+
+
+def main():
+    backfill(config.LIBRARY, config.DELAY_BETWEEN_TRACKS)
 
 
 if __name__ == "__main__":
