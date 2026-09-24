@@ -353,6 +353,28 @@
               aria-label="Очередь" title="Очередь" aria-pressed="false">
         <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h11M4 12h11M4 18h7M17 14v7M21 18l-4 3-4-3"/></svg>
       </button>
+      <!-- Таймер сна и плавный переход: одна кнопка, выбор — во всплывающем меню. -->
+      <div class="sleep-wrap">
+        <button id="playerSleep" class="icon-button" onclick="toggleSleepMenu()"
+                aria-label="Таймер сна" title="Таймер сна" aria-pressed="false" aria-haspopup="true">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/></svg>
+          <span id="playerSleepLeft" class="repeat-one" hidden></span>
+        </button>
+        <div id="playerSleepMenu" class="sleep-menu" role="menu" hidden>
+          <div class="sleep-title">Таймер сна</div>
+          <button role="menuitem" onclick="setSleep(null)">Выключен</button>
+          <button role="menuitem" onclick="setSleep(15)">15 минут</button>
+          <button role="menuitem" onclick="setSleep(30)">30 минут</button>
+          <button role="menuitem" onclick="setSleep(60)">60 минут</button>
+          <button role="menuitem" onclick="setSleep('track')">До конца трека</button>
+          <div id="playerFadeBox" hidden>
+            <div class="sleep-title">Плавный переход</div>
+            <button role="menuitem" onclick="setFade(0)">Нет</button>
+            <button role="menuitem" onclick="setFade(3)">3 секунды</button>
+            <button role="menuitem" onclick="setFade(6)">6 секунд</button>
+          </div>
+        </div>
+      </div>
       </div>
 
       <!-- На iOS громкость страницы задать нельзя: Apple отдаёт её физическим

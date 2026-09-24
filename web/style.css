@@ -1939,3 +1939,33 @@ button.ghost.is-on { color: var(--text); border-color: var(--text); font-weight:
         font-size: 18px;
     }
 }
+
+
+/* Таймер сна: меню над кнопкой, число оставшихся минут — как «1» у повтора. */
+.sleep-wrap { position: relative; display: inline-flex; }
+.sleep-menu {
+    position: absolute;
+    bottom: calc(100% + 8px);
+    right: 0;
+    z-index: 30;
+    min-width: 180px;
+    padding: 6px;
+    display: flex;
+    flex-direction: column;
+    background: var(--surface-2);
+    border: 1px solid var(--line-2);
+    border-radius: 10px;
+    box-shadow: 0 8px 24px #0008;
+}
+.sleep-menu[hidden] { display: none; }
+.sleep-menu button {
+    text-align: left;
+    background: none;
+    border: 0;
+    color: var(--text);
+    padding: 7px 10px;
+    border-radius: 6px;
+    font-size: 13px;
+}
+.sleep-menu button:hover { background: var(--line); }
+.sleep-title { font-size: 11px; color: var(--text-3); text-transform: uppercase; padding: 6px 10px 2px; }

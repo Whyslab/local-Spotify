@@ -37,6 +37,7 @@ It is not built to be a public SaaS or to work around YouTube's restrictions —
 * **Add music by link** — POST a list of YouTube URLs; the service handles the rest.
 * **Background queue with multiple workers** — downloads run in parallel (`MAX_WORKERS`) and never block the API.
 * **Automatic metadata cleanup** — `Song (Official Video) [4K]` becomes a clean `Artist / Song`, while genuine variants like `(Live)` or `(Remix)` are preserved in the tags.
+* **Sleep timer and fades** — the player stops after 15, 30 or 60 minutes or at the end of the track, lowering the volume over the last ten seconds; track changes can fade out and in over 3 or 6 seconds (a fade, not an overlapping crossfade; not on an iPhone, where a page cannot set volume).
 * **Even loudness (ReplayGain)** — every track is measured with ffmpeg (EBU R 128) and tagged; Navidrome, Subsonic clients that honour ReplayGain and the built-in desktop player play everything at the same level. On an iPhone the browser does not let a page change volume, so there it is up to the Subsonic client.
 * **Real album data** — album, track number, release date and every credited artist come from Deezer, and from MusicBrainz (with the Cover Art Archive) when Deezer does not know the track; only when both miss is a track filed as its own single.
 * **HD cover art** — iTunes Search API with a fallback to the YouTube thumbnail; a separate script (`fix_covers.py`) backfills missing artwork afterwards via iTunes → Deezer.
