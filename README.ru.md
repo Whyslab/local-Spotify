@@ -23,6 +23,7 @@
 * [API](#-api)
 * [Production: systemd](#-production-systemd)
 * [Тесты](#-тесты)
+* [Решение проблем](#-решение-проблем)
 * [Безопасность](#-безопасность)
 * [Структура проекта](#-структура-проекта)
 * [Ограничения](#️-ограничения)
@@ -89,64 +90,157 @@
 
 ## 🚀 Быстрый старт
 
-Требования: Linux, Python 3.12+, [FFmpeg](https://ffmpeg.org/), git.
+Проверено на Debian/Ubuntu. Каждый шаг заканчивается командой, которая показывает, что он удался — не переходи дальше, пока она не сработает.
+
+### 1. Системные пакеты
+
+| Что | Зачем | Проверка |
+| --- | --- | --- |
+| Linux с systemd | продакшен-юнит (шаг 7) | `systemctl --user status` |
+| Python **3.12+** с `venv` | сам сервис | `python3 --version` |
+| **FFmpeg** (с `ffprobe`) | yt-dlp извлекает им аудио; без него падает каждое скачивание | `ffmpeg -version && ffprobe -version` |
+| **Deno** | yt-dlp нужен JavaScript-рантайм для JS-проверок плеера YouTube; по умолчанию он использует Deno | `deno --version` |
+| git, sqlite3 | клонирование; `deploy/backup.sh` | `git --version && sqlite3 --version` |
 
 ```bash
-# 1. Клонировать репозиторий
+sudo apt update
+sudo apt install -y python3 python3-venv ffmpeg git sqlite3 curl unzip
+
+# Deno в /usr/local/bin, чтобы systemd-сервис нашёл его в своём PATH по умолчанию.
+# (Официальный установщик кладёт его в ~/.deno/bin — он есть в PATH шелла, но не сервиса.)
+curl -fsSLo /tmp/deno.zip \
+  "https://github.com/denoland/deno/releases/latest/download/deno-$(uname -m)-unknown-linux-gnu.zip"
+sudo unzip -o /tmp/deno.zip -d /usr/local/bin
+deno --version
+```
+
+В Ubuntu 22.04 и старше `python3` — это 3.10/3.11: поставь 3.12 (например, из PPA deadsnakes как `python3.12` + `python3.12-venv`) и используй дальше `python3.12` вместо `python3`.
+
+### 2. Клонирование
+
+```bash
 git clone https://github.com/Whyslab/local-Spotify.git
 cd local-Spotify
-
-# 2. Виртуальное окружение и зависимости
-python -m venv .venv
-source .venv/bin/activate
-pip install -r adder/requirements.txt
-
-# 3. Конфигурация
-cp .env.example adder/.env
-python -c 'import secrets; print(secrets.token_urlsafe(32))'   # вставить в API_TOKEN
-$EDITOR adder/.env
-
-# 4. Запуск
-python -m adder.server
 ```
 
-Сервис поднимется на `http://0.0.0.0:8787`. Проверка:
+Все команды ниже выполняются из этого каталога.
+
+### 3. Виртуальное окружение и зависимости
 
 ```bash
-curl http://127.0.0.1:8787/health
+python3 -m venv .venv
+.venv/bin/pip install -r adder/requirements.txt
+.venv/bin/python -m yt_dlp --version     # печатает версию, например 2026.08.19
 ```
+
+Необязательно: умное перемешивание измеряет темп, тональность и энергию каждого трека через librosa. Она вынесена из основных зависимостей, потому что тянет компиляторы. Без неё всё остальное работает:
+
+```bash
+.venv/bin/pip install -r scripts/requirements-analysis.txt
+```
+
+venv должен лежать именно в `.venv` в корне репозитория: там его ищут `deploy/install.sh` и systemd-юнит.
+
+### 4. Настройка
+
+```bash
+cp .env.example adder/.env
+TOKEN=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
+sed -i "s|^API_TOKEN=.*|API_TOKEN=$TOKEN|" adder/.env
+grep '^API_TOKEN=' adder/.env             # НЕ должно быть CHANGE_ME_...
+```
+
+Это единственная обязательная настройка. С пустым токеном или заглушкой из `.env.example` сервис не запустится.
+
+Необязательно, в `adder/.env`:
+
+* `LIBRARY_PATH` — куда складывать музыку. По умолчанию `~/Music/Normalized Library`. Чтобы изменить, раскомментируй строку и укажи абсолютный путь **без кавычек**. Navidrome должен читать эту же папку (шаг 6).
+* `COOKIES_FROM_BROWSER` — только если YouTube начнёт отвечать «Sign in to confirm you're not a bot» (см. [Решение проблем](#-решение-проблем)).
+
+Полный список — в разделе [Конфигурация](#️-конфигурация).
+
+### 5. Запуск и проверка
+
+```bash
+.venv/bin/python -m adder.server
+```
+
+Сервис слушает `http://0.0.0.0:8787`. Во втором терминале:
 
 ```bash
 TOKEN=$(grep '^API_TOKEN=' adder/.env | cut -d= -f2-)
+curl -s http://127.0.0.1:8787/health -H "Authorization: Bearer $TOKEN"
+```
 
+Без токена `/health` отвечает только `{"status": ...}`. Ожидается `"status":"healthy"`, `"ffmpeg":"ok"` и `"js_runtime":"ok"`. Ответ `503` с `"ffmpeg":"missing"` значит, что шаг 1 не завершён; то же самое написано в логе запуска.
+
+Добавить трек:
+
+```bash
 curl -X POST http://127.0.0.1:8787/api/add \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"links": ["https://www.youtube.com/watch?v=dQw4w9WgXcQ"]}'
+# {"added":[1]}
+
+curl -s http://127.0.0.1:8787/api/tasks -H "Authorization: Bearer $TOKEN"
+# status: queued -> downloading -> tagging -> done
 ```
 
-Веб-интерфейс доступен по адресу самого сервиса (`/`) — там же можно ввести токен и следить за очередью.
+Файл появится как `<LIBRARY_PATH>/<Исполнитель>/Singles/<Название>.m4a`. Строка лога `Task finished: stored` отмечает его; при ошибке в логе будет строка `ERROR` с причиной, а в `/api/tasks` — поля `error` / `error_type`.
+
+Веб-интерфейс — `http://<хост>:8787/`: один раз вставь токен, дальше добавляй ссылки и смотри очередь с телефона.
+
+Перед шагом 7 останови сервис (`Ctrl+C`).
+
+### 6. Navidrome
+
+`local-Spotify` только наполняет папку, раздаёт её [Navidrome](https://www.navidrome.org/). Установи его по [официальной инструкции для Linux](https://www.navidrome.org/docs/installation/linux/) (пакет `.deb`/`.rpm` или архив релиза; сервис должен называться `navidrome`).
+
+Затем `MusicFolder` в Navidrome должен указывать на твой `LIBRARY_PATH`. Шаг 7 сделает это сам, если у Navidrome ещё нет конфига: запишет `/etc/navidrome/navidrome.toml` из `deploy/navidrome.toml.example` и добавит `deploy/navidrome-override.conf`, который разрешает сервису Navidrome читать папку внутри `/home`. Существующий конфиг никогда не перезаписывается — вместо этого скрипт напечатает, какую строку `MusicFolder` проверить.
+
+Для обложек подборок и удаления подборки из Navidrome, когда её `.m3u` удалён, задай ещё `NAVIDROME_USER` и `NAVIDROME_PASSWORD` (пользователь Navidrome) в `adder/.env`. Без них сервис работает, а эта часть ждёт в очереди, пока они не появятся.
+
+Проверка: открой `http://<хост>:4533`, создай администратора — трек из шага 5 появится после сканирования (Navidrome следит за папкой; полное пересканирование — *Settings → Scan*).
+
+### 7. Постоянная работа (systemd)
+
+```bash
+./deploy/install.sh
+systemctl --user status music-adder       # active (running)
+curl -s http://127.0.0.1:8787/health     # {"status":"healthy"}
+```
+
+Что делает скрипт — в разделе [Production: systemd](#-production-systemd). Окно приложения с медиаклавишами вокруг той же страницы описано в [`desktop/README.md`](desktop/README.md).
 
 ---
 
 ## ⚙️ Конфигурация
 
-Все настройки читаются из `adder/.env` (см. `.env.example`). Без валидного `API_TOKEN` сервис не запустится — это осознанное поведение, т.к. API доступен по всей локальной сети.
+Все настройки читаются из `adder/.env` (см. `.env.example`); настоящие переменные окружения имеют приоритет. Без валидного `API_TOKEN` сервис не запустится — это осознанное поведение, т.к. API доступен по всей локальной сети.
 
 | Переменная              | По умолчанию                    | Назначение                                             |
 | ------------------------ | -------------------------------- | ------------------------------------------------------- |
-| `API_TOKEN`               | *(обязательно)*                  | Bearer-токен для доступа к API                          |
-| `LIBRARY_PATH`             | `~/Music/Normalized Library`     | Путь к музыкальной библиотеке                           |
+| `API_TOKEN`               | *(обязательно)*                  | Bearer-токен для доступа к API. Пустой или заглушка из `.env.example` отвергаются |
+| `LIBRARY_PATH`             | `~/Music/Normalized Library`     | Путь к библиотеке; должен совпадать с `MusicFolder` в Navidrome. Абсолютный, без кавычек |
 | `PORT` / `HOST`            | `8787` / `0.0.0.0`               | Адрес, на котором слушает сервис                        |
 | `MAX_WORKERS`              | `2`                               | Число параллельных воркеров загрузки                    |
 | `MAX_LINKS_PER_REQUEST`    | `100`                             | Лимит ссылок в одном запросе `/api/add`                 |
 | `MAX_QUEUE_SIZE`           | `5000`                            | Максимальный размер очереди задач                       |
 | `PRESERVE_FEAT_ARTISTS`    | `true`                            | Сохранять `feat./ft.` в имени папки исполнителя         |
-| `MAX_RETRIES`              | `3`                               | Число попыток на задачу при временных ошибках           |
+| `MAX_RETRIES`              | `3`                               | Число попыток на задачу при временных ошибках (сеть, HTTP 429) |
 | `RETRY_BACKOFF_BASE`       | `2.0`                             | База экспоненциального backoff (сек.)                   |
 | `SHUTDOWN_TIMEOUT`         | `30`                              | Таймаут graceful shutdown (сек.)                        |
 | `MIN_FREE_SPACE_MB`        | `2048`                            | Минимум свободного места на диске перед загрузкой        |
 | `TMP_TTL_HOURS`            | `24`                              | Через сколько часов удаляются зависшие временные файлы   |
+| `COOKIES_FROM_BROWSER` | *(пусто)* | Значение `--cookies-from-browser` для yt-dlp: `firefox`, `chrome` или `firefox:/путь/к/профилю` |
+| `NAVIDROME_URL` | `http://127.0.0.1:4533` | Navidrome — для обложек подборок и удаления подборок в нём |
+| `NAVIDROME_USER` / `NAVIDROME_PASSWORD` | *(пусто)* | Пользователь Navidrome; необязательно, эта работа ждёт в очереди, пока их нет |
+| `MAX_COVER_BYTES` | `8388608` | Максимальный размер загружаемой обложки подборки |
+| `PLAY_HISTORY_DAYS` | `400` | Сколько дней хранится журнал прослушиваний |
+| `DELAY_BETWEEN_TRACKS` | `1.1` | Пауза между треками в офлайн-скриптах, не в сервисе |
+
+Изменения применяются после перезапуска (`systemctl --user restart music-adder`).
 
 ---
 
@@ -156,7 +250,7 @@ curl -X POST http://127.0.0.1:8787/api/add \
 
 | Метод  | Путь           | Описание                                    |
 | ------ | -------------- | -------------------------------------------- |
-| `GET`  | `/health`      | Статус сервиса, БД, библиотеки и очереди     |
+| `GET`  | `/health`      | Статус сервиса, БД, библиотеки, ffmpeg, JS-рантайма и очереди |
 | `POST` | `/api/add`     | Добавить одну или несколько YouTube-ссылок   |
 | `GET`  | `/api/tasks`   | Последние 50 задач и их статус               |
 | `GET`  | `/`            | Веб-интерфейс                                |
@@ -216,6 +310,24 @@ curl -X POST http://127.0.0.1:8787/api/add \
 </details>
 
 <details>
+<summary><code>GET /api/tasks</code> — статусы задач и типы ошибок</summary>
+
+`status` — одно из `queued`, `downloading`, `tagging`, `done`, `error`. Для `error` в поле `error` лежит строка ошибки самого yt-dlp, а `error_type` подсказывает, что делать:
+
+| `error_type` | Повтор автоматически | Значение |
+| --- | --- | --- |
+| `network_error`, `download_error`, `artwork_error` | да | Временный сбой |
+| `rate_limited` | да | YouTube ограничивает запросы (HTTP 429 / «try again later») |
+| `youtube_not_found` | нет | Видео удалено, приватное или заблокировано в регионе |
+| `youtube_auth_required` | нет | Проверка на бота, возрастное ограничение, только для спонсоров: задай `COOKIES_FROM_BROWSER` |
+| `dependency_error` | нет | На машине нет ffmpeg/ffprobe |
+| `invalid_url`, `filesystem_error`, `database_error`, `metadata_error`, `internal_error`, `unknown_error` | нет | Смотри лог сервиса по id задачи |
+
+Упавшую ссылку можно отправить заново, когда причина устранена.
+
+</details>
+
+<details>
 <summary><code>GET /health</code> — пример ответа</summary>
 
 ```json
@@ -224,13 +336,15 @@ curl -X POST http://127.0.0.1:8787/api/add \
   "database": "ok",
   "library": "ok",
   "library_path": "/home/user/Music/Normalized Library",
+  "ffmpeg": "ok",
+  "js_runtime": "ok",
   "workers": 2,
   "queue_size": 0,
   "max_queue_size": 5000
 }
 ```
 
-При проблеме с БД или отсутствии директории библиотеки статус меняется на `unhealthy`, а HTTP-код ответа — на `503`.
+Если БД недоступна, папки библиотеки нет или не установлены ffmpeg/ffprobe, статус становится `unhealthy`, а код ответа — `503`. Отсутствие Deno видно как `"js_runtime": "missing"`, но не делает сервис нездоровым.
 
 </details>
 
@@ -244,17 +358,28 @@ curl -X POST http://127.0.0.1:8787/api/add \
 ./deploy/install.sh
 ```
 
+Скрипт не продолжит без `.venv` или с пустым/заглушечным `API_TOKEN`; запишет юнит для `LIBRARY_PATH` и включит lingering; если установлен `navidrome` и у него ещё нет конфига — запишет `/etc/navidrome/navidrome.toml` с тем же `MusicFolder` (существующий конфиг не трогается); если активен `ufw` — откроет Navidrome и сервис для подсети LAN (`LAN_SUBNET=192.168.1.0/24`, чтобы выбрать её самому).
+
 ```bash
 systemctl --user status music-adder
-journalctl --user -u music-adder -f
+journalctl --user -u music-adder -f      # на задачу: Processing / Task finished / ERROR
+systemctl --user restart music-adder     # после правки adder/.env
+```
+
+Обновление:
+
+```bash
+git pull
+.venv/bin/pip install -r adder/requirements.txt
+./deploy/install.sh                      # юнит меняется между версиями
 ```
 
 Юнит запускает сервис с `WorkingDirectory` в корне репозитория и разрешает запись только в `adder/` (БД и временные файлы), `trash/` (удалённые треки) и путь библиотеки. Одного `ProtectSystem=strict` для этого мало: он монтирует `/` только для чтения, но `/home` — отдельная точка монтирования и остаётся доступной на запись. Закрывает её `ProtectHome=read-only`, а нужные каталоги возвращаются через `ReadWritePaths`.
 
-Резервное копирование состояния (SQLite + `.env`):
+Резервное копирование состояния (SQLite + `.env`; нужен пакет `sqlite3`):
 
 ```bash
-./deploy/backup.sh
+./deploy/backup.sh      # в ~/local-spotify-backups, хранит последние 10
 ```
 
 ---
@@ -262,12 +387,39 @@ journalctl --user -u music-adder -f
 ## 🧪 Тесты
 
 ```bash
-PYTHONPATH="$PWD" pytest -q
+.venv/bin/pip install ruff               # только для линтера; pytest уже в requirements.txt
+.venv/bin/pytest -q
+.venv/bin/ruff check . && .venv/bin/ruff format --check adder scripts tests
 ```
 
-Тесты покрывают: классификацию ошибок и решение о повторе, авторизацию API, валидацию и канонизацию YouTube-ссылок, дедупликацию по содержимому файла, retry-логику и её взаимодействие с graceful shutdown, восстановление задач после рестарта, очистку временных файлов, очистку названий треков и XSS-регрессию во фронтенде (проверка, что данные из недоверенных источников — метаданные YouTube-видео — никогда не попадают в DOM через `innerHTML`).
+Тесты полностью офлайн и не требуют настоящего `.env`; тестам импорта и потоков нужен `ffmpeg` (CI его ставит). `tests/conftest.py` роняет любой тест, который открывает сетевое соединение, поэтому YouTube, Deezer и iTunes всегда замоканы. Покрыто:
 
-CI (`.github/workflows/ci.yml`) на каждый push/PR прогоняет `ruff check`, `ruff format --check`, `compileall` и полный набор тестов на чистом окружении.
+* **скачивание** — команды yt-dlp, разбор его JSON и строки `ERROR:`, запуск подпроцесса (таймауты, остановка, большой вывод), какие ошибки повторяются;
+* **метаданные** — разбор заголовков YouTube на исполнителя и название, обогащение из Deezer на подготовленных ответах API;
+* **запись в библиотеку** — `process()` целиком на настоящем AAC-файле длиной 1 с (`tests/fixtures/tone.m4a`): теги читаются обратно через mutagen, раскладка `Artist/Singles/Title.m4a`, запасная обложка, битые файлы, дедупликация по содержимому;
+* API: авторизация, валидация и канонизация ссылок, удаление и path traversal, `/health`, восстановление задач после рестарта, graceful shutdown и XSS-регрессия во фронтенде;
+* подборки, синхронизация с Navidrome, подписи потоков, импорт файлов, тексты песен, перемешивания и скачивания умного перемешивания.
+
+CI (`.github/workflows/ci.yml`) на каждый push и pull request запускает `ruff check`, `ruff format --check`, `compileall` и весь набор тестов в чистом окружении.
+
+---
+
+## 🛠 Решение проблем
+
+Начни с `curl -s http://127.0.0.1:8787/health -H "Authorization: Bearer $TOKEN"` и `journalctl --user -u music-adder -n 50`.
+
+| Симптом | Причина и решение |
+| --- | --- |
+| `RuntimeError: API_TOKEN is required` при запуске | Токен пустой или всё ещё заглушка. Повтори [шаг 4](#4-настройка). |
+| `PermissionError` при создании библиотеки на старте | `LIBRARY_PATH` указывает туда, куда нельзя писать. Исправь в `adder/.env` или закомментируй для значения по умолчанию. |
+| `/health` → `"ffmpeg": "missing"`, задачи падают с `dependency_error` | `sudo apt install ffmpeg`, затем перезапусти сервис. |
+| `/health` → `"js_runtime": "missing"`, в логе предупреждение про Deno | Поставь Deno в `/usr/local/bin`, как в [шаге 1](#1-системные-пакеты). Deno из `~/.deno/bin` работает в шелле, но не в systemd-сервисе. |
+| `youtube_auth_required`: «Sign in to confirm you're not a bot» | YouTube не доверяет этому IP. Войди в YouTube в браузере на этой же машине, задай `COOKIES_FROM_BROWSER=firefox` (или `chrome`, или `firefox:/путь/к/профилю`) в `adder/.env`, перезапусти, отправь ссылку заново. |
+| Много ошибок `rate_limited` | YouTube ограничивает запросы. Уменьши `MAX_WORKERS` до `1`, подожди час, отправь упавшие ссылки заново. |
+| Скачивания, которые работали, начали падать | YouTube что-то поменял; обнови yt-dlp: `.venv/bin/pip install -U yt-dlp yt-dlp-ejs` и перезапусти. |
+| Задача `done`, но в Navidrome трека нет | Navidrome читает другую папку: его `MusicFolder` (`/etc/navidrome/navidrome.toml`) должен совпадать с `library_path` из `/health`. Проверь, что пользователь Navidrome может её читать: `sudo -u navidrome ls "<library_path>"`. Затем *Settings → Scan* в Navidrome. |
+| Удаление трека из веб-интерфейса не работает | Удалённые файлы попадают в `trash/` в корне репозитория. После `git pull` запусти `./deploy/install.sh` заново, чтобы у юнита был `ReadWritePaths` для неё. |
+| Веб-интерфейс говорит, что токен неверный | Вставь значение `API_TOKEN` из `adder/.env` без `API_TOKEN=`. |
 
 ---
 
