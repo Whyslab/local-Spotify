@@ -126,3 +126,18 @@ def test_malicious_channel_name_stays_one_path_component():
 
     assert fs_artist == "Unknown"
     assert "/" not in fs_title
+
+
+@pytest.mark.parametrize(
+    ("title", "filename"),
+    [
+        ("Live Forever", "Live Forever"),
+        ("Clean Up", "Clean Up"),
+        ("Remix the Night (Live)", "Remix the Night"),
+        ("Song [Radio Edit]", "Song"),
+        ("Song - Remastered 2011", "Song"),
+        ("Song (Live at Wembley)", "Song"),
+    ],
+)
+def test_only_marked_versions_are_removed_from_filenames(title, filename):
+    assert clean_title(title, for_filename=True) == filename

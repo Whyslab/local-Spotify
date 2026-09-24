@@ -66,10 +66,14 @@ JUNK = [
 ]
 
 # Version keywords that should be preserved in metadata (Problem #13)
+_VERSION = r"(live|remix|acoustic|radio\s+edit|remastered|deluxe|explicit|clean)"
+# Only where a version marker actually sits: in brackets, or after a dash at
+# the end ("Song - Remastered 2011"). A bare word anywhere used to be removed
+# too, so "Live Forever" was filed as "Forever" and "Clean Up" as "Up".
 VERSION_KEYWORDS = [
-    r"\b(live|remix|acoustic|radio\s+edit|remastered|deluxe|explicit|clean)\b",
-    r"\((live|remix|acoustic|radio\s+edit|remastered|deluxe|explicit|clean)[^)]*\)",
-    r"\[(live|remix|acoustic|radio\s+edit|remastered|deluxe|explicit|clean)[^\]]*\]",
+    rf"\({_VERSION}\b[^)]*\)",
+    rf"\[{_VERSION}\b[^\]]*\]",
+    rf"\s[-–—]\s*{_VERSION}\b[^()\[\]]*$",
 ]
 
 
