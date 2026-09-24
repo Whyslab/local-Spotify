@@ -715,3 +715,20 @@ def test_health_stays_healthy_without_deno(client, monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["js_runtime"] == "missing"
+
+
+def test_final_failure_is_logged_with_its_type(app_module, monkeypatch, caplog):
+    def fake_yt_meta(_url):
+        raise RuntimeError("ERROR: [youtube] abc: Video unavailable")
+
+    monkeypatch.setattr(ingest, "yt_meta", fake_yt_meta)
+    monkeypatch.setattr(db, "task_update", lambda *a, **k: None)
+    monkeypatch.setattr(ingest, "check_disk_space", lambda *a, **k: (True, 10_000))
+
+    with caplog.at_level("INFO"):
+        adder_queue.process(7, "https://www.youtube.com/watch?v=abc")
+
+    failures = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert len(failures) == 1
+    assert failures[0].task_id == 7
+    assert "youtube_not_found" in failures[0].getMessage()

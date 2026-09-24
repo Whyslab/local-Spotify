@@ -51,6 +51,7 @@ def process(tid: int, url: str):
     temp_path = None
     retry_count = 0
     last_error_type = None
+    logger.info("Processing %s", url, extra={"task_id": tid})
 
     while retry_count == 0 or retry_count < config.MAX_RETRIES:
         try:
@@ -131,7 +132,15 @@ def process(tid: int, url: str):
 
                 continue
 
-            # Not retryable or max retries reached
+            # Not retryable or max retries reached. Without this line a task that
+            # gave up was visible only in SQLite, never in journalctl.
+            logger.error(
+                "Failed after %d attempt(s) [%s]: %s",
+                retry_count + 1,
+                last_error_type,
+                error_str,
+                extra={"task_id": tid},
+            )
             db.task_update(
                 tid,
                 status="error",
