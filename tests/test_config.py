@@ -74,3 +74,31 @@ def test_max_retries():
 
     assert isinstance(MAX_RETRIES, int)
     assert MAX_RETRIES >= 0
+
+
+def _import_config_with_token(token: str):
+    """Import config.py in a fresh interpreter, so its import-time check runs again."""
+    import subprocess
+
+    env = {**os.environ, "API_TOKEN": token}
+    return subprocess.run(
+        [sys.executable, "-c", "import config"],
+        cwd=Path(__file__).parent.parent / "adder",
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_placeholder_api_token_is_rejected():
+    """The token shipped in .env.example is public and must not unlock the API."""
+    result = _import_config_with_token("CHANGE_ME_TO_A_LONG_RANDOM_SECRET")
+
+    assert result.returncode != 0
+    assert "API_TOKEN is required" in result.stderr
+
+
+def test_real_api_token_is_accepted():
+    result = _import_config_with_token("a-real-random-token")
+
+    assert result.returncode == 0, result.stderr

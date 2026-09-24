@@ -56,11 +56,14 @@ PRESERVE_FEAT_ARTISTS = os.environ.get("PRESERVE_FEAT_ARTISTS", "true").lower() 
 
 # API Authentication (Problem #19)
 # The API is reachable from the LAN, so an empty token must fail closed.
+# The placeholder from .env.example is public, so it is as good as no token.
+PLACEHOLDER_API_TOKEN = "CHANGE_ME_TO_A_LONG_RANDOM_SECRET"
 API_TOKEN = os.environ.get("API_TOKEN", "").strip()
-if not API_TOKEN:
+if not API_TOKEN or API_TOKEN == PLACEHOLDER_API_TOKEN:
     raise RuntimeError(
         "API_TOKEN is required. Set a strong random token in adder/.env "
-        "or the systemd environment before starting local-Spotify."
+        "or the systemd environment before starting local-Spotify. Generate one with: "
+        "python -c 'import secrets; print(secrets.token_urlsafe(32))'"
     )
 
 # Retry settings (Problem #23)
