@@ -509,6 +509,36 @@ def run_yt_dlp(cmd: list[str], timeout: float) -> subprocess.CompletedProcess:
         selector.close()
 
 
+def check_dependencies() -> dict[str, str]:
+    """Report the external programs yt-dlp relies on that are missing from PATH.
+
+    ffmpeg and ffprobe are required: yt-dlp needs them to extract the M4A, so
+    without them every task fails in post-processing. Deno is the JavaScript
+    runtime yt-dlp uses by default to solve YouTube's player challenges;
+    without it some videos still download, others lose formats or fail.
+    """
+    return {
+        "ffmpeg": "ok" if shutil.which("ffmpeg") and shutil.which("ffprobe") else "missing",
+        "js_runtime": "ok" if shutil.which("deno") else "missing",
+    }
+
+
+def log_missing_dependencies() -> None:
+    deps = check_dependencies()
+    if deps["ffmpeg"] != "ok":
+        logger.error(
+            "ffmpeg/ffprobe not found on PATH: every download will fail. "
+            "Install ffmpeg (e.g. sudo apt install ffmpeg) and restart the service.",
+            extra={"task_id": "system"},
+        )
+    if deps["js_runtime"] != "ok":
+        logger.warning(
+            "Deno not found on PATH: yt-dlp needs it to solve YouTube's JavaScript "
+            "challenges, so some downloads may fail. See README, Quick start.",
+            extra={"task_id": "system"},
+        )
+
+
 def ytdlp_base() -> list[str]:
     """The yt-dlp invocation every call starts from.
 
@@ -1061,6 +1091,8 @@ async def lifespan(app: FastAPI):
     shutdown_event.clear()
     active_workers.clear()
 
+    log_missing_dependencies()
+
     # Recover tasks left unfinished by a previous process.
     recover_queued_tasks()
 
@@ -1350,7 +1382,10 @@ def health():
     # Queue stats
     queue_size = TASK_QUEUE.qsize()
 
-    healthy = db_status == "ok" and library_status == "ok"
+    # Without ffmpeg nothing can be downloaded, so the service is not healthy.
+    # A missing JS runtime degrades YouTube downloads but does not stop them.
+    dependencies = check_dependencies()
+    healthy = db_status == "ok" and library_status == "ok" and dependencies["ffmpeg"] == "ok"
     tracks, albums = library_counts() if library_status == "ok" else (0, 0)
 
     payload = {
@@ -1358,6 +1393,7 @@ def health():
         "database": db_status,
         "library": library_status,
         "library_path": str(LIBRARY),
+        **dependencies,
         "workers": MAX_WORKERS,
         "queue_size": queue_size,
         "max_queue_size": MAX_QUEUE_SIZE,

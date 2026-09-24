@@ -57,6 +57,13 @@ def app_module(tmp_path, monkeypatch):
         tmp_path / "library",
     )
 
+    # The test machine may lack ffmpeg/Deno; /health must not depend on that.
+    monkeypatch.setattr(
+        app_module,
+        "check_dependencies",
+        lambda: {"ffmpeg": "ok", "js_runtime": "ok"},
+    )
+
     app_module.PROJECT.mkdir(parents=True, exist_ok=True)
     app_module.TMP_DIR.mkdir(parents=True, exist_ok=True)
     app_module.LIBRARY.mkdir(parents=True, exist_ok=True)
@@ -203,6 +210,42 @@ def test_health_does_not_require_auth(client):
     response = client.get("/health")
 
     assert response.status_code == 200
+
+
+def test_health_is_unhealthy_without_ffmpeg(client, app_module, monkeypatch):
+    monkeypatch.setattr(
+        app_module, "check_dependencies", lambda: {"ffmpeg": "missing", "js_runtime": "ok"}
+    )
+
+    response = client.get("/health")
+
+    assert response.status_code == 503
+    assert response.json()["ffmpeg"] == "missing"
+
+
+def test_health_stays_healthy_without_deno(client, app_module, monkeypatch):
+    monkeypatch.setattr(
+        app_module, "check_dependencies", lambda: {"ffmpeg": "ok", "js_runtime": "missing"}
+    )
+
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json()["js_runtime"] == "missing"
+
+
+def test_check_dependencies_reads_path(monkeypatch):
+    # Deliberately not using the app_module fixture, which stubs this function out.
+    import importlib
+
+    monkeypatch.setenv("API_TOKEN", "test-secret")
+    app = importlib.import_module("adder.app")
+
+    monkeypatch.setattr(app.shutil, "which", lambda name: None if name == "deno" else "/x")
+    assert app.check_dependencies() == {"ffmpeg": "ok", "js_runtime": "missing"}
+
+    monkeypatch.setattr(app.shutil, "which", lambda name: None if name == "ffprobe" else "/x")
+    assert app.check_dependencies() == {"ffmpeg": "missing", "js_runtime": "ok"}
 
 
 # ---------------------------------------------------------------------------
