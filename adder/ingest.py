@@ -442,9 +442,17 @@ def yt_meta(url: str) -> dict:
     return json.loads(p.stdout)
 
 
+# YouTube's best audio is usually Opus. Converting that to AAC is a second
+# lossy pass; most videos also carry a native AAC stream, which "-x" then only
+# remuxes into .m4a. Conversion remains the fallback when there is none.
+AUDIO_FORMAT = "bestaudio[ext=m4a]/bestaudio/best"
+
+
 def yt_download(url: str, vid: str) -> Path:
     command = [
         *ytdlp_base(),
+        "-f",
+        AUDIO_FORMAT,
         "-x",
         "--audio-format",
         "m4a",

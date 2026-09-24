@@ -576,6 +576,8 @@ def _download(video_id: str, key: str) -> Path:
     done = ingest.run_yt_dlp(
         [
             *ingest.ytdlp_base(),
+            "-f",
+            ingest.AUDIO_FORMAT,
             "-x",
             "--audio-format",
             "m4a",

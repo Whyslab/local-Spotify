@@ -104,6 +104,8 @@ def test_download_extracts_m4a_into_tmp_and_returns_it(app, monkeypatch):
     assert result == runtime.TMP_DIR / "abc123.m4a"
     cmd = fake.commands[0]
     assert cmd[cmd.index("--audio-format") + 1] == "m4a"
+    # Native AAC first, so the usual case is a remux rather than a second lossy encode.
+    assert cmd[cmd.index("-f") + 1] == "bestaudio[ext=m4a]/bestaudio/best"
     assert cmd[cmd.index("-o") + 1] == str(runtime.TMP_DIR / "abc123.%(ext)s")
     assert "--no-playlist" in cmd
 
