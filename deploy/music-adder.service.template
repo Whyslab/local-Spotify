@@ -40,7 +40,10 @@ ReadWritePaths=%REPO%/adder
 ReadWritePaths=%REPO%/trash
 ReadWritePaths="%LIBRARY%"
 
-TimeoutStopSec=30
+# The installer sets this to SHUTDOWN_TIMEOUT + 15. Equal values let systemd
+# SIGKILL the service while it was still returning tasks to the queue and
+# cleaning tmp/ after its own shutdown timeout.
+TimeoutStopSec=%STOP_TIMEOUT%
 
 [Install]
 WantedBy=default.target

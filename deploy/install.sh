@@ -53,6 +53,11 @@ UNIT_TEMPLATE="$(cat "$REPO/deploy/music-adder.service.template")"
 # turning a library path like "Rock & Roll" into "Rock %LIBRARY% Roll".
 UNIT_CONTENT="${UNIT_TEMPLATE//%REPO%/"$REPO"}"
 UNIT_CONTENT="${UNIT_CONTENT//%LIBRARY%/"$LIBRARY_PATH_VALUE"}"
+SHUTDOWN_TIMEOUT_VALUE="$(env_value SHUTDOWN_TIMEOUT)"
+if [[ ! "$SHUTDOWN_TIMEOUT_VALUE" =~ ^[0-9]+$ ]]; then
+  SHUTDOWN_TIMEOUT_VALUE=30
+fi
+UNIT_CONTENT="${UNIT_CONTENT//%STOP_TIMEOUT%/"$((SHUTDOWN_TIMEOUT_VALUE + 15))"}"
 
 printf '%s\n' "$UNIT_CONTENT" \
     > "$HOME/.config/systemd/user/music-adder.service"
