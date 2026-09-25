@@ -93,9 +93,13 @@ def full_scan() -> None:
         response.raise_for_status()
         status = response.json()["subsonic-response"]["status"]
     except Exception as exc:
-        raise NavidromeUnavailable(f"Navidrome scan request failed: {exc}") from exc
+        # Never str(exc): a requests error carries the whole URL, and the
+        # u/t/s triple in it logs in to Navidrome as that user.
+        code = getattr(getattr(exc, "response", None), "status_code", None)
+        detail = type(exc).__name__ + (f", HTTP {code}" if code else "")
+        raise NavidromeUnavailable(f"Navidrome scan request failed ({detail})") from None
     if status != "ok":
-        raise NavidromeUnavailable(f"Navidrome refused the scan: {response.text[:200]}")
+        raise NavidromeUnavailable("Navidrome refused the scan (check NAVIDROME_USER/PASSWORD)")
 
 
 def playlists() -> list[dict]:

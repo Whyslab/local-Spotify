@@ -27,6 +27,18 @@ function token() {
     return localStorage.getItem("token") || "";
 }
 
+/* Ссылка из тега файла — чужая строка: загруженный файл приносит свои теги.
+ * В href попадает только http(s), не javascript: и не data:. */
+function isWebLink(text) {
+    if (!text) return false;
+    try {
+        const url = new URL(text);
+        return url.protocol === "https:" || url.protocol === "http:";
+    } catch (e) {
+        return false;
+    }
+}
+
 function headers() {
     return { "Authorization": "Bearer " + token() };
 }
@@ -422,7 +434,7 @@ function duplicateSide(label, t) {
     path.className = "track-album";
     path.textContent = t.path;
     side.append(head, title, artist, facts, path);
-    if (t.source) {
+    if (isWebLink(t.source)) {
         const link = document.createElement("a");
         link.href = t.source;
         link.target = "_blank";
@@ -1717,7 +1729,7 @@ function askEdit(card, t, rows) {
 
     const note = document.createElement("p");
     note.className = "muted";
-    if (t.source) {
+    if (isWebLink(t.source)) {
         const link = document.createElement("a");
         link.href = t.source;
         link.target = "_blank";

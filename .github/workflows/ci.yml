@@ -7,6 +7,10 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # 3.12 is the oldest supported; 3.14 is what the machine runs (Arch).
+    strategy:
+      matrix:
+        python-version: ["3.12", "3.14"]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -14,7 +18,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
           cache: pip
           cache-dependency-path: |
             adder/requirements.txt
@@ -25,8 +29,10 @@ jobs:
       - name: Install ffmpeg
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
 
+      # numpy too: scripts/upgrade_audio.py compares recordings with it, and
+      # without it those tests are skipped rather than run.
       - name: Install dependencies
-        run: python -m pip install -r requirements-dev.txt
+        run: python -m pip install -r requirements-dev.txt numpy
 
       # Chromium for tests/test_ui.py, the version this Playwright release drives.
       - name: Install browser

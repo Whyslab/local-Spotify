@@ -47,6 +47,14 @@ def get_file_hash(filepath: Path, chunk_size: int = 8192) -> str:
         return ""
 
 
+def _first(audio, *keys: str) -> str:
+    for key in keys:
+        value = audio.get(key)
+        if value:
+            return str(value[0])
+    return ""
+
+
 def extract_metadata(filepath: Path) -> dict:
     """Extract metadata from M4A file."""
     result = {
@@ -61,9 +69,12 @@ def extract_metadata(filepath: Path) -> dict:
 
     try:
         audio = MP4(filepath)
-        result["artist"] = (audio.get("\xa9ART") or audio.get("aART") or "").lower().strip()
-        result["title"] = (audio.get("\xa9nam") or "").lower().strip()
-        result["album"] = (audio.get("\xa9alb") or "").lower().strip()
+        # MP4 tags are lists; .lower() on the list raised, and the bare
+        # except below turned every file into "no tags" -- no metadata
+        # duplicates were ever found.
+        result["artist"] = _first(audio, "\xa9ART", "aART").lower().strip()
+        result["title"] = _first(audio, "\xa9nam").lower().strip()
+        result["album"] = _first(audio, "\xa9alb").lower().strip()
 
         # Get duration if available
         info = audio.info

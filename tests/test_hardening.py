@@ -144,3 +144,23 @@ def test_every_route_but_the_public_few_needs_the_token(client):
         if "verify_token" not in names:
             open_routes.append(route.path)
     assert open_routes == []
+
+
+def test_an_oversized_upload_is_refused_before_it_is_read(client, monkeypatch):
+    from adder import app as app_module
+
+    monkeypatch.setitem(app_module.BODY_LIMITS, "/api/import", 1000)
+    response = client.post("/api/import", files={"files": ("a.mp3", b"x" * 5000, "audio/mpeg")})
+    assert response.status_code == 413
+
+
+def test_a_playlist_cannot_point_outside_the_library():
+    from fastapi import HTTPException
+
+    from adder import playlists
+
+    for bad in ("/etc/shadow", "../../../../etc/passwd", "A/../../x.m4a", "A\\..\\x.m4a"):
+        with pytest.raises(HTTPException):
+            playlists._clean_paths([bad])
+    fine = ["A/Singles/Wait....m4a", "B/Singles/..and more.m4a", "outside:0123456789abcdef"]
+    assert playlists._clean_paths(fine) == fine

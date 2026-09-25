@@ -51,6 +51,7 @@ import itertools
 import json
 import logging
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -216,17 +217,23 @@ def names_another_version(video_title: str, own_title: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def youtube_id(url: str) -> str | None:
-    from urllib.parse import parse_qs, urlparse
+VIDEO_ID = re.compile(r"[A-Za-z0-9_-]{11}")
 
-    parsed = urlparse(url.strip())
-    host = (parsed.hostname or "").lower()
-    if host.endswith("youtu.be"):
-        return parsed.path.lstrip("/") or None
-    if "youtube.com" in host:
-        found = parse_qs(parsed.query).get("v")
-        return found[0] if found else None
-    return None
+
+def youtube_id(url: str) -> str | None:
+    """The 11-character video ID of a YouTube link, or None.
+
+    Strict on purpose: the ID ends up in a file pattern (download() clears
+    WORK/<id>.* before each download), and a link comes from the file's own
+    tag -- which an uploaded file brings with it. "../../x/**" must not get
+    that far.
+    """
+    try:
+        canonical = ingest.canonicalize_youtube_url(url or "")
+    except ValueError:
+        return None
+    video_id = canonical.rsplit("=", 1)[-1]
+    return video_id if VIDEO_ID.fullmatch(video_id) else None
 
 
 def known_links(db_path: Path) -> tuple[dict[str, str], list[tuple[str, str]]]:
@@ -348,6 +355,8 @@ def download(client, video_id: str) -> tuple[Path, str] | None:
     None when the video itself is gone or unusable; NotDownloaded(setup=True)
     when the failure looks like YouTube's or this machine's.
     """
+    if not VIDEO_ID.fullmatch(video_id or ""):
+        return None  # search results are checked here too, not only tags
     for stale in WORK.glob(f"{video_id}.*"):
         stale.unlink(missing_ok=True)
     try:

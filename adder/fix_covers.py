@@ -9,6 +9,7 @@
     .venv/bin/python -m adder.fix_covers
 """
 
+import os
 import sys
 import time
 from pathlib import Path
@@ -59,8 +60,14 @@ def backfill(library: Path, delay: float, sleep=time.sleep) -> tuple[int, int]:
         if cover:
             data, fmt = cover
             fmt_c = MP4Cover.FORMAT_PNG if fmt == "png" else MP4Cover.FORMAT_JPEG
-            audio["covr"] = [MP4Cover(data, imageformat=fmt_c)]
-            audio.save()
+            # Reloaded right before saving (a tool may have swapped the file
+            # since the scan), and the mtime put back: the library reads it as
+            # the track's "added" date, and a new cover is not a new track.
+            fresh = MP4(f)
+            stamp = f.stat()
+            fresh["covr"] = [MP4Cover(data, imageformat=fmt_c)]
+            fresh.save()
+            os.utime(f, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
             ok += 1
             print(f"[{i}/{len(missing)}] OK   {artist} - {title}")
         else:

@@ -81,6 +81,10 @@ for unit in music-analysis music-shelves music-ytdlp-update; do
   render "$REPO/deploy/$unit.timer.template" > "$HOME/.config/systemd/user/$unit.timer"
 done
 
+# Every ReadWritePaths entry must exist, or systemd refuses to start the unit
+# (226/NAMESPACE). trash/ is gitignored, so a fresh clone does not have it.
+mkdir -p "$REPO/trash" "$LIBRARY_PATH_VALUE"
+
 systemctl --user daemon-reload
 systemctl --user enable --now music-adder
 systemctl --user enable --now music-analysis.timer music-shelves.timer music-ytdlp-update.timer

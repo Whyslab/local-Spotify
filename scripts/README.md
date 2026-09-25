@@ -47,19 +47,18 @@ scripts/analyze_audio.py --force         # пересчитать всё зан�
 
 ### Ночью, само
 
+Таймер ставит `deploy/install.sh` — вместе со службой и остальными таймерами,
+со всеми подстановками в шаблоне (`%REPO%`, `%LIBRARY%`, `%JOBS%`). Руками
+шаблон лучше не собирать: без `%LIBRARY%` служба не может записать теги
+ReplayGain, и `systemd-run` отказывается от строки целиком. Число процессов —
+`ANALYSIS_JOBS` при запуске установщика (по умолчанию 3):
+
 ```bash
-sed -e "s|%REPO%|$PWD|g" -e "s|%JOBS%|1|g" \
-  deploy/music-analysis.service.template > ~/.config/systemd/user/music-analysis.service
-cp deploy/music-analysis.timer.template ~/.config/systemd/user/music-analysis.timer
-systemctl --user daemon-reload
-systemctl --user enable --now music-analysis.timer
+ANALYSIS_JOBS=1 ./deploy/install.sh
 ```
 
-Один процесс, а не три: ночной проход обычно только пересчитывает хеши и
-занимает меньше минуты, а после обновления librosa три процесса компилируют
-кэш разом и подходят вплотную к потолку памяти — на машине, где свободно
-меньше двух гигабайт, это стоит дороже сэкономленного времени. Три процесса
-остаются для ручного прогона всей фонотеки с нуля.
+Ночной проход обычно только пересчитывает хеши и занимает меньше минуты; на
+машине, где свободно меньше двух гигабайт, одного процесса хватает.
 
 Новый трек измеряется сразу при добавлении — тем же способом, в своей области
 с тем же лимитом, — так что таймер нужен только для догона того, что появилось
@@ -107,16 +106,7 @@ libsndfile, который не умеет AAC, а почти вся фонот�
 запуск до анализа собрал бы их по вчерашним измерениям. Таймер стоит на 04:30,
 анализ — на 03:30.
 
-```bash
-# API_TOKEN нужен только чтобы adder.config вообще импортировался;
-# путь фонотеки берётся из adder/.env, если он там задан.
-LIBRARY=$(API_TOKEN=unused .venv/bin/python -c 'from adder import config; print(config.LIBRARY)')
-sed -e "s|%REPO%|$PWD|g" -e "s|%LIBRARY%|$LIBRARY|g" \
-  deploy/music-shelves.service.template > ~/.config/systemd/user/music-shelves.service
-cp deploy/music-shelves.timer.template ~/.config/systemd/user/music-shelves.timer
-systemctl --user daemon-reload
-systemctl --user enable --now music-shelves.timer
-```
+Ставит его тоже `deploy/install.sh`.
 
 Служба ходит только в две папки — корень фонотеки и `adder/playlist-history`, —
 поэтому `%LIBRARY%` в шаблоне обязателен: без подстановки `ProtectHome=read-only`

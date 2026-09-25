@@ -86,8 +86,9 @@ def find_duplicates(files: list[Path]) -> list[list[Path]]:
     for f in files:
         try:
             audio = MP4(f)
-            title = (audio.get("\xa9nam") or "").lower().strip()
-            artist = (audio.get("\xa9ART") or audio.get("aART") or "").lower().strip()
+            # MP4 tags are lists: the first value, not the list itself.
+            title = str((audio.get("\xa9nam") or [""])[0]).lower().strip()
+            artist = str((audio.get("\xa9ART") or audio.get("aART") or [""])[0]).lower().strip()
 
             if title and artist:
                 key = f"{artist}|{title}"

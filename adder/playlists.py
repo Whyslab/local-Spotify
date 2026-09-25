@@ -66,6 +66,11 @@ def _clean_paths(paths: list[str]) -> list[str]:
         text = str(path)
         if not text.strip() or "\n" in text or "\r" in text or text.lstrip().startswith("#"):
             raise HTTPException(status_code=400, detail=f"Недопустимый путь в подборке: {text!r}")
+        # Только пути внутри фонотеки: «/etc/shadow» или «../..» в .m3u сейчас
+        # ни к чему не ведут, но Navidrome и другие клиенты читают эти файлы сами.
+        parts = text.replace("\\", "/").split("/")
+        if text.startswith(("/", "\\")) or ".." in parts:
+            raise HTTPException(status_code=400, detail=f"Путь вне фонотеки: {text!r}")
     return [str(path) for path in paths]
 
 

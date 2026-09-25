@@ -44,7 +44,9 @@ def main() -> int:
 
     measured, tagged, failed = backfill(args.library or config.LIBRARY, args.db, args.limit)
     logger.info("Measured %d, already tagged %d, failed %d", measured, tagged, failed)
-    return 0
+    # Non-zero on failures: the nightly unit then shows as failed and the
+    # failure notice fires, instead of a "success" that measured nothing.
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

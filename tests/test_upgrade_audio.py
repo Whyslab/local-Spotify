@@ -30,6 +30,9 @@ def dirs(tmp_path, monkeypatch):
     monkeypatch.setattr(upgrade, "STATE", tmp_path / "data" / "state.json")
     monkeypatch.setattr(upgrade, "WORK", tmp_path / "data" / "work")
     monkeypatch.setattr(upgrade, "LOCK", tmp_path / "data" / "lock")
+    # Everything under DATA, or a test run touches the real upgrade's folder.
+    monkeypatch.setattr(upgrade, "DRY_STATE", tmp_path / "data" / "state-dry-run.json")
+    monkeypatch.setattr(upgrade, "RESCAN_PENDING", tmp_path / "data" / "rescan-pending")
     root = tmp_path / "library"
     (root / "Artist" / "Singles").mkdir(parents=True)
     return root
@@ -69,21 +72,29 @@ def _codec(path):
 
 
 def test_youtube_ids_are_read_from_every_link_form():
-    assert upgrade.youtube_id("https://www.youtube.com/watch?v=abc123&t=4") == "abc123"
-    assert upgrade.youtube_id("https://youtu.be/abc123") == "abc123"
-    assert upgrade.youtube_id("https://music.youtube.com/watch?v=abc123") == "abc123"
+    assert upgrade.youtube_id("https://www.youtube.com/watch?v=abcdefghi12&t=4") == "abcdefghi12"
+    assert upgrade.youtube_id("https://youtu.be/abcdefghi12") == "abcdefghi12"
+    assert upgrade.youtube_id("https://music.youtube.com/watch?v=abcdefghi12") == "abcdefghi12"
     assert upgrade.youtube_id("file:3917bf57") is None
     assert upgrade.youtube_id("") is None
 
 
+def test_a_crafted_link_in_a_tag_cannot_reach_a_file_pattern():
+    # An uploaded file brings its own SOURCE_URL tag; the ID goes into a glob.
+    assert upgrade.youtube_id("https://youtu.be/../../../../Music/Library/**/*") is None
+    assert upgrade.youtube_id("https://www.youtube.com/watch?v=../backup/*") is None
+    assert upgrade.youtube_id("https://evil.youtube.com.example/watch?v=abcdefghi12") is None
+    assert upgrade.download(None, "../x/*") is None  # and search results are checked too
+
+
 def test_known_links_come_first_and_are_not_repeated():
-    tags = {"source": "https://youtu.be/one", "artist": "A • B", "title": "Song"}
-    links = {"A/Singles/Song.m4a": "https://www.youtube.com/watch?v=two"}
-    by_name = {("a", "song"): "https://youtu.be/one"}
+    tags = {"source": "https://youtu.be/one00000000", "artist": "A • B", "title": "Song"}
+    links = {"A/Singles/Song.m4a": "https://www.youtube.com/watch?v=two00000000"}
+    by_name = {("a", "song"): "https://youtu.be/one00000000"}
 
     got = upgrade.candidates_for("A/Singles/Song.m4a", tags, links, by_name)
 
-    assert got == ["https://youtu.be/one", "https://www.youtube.com/watch?v=two"]
+    assert got == ["https://youtu.be/one00000000", "https://www.youtube.com/watch?v=two00000000"]
 
 
 def test_uploads_are_told_by_name_so_a_moved_one_is_still_kept(tmp_path):
@@ -95,14 +106,14 @@ def test_uploads_are_told_by_name_so_a_moved_one_is_still_kept(tmp_path):
         con.executemany(
             "INSERT INTO tasks VALUES (?, 'done', ?, ?, ?)",
             [
-                ("https://www.youtube.com/watch?v=x1", "A", "s", "A/Singles/s.m4a"),
+                ("https://www.youtube.com/watch?v=x1234567890", "A", "s", "A/Singles/s.m4a"),
                 ("file:abc", "BUSHIDO ZHO", "PAPI", "BUSHIDO ZHO/Singles/PAPI.m4a"),
             ],
         )
 
     links, uploads = upgrade.known_links(db)
 
-    assert links == {"A/Singles/s.m4a": "https://www.youtube.com/watch?v=x1"}
+    assert links == {"A/Singles/s.m4a": "https://www.youtube.com/watch?v=x1234567890"}
     # Moved to another artist folder from the panel: the task row kept the old path.
     moved = {"artist": "BUSHIDO ZHO \u2022 Yanix", "title": "PAPI"}
     assert upgrade.is_upload(moved, uploads)
@@ -255,7 +266,7 @@ def test_a_removed_video_is_the_tracks_own_not_found(dirs, monkeypatch):
     monkeypatch.setattr(upgrade, "search", lambda *a: [])
     monkeypatch.setattr(upgrade, "download", lambda client, vid: None)
     audio = MP4(old)
-    audio[upgrade.MP4_SOURCE] = [MP4FreeForm(b"https://youtu.be/gone")]
+    audio[upgrade.MP4_SOURCE] = [MP4FreeForm(b"https://youtu.be/gone0000000")]
     audio.save()
 
     result = upgrade.upgrade_one(None, old, dirs, {}, {}, dirs / "x.db", dry=True)
@@ -272,9 +283,11 @@ def test_download_tells_a_setup_failure_from_a_dead_video(monkeypatch):
             raise RuntimeError(self.message)
 
     monkeypatch.setattr(upgrade, "WORK", Path("/nonexistent-work-dir"))
-    assert upgrade.download(Client("ERROR: [youtube] x: Video unavailable"), "x") is None
+    assert upgrade.download(Client("ERROR: [youtube] x: Video unavailable"), "abcdefghi12") is None
     with pytest.raises(upgrade.NotDownloaded):
-        upgrade.download(Client("ERROR: unable to download video data: HTTP Error 403"), "x")
+        upgrade.download(
+            Client("ERROR: unable to download video data: HTTP Error 403"), "abcdefghi12"
+        )
 
 
 def test_a_broken_search_is_youtubes_problem_not_the_tracks(dirs):
@@ -300,7 +313,7 @@ def test_a_known_link_is_not_refused_for_its_title(dirs, tmp_path, monkeypatch):
     old = _library_track(dirs)
     new = _opus_download(tmp_path)
     audio = MP4(old)
-    audio[upgrade.MP4_SOURCE] = [MP4FreeForm(b"https://youtu.be/v1")]
+    audio[upgrade.MP4_SOURCE] = [MP4FreeForm(b"https://youtu.be/v1234567890")]
     audio.save()
     # "LIVE - Song" names a band, and this is the very video the file came from.
     monkeypatch.setattr(upgrade, "download", lambda client, vid: (new, "LIVE - Song"))
@@ -346,3 +359,21 @@ def test_the_same_recording_matches_and_others_do_not(tmp_path):
     assert worst < upgrade.MIN_WINDOW_CORRELATION
     overall, _, _ = upgrade.similarity(base, other)
     assert overall < upgrade.MIN_CORRELATION
+
+
+def test_a_failed_navidrome_scan_does_not_leak_the_credential(monkeypatch):
+    from adder import config, navidrome
+
+    monkeypatch.setattr(config, "NAVIDROME_URL", "http://127.0.0.1:9")
+    monkeypatch.setattr(config, "NAVIDROME_USER", "someone")
+    monkeypatch.setattr(config, "NAVIDROME_PASSWORD", "secret")
+    with pytest.raises(navidrome.NavidromeUnavailable) as excinfo:
+        navidrome.full_scan()
+    text = str(excinfo.value)
+    assert "t=" not in text and "s=" not in text and "someone" not in text
+    assert excinfo.value.__cause__ is None and excinfo.value.__suppress_context__
+
+
+def test_no_path_under_data_is_left_unpatched(dirs):
+    for name in ("DATA", "BACKUP", "STATE", "DRY_STATE", "WORK", "LOCK", "RESCAN_PENDING"):
+        assert str(getattr(upgrade, name)).startswith(str(dirs.parent)), name

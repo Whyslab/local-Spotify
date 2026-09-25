@@ -182,6 +182,43 @@ async def lifespan(app: FastAPI):
 # всего API без ключа там ни к чему.
 app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 
+# Limits on a request body, checked before it is read. Starlette writes a
+# whole multipart part to /tmp (RAM on this machine) before the handler sees
+# it, so the per-file check in the handler comes too late to protect memory.
+BODY_LIMITS = {
+    "/api/import": 600 * 1024 * 1024,  # several files at once
+    "/api/replace-file": 210 * 1024 * 1024,
+}
+COVER_BODY_LIMIT = 12 * 1024 * 1024
+
+
+class UploadSizeLimit:
+    """Plain ASGI, not @app.middleware: that one wraps every response, the
+    audio streams included, and only the request headers matter here."""
+
+    def __init__(self, inner):
+        self.inner = inner
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope["method"] == "POST":
+            path = scope["path"]
+            limit = BODY_LIMITS.get(path)
+            if limit is None and path.startswith("/api/playlists/") and path.endswith("/cover"):
+                limit = COVER_BODY_LIMIT
+            if limit is not None:
+                length = dict(scope["headers"]).get(b"content-length", b"")
+                if not length.isdigit():
+                    answer = JSONResponse({"detail": "Content-Length is required"}, status_code=411)
+                    return await answer(scope, receive, send)
+                if int(length) > limit:
+                    answer = JSONResponse({"detail": "Upload is too large"}, status_code=413)
+                    return await answer(scope, receive, send)
+        await self.inner(scope, receive, send)
+
+
+app.add_middleware(UploadSizeLimit)
+
+
 app.mount(
     "/static",
     StaticFiles(directory=str(runtime.PROJECT.parent / "web")),
