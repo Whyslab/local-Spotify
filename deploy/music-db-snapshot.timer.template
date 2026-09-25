@@ -1,0 +1,10 @@
+[Unit]
+Description=local-Spotify: nightly adder.db snapshot, before the 03:20 borg backup
+
+[Timer]
+OnCalendar=*-*-* 03:05
+Persistent=true
+RandomizedDelaySec=5min
+
+[Install]
+WantedBy=timers.target

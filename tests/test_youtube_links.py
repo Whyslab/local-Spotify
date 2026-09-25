@@ -114,3 +114,26 @@ def test_parser_paths_are_absolute():
     assert parser.CSV_IN.is_absolute()
     assert parser.CSV_OUT.is_absolute()
     assert parser.DB_PATH.is_absolute()
+
+
+def test_the_link_cache_is_per_track_not_per_row(tmp_path, monkeypatch):
+    # Row 1 of a second playlist used to get row 1 of the first one's link.
+    module = load_parser()
+    monkeypatch.setattr(module, "DB_PATH", tmp_path / "links.db")
+    searched = []
+
+    def search(artist, title):
+        searched.append((artist, title))
+        return f"https://www.youtube.com/watch?v={title[:11]:_<11}", 0.9
+
+    monkeypatch.setattr(module, "yt_search_url", search)
+    monkeypatch.setattr(module.time, "sleep", lambda s: None)
+    for playlist, title in (("first.csv", "Alpha"), ("second.csv", "Beta")):
+        source = tmp_path / playlist
+        source.write_text(f"position,name,artists\n1,{title},Artist\n", encoding="utf-8")
+        monkeypatch.setattr(module, "CSV_IN", source)
+        monkeypatch.setattr(module, "CSV_OUT", tmp_path / f"out-{playlist}")
+        module.main()
+
+    assert searched == [("Artist", "Alpha"), ("Artist", "Beta")]
+    assert "Beta" in (tmp_path / "out-second.csv").read_text(encoding="utf-8")

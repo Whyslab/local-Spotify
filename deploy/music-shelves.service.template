@@ -8,7 +8,7 @@ After=music-analysis.service
 [Service]
 Type=oneshot
 WorkingDirectory=%REPO%
-ExecStart=%REPO%/.venv/bin/python %REPO%/scripts/export_shelves.py
+ExecStart="%REPO%/.venv/bin/python" "%REPO%/scripts/export_shelves.py"
 
 # Building a shelf means reading the tags off every file in the library. There
 # is nothing to hurry for -- a shelf rebuilt half an hour later is the same
@@ -32,7 +32,7 @@ ProtectSystem=strict
 # under adder/playlist-history. The installer replaces %LIBRARY% with the
 # configured library path.
 ProtectHome=read-only
-ReadWritePaths=%REPO%/adder
+ReadWritePaths="%REPO%/adder"
 ReadWritePaths="%LIBRARY%"
 
 [Install]

@@ -1,0 +1,25 @@
+[Unit]
+Description=local-Spotify: consistent snapshot of adder.db for the nightly backup
+After=music-adder.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=%REPO%
+# The machine's own backup (borg, 03:20) copies adder.db as a plain file while
+# the service writes to it; part of the data then sits in adder.db-wal, and a
+# copy of the two taken a moment apart may not open. This writes a snapshot
+# through SQLite's backup API into adder/snapshots/ first, checked by reading
+# it back, and keeps the last ten. borg picks it up with the rest of ~/Projects.
+Environment="BACKUP_DIR=%REPO%/adder/snapshots"
+ExecStart="%REPO%/deploy/backup.sh"
+TimeoutStartSec=10min
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths="%REPO%/adder"
+
+[Install]
+WantedBy=default.target

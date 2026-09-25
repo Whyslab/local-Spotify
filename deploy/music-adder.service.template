@@ -3,7 +3,7 @@ Description=YouTube to Navidrome adder
 
 [Service]
 WorkingDirectory=%REPO%
-ExecStart=%REPO%/.venv/bin/python -m adder.server
+ExecStart="%REPO%/.venv/bin/python" -m adder.server
 Restart=on-failure
 
 # Send SIGTERM to the main process only. The workers terminate their own
@@ -36,8 +36,8 @@ RestrictNamespaces=true
 # frontend it serves, deploy/ scripts, or .git even if it were ever tricked
 # into an arbitrary file write. This only holds because ProtectHome=read-only
 # is set above; ProtectSystem=strict alone leaves /home writable.
-ReadWritePaths=%REPO%/adder
-ReadWritePaths=%REPO%/trash
+ReadWritePaths="%REPO%/adder"
+ReadWritePaths="%REPO%/trash"
 ReadWritePaths="%LIBRARY%"
 
 # The installer sets this to SHUTDOWN_TIMEOUT + 15. Equal values let systemd

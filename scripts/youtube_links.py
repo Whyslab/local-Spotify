@@ -96,6 +96,21 @@ def init_db():
         )
         """
     )
+    # Keyed by the track, not by its row: the row-number cache handed the
+    # first playlist's links to the second one, with score 1.0. The old table
+    # stays for reference and is no longer read.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS track_links (
+            artists TEXT NOT NULL,
+            name TEXT NOT NULL,
+            youtube_url TEXT,
+            status TEXT,
+            updated_at TEXT,
+            PRIMARY KEY (artists, name)
+        )
+        """
+    )
     conn.commit()
     return conn
 
@@ -205,6 +220,15 @@ def yt_search_url(artist: str, title: str):
 
 
 def main():
+    # No argparse (settings come from the environment), but --help must not
+    # start a full search run.
+    if any(arg in ("-h", "--help") for arg in sys.argv[1:]):
+        print(
+            "Finds a YouTube link for every track of a Spotify export.\n"
+            "Settings via environment: CSV_IN, CSV_OUT, DB_PATH, YT_SEARCH_COUNT,\n"
+            "YT_MATCH_MIN_SCORE. Links are cached per (artist, title) in DB_PATH."
+        )
+        return
     tracks = load_tracks(CSV_IN)
 
     if not tracks or not any(t["name"] for t in tracks):
@@ -222,8 +246,9 @@ def main():
         position = t["position"]
         query = f"{t['artists']} - {t['name']}".strip(" -")
 
+        key = (t["artists"].strip().lower(), t["name"].strip().lower())
         existing = conn.execute(
-            "SELECT youtube_url FROM links WHERE position = ?", (position,)
+            "SELECT youtube_url FROM track_links WHERE artists = ? AND name = ?", key
         ).fetchone()
 
         if existing and existing[0]:
@@ -233,10 +258,10 @@ def main():
             yt_url, score = yt_search_url(t["artists"], t["name"])
             yt_url = yt_url or ""
             conn.execute(
-                "INSERT OR REPLACE INTO links "
-                "(position, youtube_url, status, updated_at) VALUES (?, ?, ?, ?)",
+                "INSERT OR REPLACE INTO track_links "
+                "(artists, name, youtube_url, status, updated_at) VALUES (?, ?, ?, ?, ?)",
                 (
-                    position,
+                    *key,
                     yt_url,
                     "found" if yt_url else "not_found",
                     time.strftime("%Y-%m-%d %H:%M:%S"),

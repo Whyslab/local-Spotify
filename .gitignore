@@ -95,3 +95,6 @@ adder/outside-cache/
 adder/thumb-cache/
 # yt-dlp and Deno caches (XDG_CACHE_HOME for yt-dlp calls)
 adder/cache/
+
+# Nightly consistent copies of adder.db (deploy/music-db-snapshot)
+adder/snapshots/

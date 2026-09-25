@@ -28,10 +28,13 @@ except ImportError:
     sys.exit(1)
 
 # Add parent directory to path to import config
-sys.path.insert(0, str(Path(__file__).parent.parent / "adder"))
+# The repository root, not adder/ itself: with adder/ first on sys.path its
+# queue.py shadows the standard library's queue module for everything imported
+# after it (the trap fix_covers.py describes).
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 try:
-    from config import LIBRARY  # type: ignore[import-not-found]  # adder/ on sys.path
-except ImportError:
+    from adder.config import LIBRARY
+except Exception:  # no API_TOKEN / no .env: the default layout still works
     LIBRARY = Path.home() / "Music" / "Normalized Library"
 
 

@@ -1,14 +1,22 @@
 [Unit]
-Description=local-Spotify: ReplayGain, then tempo, energy and key across the library
+Description=local-Spotify: tempo, energy and key, then ReplayGain, across the library
 After=music-adder.service
 
 [Service]
 Type=oneshot
 WorkingDirectory=%REPO%
-# ReplayGain first: it retags only files without it and moves their analysis
-# hash along, so the pass below does not re-measure them. See the script.
-ExecStart=%REPO%/.venv/bin/python %REPO%/scripts/replaygain.py
-ExecStart=%REPO%/.venv/bin/python %REPO%/scripts/analyze_audio.py --jobs %JOBS%
+# Analysis first, ReplayGain second. replaygain.py exits non-zero when a file
+# could not be measured, so the failure notice fires -- and a failed ExecStart
+# stops the ones after it: with ReplayGain first, one bad file would have
+# stopped the analysis every night. Order costs nothing: ReplayGain moves the
+# analysis rows of the files it retags to their new hash (see the script).
+ExecStart="%REPO%/.venv/bin/python" "%REPO%/scripts/analyze_audio.py" --jobs %JOBS%
+ExecStart="%REPO%/.venv/bin/python" "%REPO%/scripts/replaygain.py"
+# The home shelves are built from these measurements. Their own timer is 04:30,
+# an hour after this one, but after a night asleep both catch up at boot in no
+# particular order (seen 25.09: shelves 12:35, analysis 12:45). Starting them
+# from here makes "after the analysis" true; the timer stays as a fallback.
+ExecStartPost=-/usr/bin/systemctl --user start --no-block music-shelves.service
 
 # The whole point of running this as its own unit. One analysis process peaks
 # at about 376 MB; this machine has under two gigabytes free, and an unbounded
@@ -20,7 +28,9 @@ MemoryMax=1500M
 # instead of killing it, and the difference matters: the run that gets near the
 # limit is the one after a librosa update, when three processes compile at once
 # on a machine with under two gigabytes free.
-MemoryHigh=800M
+# 1300M: three processes need about 3 x 376 MB, and even a hash-only night
+# peaked at 801M with page cache; 800M squeezed every real pass.
+MemoryHigh=1300M
 
 # systemd disables the start timeout for Type=oneshot, so without this line a
 # stuck pass sits in `activating` forever -- and a timer never starts a unit
@@ -37,7 +47,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=%REPO%/adder
+ReadWritePaths="%REPO%/adder"
 # The ReplayGain step writes tags into the library files.
 ReadWritePaths="%LIBRARY%"
 

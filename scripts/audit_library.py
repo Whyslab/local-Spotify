@@ -26,10 +26,13 @@ except ImportError:
     sys.exit(1)
 
 # Add parent directory to path to import config
-sys.path.insert(0, str(Path(__file__).parent.parent / "adder"))
+# The repository root, not adder/ itself: with adder/ first on sys.path its
+# queue.py shadows the standard library's queue module for everything imported
+# after it (the trap fix_covers.py describes).
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 try:
-    from config import LIBRARY  # type: ignore[import-not-found]  # adder/ on sys.path
-except ImportError:
+    from adder.config import LIBRARY
+except Exception:  # no API_TOKEN / no .env: the default layout still works
     LIBRARY = Path.home() / "Music" / "Normalized Library"
 
 
@@ -157,13 +160,11 @@ def audit_library(library_path: Path) -> dict:
             result["filename_issues"].append({"path": rel_path, "issues": issues})
 
         # Track directory structure
-        artist_dir = filepath.parent.name
-        parent_dir = filepath.parent.parent.name if filepath.parent.parent else ""
-        if parent_dir not in result["directory_structure"]:
-            result["directory_structure"][parent_dir] = {}
-        if artist_dir not in result["directory_structure"][parent_dir]:
-            result["directory_structure"][parent_dir][artist_dir] = 0
-        result["directory_structure"][parent_dir][artist_dir] += 1
+        # <Artist>/<Album or "Singles">/<Title>.m4a
+        album_dir = filepath.parent.name
+        artist_dir = filepath.parent.parent.name if filepath.parent.parent else ""
+        folders = result["directory_structure"].setdefault(artist_dir, {})
+        folders[album_dir] = folders.get(album_dir, 0) + 1
 
     # Find duplicates
     dup_groups = find_duplicates(m4a_files)

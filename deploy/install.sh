@@ -38,12 +38,17 @@ fi
 
 mkdir -p "$HOME/.config/systemd/user"
 
-# Keep systemd in sync with the same configurable library path used by Python.
-LIBRARY_PATH_VALUE="${LIBRARY_PATH:-}"
-if [[ -z "$LIBRARY_PATH_VALUE" ]]; then
-  LIBRARY_PATH_VALUE="$(env_value LIBRARY_PATH)"
-fi
+# Keep systemd in sync with the library path the service itself uses. The
+# service reads adder/.env, not this shell: a LIBRARY_PATH exported here but
+# not in .env would open the unit's writable paths on a folder the service
+# never uses, and close them on the one it does.
+LIBRARY_PATH_VALUE="$(env_value LIBRARY_PATH)"
 LIBRARY_PATH_VALUE="${LIBRARY_PATH_VALUE:-$HOME/Music/Normalized Library}"
+if [[ -n "${LIBRARY_PATH:-}" && "$LIBRARY_PATH" != "$LIBRARY_PATH_VALUE" ]]; then
+  echo "ERROR: LIBRARY_PATH in this shell ($LIBRARY_PATH) differs from adder/.env ($LIBRARY_PATH_VALUE)." >&2
+  echo "Set it in adder/.env: that is what the service reads." >&2
+  exit 1
+fi
 
 # Generate the systemd unit.
 # Keep the library path quoted in the generated unit so paths containing
@@ -76,7 +81,8 @@ render() {
 }
 # music-ytdlp-update: weekly yt-dlp upgrade that rolls itself back if the new
 # version cannot read YouTube.
-for unit in music-analysis music-shelves music-ytdlp-update; do
+# music-db-snapshot: a consistent adder.db copy ahead of the nightly borg backup.
+for unit in music-analysis music-shelves music-ytdlp-update music-db-snapshot; do
   render "$REPO/deploy/$unit.service.template" > "$HOME/.config/systemd/user/$unit.service"
   render "$REPO/deploy/$unit.timer.template" > "$HOME/.config/systemd/user/$unit.timer"
 done
@@ -87,8 +93,22 @@ mkdir -p "$REPO/trash" "$LIBRARY_PATH_VALUE"
 
 systemctl --user daemon-reload
 systemctl --user enable --now music-adder
-systemctl --user enable --now music-analysis.timer music-shelves.timer music-ytdlp-update.timer
+systemctl --user enable --now music-analysis.timer music-shelves.timer music-ytdlp-update.timer \
+  music-db-snapshot.timer
 loginctl enable-linger "$USER"
+
+PORT_VALUE="$(env_value PORT)"
+PORT_VALUE="${PORT_VALUE:-8787}"
+
+# The steps below need root. Here sudo has no terminal to ask on, and under
+# set -e its failure used to end the script halfway; they are skipped with
+# the commands printed instead.
+if ! sudo -n true 2>/dev/null; then
+  echo "NOTE: no passwordless sudo; skipped the Navidrome and firewall steps."
+  echo "  Run them as root, or run this script again from a terminal where sudo works."
+  echo "OK (user units): adder http://localhost:${PORT_VALUE:-8787}"
+  exit 0
+fi
 
 if command -v navidrome >/dev/null; then
   sudo install -d /etc/navidrome
@@ -107,16 +127,24 @@ if command -v navidrome >/dev/null; then
     echo "  Check that it contains: MusicFolder = \"$LIBRARY_PATH_VALUE\""
   fi
   sudo install -d /etc/systemd/system/navidrome.service.d
-  sudo cp "$REPO/deploy/navidrome-override.conf" /etc/systemd/system/navidrome.service.d/override.conf
-  sudo systemctl daemon-reload
-  sudo systemctl restart navidrome
+  # Restart only when the override actually changed: every re-run of the
+  # installer used to interrupt whatever Navidrome was streaming.
+  OVERRIDE=/etc/systemd/system/navidrome.service.d/override.conf
+  if ! sudo cmp -s "$REPO/deploy/navidrome-override.conf" "$OVERRIDE"; then
+    sudo cp "$REPO/deploy/navidrome-override.conf" "$OVERRIDE"
+    sudo systemctl daemon-reload
+    sudo systemctl restart navidrome
+  fi
 fi
 
-PORT_VALUE="$(env_value PORT)"
-PORT_VALUE="${PORT_VALUE:-8787}"
-
 # Firewall rules are intentionally explicit and failure is not hidden.
-if command -v ufw >/dev/null && sudo ufw status | grep -q "Status: active"; then
+# Status read first, then matched: "ufw status | grep -q" under pipefail can
+# fail on SIGPIPE when grep exits early, which silently skipped the rules.
+UFW_STATUS=""
+if command -v ufw >/dev/null; then
+  UFW_STATUS="$(sudo ufw status || true)"
+fi
+if [[ "$UFW_STATUS" == *"Status: active"* ]]; then
   LAN_SUBNET="${LAN_SUBNET:-}"
   if [[ -z "$LAN_SUBNET" ]]; then
     LAN_SUBNET="$(ip -4 route show scope link | awk '$1 !~ /^127\./ && $1 ~ /^[0-9]+\./ {print $1; exit}')"

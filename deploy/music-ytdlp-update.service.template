@@ -5,7 +5,7 @@ After=network-online.target
 [Service]
 Type=oneshot
 WorkingDirectory=%REPO%
-ExecStart=%REPO%/.venv/bin/python %REPO%/scripts/update_ytdlp.py
+ExecStart="%REPO%/.venv/bin/python" "%REPO%/scripts/update_ytdlp.py"
 TimeoutStartSec=15min
 Nice=10
 
@@ -15,8 +15,8 @@ ProtectSystem=strict
 ProtectHome=read-only
 # .venv is where pip installs; adder/ holds the yt-dlp cache and the .env the
 # probe reads for COOKIES_FROM_BROWSER.
-ReadWritePaths=%REPO%/.venv
-ReadWritePaths=%REPO%/adder
+ReadWritePaths="%REPO%/.venv"
+ReadWritePaths="%REPO%/adder"
 
 [Install]
 WantedBy=default.target

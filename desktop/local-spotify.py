@@ -15,6 +15,7 @@ a real cost. Moving to GTK4 later is the import block below plus Gtk.Window
 construction; nothing else in this file knows the difference.
 """
 
+import hashlib
 import json
 import os
 import sys
@@ -76,8 +77,17 @@ def read_token() -> str:
     """
     try:
         for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
-            if line.startswith("API_TOKEN="):
-                return line.split("=", 1)[1].strip()
+            # The same forms the service's dotenv accepts: leading spaces,
+            # "export ", quotes. A quoted token read with its quotes gave 401.
+            line = line.strip()
+            if line.startswith("export "):
+                line = line[len("export ") :].lstrip()
+            key, sep, value = line.partition("=")
+            if sep and key.strip() == "API_TOKEN":
+                value = value.strip()
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+                    value = value[1:-1]
+                return value
     except OSError:
         pass
     return ""
@@ -204,7 +214,10 @@ class MprisService(dbus.service.Object):
         self.metadata = {
             # A stable object path per track, which is what clients key on.
             "mpris:trackid": dbus.ObjectPath(
-                "/org/whyslab/localSpotify/track/" + str(abs(hash(state.get("path", ""))))
+                # sha1, not hash(): Python salts str hashes per process, so the
+                # "stable" path changed with every launch.
+                "/org/whyslab/localSpotify/track/"
+                + hashlib.sha1(state.get("path", "").encode()).hexdigest()[:16]
             ),
             "mpris:length": dbus.Int64(int(float(state.get("duration") or 0) * 1_000_000)),
             "xesam:title": title,
