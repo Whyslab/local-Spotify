@@ -238,10 +238,43 @@ def test_only_one_run_at_a_time(dirs):
 def test_a_track_nothing_could_be_downloaded_for_is_not_marked_not_found(dirs, monkeypatch):
     old = _library_track(dirs)
     monkeypatch.setattr(upgrade, "search", lambda *a: [("v1", "Song"), ("v2", "Song")])
-    monkeypatch.setattr(upgrade, "download", lambda client, vid: None)  # a 403 wave
+
+    def refused(client, vid):  # a 403 wave: YouTube's problem, not the track's
+        raise upgrade.NotDownloaded("HTTP Error 403: Forbidden", setup=True)
+
+    monkeypatch.setattr(upgrade, "download", refused)
 
     with pytest.raises(upgrade.Unreachable):
         upgrade.upgrade_one(None, old, dirs, {}, {}, dirs / "x.db", dry=True)
+
+
+def test_a_removed_video_is_the_tracks_own_not_found(dirs, monkeypatch):
+    # Its only link is dead and search finds nothing: that must not read as
+    # "YouTube is down", or the run would stop on this track every time.
+    old = _library_track(dirs)
+    monkeypatch.setattr(upgrade, "search", lambda *a: [])
+    monkeypatch.setattr(upgrade, "download", lambda client, vid: None)
+    audio = MP4(old)
+    audio[upgrade.MP4_SOURCE] = [MP4FreeForm(b"https://youtu.be/gone")]
+    audio.save()
+
+    result = upgrade.upgrade_one(None, old, dirs, {}, {}, dirs / "x.db", dry=True)
+
+    assert result["status"] == "not found"
+
+
+def test_download_tells_a_setup_failure_from_a_dead_video(monkeypatch):
+    class Client:
+        def __init__(self, message):
+            self.message = message
+
+        def extract_info(self, *a, **k):
+            raise RuntimeError(self.message)
+
+    monkeypatch.setattr(upgrade, "WORK", Path("/nonexistent-work-dir"))
+    assert upgrade.download(Client("ERROR: [youtube] x: Video unavailable"), "x") is None
+    with pytest.raises(upgrade.NotDownloaded):
+        upgrade.download(Client("ERROR: unable to download video data: HTTP Error 403"), "x")
 
 
 def test_a_known_link_is_not_refused_for_its_title(dirs, tmp_path, monkeypatch):

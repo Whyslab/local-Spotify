@@ -85,17 +85,17 @@ async function streamUrlFor(path) {
     };
 }
 
-/* Ссылка на следующий трек берётся заранее, под конец этого. На айфоне с
- * погашенным экраном следующий трек включается из обработчика «ended», и
- * запрос к серверу посередине давал системе повод решить, что звук кончился:
- * play() после паузы на сеть там бывает не разрешён. С готовой ссылкой src
- * меняется сразу, без ожидания.
+/* Ссылка на следующий трек берётся заранее, пока играет этот. На айфоне с
+ * погашенным экраном следующий трек включается из обработчика «ended» или
+ * кнопкой экрана блокировки, и запрос к серверу посередине давал системе
+ * повод решить, что звук кончился: play() после паузы на сеть там бывает не
+ * разрешён. С готовой ссылкой src меняется сразу, без ожидания.
  *
- * Под конец, а не в начале: ссылка живёт «длина трека + 5 минут», и взятая
- * в начале длинного трека к его концу уже не покрывала бы следующий. */
+ * Ссылка живёт «длина трека + 5 минут»: взятая в начале длинного трека к
+ * его концу уже не покрыла бы следующий. Поэтому она проверяется по ходу и
+ * берётся заново, когда перестаёт хватать (linkLasts). */
 let nextStream = null;   // {path, url, gain, expires}
 const STREAM_MARGIN_MS = 60 * 1000;
-const PREFETCH_BEFORE_END_S = 45;
 const PREFETCH_RETRY_MS = 20 * 1000;
 
 function peekNext() {
@@ -109,7 +109,8 @@ function peekNext() {
 
 /* Хватит ли ссылки на весь трек: браузер дочитывает его кусками до конца. */
 function linkLasts(stream, track) {
-    const needed = (Number(track.duration) || 0) * 1000 + STREAM_MARGIN_MS;
+    // Длина неизвестна — 8 минут: сервер даёт такой ссылке не меньше 10.
+    const needed = (Number(track.duration) || 480) * 1000 + STREAM_MARGIN_MS;
     return stream.expires * 1000 - Date.now() >= needed;
 }
 
@@ -122,8 +123,6 @@ let prefetching = null;   // путь, за ссылкой на который �
 let prefetchFailed = { path: null, at: 0 };
 
 function prefetchNextStream() {
-    const a = player.audio;
-    if (!Number.isFinite(a.duration) || a.duration - a.currentTime > PREFETCH_BEFORE_END_S) return;
     const track = player.queue[peekNext()];
     if (!track || track.path === prefetching) return;
     if (nextStream && nextStream.path === track.path && linkLasts(nextStream, track)) return;

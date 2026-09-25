@@ -103,6 +103,15 @@ class Blocked(RuntimeError):
     """YouTube refuses to answer; the run has to stop, not skip."""
 
 
+# Failures that say something about YouTube or this machine, not the video:
+# a 403 wave, a broken extractor, a missing ffmpeg. A removed, private or
+# region-blocked video is that video's own problem and falls outside.
+SETUP_FAILURES = (
+    "403", "forbidden", "unable to extract", "nsig", "po token", "signature",
+    "requested format is not available", "ffmpeg", "ffprobe",
+)  # fmt: skip
+
+
 class Unreachable(RuntimeError):
     """A request failed for a reason that says nothing about the track."""
 
@@ -315,15 +324,30 @@ def search(client, artist: str, title: str, duration: float) -> list[tuple[str, 
     ]
 
 
+class NotDownloaded(RuntimeError):
+    """This candidate could not be fetched; `setup` tells whose fault it was."""
+
+    def __init__(self, message: str, setup: bool):
+        super().__init__(message)
+        self.setup = setup
+
+
 def download(client, video_id: str) -> tuple[Path, str] | None:
-    """The video's audio as .m4a, and the video's title."""
+    """The video's audio as .m4a, and the video's title.
+
+    None when the video itself is gone or unusable; NotDownloaded(setup=True)
+    when the failure looks like YouTube's or this machine's.
+    """
     for stale in WORK.glob(f"{video_id}.*"):
         stale.unlink(missing_ok=True)
     try:
         info = client.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=True)
     except Exception as exc:
         _judge(exc)
+        text = str(exc).lower()
         logger.info("  %s: not downloaded (%s)", video_id, str(exc).splitlines()[0][:120])
+        if any(word in text for word in SETUP_FAILURES):
+            raise NotDownloaded(str(exc)[:200], setup=True) from exc
         return None
     if not info:
         return None
@@ -387,6 +411,8 @@ def swap(old: Path, new: Path, url: str, root: Path, db_path: Path) -> None:
     os.utime(new, ns=(before.st_atime_ns, before.st_mtime_ns))
     staged = old.with_name(f".{old.name}.upgrading")
     shutil.move(str(new), staged)
+    RESCAN_PENDING.parent.mkdir(parents=True, exist_ok=True)
+    RESCAN_PENDING.touch()  # before the replace: a kill right after it must not lose the rescan
     os.replace(staged, old)
     try:
         _move_analysis(db_path, str(relative), old_hash, loudness.file_hash(old))
@@ -504,9 +530,12 @@ def upgrade_one(client, path: Path, root: Path, links, by_name, db_path: Path, d
             if how == "search" and names_another_version(listed_title, own):
                 logger.info("  %s: another version (%s)", video_id, listed_title[:60])
                 continue
-            got = download(client, video_id)
-            if got is None:
+            try:
+                got = download(client, video_id)
+            except NotDownloaded:
                 unavailable += 1
+                continue
+            if got is None:
                 continue
             new, video_title = got
             compared += 1
@@ -547,9 +576,9 @@ def upgrade_one(client, path: Path, root: Path, links, by_name, db_path: Path, d
             finally:
                 new.unlink(missing_ok=True)
     if not compared and unavailable:
-        # Nothing could be looked at: that says more about YouTube (a 403 wave,
-        # an outdated yt-dlp) than about this track. Not "not found".
-        raise Unreachable(f"none of {unavailable} candidates could be downloaded")
+        # Nothing could be looked at, for reasons that are YouTube's (a 403
+        # wave, an outdated yt-dlp), not the track's. Not "not found".
+        raise Unreachable(f"{unavailable} candidates failed for reasons not their own")
     if no_opus:
         return {"status": "no opus on youtube", "tried": sorted(tried)}
     return {"status": "not found", "tried": sorted(tried)}
@@ -598,13 +627,20 @@ def main() -> int:
             continue
         if previous == "failed" and entry.get("attempts", 0) >= MAX_ATTEMPTS and not args.retry:
             continue
-        tags = library.read_tags(path)
+        try:
+            tags = library.read_tags(path)
+            codec = codec_of(path)
+        except Exception as exc:
+            logger.warning("%s: unreadable for now (%s), skipped", relative, exc)
+            continue
         if is_upload(tags, uploads):
             state[relative] = {"status": "upload, kept"}
             continue
-        codec = codec_of(path)
         if codec == "opus":
             state[relative] = {"status": "already opus"}
+            continue
+        if not codec:
+            logger.warning("%s: ffprobe could not read it now, skipped", relative)
             continue
         if codec != "aac":
             # ALAC is lossless and was put here on purpose; Opus would be a step down.
@@ -635,6 +671,7 @@ def main() -> int:
                 break
         except Exception as exc:
             logger.warning("  failed: %s", exc)
+            unreachable_in_a_row = 0
             state[relative] = {
                 "status": "failed",
                 "error": str(exc)[:200],
@@ -642,7 +679,6 @@ def main() -> int:
             }
         if state[relative]["status"] == "upgraded":
             changed += 1
-            RESCAN_PENDING.touch()
         logger.info("  -> %s", state[relative]["status"])
         save_state(state, state_path)
         time.sleep(PAUSE_SECONDS)
