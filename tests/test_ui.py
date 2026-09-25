@@ -215,6 +215,36 @@ def test_fades_at_the_ends_of_a_track(page):
     assert middle == 1
 
 
+def test_a_track_starts_silent_when_fades_are_on(page):
+    # Regression: while the next track is loading its duration is NaN. The
+    # fade used to be skipped then, so the track's first moment played at
+    # full volume, dropped to silence once the duration arrived, and only
+    # then faded in.
+    open_library(page)
+    row(page, "Loud").get_by_role("button", name="Играть").click()
+    page.wait_for_function("!player.audio.paused && player.audio.duration > 10")
+    page.evaluate("setFade(3); player.audio.pause()")
+
+    # The state between two tracks: a new source, nothing known about it yet.
+    page.evaluate("player.audio.removeAttribute('src'); player.audio.load(); fadeTick()")
+    assert page.evaluate("Number.isNaN(player.audio.duration)")
+    assert page.evaluate("player.fadeLevel") == 0
+
+
+def test_a_fade_is_driven_by_a_fast_timer_only_while_it_runs(page):
+    open_library(page)
+    row(page, "Loud").get_by_role("button", name="Играть").click()
+    page.wait_for_function("!player.audio.paused && player.audio.duration > 10")
+    page.evaluate("setFade(3); player.audio.currentTime = 6; fadeTick()")
+    assert page.evaluate("fadeTimer") is None  # middle of the track: no fade
+
+    page.evaluate("player.audio.currentTime = player.audio.duration - 2; fadeTick()")
+    assert page.evaluate("fadeTimer") is not None
+
+    page.evaluate("player.audio.pause(); fadeTick()")
+    assert page.evaluate("fadeTimer") is None
+
+
 def test_the_sleep_timer_counts_down_and_stops_playback(page):
     open_library(page)
     row(page, "Loud").get_by_role("button", name="Играть").click()

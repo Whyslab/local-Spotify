@@ -125,6 +125,11 @@ async function playAt(position, skipped = 0, direction = 1) {
     }
     if (generation !== player.generation) return false;
     try {
+        /* Новый трек начинается с нуля: если есть переход — из тишины. Ставим
+         * это до src: смену трека браузер отмечает timeupdate сам, но только
+         * если позиция была не нулевой, — первое включение прозвучало бы на
+         * прежней громкости до первого timeupdate. */
+        player.fadeLevel = player.fadeSeconds > 0 ? 0 : Math.min(1, sleepLevel());
         applyVolume();
         player.audio.src = url;
         await player.audio.play();
@@ -2475,19 +2480,42 @@ function sleepLevel() {
     return Math.max(0, Math.min(1, (player.sleep.until - Date.now()) / SLEEP_FADE_MS));
 }
 
+/* Пока новый трек грузится, длительность у него ещё не известна (NaN).
+ * Раньше это значило «без перехода» — громкость 1, и первую секунду трек
+ * звучал в полную силу, а потом, когда длительность приходила, резко
+ * проваливался в тишину и только тогда выходил из неё. Теперь начало трека
+ * выходит из тишины всегда; длительность нужна лишь для конца трека и для
+ * правила «слишком короткий — без перехода». */
 function fadeTick() {
     const a = player.audio;
     let level = 1;
-    if (player.fadeSeconds > 0 && Number.isFinite(a.duration) && a.duration > player.fadeSeconds * 2) {
-        const left = a.duration - a.currentTime;
-        if (left < player.fadeSeconds) level = Math.max(0, left / player.fadeSeconds);
-        if (a.currentTime < player.fadeSeconds) level = Math.min(level, a.currentTime / player.fadeSeconds);
+    if (player.fadeSeconds > 0) {
+        const known = Number.isFinite(a.duration);
+        if (!known || a.duration > player.fadeSeconds * 2) {
+            if (a.currentTime < player.fadeSeconds) level = a.currentTime / player.fadeSeconds;
+            if (known) {
+                const left = a.duration - a.currentTime;
+                if (left < player.fadeSeconds) level = Math.min(level, Math.max(0, left / player.fadeSeconds));
+            }
+        }
     }
     level = Math.min(level, sleepLevel());
     if (level !== player.fadeLevel) {
         player.fadeLevel = level;
         applyVolume();
     }
+    smoothFade(player.volumeAdjustable && level < 1 && !a.paused);
+}
+
+/* timeupdate приходит раза четыре в секунду — громкость менялась ступеньками,
+ * заметными на слух в тихом месте. Пока идёт переход, её ведёт ещё и частый
+ * таймер. setInterval, а не requestAnimationFrame: тот в фоновой вкладке
+ * стоит совсем. Таймер там тоже могут замедлить (почти тихую вкладку браузер
+ * звучащей не считает) — тогда остаётся timeupdate, как было раньше. */
+let fadeTimer = null;
+function smoothFade(on) {
+    if (on && !fadeTimer) fadeTimer = setInterval(fadeTick, 40);
+    if (!on && fadeTimer) { clearInterval(fadeTimer); fadeTimer = null; }
 }
 
 function renderSleep() {
