@@ -45,6 +45,10 @@ def describe(path: str) -> dict | None:
     try:
         info = mutagen.File(absolute).info
         bitrate = round(getattr(info, "bitrate", 0) / 1000) or None
+        length = getattr(info, "length", 0) or 0
+        if bitrate is None and length > 0:
+            # mutagen reports 0 for Opus in MP4; the average is what matters here.
+            bitrate = round(absolute.stat().st_size * 8 / length / 1000) or None
         codec = getattr(info, "codec", None) or absolute.suffix.lstrip(".")
     except Exception:
         codec = absolute.suffix.lstrip(".")

@@ -580,9 +580,7 @@ def _download(video_id: str, key: str) -> Path:
             ingest.AUDIO_FORMAT,
             "-x",
             "--audio-format",
-            "m4a",
-            "--audio-quality",
-            "0",
+            "best",
             "--no-playlist",
             "-o",
             str(folder / f"{key}.dl.%(ext)s"),
@@ -597,7 +595,7 @@ def _download(video_id: str, key: str) -> Path:
         found = sorted(folder.glob(f"{key}.dl.*"))
         if not found:
             raise RuntimeError("файл не найден после скачивания")
-        produced = found[0]
+        produced = ingest.ensure_m4a(found[0])
     return produced
 
 

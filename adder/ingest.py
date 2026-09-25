@@ -498,10 +498,80 @@ def check_downloadable(meta: dict) -> None:
         )
 
 
-# YouTube's best audio is usually Opus. Converting that to AAC is a second
-# lossy pass; most videos also carry a native AAC stream, which "-x" then only
-# remuxes into .m4a. Conversion remains the fallback when there is none.
-AUDIO_FORMAT = "bestaudio[ext=m4a]/bestaudio/best"
+# YouTube's best audio is Opus (format 251, full band to 20 kHz). Its AAC
+# stream (140) is cut off above 16 kHz, and converting Opus to AAC is a second
+# lossy pass that also flattens peaks above full scale. So the best stream is
+# kept exactly as YouTube sent it: "-x --audio-format best" extracts without
+# re-encoding, and ensure_m4a() moves Opus into an .m4a container untouched.
+AUDIO_FORMAT = "bestaudio/best"
+
+# Codecs an .m4a (MP4) can carry as they are. Opus in MP4 plays in Firefox,
+# Chromium, WebKitGTK, Safari on iOS 17+, and Navidrome reads its tags.
+M4A_COPYABLE_CODECS = {"aac", "alac", "opus"}
+# Lossless audio from elsewhere stays lossless: ALAC is MP4's own.
+M4A_LOSSLESS_CODECS = {"flac", "wavpack", "tta", "truehd"}
+REMUX_TIMEOUT = 120
+
+
+def ensure_m4a(path: Path) -> Path:
+    """Put the audio of `path` into an .m4a next to it and return that file.
+
+    The library and the smart-shuffle cache are .m4a throughout (MP4 tags,
+    covers, Subsonic clients), so a download that came out as .opus is moved
+    into that container with its audio copied bit for bit. Lossless audio
+    becomes ALAC; only a lossy codec MP4 cannot hold is converted to AAC. A
+    file ffprobe rejects is returned as it is: the integrity check decodes it
+    later and rejects it there.
+
+    Failures say "Download failed" and keep ffmpeg's own words in the log:
+    classify_error reads the message, and a stray "not found" from ffmpeg
+    would pass for a removed video.
+    """
+    if path.suffix.lower() == ".m4a":
+        return path
+    try:
+        probe = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-select_streams", "a:0",
+                "-show_entries", "stream=codec_name", "-of", "csv=p=0", str(path),
+            ],
+            capture_output=True, text=True, timeout=60,
+        )  # fmt: skip
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError("Download failed: could not inspect the downloaded audio") from exc
+    codec = probe.stdout.strip().lower()
+    if probe.returncode != 0 or not codec:
+        return path
+    target = path.with_suffix(".m4a")
+    partial = path.with_suffix(".m4a.tmp")
+    if codec in M4A_COPYABLE_CODECS:
+        codec_args = ["-c:a", "copy"]
+    elif codec in M4A_LOSSLESS_CODECS or codec.startswith("pcm_"):
+        codec_args = ["-c:a", "alac"]
+    else:
+        codec_args = ["-c:a", "aac", "-b:a", "256k"]
+    # "-f mp4": the .m4a extension alone picks the ipod muxer, which refuses Opus.
+    command = [
+        "ffmpeg", "-v", "error", "-y", "-i", str(path), "-map", "0:a:0", "-vn",
+        *codec_args, "-movflags", "+faststart", "-f", "mp4", str(partial),
+    ]  # fmt: skip
+    try:
+        done = subprocess.run(command, capture_output=True, text=True, timeout=REMUX_TIMEOUT)
+    except (OSError, subprocess.SubprocessError) as exc:
+        partial.unlink(missing_ok=True)
+        raise RuntimeError(f"Download failed: could not move {codec} audio into .m4a") from exc
+    if done.returncode != 0 or not partial.is_file():
+        partial.unlink(missing_ok=True)
+        logger.warning(
+            "ffmpeg could not move %s into .m4a: %s",
+            path.name,
+            done.stderr.strip()[-300:],
+            extra={"task_id": "system"},
+        )
+        raise RuntimeError(f"Download failed: could not move {codec} audio into .m4a")
+    partial.replace(target)
+    path.unlink(missing_ok=True)
+    return target
 
 
 YTDLP_LEFTOVERS = {".part", ".ytdl", ".temp", ".tmp"}
@@ -514,9 +584,7 @@ def yt_download(url: str, vid: str) -> Path:
         AUDIO_FORMAT,
         "-x",
         "--audio-format",
-        "m4a",
-        "--audio-quality",
-        "0",
+        "best",
         "--no-playlist",
         "-o",
         str(runtime.TMP_DIR / f"{vid}.%(ext)s"),
@@ -537,7 +605,7 @@ def yt_download(url: str, vid: str) -> Path:
         )
         if not found:
             raise RuntimeError("yt-dlp finished but produced no audio file")
-        target = found[0]
+        target = ensure_m4a(found[0])
     return target
 
 

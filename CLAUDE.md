@@ -10,7 +10,8 @@ desktop window around that page (`desktop/`). It runs as a systemd user unit on 
 machine, on a trusted LAN.
 
 Ingest flow: `POST /api/add` → SQLite task + in-memory queue → worker thread (`queue.process`) →
-`ingest.download_to_temp` (`yt-dlp -J`, then `yt-dlp -x --audio-format m4a` into `adder/tmp/`,
+`ingest.download_to_temp` (`yt-dlp -J`, then `yt-dlp -x --audio-format best` into `adder/tmp/` and
+`ensure_m4a`, which moves Opus into .m4a without re-encoding,
 integrity check) → `ingest.ingest_temp_file` (Deezer lookup via `enrich`, cover Deezer → iTunes →
 YouTube thumbnail, tags, content-hash duplicate check) → atomic move to
 `<LIBRARY_PATH>/<Artist>/Singles/<Title>.<ext>`. A file never reaches the library before every

@@ -103,14 +103,16 @@ def test_download_extracts_m4a_into_tmp_and_returns_it(app, monkeypatch):
 
     assert result == runtime.TMP_DIR / "abc123.m4a"
     cmd = fake.commands[0]
-    assert cmd[cmd.index("--audio-format") + 1] == "m4a"
-    # Native AAC first, so the usual case is a remux rather than a second lossy encode.
-    assert cmd[cmd.index("-f") + 1] == "bestaudio[ext=m4a]/bestaudio/best"
+    # The best stream (Opus on YouTube) is extracted as it is, never re-encoded.
+    assert cmd[cmd.index("--audio-format") + 1] == "best"
+    assert "--audio-quality" not in cmd
+    assert cmd[cmd.index("-f") + 1] == "bestaudio/best"
     assert cmd[cmd.index("-o") + 1] == str(runtime.TMP_DIR / "abc123.%(ext)s")
     assert "--no-playlist" in cmd
 
 
-def test_download_accepts_another_extension_when_m4a_is_missing(app, monkeypatch):
+def test_an_unreadable_non_m4a_download_is_returned_as_it_is(app, monkeypatch):
+    # Not audio at all: left for the integrity check, which decodes and rejects it.
     def reply(cmd):
         (runtime.TMP_DIR / "abc123.mp4").write_bytes(b"audio")
         return completed(cmd)
@@ -118,6 +120,139 @@ def test_download_accepts_another_extension_when_m4a_is_missing(app, monkeypatch
     monkeypatch.setattr(app, "run_yt_dlp", FakeYtDlp(reply))
 
     assert app.yt_download("u", "abc123") == runtime.TMP_DIR / "abc123.mp4"
+
+
+FIXTURE = __import__("pathlib").Path(__file__).parent / "fixtures" / "tone.m4a"
+
+
+def _codec(path):
+    return subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "a:0",
+         "-show_entries", "stream=codec_name", "-of", "csv=p=0", str(path)],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()  # fmt: skip
+
+
+def _packets(path):
+    """Checksum of the compressed audio itself, whatever the container."""
+    return subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", str(path), "-map", "0:a", "-c", "copy", "-f", "md5", "-"],
+        capture_output=True, text=True, check=True,
+    ).stdout  # fmt: skip
+
+
+def _opus(tmp_path):
+    source = tmp_path / "abc123.opus"
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", str(FIXTURE), "-c:a", "libopus", str(source)],
+        check=True,
+    )  # fmt: skip
+    return source
+
+
+def test_opus_download_is_moved_into_m4a_without_re_encoding(app, monkeypatch):
+    source = _opus(runtime.TMP_DIR)
+    expected = _packets(source)
+
+    def reply(cmd):
+        return completed(cmd)  # yt-dlp "produced" the .opus made above
+
+    monkeypatch.setattr(app, "run_yt_dlp", FakeYtDlp(reply))
+
+    result = app.yt_download("u", "abc123")
+
+    assert result == runtime.TMP_DIR / "abc123.m4a"
+    assert _codec(result) == "opus"
+    assert _packets(result) == expected  # the very same Opus data: copied, not encoded
+    assert not source.exists()
+    assert sorted(p.name for p in runtime.TMP_DIR.iterdir()) == ["abc123.m4a"]
+
+
+def test_a_codec_mp4_cannot_carry_is_converted_to_aac(app, tmp_path):
+    source = tmp_path / "x.ogg"
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", str(FIXTURE), "-c:a", "libvorbis", str(source)],
+        check=True,
+    )  # fmt: skip
+
+    result = app.ensure_m4a(source)
+
+    assert result == tmp_path / "x.m4a"
+    assert _codec(result) == "aac"
+    ok, message = app.validate_audio_integrity(result, from_outside=True)
+    assert ok, message
+
+
+def test_an_aac_mp4_download_becomes_m4a_untouched(app, monkeypatch):
+    source = runtime.TMP_DIR / "abc123.mp4"
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", str(FIXTURE), "-c", "copy", "-f", "mp4", str(source)],
+        check=True,
+    )  # fmt: skip
+    expected = _packets(source)
+    monkeypatch.setattr(app, "run_yt_dlp", FakeYtDlp(lambda cmd: completed(cmd)))
+
+    result = app.yt_download("u", "abc123")
+
+    assert result == runtime.TMP_DIR / "abc123.m4a"
+    assert _codec(result) == "aac"
+    assert _packets(result) == expected
+
+
+def test_lossless_audio_stays_lossless(app, tmp_path):
+    source = tmp_path / "x.flac"
+    subprocess.run(["ffmpeg", "-v", "error", "-i", str(FIXTURE), str(source)], check=True)
+
+    assert _codec(app.ensure_m4a(source)) == "alac"
+
+
+def test_a_failed_remux_leaves_nothing_behind_and_reads_as_a_download_error(
+    app, tmp_path, monkeypatch
+):
+    source = _opus(tmp_path)
+    real_run = subprocess.run
+
+    def run(cmd, *args, **kwargs):
+        if cmd[0] == "ffmpeg":
+            (tmp_path / "abc123.m4a.tmp").write_bytes(b"half")
+            # ffmpeg's own words must not decide the error class.
+            return subprocess.CompletedProcess(cmd, 1, "", "Stream map '0:a:0' not found")
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(app.subprocess, "run", run)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        app.ensure_m4a(source)
+
+    assert app.classify_error(str(excinfo.value)) == "download_error"
+    assert sorted(p.name for p in tmp_path.glob("abc123.*")) == ["abc123.opus"]
+
+
+def test_a_remux_that_hangs_is_cleaned_up(app, tmp_path, monkeypatch):
+    source = _opus(tmp_path)
+    real_run = subprocess.run
+
+    def run(cmd, *args, **kwargs):
+        if cmd[0] == "ffmpeg":
+            (tmp_path / "abc123.m4a.tmp").write_bytes(b"half")
+            raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout", 0))
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(app.subprocess, "run", run)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        app.ensure_m4a(source)
+
+    assert app.classify_error(str(excinfo.value)) == "download_error"
+    assert sorted(p.name for p in tmp_path.glob("abc123.*")) == ["abc123.opus"]
+
+
+def test_an_unreadable_download_is_left_for_the_integrity_check(app, tmp_path):
+    junk = tmp_path / "x.opus"
+    junk.write_bytes(b"not audio")
+
+    assert app.ensure_m4a(junk) == junk
+    assert junk.exists()
 
 
 def test_download_without_output_file_is_an_error(app, monkeypatch):
