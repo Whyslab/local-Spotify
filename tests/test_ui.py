@@ -304,6 +304,75 @@ def test_a_prefetched_link_must_cover_the_whole_next_track(page):
     assert page.evaluate("([s, t]) => linkLasts(s, t)", [{"expires": now + 555}, track]) is True
 
 
+def test_where_volume_is_fixed_the_stream_is_asked_to_carry_the_gain(page):
+    open_library(page)
+    url = page.evaluate(
+        "player.volumeAdjustable = false;"
+        "streamUrlFor('Loud Band/Singles/Loud.opus').then(s => s.url)"
+    )
+    assert url.endswith("&norm=1")  # -6 dB ReplayGain, and the page cannot apply it
+    url = page.evaluate(
+        "player.volumeAdjustable = true;"
+        "streamUrlFor('Loud Band/Singles/Loud.opus').then(s => s.url)"
+    )
+    assert "norm" not in url  # the slider does it here
+
+
+def test_a_downloaded_track_plays_and_seeks_without_a_network(page):
+    open_library(page)
+    assert page.evaluate("offline.supported") is True
+    page.evaluate("navigator.serviceWorker.ready.then(() => true)")
+    # The page must be controlled by the worker before it can answer offline.
+    if not page.evaluate("!!navigator.serviceWorker.controller"):
+        page.reload()
+        page.wait_for_function(
+            "typeof switchView === 'function' && !!navigator.serviceWorker.controller"
+        )
+    page.evaluate(
+        "downloadTrack({path: 'Loud Band/Singles/Loud.opus', title: 'Loud', artist: 'Loud Band',"
+        " duration: 12})"
+    )
+    assert page.evaluate("isDownloaded('Loud Band/Singles/Loud.opus')") is True
+
+    page.context.set_offline(True)
+    try:
+        # A piece of the file, the way <audio> asks for it: an honest 206.
+        part = page.evaluate(
+            "fetch('/api/stream?path=' + encodeURIComponent('Loud Band/Singles/Loud.opus'),"
+            " {headers: {Range: 'bytes=0-9'}}).then(async r => [r.status,"
+            " r.headers.get('Content-Range'), (await r.arrayBuffer()).byteLength])"
+        )
+        assert part[0] == 206 and part[1].startswith("bytes 0-9/") and part[2] == 10
+
+        page.evaluate(
+            "playQueue([{path: 'Loud Band/Singles/Loud.opus', title: 'Loud', artist: 'Loud Band',"
+            " duration: 12}], 0)"
+        )
+        page.wait_for_function("!player.audio.paused && player.audio.currentTime > 0.3")
+        page.evaluate("player.audio.currentTime = 8")
+        page.wait_for_function("player.audio.currentTime > 8.2 && !player.audio.paused")
+        assert page.evaluate("player.audio.error") is None
+    finally:
+        page.context.set_offline(False)
+
+    page.evaluate("removeAllDownloads()")
+    assert page.evaluate("isDownloaded('Loud Band/Singles/Loud.opus')") is False
+
+
+def test_a_play_heard_offline_is_sent_when_the_network_returns(page, server):
+    from adder import db
+
+    open_library(page)
+    before = db.db_query("SELECT COUNT(*) AS n FROM plays")[0]["n"]
+    page.evaluate(
+        "localStorage.setItem('pendingPlays', JSON.stringify([{path: 'Loud Band/Singles/Loud.opus',"
+        " played_seconds: 12, duration: 12, skipped: false, source: 'player', mode: 'manual'}]))"
+    )
+    page.evaluate("flushPendingPlays()")
+    page.wait_for_function("JSON.parse(localStorage.getItem('pendingPlays') || '[]').length === 0")
+    assert db.db_query("SELECT COUNT(*) AS n FROM plays")[0]["n"] == before + 1
+
+
 def test_the_sleep_timer_counts_down_and_stops_playback(page):
     open_library(page)
     row(page, "Loud").get_by_role("button", name="Играть").click()

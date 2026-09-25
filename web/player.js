@@ -54,21 +54,26 @@ function reportPlay(finished) {
     player.reported = true;
 
     const played = player.audio.currentTime || 0;
+    const body = {
+        path: current.path,
+        played_seconds: Number(played.toFixed(2)),
+        duration: player.audio.duration || current.duration || null,
+        skipped: !finished && played < SKIP_THRESHOLD_SECONDS,
+        source: "player",
+        /* Which kind of queue this came out of. The comparison of skip
+         * rates cannot be reconstructed later, so the label has to travel
+         * with the play. */
+        mode: player.playingMode || player.queueMode,
+    };
     fetch("/api/plays", {
         method: "POST",
         headers: { ...headers(), "Content-Type": "application/json" },
-        body: JSON.stringify({
-            path: current.path,
-            played_seconds: Number(played.toFixed(2)),
-            duration: player.audio.duration || current.duration || null,
-            skipped: !finished && played < SKIP_THRESHOLD_SECONDS,
-            source: "player",
-            /* Which kind of queue this came out of. The comparison of skip
-             * rates cannot be reconstructed later, so the label has to travel
-             * with the play. */
-            mode: player.playingMode || player.queueMode,
-        }),
-    }).catch(() => { /* the journal is not worth interrupting playback for */ });
+        body: JSON.stringify(body),
+    })
+        /* Без сети или при недоступном сервере — в очередь (offline.js): уйдёт,
+         * когда сеть вернётся. Воспроизведение из-за журнала не прерывается. */
+        .then(r => { if (!r.ok && r.status >= 500) queuePlay(body); })
+        .catch(() => queuePlay(body));
 }
 
 /* ---------------- Playback ---------------- */
@@ -78,9 +83,15 @@ async function streamUrlFor(path) {
     const r = await fetch("/api/stream-url?path=" + encodeURIComponent(path), { headers: headers() });
     if (!r.ok) throw new Error("Не удалось получить ссылку на трек");
     const data = await r.json();
+    const gain = typeof data.gain === "number" ? data.gain : null;
+    /* Там, где странице громкость не подчиняется (iPhone), ReplayGain
+     * применить нечем — и его просим вписать в сам поток: сервер ставит
+     * поправку в заголовок Opus, её применяет декодер телефона (см.
+     * adder/opusgain.py). Только вниз, как и ползунок. */
+    const norm = !player.volumeAdjustable && gain !== null && gain < 0;
     return {
-        url: data.url,
-        gain: typeof data.gain === "number" ? data.gain : null,
+        url: norm ? data.url + "&norm=1" : data.url,
+        gain,
         expires: typeof data.expires_at === "number" ? data.expires_at : 0,
     };
 }
@@ -177,12 +188,17 @@ async function playAt(position, skipped = 0, direction = 1) {
          * музыки хуже, чем пропуск: играем соседний, а этот просим докачать
          * — вдруг к нему ещё вернутся. Счётчик не даёт кружить по очереди,
          * в которой не скачалось ничего. */
-        if (isOutside(track) && skipped < player.queue.length) {
-            requestOutside([outsideKey(track)]);
+        /* Без сети то же с нескачанным треком: играем следующий скачанный. */
+        const offlineMiss = !navigator.onLine && !isDownloaded(track.path);
+        if ((isOutside(track) || offlineMiss) && skipped < player.queue.length) {
+            if (isOutside(track)) requestOutside([outsideKey(track)]);
             const next = stepInOrder(direction);
             if (next >= 0 && next !== position) {
                 const played = await playAt(next, skipped + 1, direction);
-                if (played) setPlayerNote(`«${track.title}» пока недоступен — пропущен`);
+                if (played) {
+                    setPlayerNote(offlineMiss ? `Нет сети: «${track.title}» не скачан — пропущен`
+                        : `«${track.title}» пока недоступен — пропущен`);
+                }
                 return played;
             }
         }
@@ -1528,6 +1544,7 @@ function markPlayingRow() {
     const current = player.queue[player.index];
     for (const row of document.querySelectorAll("[data-track-path]")) {
         row.classList.toggle("is-playing", !!current && row.dataset.trackPath === current.path);
+        row.classList.toggle("is-offline", isDownloaded(row.dataset.trackPath));
     }
 }
 
@@ -1703,6 +1720,7 @@ function renderPlaylist() {
     pl.entries.forEach((entry, position) => box.appendChild(playlistTrackRow(entry, position)));
     filterOpenPlaylist();
     markPlayingRow();
+    renderPlaylistOffline();
 }
 
 const DRAG_TYPE = "application/x-ls-index";
@@ -1859,6 +1877,11 @@ function openTrackMenu(button, position) {
     separator.className = "row-menu-line";
     menu.appendChild(separator);
     menu.appendChild(item("Заменить другой версией…", "", () => askForReplacement(button, position)));
+    const entry = player.playlist.entries[position];
+    if (offline.supported && entry && !isOutside(entry)) {
+        menu.appendChild(item(isDownloaded(entry.path) ? "Убрать с телефона" : "Скачать на телефон", "",
+            () => toggleTrackDownload(entry)));
+    }
     menu.appendChild(item("Убрать из подборки", "", () => removeAt(position)));
     menu.lastChild.classList.add("is-danger");
 

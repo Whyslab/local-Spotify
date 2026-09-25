@@ -134,7 +134,8 @@ def test_every_route_but_the_public_few_needs_the_token(client):
 
     from adder import app as app_module
 
-    public = {"/api/stream", "/health", "/"}
+    # /sw.js is the offline worker: page code like /static/, no data in it.
+    public = {"/api/stream", "/health", "/", "/sw.js"}
     open_routes = []
     for route in app_module.app.routes:
         if not isinstance(route, APIRoute) or route.path in public:

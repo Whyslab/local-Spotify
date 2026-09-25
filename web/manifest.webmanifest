@@ -1,0 +1,13 @@
+{
+  "name": "local-Spotify",
+  "short_name": "Музыка",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#090909",
+  "theme_color": "#090909",
+  "icons": [
+    { "src": "/static/icon-180.png", "sizes": "180x180", "type": "image/png" },
+    { "src": "/static/icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}

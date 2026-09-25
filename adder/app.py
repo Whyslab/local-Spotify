@@ -15,7 +15,7 @@ from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import Depends, FastAPI, File, HTTPException, Security, UploadFile, status
+from fastapi import Depends, FastAPI, File, HTTPException, Request, Security, UploadFile, status
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
@@ -34,6 +34,7 @@ from . import (
     moods,
     navidrome,
     notify,
+    opusgain,
     outside,
     playlists,
     runtime,
@@ -1068,23 +1069,32 @@ def get_stream_url(path: str, authenticated: bool = Depends(verify_token)):
 
 
 @app.get("/api/stream")
-def stream(path: str, exp: str = "", sig: str = ""):
+def stream(request: Request, path: str, exp: str = "", sig: str = "", norm: str = ""):
     """Serve one track to an <audio> element.
 
     Deliberately outside verify_token: an <audio> element sends no headers, and
     the signature is what stands in for the bearer token here. A missing or
     stale signature is refused; it is not a way around the token.
+
+    ``norm=1`` is for players that cannot set a volume (iPhone): an Opus track
+    is then served with its ReplayGain put into the stream's own header, which
+    the phone's decoder applies. Only downwards, as the web player does; the
+    file on disk is not touched (see opusgain). Unsigned on purpose: it can
+    only make a track quieter.
     """
     if not signing.verify(path, exp, sig):
         raise HTTPException(status_code=403, detail="Stream link is invalid or has expired")
     track = _audio_file(path)
+    media_type = STREAM_TYPES.get(track.suffix.lower(), "audio/mp4")
+    if norm == "1" and track.suffix.lower() == ".m4a" and not outside.is_outside(path):
+        gain = next((r.get("gain") for r in library.library_index() if r["path"] == path), None)
+        if isinstance(gain, (int, float)) and gain < 0 and opusgain.gain_offset(track) is not None:
+            return opusgain.response(track, gain, media_type, request.headers.get("range"))
     # FileResponse handles Range itself, which is what makes seeking work:
     # starlette parses the header, answers 206, and returns 416 on a bad range.
     # По расширению: mp3, flac и opus из импорта с меткой audio/mp4 Safari
     # может не сыграть вовсе.
-    return FileResponse(
-        track, media_type=STREAM_TYPES.get(track.suffix.lower(), "audio/mp4"), filename=track.name
-    )
+    return FileResponse(track, media_type=media_type, filename=track.name)
 
 
 STREAM_TYPES = {
@@ -1794,6 +1804,18 @@ def health(credentials: HTTPAuthorizationCredentials = Security(security)):
     return payload
 
 
+@app.get("/sw.js")
+def service_worker():
+    """The offline worker (web/sw.js) — from the root, not /static/: a service
+    worker only controls pages under its own path, and the player is at "/".
+    no-cache so a new version is picked up on the next visit."""
+    return FileResponse(
+        runtime.PROJECT.parent / "web" / "sw.js",
+        media_type="text/javascript",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
 @app.get("/", response_class=HTMLResponse)
 def index():
     """Страница вместе с версиями файлов, которые она подключает.
@@ -1809,7 +1831,7 @@ def index():
     """
     web = runtime.PROJECT.parent / "web"
     html = (web / "index.html").read_text(encoding="utf-8")
-    for name in ("style.css", "app.js", "player.js"):
+    for name in ("style.css", "app.js", "player.js", "offline.js"):
         path = web / name
         if not path.is_file():
             continue

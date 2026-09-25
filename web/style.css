@@ -626,6 +626,12 @@ code {
     box-shadow: inset 3px 0 0 var(--accent);
 }
 .track.is-playing .track-title { font-weight: 750; color: var(--text); }
+/* Скачан на это устройство — стрелка вниз перед названием: играет без сети. */
+.track.is-offline .track-title::before {
+    content: "\2193\00a0";
+    color: var(--text-3);
+    font-weight: 600;
+}
 
 .icon-button.small {
     width: 34px;

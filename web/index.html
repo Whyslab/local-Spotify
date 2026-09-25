@@ -14,6 +14,7 @@
 <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
 <link rel="icon" href="/static/favicon-32.png" sizes="32x32" type="image/png">
 <link rel="apple-touch-icon" href="/static/icon-180.png">
+<link rel="manifest" href="/static/manifest.webmanifest">
 
 <link rel="stylesheet" href="/static/style.css">
 
@@ -220,6 +221,8 @@
               Обложка
               <input type="file" accept="image/jpeg,image/png,image/webp" onchange="uploadCover(this)" hidden>
             </label>
+            <button id="playlistOffline" class="ghost" hidden
+                    title="Скачать треки подборки на это устройство — чтобы играли без сети">На телефон</button>
             <button id="playlistEditToggle" class="ghost" onclick="togglePlaylistEdit()"
                     aria-expanded="false" aria-controls="playlistEdit">Изменить</button>
             <button class="ghost" onclick="switchView('viewPlaylists')">Назад</button>
@@ -251,6 +254,19 @@
 
     <!-- ---------------- Сервис ---------------- -->
     <section id="viewService" class="view" hidden>
+
+      <div id="offlineCard" class="card" hidden>
+        <div class="card-head">
+          <svg class="icon accent" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m-5-5 5 5 5-5M5 20h14"/></svg>
+          <h2>На этом устройстве</h2>
+        </div>
+        <p id="offlineFacts" class="muted"></p>
+        <p class="muted">Скачанное играет без сети. Качать — кнопкой «На телефон» в подборке.
+          На айфоне держи плеер на экране «Домой»: у сайта в Safari iOS стирает скачанное после недели без открытия.</p>
+        <div class="row wrap">
+          <button id="offlineRemoveAll" class="ghost" onclick="removeAllDownloads()">Удалить всё скачанное</button>
+        </div>
+      </div>
 
       <div class="card">
         <div class="card-head">
@@ -458,3 +474,4 @@
 
 <script src="/static/app.js"></script>
 <script src="/static/player.js"></script>
+<script src="/static/offline.js"></script>
