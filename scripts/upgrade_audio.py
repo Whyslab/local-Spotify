@@ -106,10 +106,17 @@ class Blocked(RuntimeError):
 # Failures that say something about YouTube or this machine, not the video:
 # a 403 wave, a broken extractor, a missing ffmpeg. A removed, private or
 # region-blocked video is that video's own problem and falls outside.
+# "http error 403", not a bare "403": the message carries the video ID, and
+# an ID can contain those digits.
 SETUP_FAILURES = (
-    "403", "forbidden", "unable to extract", "nsig", "po token", "signature",
-    "requested format is not available", "ffmpeg", "ffprobe",
+    "http error 403", "forbidden", "unable to extract", "nsig", "po token", "signature",
+    "ffmpeg", "ffprobe",
 )  # fmt: skip
+
+
+def is_setup_failure(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return any(word in text for word in SETUP_FAILURES)
 
 
 class Unreachable(RuntimeError):
@@ -316,6 +323,9 @@ def search(client, artist: str, title: str, duration: float) -> list[tuple[str, 
         entries = list(itertools.islice((found or {}).get("entries") or [], SEARCH_RESULTS))
     except Exception as exc:
         _judge(exc)
+        if is_setup_failure(exc):
+            # A broken search is YouTube's problem; "not found" would stick.
+            raise Unreachable(f"search failed: {str(exc)[:160]}") from exc
         return []
     return [
         (entry["id"], entry.get("title") or "")
@@ -344,9 +354,8 @@ def download(client, video_id: str) -> tuple[Path, str] | None:
         info = client.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=True)
     except Exception as exc:
         _judge(exc)
-        text = str(exc).lower()
         logger.info("  %s: not downloaded (%s)", video_id, str(exc).splitlines()[0][:120])
-        if any(word in text for word in SETUP_FAILURES):
+        if is_setup_failure(exc):
             raise NotDownloaded(str(exc)[:200], setup=True) from exc
         return None
     if not info:
@@ -516,7 +525,7 @@ def upgrade_one(client, path: Path, root: Path, links, by_name, db_path: Path, d
     ids = (youtube_id(u) for u in candidates_for(relative, tags, links, by_name))
     known = [(i, "") for i in ids if i]
     no_opus = False
-    compared = unavailable = 0
+    compared = unavailable = opus_compared = 0
     # The artist is part of a video's title: "Clean Bandit - Rather Be" is not a clean edit.
     own = f"{tags['artist']} {tags['title']}"
     for round_ids, how in ((known, "known link"), (None, "search")):
@@ -549,6 +558,7 @@ def upgrade_one(client, path: Path, root: Path, links, by_name, db_path: Path, d
                     no_opus = True
                     logger.info("  %s: no Opus stream on YouTube", video_id)
                     continue
+                opus_compared += 1
                 overall, worst, lag = similarity(path, new)
                 length = library.read_tags(new).get("duration") or 0
                 fits = (
@@ -579,7 +589,7 @@ def upgrade_one(client, path: Path, root: Path, links, by_name, db_path: Path, d
         # Nothing could be looked at, for reasons that are YouTube's (a 403
         # wave, an outdated yt-dlp), not the track's. Not "not found".
         raise Unreachable(f"{unavailable} candidates failed for reasons not their own")
-    if no_opus:
+    if no_opus and not opus_compared:
         return {"status": "no opus on youtube", "tried": sorted(tried)}
     return {"status": "not found", "tried": sorted(tried)}
 

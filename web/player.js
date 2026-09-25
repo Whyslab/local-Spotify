@@ -116,17 +116,19 @@ function linkLasts(stream, track) {
 
 /* Зовётся из timeupdate: очередь собирается иногда уже после того, как трек
  * заиграл, и её меняют на ходу, поэтому следующий трек каждый раз
- * определяется заново. Неудача (трек со стороны ещё качается, сеть) не
- * повторяется чаще раза в PREFETCH_RETRY_MS — timeupdate идёт 4 раза в
- * секунду. */
+ * определяется заново. */
 let prefetching = null;   // путь, за ссылкой на который уже пошли
-let prefetchFailed = { path: null, at: 0 };
+let lastPrefetch = { path: null, at: 0 };  // когда за ним ходили в последний раз
 
 function prefetchNextStream() {
     const track = player.queue[peekNext()];
     if (!track || track.path === prefetching) return;
     if (nextStream && nextStream.path === track.path && linkLasts(nextStream, track)) return;
-    if (prefetchFailed.path === track.path && Date.now() - prefetchFailed.at < PREFETCH_RETRY_MS) return;
+    /* Не чаще раза в PREFETCH_RETRY_MS за тем же треком — и после неудачи, и
+     * после удачи: сервер мог дать ссылку короче, чем думает телефон (часы
+     * врут, длина неизвестна), и тогда каждый timeupdate просил бы новую. */
+    if (lastPrefetch.path === track.path && Date.now() - lastPrefetch.at < PREFETCH_RETRY_MS) return;
+    lastPrefetch = { path: track.path, at: Date.now() };
     prefetching = track.path;
     streamUrlFor(track.path)
         .then(stream => {
@@ -134,7 +136,7 @@ function prefetchNextStream() {
             const now = player.queue[peekNext()];
             if (now && now.path === track.path) nextStream = { path: track.path, ...stream };
         })
-        .catch(() => { prefetchFailed = { path: track.path, at: Date.now() }; })
+        .catch(() => { /* не страшно: возьмём, когда дойдём */ })
         .finally(() => { if (prefetching === track.path) prefetching = null; });
 }
 

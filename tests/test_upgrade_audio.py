@@ -277,6 +277,24 @@ def test_download_tells_a_setup_failure_from_a_dead_video(monkeypatch):
         upgrade.download(Client("ERROR: unable to download video data: HTTP Error 403"), "x")
 
 
+def test_a_broken_search_is_youtubes_problem_not_the_tracks(dirs):
+    class Client:
+        def extract_info(self, *a, **k):
+            raise RuntimeError("ERROR: [youtube:search] Unable to extract yt initial data")
+
+    with pytest.raises(upgrade.Unreachable):
+        upgrade.search(Client(), "A", "Song", 100)
+
+
+def test_a_403_inside_a_video_id_is_not_a_setup_failure():
+    assert not upgrade.is_setup_failure(
+        RuntimeError("ERROR: [youtube] ab403xYzQ1: Video unavailable")
+    )
+    assert upgrade.is_setup_failure(
+        RuntimeError("ERROR: unable to download: HTTP Error 403: Forbidden")
+    )
+
+
 def test_a_known_link_is_not_refused_for_its_title(dirs, tmp_path, monkeypatch):
     pytest.importorskip("numpy")
     old = _library_track(dirs)
