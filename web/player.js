@@ -85,13 +85,18 @@ async function streamUrlFor(path) {
     };
 }
 
-/* Ссылка на следующий трек берётся заранее, пока играет этот. На айфоне с
+/* Ссылка на следующий трек берётся заранее, под конец этого. На айфоне с
  * погашенным экраном следующий трек включается из обработчика «ended», и
  * запрос к серверу посередине давал системе повод решить, что звук кончился:
  * play() после паузы на сеть там бывает не разрешён. С готовой ссылкой src
- * меняется сразу, без ожидания. */
+ * меняется сразу, без ожидания.
+ *
+ * Под конец, а не в начале: ссылка живёт «длина трека + 5 минут», и взятая
+ * в начале длинного трека к его концу уже не покрывала бы следующий. */
 let nextStream = null;   // {path, url, gain, expires}
 const STREAM_MARGIN_MS = 60 * 1000;
+const PREFETCH_BEFORE_END_S = 45;
+const PREFETCH_RETRY_MS = 20 * 1000;
 
 function peekNext() {
     if (!player.order.length) return -1;
@@ -102,19 +107,35 @@ function peekNext() {
     return -1;
 }
 
-/* Зовётся и из timeupdate: очередь собирается иногда уже после того, как
- * трек заиграл, и её меняют на ходу — следующий трек проверяется заново,
- * запрос уходит, только когда он сменился. */
-let prefetching = null;  // путь, за ссылкой на который уже пошли
+/* Хватит ли ссылки на весь трек: браузер дочитывает его кусками до конца. */
+function linkLasts(stream, track) {
+    const needed = (Number(track.duration) || 0) * 1000 + STREAM_MARGIN_MS;
+    return stream.expires * 1000 - Date.now() >= needed;
+}
+
+/* Зовётся из timeupdate: очередь собирается иногда уже после того, как трек
+ * заиграл, и её меняют на ходу, поэтому следующий трек каждый раз
+ * определяется заново. Неудача (трек со стороны ещё качается, сеть) не
+ * повторяется чаще раза в PREFETCH_RETRY_MS — timeupdate идёт 4 раза в
+ * секунду. */
+let prefetching = null;   // путь, за ссылкой на который уже пошли
+let prefetchFailed = { path: null, at: 0 };
 
 function prefetchNextStream() {
+    const a = player.audio;
+    if (!Number.isFinite(a.duration) || a.duration - a.currentTime > PREFETCH_BEFORE_END_S) return;
     const track = player.queue[peekNext()];
     if (!track || track.path === prefetching) return;
-    if (nextStream && nextStream.path === track.path) return;
+    if (nextStream && nextStream.path === track.path && linkLasts(nextStream, track)) return;
+    if (prefetchFailed.path === track.path && Date.now() - prefetchFailed.at < PREFETCH_RETRY_MS) return;
     prefetching = track.path;
     streamUrlFor(track.path)
-        .then(stream => { nextStream = { path: track.path, ...stream }; })
-        .catch(() => { /* не страшно: возьмём, когда дойдём */ })
+        .then(stream => {
+            // Пока шёл запрос, следующим мог стать другой трек.
+            const now = player.queue[peekNext()];
+            if (now && now.path === track.path) nextStream = { path: track.path, ...stream };
+        })
+        .catch(() => { prefetchFailed = { path: track.path, at: Date.now() }; })
         .finally(() => { if (prefetching === track.path) prefetching = null; });
 }
 
@@ -122,11 +143,7 @@ function takePrefetched(track) {
     const ready = nextStream;
     if (!ready || ready.path !== track.path) return null;
     nextStream = null;
-    /* Подписанная ссылка живёт ограниченно, а браузер дочитывает трек по
-     * кускам до самого конца: её должно хватить на весь трек с запасом. */
-    const needed = (Number(track.duration) || 600) * 1000 + STREAM_MARGIN_MS;
-    if (ready.expires * 1000 - Date.now() < needed) return null;
-    return ready;
+    return linkLasts(ready, track) ? ready : null;
 }
 
 /* `direction` — куда листают: пропуск недоступного трека идёт туда же, иначе

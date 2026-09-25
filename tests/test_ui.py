@@ -294,6 +294,16 @@ def test_the_next_track_starts_without_waiting_for_the_server(page):
     assert waited is True
 
 
+def test_a_prefetched_link_must_cover_the_whole_next_track(page):
+    open_library(page)
+    now = page.evaluate("Date.now() / 1000")
+    track = {"duration": 270}  # 4.5 minutes
+    # A link fetched at the start of a 4.5-minute track has 300 s left at its end.
+    assert page.evaluate("([s, t]) => linkLasts(s, t)", [{"expires": now + 300}, track]) is False
+    # One fetched 45 s before the end still has nearly its full life.
+    assert page.evaluate("([s, t]) => linkLasts(s, t)", [{"expires": now + 555}, track]) is True
+
+
 def test_the_sleep_timer_counts_down_and_stops_playback(page):
     open_library(page)
     row(page, "Loud").get_by_role("button", name="Играть").click()

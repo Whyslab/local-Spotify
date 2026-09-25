@@ -29,6 +29,7 @@ def dirs(tmp_path, monkeypatch):
     monkeypatch.setattr(upgrade, "BACKUP", tmp_path / "data" / "backup")
     monkeypatch.setattr(upgrade, "STATE", tmp_path / "data" / "state.json")
     monkeypatch.setattr(upgrade, "WORK", tmp_path / "data" / "work")
+    monkeypatch.setattr(upgrade, "LOCK", tmp_path / "data" / "lock")
     root = tmp_path / "library"
     (root / "Artist" / "Singles").mkdir(parents=True)
     return root
@@ -105,6 +106,8 @@ def test_uploads_are_told_by_name_so_a_moved_one_is_still_kept(tmp_path):
     # Moved to another artist folder from the panel: the task row kept the old path.
     moved = {"artist": "BUSHIDO ZHO \u2022 Yanix", "title": "PAPI"}
     assert upgrade.is_upload(moved, uploads)
+    # And Deezer may spell the artist differently from the upload.
+    assert upgrade.is_upload({"artist": "Bushido Zhö", "title": "papi"}, uploads)
     assert not upgrade.is_upload({"artist": "A", "title": "s"}, uploads)
 
 
@@ -115,6 +118,9 @@ def test_titles_that_name_another_version_are_refused():
     assert not upgrade.names_another_version("Song (Official Video)", "Song")
     assert not upgrade.names_another_version("Song (Remix)", "Song (Remix)")
     assert not upgrade.names_another_version("Olivia - Song", "Song")  # "live" as a word only
+    assert upgrade.names_another_version("Song (Sped-Up)", "Song")
+    # The artist is part of the video title; compared with "artist title" it is not a version.
+    assert not upgrade.names_another_version("Clean Bandit - Rather Be", "Clean Bandit Rather Be")
 
 
 def test_only_a_refusal_from_youtube_stops_the_run():
@@ -202,6 +208,56 @@ def test_a_file_edited_during_the_swap_is_left_alone(dirs, tmp_path, monkeypatch
 
     assert _codec(old) == "aac"
     assert MP4(old).tags["\xa9alb"] == ["Other"]
+
+
+def test_an_existing_backup_is_never_replaced_and_the_mode_is_kept(dirs, tmp_path):
+    old = _library_track(dirs)
+    os.chmod(old, 0o640)
+    backup = upgrade.BACKUP / "Artist" / "Singles" / "Song.m4a"
+    backup.parent.mkdir(parents=True)
+    backup.write_bytes(b"the original from an earlier pass")
+
+    upgrade.swap(old, _opus_download(tmp_path), "https://youtu.be/vid", dirs, tmp_path / "x.db")
+
+    assert backup.read_bytes() == b"the original from an earlier pass"
+    assert old.stat().st_mode & 0o777 == 0o640
+
+
+def test_only_one_run_at_a_time(dirs):
+    first = upgrade.take_lock()
+    assert first is not None
+    try:
+        assert upgrade.take_lock() is None
+    finally:
+        first.close()
+    second = upgrade.take_lock()
+    assert second is not None
+    second.close()
+
+
+def test_a_track_nothing_could_be_downloaded_for_is_not_marked_not_found(dirs, monkeypatch):
+    old = _library_track(dirs)
+    monkeypatch.setattr(upgrade, "search", lambda *a: [("v1", "Song"), ("v2", "Song")])
+    monkeypatch.setattr(upgrade, "download", lambda client, vid: None)  # a 403 wave
+
+    with pytest.raises(upgrade.Unreachable):
+        upgrade.upgrade_one(None, old, dirs, {}, {}, dirs / "x.db", dry=True)
+
+
+def test_a_known_link_is_not_refused_for_its_title(dirs, tmp_path, monkeypatch):
+    pytest.importorskip("numpy")
+    old = _library_track(dirs)
+    new = _opus_download(tmp_path)
+    audio = MP4(old)
+    audio[upgrade.MP4_SOURCE] = [MP4FreeForm(b"https://youtu.be/v1")]
+    audio.save()
+    # "LIVE - Song" names a band, and this is the very video the file came from.
+    monkeypatch.setattr(upgrade, "download", lambda client, vid: (new, "LIVE - Song"))
+    monkeypatch.setattr(upgrade, "search", lambda *a: [])
+
+    result = upgrade.upgrade_one(None, old, dirs, {}, {}, dirs / "x.db", dry=True)
+
+    assert result["status"] == "checked"
 
 
 def test_the_same_recording_matches_and_others_do_not(tmp_path):

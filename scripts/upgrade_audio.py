@@ -72,6 +72,9 @@ logger = logging.getLogger("upgrade_audio")
 DATA = Path.home() / ".local" / "share" / "local-Spotify" / "opus-upgrade"
 BACKUP = DATA / "backup"
 STATE = DATA / "state.json"
+DRY_STATE = DATA / "state-dry-run.json"
+LOCK = DATA / "lock"
+RESCAN_PENDING = DATA / "rescan-pending"
 WORK = DATA / "work"
 
 RATE = 8000  # enough to tell recordings apart, cheap to hold for a 40-minute mix
@@ -84,6 +87,7 @@ DURATION_SLACK = 3.0
 SEARCH_RESULTS = 5
 PAUSE_SECONDS = 4.0
 MAX_ATTEMPTS = 3
+MAX_UNREACHABLE_IN_A_ROW = 5
 MP4_SOURCE = "----:com.apple.iTunes:SOURCE_URL"
 
 # Words in a video title that mean another version of the song. Rejected
@@ -156,11 +160,11 @@ def similarity(old: Path, new: Path) -> tuple[float, float, float]:
 
     overall = corr(x, y)
     step = WINDOW_SECONDS * RATE
-    loud = float(np.sqrt(np.mean(x.astype(np.float64) ** 2))) if m else 0.0
+    loud = float(np.sqrt(float(np.dot(x, x)) / m)) if m else 0.0
     worst = 1.0
     for start in range(0, m - step + 1, step):
         p, q = x[start : start + step], y[start : start + step]
-        if float(np.sqrt(np.mean(p.astype(np.float64) ** 2))) < QUIET_WINDOW * loud:
+        if float(np.sqrt(float(np.dot(p, p)) / len(p))) < QUIET_WINDOW * loud:
             continue
         worst = min(worst, corr(p, q))
     return overall, worst, lag / RATE
@@ -186,7 +190,8 @@ def names_another_version(video_title: str, own_title: str) -> bool:
         end = r"(?!\w)" if word.isascii() else ""
         return re.search(rf"(?<!\w){re.escape(word)}{end}", text) is not None
 
-    theirs, ours = video_title.lower(), own_title.lower()
+    theirs = video_title.lower().replace("-", " ")
+    ours = own_title.lower().replace("-", " ")
     return any(has(word, theirs) and not has(word, ours) for word in OTHER_VERSIONS)
 
 
@@ -231,8 +236,10 @@ def known_links(db_path: Path) -> tuple[dict[str, str], list[tuple[str, str]]]:
 
 
 def is_upload(tags: dict, uploads: list[tuple[str, str]]) -> bool:
-    artist, title = tags["artist"].lower(), tags["title"].lower()
-    return any(t and t == title and (not a or a in artist) for a, t in uploads)
+    """By title alone: the file's artist comes from Deezer (Tiësto for an
+    upload named tiesto). A false match only leaves a track as it is."""
+    title = tags["title"].lower()
+    return any(t and t == title for _, t in uploads)
 
 
 def csv_links(path: Path) -> dict[tuple[str, str], str]:
@@ -348,6 +355,8 @@ def carry_tags(old: Path, new: Path, url: str) -> None:
     assert target.tags is not None
     target.tags.clear()
     for key, value in (source.tags or {}).items():
+        if key.lower() == "----:com.apple.itunes:itunsmpb":
+            continue  # AAC's encoder delay; it would be wrong for Opus
         target.tags[key] = value
     target.tags[MP4_SOURCE] = [MP4FreeForm(url.encode())]
     target.save()
@@ -367,11 +376,14 @@ def swap(old: Path, new: Path, url: str, root: Path, db_path: Path) -> None:
     relative = old.relative_to(root)
     backup = BACKUP / relative
     backup.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(old, backup)
+    # An existing backup is the original from an earlier pass; it is never replaced.
+    if not backup.exists():
+        shutil.copy2(old, backup)
     # The file must not have changed while this track was being worked on: a
     # tag edit from the panel would otherwise be lost under the new copy.
     if _stamp(old.stat()) != _stamp(before):
         raise RuntimeError("changed during the upgrade; left as it was")
+    os.chmod(new, before.st_mode & 0o7777)
     os.utime(new, ns=(before.st_atime_ns, before.st_mtime_ns))
     staged = old.with_name(f".{old.name}.upgrading")
     shutil.move(str(new), staged)
@@ -408,13 +420,17 @@ def sweep_leftovers(root: Path) -> None:
 
 
 def rescan_navidrome() -> None:
+    """Pending since the first swap, cleared only once Navidrome has agreed:
+    a run stopped with Ctrl+C still gets its rescan on the next start."""
     from adder import navidrome
 
     try:
         navidrome.full_scan()
-        logger.info("Navidrome: full rescan started")
     except Exception as exc:
         logger.warning("Navidrome rescan not started (%s); start one from its web page", exc)
+        return
+    RESCAN_PENDING.unlink(missing_ok=True)
+    logger.info("Navidrome: full rescan started")
 
 
 # ---------------------------------------------------------------------------
@@ -422,18 +438,33 @@ def rescan_navidrome() -> None:
 # ---------------------------------------------------------------------------
 
 
-def load_state() -> dict:
+def load_state(path: Path) -> dict:
     try:
-        return json.loads(STATE.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
 
 
-def save_state(state: dict) -> None:
-    STATE.parent.mkdir(parents=True, exist_ok=True)
-    partial = STATE.with_suffix(".tmp")
+def save_state(state: dict, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    partial = path.with_suffix(".tmp")
     partial.write_text(json.dumps(state, ensure_ascii=False, indent=1), encoding="utf-8")
-    partial.replace(STATE)
+    partial.replace(path)
+
+
+def take_lock():
+    """One run at a time: two would meet on the same track, and the second
+    would back up the first one's Opus in place of the original."""
+    import fcntl
+
+    DATA.mkdir(parents=True, exist_ok=True)
+    handle = LOCK.open("w")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        return None
+    return handle
 
 
 def candidates_for(
@@ -459,6 +490,9 @@ def upgrade_one(client, path: Path, root: Path, links, by_name, db_path: Path, d
     ids = (youtube_id(u) for u in candidates_for(relative, tags, links, by_name))
     known = [(i, "") for i in ids if i]
     no_opus = False
+    compared = unavailable = 0
+    # The artist is part of a video's title: "Clean Bandit - Rather Be" is not a clean edit.
+    own = f"{tags['artist']} {tags['title']}"
     for round_ids, how in ((known, "known link"), (None, "search")):
         if round_ids is None:
             artist = tags["artist"].split(" • ")[0]
@@ -467,15 +501,19 @@ def upgrade_one(client, path: Path, root: Path, links, by_name, db_path: Path, d
             if video_id in tried:
                 continue
             tried.add(video_id)
-            if how == "search" and names_another_version(listed_title, tags["title"]):
+            if how == "search" and names_another_version(listed_title, own):
                 logger.info("  %s: another version (%s)", video_id, listed_title[:60])
                 continue
             got = download(client, video_id)
             if got is None:
+                unavailable += 1
                 continue
             new, video_title = got
+            compared += 1
             try:
-                if names_another_version(video_title, tags["title"]):
+                # A known link is the very video the file came from; the audio
+                # comparison below is the stronger test there.
+                if how == "search" and names_another_version(video_title, own):
                     logger.info("  %s: another version (%s)", video_id, video_title[:60])
                     continue
                 if codec_of(new) != "opus":
@@ -508,6 +546,10 @@ def upgrade_one(client, path: Path, root: Path, links, by_name, db_path: Path, d
                 return result
             finally:
                 new.unlink(missing_ok=True)
+    if not compared and unavailable:
+        # Nothing could be looked at: that says more about YouTube (a 403 wave,
+        # an outdated yt-dlp) than about this track. Not "not found".
+        raise Unreachable(f"none of {unavailable} candidates could be downloaded")
     if no_opus:
         return {"status": "no opus on youtube", "tried": sorted(tried)}
     return {"status": "not found", "tried": sorted(tried)}
@@ -524,24 +566,33 @@ def main() -> int:
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
+    lock = take_lock()
+    if lock is None:
+        logger.error("Another run is going on (%s); this one stops.", LOCK)
+        return 3
     root = args.library or config.LIBRARY
     WORK.mkdir(parents=True, exist_ok=True)
     sweep_leftovers(root)
+    if RESCAN_PENDING.exists() and not args.dry_run:
+        rescan_navidrome()  # left over from a run that was stopped
     links, uploads = known_links(args.db)
     by_name = csv_links(REPO / "missing_youtube.csv")
-    state = load_state()
+    # A dry run keeps its own notes: its "not found" must not hide a track
+    # from the real run.
+    state_path = DRY_STATE if args.dry_run else STATE
+    state = load_state(state_path)
     client = make_client()
 
     tracks = sorted(root.rglob("*.m4a"))
     if args.only:
         tracks = [root / args.only]
-    done = changed = 0
-    stopped = 0
+    done = changed = stopped = 0
+    unreachable_in_a_row = 0
     for path in tracks:
         relative = str(path.relative_to(root))
         entry = state.get(relative, {})
         previous = entry.get("status")
-        if previous in ("upgraded", "upload, kept", "already opus"):
+        if previous in ("upgraded", "upload, kept", "already opus", "not aac, kept"):
             continue
         if previous in ("not found", "no opus on youtube") and not args.retry:
             continue
@@ -551,8 +602,13 @@ def main() -> int:
         if is_upload(tags, uploads):
             state[relative] = {"status": "upload, kept"}
             continue
-        if codec_of(path) == "opus":
+        codec = codec_of(path)
+        if codec == "opus":
             state[relative] = {"status": "already opus"}
+            continue
+        if codec != "aac":
+            # ALAC is lossless and was put here on purpose; Opus would be a step down.
+            state[relative] = {"status": "not aac, kept", "codec": codec}
             continue
         if args.limit is not None and done >= args.limit:
             break
@@ -560,10 +616,23 @@ def main() -> int:
         logger.info("%s", relative)
         try:
             state[relative] = upgrade_one(client, path, root, links, by_name, args.db, args.dry_run)
+            unreachable_in_a_row = 0
         except Blocked as exc:
             logger.error("YouTube is refusing requests, stopping here: %s", exc)
             stopped = 2
             break
+        except Unreachable as exc:
+            # Not the track's fault: no attempt is counted against it.
+            logger.warning("  unreachable: %s", exc)
+            state[relative] = {**entry, "status": "failed", "error": str(exc)[:200]}
+            unreachable_in_a_row += 1
+            if unreachable_in_a_row >= MAX_UNREACHABLE_IN_A_ROW:
+                logger.error(
+                    "%d tracks in a row could not be reached; stopping", unreachable_in_a_row
+                )
+                save_state(state, state_path)
+                stopped = 2
+                break
         except Exception as exc:
             logger.warning("  failed: %s", exc)
             state[relative] = {
@@ -573,16 +642,17 @@ def main() -> int:
             }
         if state[relative]["status"] == "upgraded":
             changed += 1
+            RESCAN_PENDING.touch()
         logger.info("  -> %s", state[relative]["status"])
-        save_state(state)
+        save_state(state, state_path)
         time.sleep(PAUSE_SECONDS)
 
-    save_state(state)
+    save_state(state, state_path)
     counts: dict[str, int] = {}
     for item in state.values():
         counts[item["status"]] = counts.get(item["status"], 0) + 1
     logger.info("Totals: %s", ", ".join(f"{k} {v}" for k, v in sorted(counts.items())))
-    if changed:
+    if RESCAN_PENDING.exists() and not args.dry_run:
         rescan_navidrome()
     return stopped
 
