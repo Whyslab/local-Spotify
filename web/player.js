@@ -78,7 +78,55 @@ async function streamUrlFor(path) {
     const r = await fetch("/api/stream-url?path=" + encodeURIComponent(path), { headers: headers() });
     if (!r.ok) throw new Error("Не удалось получить ссылку на трек");
     const data = await r.json();
-    return { url: data.url, gain: typeof data.gain === "number" ? data.gain : null };
+    return {
+        url: data.url,
+        gain: typeof data.gain === "number" ? data.gain : null,
+        expires: typeof data.expires_at === "number" ? data.expires_at : 0,
+    };
+}
+
+/* Ссылка на следующий трек берётся заранее, пока играет этот. На айфоне с
+ * погашенным экраном следующий трек включается из обработчика «ended», и
+ * запрос к серверу посередине давал системе повод решить, что звук кончился:
+ * play() после паузы на сеть там бывает не разрешён. С готовой ссылкой src
+ * меняется сразу, без ожидания. */
+let nextStream = null;   // {path, url, gain, expires}
+const STREAM_MARGIN_MS = 60 * 1000;
+
+function peekNext() {
+    if (!player.order.length) return -1;
+    let at = player.orderAt;
+    if (at < 0 || player.order[at] !== player.index) at = player.order.indexOf(player.index);
+    if (at + 1 < player.order.length) return player.order[at + 1];
+    if (player.repeat === "all") return player.order[0];
+    return -1;
+}
+
+/* Зовётся и из timeupdate: очередь собирается иногда уже после того, как
+ * трек заиграл, и её меняют на ходу — следующий трек проверяется заново,
+ * запрос уходит, только когда он сменился. */
+let prefetching = null;  // путь, за ссылкой на который уже пошли
+
+function prefetchNextStream() {
+    const track = player.queue[peekNext()];
+    if (!track || track.path === prefetching) return;
+    if (nextStream && nextStream.path === track.path) return;
+    prefetching = track.path;
+    streamUrlFor(track.path)
+        .then(stream => { nextStream = { path: track.path, ...stream }; })
+        .catch(() => { /* не страшно: возьмём, когда дойдём */ })
+        .finally(() => { if (prefetching === track.path) prefetching = null; });
+}
+
+function takePrefetched(track) {
+    const ready = nextStream;
+    if (!ready || ready.path !== track.path) return null;
+    nextStream = null;
+    /* Подписанная ссылка живёт ограниченно, а браузер дочитывает трек по
+     * кускам до самого конца: её должно хватить на весь трек с запасом. */
+    const needed = (Number(track.duration) || 600) * 1000 + STREAM_MARGIN_MS;
+    if (ready.expires * 1000 - Date.now() < needed) return null;
+    return ready;
 }
 
 /* `direction` — куда листают: пропуск недоступного трека идёт туда же, иначе
@@ -102,7 +150,7 @@ async function playAt(position, skipped = 0, direction = 1) {
 
     let url;
     try {
-        const stream = await streamUrlFor(track.path);
+        const stream = takePrefetched(track) || await streamUrlFor(track.path);
         url = stream.url;
         player.trackGain = stream.gain;
     } catch (e) {
@@ -152,6 +200,7 @@ async function playAt(position, skipped = 0, direction = 1) {
     renderQueuePanel();
     prefetchOutside();
     extendSmartQueue();
+    prefetchNextStream();
     return true;
 }
 
@@ -855,6 +904,7 @@ player.audio.addEventListener("ended", () => {
 });
 player.audio.addEventListener("timeupdate", renderProgress);
 player.audio.addEventListener("timeupdate", fadeTick);
+player.audio.addEventListener("timeupdate", prefetchNextStream);
 player.audio.addEventListener("timeupdate", () => highlightLyric(false));
 player.audio.addEventListener("seeked", () => highlightLyric(true));
 player.audio.addEventListener("play", renderPlayer);
@@ -949,9 +999,81 @@ function renderPlayer() {
     if (track !== renderedTrack) {
         renderedTrack = track;
         setPlayerNote("");
+        announceTrack(track);
+    }
+    if ("mediaSession" in navigator) {
+        navigator.mediaSession.playbackState = player.audio.paused ? "paused" : "playing";
     }
     renderProgress();
 }
+
+/* ---------------- Экран блокировки и наушники ----------------
+ *
+ * Media Session — то, что телефон показывает на экране блокировки и в центре
+ * управления: название, обложка, кнопки «назад / пауза / дальше», ползунок.
+ * Туда же приходят кнопки наушников и руля машины. Без этого на айфоне
+ * «дальше» с экрана блокировки не работало, а там был только адрес страницы.
+ *
+ * Обложка — data: URL, а не ссылка: /api/cover требует токен, а системный
+ * плеер картинку качает сам и заголовков не шлёт.
+ */
+let announced = null;
+
+function announceTrack(track) {
+    if (!("mediaSession" in navigator) || !window.MediaMetadata) return;
+    announced = track;
+    const meta = { title: track.title || track.path, artist: track.artist || "", album: track.album || "" };
+    navigator.mediaSession.metadata = new MediaMetadata(meta);
+    if (isOutside(track)) return;
+    fetch("/api/cover?path=" + encodeURIComponent(track.path) + "&size=512", { headers: headers() })
+        .then(r => (r.ok ? r.blob() : null))
+        .then(blob => new Promise(resolve => {
+            if (!blob) { resolve(null); return; }
+            const reader = new FileReader();
+            reader.onload = () => resolve({ url: reader.result, type: blob.type || "image/jpeg" });
+            reader.onerror = () => resolve(null);
+            reader.readAsDataURL(blob);
+        }))
+        .then(data => {
+            // Пока грузилась обложка, могли переключить трек.
+            if (!data || announced !== track) return;
+            navigator.mediaSession.metadata = new MediaMetadata({
+                ...meta, artwork: [{ src: data.url, sizes: "512x512", type: data.type }],
+            });
+        })
+        .catch(() => { /* без обложки */ });
+}
+
+function sharePosition() {
+    if (!("mediaSession" in navigator) || !navigator.mediaSession.setPositionState) return;
+    const a = player.audio;
+    if (!Number.isFinite(a.duration) || a.duration <= 0) return;
+    try {
+        navigator.mediaSession.setPositionState({
+            duration: a.duration,
+            playbackRate: a.playbackRate || 1,
+            position: Math.min(a.currentTime, a.duration),
+        });
+    } catch (e) { /* позиция за пределами — пропускаем */ }
+}
+
+(function initMediaSession() {
+    if (!("mediaSession" in navigator)) return;
+    const on = (action, handler) => {
+        try { navigator.mediaSession.setActionHandler(action, handler); } catch (e) { /* не поддерживается */ }
+    };
+    on("play", () => { if (player.audio.paused) togglePlay(); });
+    on("pause", () => { if (!player.audio.paused) togglePlay(); });
+    on("nexttrack", () => nextTrack());
+    on("previoustrack", () => prevTrack());
+    on("seekto", (d) => {
+        if (typeof d.seekTime === "number") player.audio.currentTime = d.seekTime;
+        sharePosition();
+    });
+    player.audio.addEventListener("loadedmetadata", sharePosition);
+    player.audio.addEventListener("seeked", sharePosition);
+    player.audio.addEventListener("play", sharePosition);
+})();
 
 /* The right-hand panel. Everything here also exists somewhere else -- the bar
  * has the title, the list has the artist -- except the three measured numbers,

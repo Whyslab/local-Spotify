@@ -245,6 +245,55 @@ def test_a_fade_is_driven_by_a_fast_timer_only_while_it_runs(page):
     assert page.evaluate("fadeTimer") is None
 
 
+def test_the_lock_screen_shows_the_track_and_its_state(page):
+    open_library(page)
+    row(page, "Loud").get_by_role("button", name="Играть").click()
+    page.wait_for_function("!player.audio.paused")
+    page.wait_for_function("navigator.mediaSession.metadata !== null")
+
+    meta = page.evaluate(
+        "({title: navigator.mediaSession.metadata.title,"
+        " artist: navigator.mediaSession.metadata.artist,"
+        " state: navigator.mediaSession.playbackState})"
+    )
+    assert meta == {"title": "Loud", "artist": "Loud Band", "state": "playing"}
+
+    # A pause from anywhere is shown on the lock screen too.
+    page.evaluate("player.audio.pause()")
+    page.wait_for_function("navigator.mediaSession.playbackState === 'paused'")
+
+
+def test_the_next_track_starts_without_waiting_for_the_server(page):
+    # The next track's link is fetched while this one plays, so a locked
+    # iPhone does not have to wait on the network between two tracks.
+    open_library(page)
+    # A queue of two, built here: a click on a row can land before the whole
+    # list has loaded, and then the queue holds that one track.
+    page.evaluate(
+        "playQueue([{path: 'Loud Band/Singles/Loud.opus', title: 'Loud', artist: 'Loud Band',"
+        " duration: 12}, {path: 'Quiet/Singles/Quiet.m4a', title: 'Quiet', artist: 'Quiet',"
+        " duration: 12}], 0)"
+    )
+    page.wait_for_function("!player.audio.paused")
+    page.wait_for_function("nextStream !== null")
+
+    # The new source is in place before nextTrack() even returns: nothing was
+    # awaited in between. Without the prefetch it arrives a request later.
+    switched = page.evaluate(
+        "(() => { const before = player.audio.src; nextTrack();"
+        " return player.audio.src !== before; })()"
+    )
+    assert switched is True
+
+    # And without it, the same call has to wait for the server.
+    page.evaluate("nextStream = null; player.audio.pause(); player.audio.currentTime = 0")
+    waited = page.evaluate(
+        "(() => { const before = player.audio.src; prevTrack();"
+        " return player.audio.src === before; })()"
+    )
+    assert waited is True
+
+
 def test_the_sleep_timer_counts_down_and_stops_playback(page):
     open_library(page)
     row(page, "Loud").get_by_role("button", name="Играть").click()
