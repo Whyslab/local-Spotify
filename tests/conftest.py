@@ -22,7 +22,7 @@ import pytest  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
-def _outside_stays_offline(monkeypatch, tmp_path):
+def _outside_stays_offline(monkeypatch, tmp_path, request):
     """Умное перемешивание спрашивает Deezer о новых треках — в тестах нет.
 
     Иначе любой тест, дёргающий /api/shuffle, ходил бы в сеть и писал в
@@ -67,6 +67,30 @@ def _outside_stays_offline(monkeypatch, tmp_path):
     # Очередь скачиваний — состояние модуля; каждому тесту своя.
     monkeypatch.setattr(outside, "_jobs", queue.Queue())
     monkeypatch.setattr(outside, "_pending", set())
+    # Всё, куда служба пишет, — во временную папку теста, даже если тест
+    # сам об этом не подумал. Иначе TestClient на выходе чистил настоящий
+    # adder/tmp — там живая служба держит скачивания в процессе, — а на входе
+    # читал настоящую базу и фонотеку.
+    # Модуль, который сам поднимает сервер на все свои тесты (test_ui.py) и
+    # сам указывает ему папки во временном каталоге, ставит OWN_RUNTIME.
+    if not getattr(request.module, "OWN_RUNTIME", False):
+        from adder import covers, playlists
+
+        monkeypatch.setattr(runtime, "TMP_DIR", tmp_path / "tmp")
+        monkeypatch.setattr(runtime, "DB_PATH", tmp_path / "adder.db")
+        monkeypatch.setattr(runtime, "TRASH_DIR", tmp_path / "trash")
+        monkeypatch.setattr(config, "LIBRARY", tmp_path / "library")
+        monkeypatch.setattr(covers, "COVERS_DIR", tmp_path / "playlist-covers")
+        monkeypatch.setattr(playlists, "HISTORY_DIR", tmp_path / "playlist-history")
+    # И настоящий Navidrome: его логин лежит в adder/.env, а 127.0.0.1 сетевой
+    # сторож пропускает — запуск приложения логинился туда по 30 раз.
+    monkeypatch.setattr(config, "NAVIDROME_USER", "")
+    monkeypatch.setattr(config, "NAVIDROME_PASSWORD", "")
+    # Текст для нового трека ищется в своём потоке, и тот переживал тест:
+    # просыпался после снятия заглушек, звал настоящий LRCLIB, и сторож
+    # ронял уже следующий, ни в чём не виноватый тест (плавающая ошибка
+    # test_library_write). В тестах — сразу и тут же.
+    monkeypatch.setattr(ingest, "_lyrics_for_new_track", lambda relative: None)
 
 
 _real_connect = socket.socket.connect

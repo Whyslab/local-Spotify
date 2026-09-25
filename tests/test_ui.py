@@ -21,6 +21,10 @@ import pytest
 
 playwright = pytest.importorskip("playwright.sync_api")
 
+# The module's server fixture points every path into its own temp dir; the
+# per-test redirection in conftest would pull them out from under it.
+OWN_RUNTIME = True
+
 from adder import (  # noqa: E402
     analysis,
     config,
