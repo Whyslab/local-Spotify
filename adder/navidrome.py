@@ -68,6 +68,36 @@ def _headers() -> dict:
     return {"x-nd-authorization": f"Bearer {_token()}"}
 
 
+def full_scan() -> None:
+    """Ask Navidrome to read every file again, not only those with a new mtime.
+
+    Its quick scan goes by modification time, and tools that rewrite audio in
+    place keep that time on purpose (it is the track's "added" date).
+    """
+    import hashlib
+    import secrets
+
+    if not configured():
+        raise NavidromeUnavailable("Navidrome credentials are not configured")
+    salt = secrets.token_hex(8)
+    digest = hashlib.md5((config.NAVIDROME_PASSWORD + salt).encode()).hexdigest()
+    try:
+        response = requests.get(
+            f"{config.NAVIDROME_URL}/rest/startScan",
+            params={
+                "u": config.NAVIDROME_USER, "t": digest, "s": salt, "v": "1.16.1",
+                "c": "local-Spotify", "f": "json", "fullScan": "true",
+            },
+            timeout=TIMEOUT,
+        )  # fmt: skip
+        response.raise_for_status()
+        status = response.json()["subsonic-response"]["status"]
+    except Exception as exc:
+        raise NavidromeUnavailable(f"Navidrome scan request failed: {exc}") from exc
+    if status != "ok":
+        raise NavidromeUnavailable(f"Navidrome refused the scan: {response.text[:200]}")
+
+
 def playlists() -> list[dict]:
     try:
         response = requests.get(
