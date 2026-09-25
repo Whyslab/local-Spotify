@@ -533,13 +533,15 @@ def ensure_m4a(path: Path) -> Path:
         probe = subprocess.run(
             [
                 "ffprobe", "-v", "error", "-select_streams", "a:0",
-                "-show_entries", "stream=codec_name", "-of", "csv=p=0", str(path),
+                "-show_entries", "stream=codec_name", "-of", "default=nw=1:nk=1", str(path),
             ],
             capture_output=True, text=True, timeout=60,
         )  # fmt: skip
     except (OSError, subprocess.SubprocessError) as exc:
         raise RuntimeError("Download failed: could not inspect the downloaded audio") from exc
-    codec = probe.stdout.strip().lower()
+    # First line only, and nothing after a comma: ffprobe's output format
+    # has shifted between versions, and "opus," once read as an unknown codec.
+    codec = (probe.stdout.strip().splitlines() or [""])[0].split(",")[0].strip().lower()
     if probe.returncode != 0 or not codec:
         return path
     target = path.with_suffix(".m4a")

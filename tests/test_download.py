@@ -128,7 +128,7 @@ FIXTURE = __import__("pathlib").Path(__file__).parent / "fixtures" / "tone.m4a"
 def _codec(path):
     return subprocess.run(
         ["ffprobe", "-v", "error", "-select_streams", "a:0",
-         "-show_entries", "stream=codec_name", "-of", "csv=p=0", str(path)],
+         "-show_entries", "stream=codec_name", "-of", "default=nw=1:nk=1", str(path)],
         capture_output=True, text=True, check=True,
     ).stdout.strip()  # fmt: skip
 
@@ -189,6 +189,14 @@ def test_an_aac_mp4_download_becomes_m4a_untouched(app, monkeypatch):
         ["ffmpeg", "-v", "error", "-i", str(FIXTURE), "-c", "copy", "-f", "mp4", str(source)],
         check=True,
     )  # fmt: skip
+    # With a ReplayGain tag: ffprobe's csv output then reads "aac," (an empty
+    # side-data field), which once passed for an unknown codec and sent good
+    # audio through a second encode.
+    from mutagen.mp4 import MP4, MP4FreeForm
+
+    tagged = MP4(source)
+    tagged["----:com.apple.iTunes:replaygain_track_gain"] = [MP4FreeForm(b"-3.00 dB")]
+    tagged.save()
     expected = _packets(source)
     monkeypatch.setattr(app, "run_yt_dlp", FakeYtDlp(lambda cmd: completed(cmd)))
 
