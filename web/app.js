@@ -1484,7 +1484,30 @@ function forgetCover(key) {
     coverUrls.delete(key);
 }
 
+/* Обложку строки просим, только когда строка подъезжает к экрану.
+ * Раньше подборка Monday на 1124 трека запрашивала 1124 обложки разом:
+ * открытие шло 4–9 с на ноутбуке и ~17 с на телефоне, а ссылка на трек
+ * по «играть» ждала в очереди за картинками (замер 30.09.2026). */
+const coverObserver = "IntersectionObserver" in window
+    ? new IntersectionObserver((entries) => {
+        for (const entry of entries) {
+            if (!entry.isIntersecting) continue;
+            coverObserver.unobserve(entry.target);
+            const job = entry.target._coverJob;
+            delete entry.target._coverJob;
+            if (job) job();
+        }
+    }, { rootMargin: "600px 0px" })
+    : null;
+
 function loadTrackCover(host, path, size = THUMB_SMALL) {
+    const job = () => fetchTrackCover(host, path, size);
+    if (!coverObserver) { job(); return; }
+    host._coverJob = job;
+    coverObserver.observe(host);
+}
+
+function fetchTrackCover(host, path, size) {
     coverUrl(`track:${size}:${path}`, "/api/cover?path=" + encodeURIComponent(path) + "&size=" + size)
         .then(url => {
             if (!url) return;

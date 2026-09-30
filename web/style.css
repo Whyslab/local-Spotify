@@ -1993,3 +1993,12 @@ button.ghost.is-on { color: var(--text); border-color: var(--text); font-weight:
 }
 .sleep-menu button:hover { background: var(--line); }
 .sleep-title { font-size: 11px; color: var(--text-3); text-transform: uppercase; padding: 6px 10px 2px; }
+
+/* Строки за пределами экрана браузер не раскладывает и не рисует: в подборке
+   на тысячу треков это в разы быстрее (замер 30.09.2026: 265 → 26 мс на
+   «телефоне»). Строку с открытым меню «⋯» не трогаем — content-visibility
+   обрезал бы меню по краю строки. */
+.rows > .track:not(:has(.row-menu)) {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 64px;
+}
