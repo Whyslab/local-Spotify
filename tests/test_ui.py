@@ -377,6 +377,140 @@ def test_a_play_heard_offline_is_sent_when_the_network_returns(page, server):
     assert db.db_query("SELECT COUNT(*) AS n FROM plays")[0]["n"] == before + 1
 
 
+LOUD = "{path: 'Loud Band/Singles/Loud.opus', title: 'Loud', artist: 'Loud Band', duration: 12}"
+
+
+def _controlled(page):
+    """The offline worker answers only once it controls the page."""
+    page.evaluate("navigator.serviceWorker.ready.then(() => true)")
+    if not page.evaluate("!!navigator.serviceWorker.controller"):
+        page.reload()
+        page.wait_for_function(
+            "typeof switchView === 'function' && !!navigator.serviceWorker.controller"
+        )
+
+
+def test_the_page_is_saved_for_offline_on_the_very_first_visit(page):
+    open_library(page)
+    page.evaluate("navigator.serviceWorker.ready.then(() => true)")
+    page.wait_for_function(
+        "caches.open('shell-v1').then(c => c.keys()).then(k => window.shellKeys = k.map(r => new URL(r.url).pathname))"
+        " && window.shellKeys && window.shellKeys.includes('/static/player.js')",
+        timeout=15000,
+    )
+    keys = page.evaluate("window.shellKeys")
+    assert "/" in keys and "/static/offline.js" in keys and "/static/style.css" in keys
+
+
+def test_an_unreachable_server_skips_to_a_downloaded_track(page):
+    open_library(page)
+    _controlled(page)
+    page.evaluate(f"downloadTrack({LOUD})")
+    # Online as far as the phone knows, but the server does not answer.
+    page.evaluate(
+        "const real = window.fetch; window.fetch = (url, opts) =>"
+        " String(url).includes('Quiet.m4a') ? Promise.reject(new TypeError('Load failed')) : real(url, opts)"
+    )
+    page.evaluate(
+        "playQueue([{path: 'Quiet/Singles/Quiet.m4a', title: 'Quiet', artist: 'Quiet', duration: 12},"
+        f" {LOUD}], 0)"
+    )
+    page.wait_for_function("player.index === 1 && !player.audio.paused")
+    page.evaluate("removeAllDownloads()")
+
+
+def test_a_track_that_never_started_is_not_logged_as_played(page):
+    open_library(page)
+    posts = []
+    page.on("request", lambda r: posts.append(r) if r.url.endswith("/api/plays") else None)
+    page.evaluate(
+        "player.queue = [{path: 'X/Singles/x.m4a', title: 'x'}]; player.index = 0;"
+        "player.started = false; player.reported = false; reportPlay(false)"
+    )
+    page.wait_for_timeout(300)
+    assert posts == []
+
+
+def test_a_failed_load_does_not_leave_the_previous_track_playing(page):
+    open_library(page)
+    page.evaluate(f"playQueue([{LOUD}, {{path: 'Nope/Singles/nope.m4a', title: 'Nope'}}], 0)")
+    page.wait_for_function("!player.audio.paused")
+    page.evaluate("nextTrack()")
+    page.wait_for_function("player.index === 1 && !player.audio.getAttribute('src')")
+    assert page.evaluate("player.audio.paused") is True
+
+
+def test_removing_a_download_drops_its_prepared_next_link(page):
+    open_library(page)
+    _controlled(page)
+    page.evaluate(f"downloadTrack({LOUD})")
+    page.evaluate(
+        "nextStream = {path: 'Loud Band/Singles/Loud.opus', url: '/api/stream?sig=offline',"
+        " gain: null, expires: Date.now() / 1000 + 9999}"
+    )
+    page.evaluate("removeDownloaded('Loud Band/Singles/Loud.opus')")
+    assert page.evaluate("nextStream") is None
+
+
+def test_remove_all_during_a_download_keeps_it_removed(page):
+    open_library(page)
+    _controlled(page)
+    page.evaluate(f"window.pending = downloadTrack({LOUD}); removeAllDownloads()")
+    page.evaluate("pending.catch(() => {})")
+    assert page.evaluate("isDownloaded('Loud Band/Singles/Loud.opus')") is False
+    keys = page.evaluate("caches.open('offline-audio-v1').then(c => c.keys()).then(k => k.length)")
+    assert keys == 0
+
+
+def test_a_download_brings_its_covers_and_a_library_search_is_not_kept(page):
+    open_library(page)
+    _controlled(page)
+    # Give it words, so there is something to keep besides the audio.
+    page.evaluate(
+        "fetch('/api/lyrics/custom', {method: 'POST', headers: {...headers(),"
+        " 'Content-Type': 'application/json'}, body: JSON.stringify({path:"
+        " 'Loud Band/Singles/Loud.opus', text: 'la la la'})}).then(r => r.status)"
+    )
+    page.evaluate(f"downloadTrack({LOUD})")
+    # Kept: exactly what the server has for it, cover sizes and lyrics alike.
+    kept, served = page.evaluate(
+        "(async () => {"
+        " const path = 'Loud Band/Singles/Loud.opus';"
+        " const urls = [96, 300, 600].map(s => coverKey(path, s)).concat([lyricsKey(path)]);"
+        " const served = [];"
+        " for (const u of urls) { const r = await fetch(u + '&fresh=1', {headers: headers()});"
+        "   if (r.ok) served.push(new URL(u, location.href).href); }"
+        " const keys = await (await caches.open('offline-covers-v1')).keys();"
+        " return [keys.map(r => r.url).sort(), served.sort()]; })()"
+    )
+    assert kept == served and any("lyrics" in u for u in kept)
+    page.evaluate("fetch('/api/library?q=lou', {headers: headers()})")
+    kept = page.evaluate("caches.open('api-v1').then(c => c.keys()).then(k => k.map(r => r.url))")
+    assert not any("q=lou" in u for u in kept)
+    page.evaluate("removeAllDownloads()")
+
+
+def test_a_download_whose_file_changed_on_the_server_is_fetched_again(page):
+    open_library(page)
+    _controlled(page)
+    page.evaluate(f"downloadTrack({LOUD})")
+    # As if the library file had been replaced since (a new version, Opus).
+    page.evaluate(
+        "caches.open('offline-meta-v1').then(async c => {"
+        " const key = '/offline/meta?path=' + encodeURIComponent('Loud Band/Singles/Loud.opus');"
+        " const meta = await (await c.match(key)).json(); meta.size = 1;"
+        " await c.put(key, new Response(JSON.stringify(meta))); })"
+        ".then(() => localStorage.removeItem('offlineChecked'))"
+    )
+    page.evaluate("reconcileDownloads()")
+    size = page.evaluate(
+        "caches.open('offline-meta-v1').then(async c => (await (await c.match('/offline/meta?path='"
+        " + encodeURIComponent('Loud Band/Singles/Loud.opus'))).json()).size)"
+    )
+    assert size > 1
+    page.evaluate("removeAllDownloads()")
+
+
 def test_the_sleep_timer_counts_down_and_stops_playback(page):
     open_library(page)
     row(page, "Loud").get_by_role("button", name="Играть").click()

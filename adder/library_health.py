@@ -72,7 +72,9 @@ def _run(what: str) -> None:
             )
             result = {"added": added, "not_found": missed}
         else:
-            measured, _, failed = loudness.backfill(config.LIBRARY, runtime.DB_PATH)
+            measured, _, failed = loudness.backfill(
+                config.LIBRARY, runtime.DB_PATH, stop=runtime.shutdown_event
+            )
             result = {"measured": measured, "failed": failed}
     except Exception as exc:
         logger.exception("Library fix %s failed", what, extra={"task_id": "system"})

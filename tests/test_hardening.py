@@ -164,3 +164,23 @@ def test_a_playlist_cannot_point_outside_the_library():
             playlists._clean_paths([bad])
     fine = ["A/Singles/Wait....m4a", "B/Singles/..and more.m4a", "outside:0123456789abcdef"]
     assert playlists._clean_paths(fine) == fine
+
+
+def test_static_files_never_serve_dotfiles(monkeypatch, tmp_path):
+    """web/.omc/… (служебные файлы инструментов) отдавались по /static с 200."""
+    from adder import app as app_module
+
+    web = tmp_path / "web"
+    (web / ".omc").mkdir(parents=True)
+    (web / ".omc" / "state.json").write_text("{}")
+    (web / ".env").write_text("SECRET=1")
+    (web / "app.js").write_text("// ok")
+    (web / "sub").mkdir()
+    (web / "sub" / ".hidden").write_text("x")
+    static = next(r for r in app_module.app.routes if getattr(r, "path", None) == "/static")
+    monkeypatch.setattr(static.app, "all_directories", [web])
+    client = TestClient(app_module.app)
+
+    assert client.get("/static/app.js").status_code == 200
+    for path in (".env", ".omc/state.json", "sub/.hidden", "sub/../.env", "%2eenv"):
+        assert client.get(f"/static/{path}").status_code == 404, path

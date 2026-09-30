@@ -73,7 +73,10 @@ def backfill(library: Path, delay: float, sleep=time.sleep) -> tuple[int, int]:
         else:
             miss += 1
             print(f"[{i}/{len(missing)}] MISS {artist} - {title}")
-        sleep(delay)  # защита от rate-limit iTunes
+        # Защита от rate-limit iTunes. Из службы sleep — это
+        # shutdown_event.wait, и True значит «служба останавливается».
+        if sleep(delay):
+            break
 
     print(f"\nГотово: обложек добавлено {ok}, не найдено {miss}")
     return ok, miss

@@ -102,6 +102,10 @@ def resolve(tid: int, keep: str) -> dict:
     kept = pair[keep]["path"]
     removed = pair["existing" if keep == "new" else "new"]["path"]
     moved = playlists.swap_everywhere(removed, kept)
+    left = playlists.still_pointing_at(removed)
+    if left:
+        # Не удалять то, на что ещё ссылается подборка (см. ingest._apply_replacement).
+        raise RuntimeError(f"Подборки {', '.join(left)} не обновились — дубликат оставлен")
     library.delete_track(removed)
     if keep == "existing":
         db.task_update(tid, result_path=kept)

@@ -674,3 +674,126 @@ def test_bad_edits_are_refused(app, monkeypatch, body, status):
     with _client(monkeypatch) as client:
         assert client.patch("/api/track", json=body, headers=AUTH).status_code == status
         assert client.patch("/api/track", json=body).status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# After the move: the track is in the library, nothing may fail the task now
+# ---------------------------------------------------------------------------
+
+
+def _replace(app, monkeypatch, replace_of):
+    url = "https://www.youtube.com/watch?v=def456"
+    youtube(app, monkeypatch, {"title": "A - New", "uploader": "x"})
+    tid = db.db_exec(
+        "INSERT INTO tasks(url, status, replace_of) VALUES(?, 'queued', ?)", (url, replace_of)
+    ).lastrowid
+    adder_queue.process(tid, url)
+    return db.db_query("SELECT * FROM tasks WHERE id = ?", (tid,))[0]
+
+
+def test_an_odd_playlist_file_does_not_fail_a_replacement(app, monkeypatch):
+    from adder import playlists
+
+    monkeypatch.setattr(playlists, "HISTORY_DIR", config.LIBRARY.parent / "history")
+    monkeypatch.setattr(runtime, "guard_real_library", lambda *a, **k: None)
+    youtube(app, monkeypatch, {"title": "A - Old", "uploader": "x"})
+    deezer(app, monkeypatch, None)
+    covers(app, monkeypatch)
+    run(app)
+    playlists.create("Вечер", ["A/Singles/Old.m4a"])
+    (config.LIBRARY / ".sync-conflict.m3u").write_text("#EXTM3U\nA/Singles/Old.m4a\n")
+
+    task = _replace(app, monkeypatch, "A/Singles/Old.m4a")
+
+    assert task["status"] == "done", task["error"]
+    assert [e.path for e in playlists.read("Вечер").entries] == ["A/Singles/New.m4a"]
+    # The odd file could not be rewritten and still lists the old track: the
+    # old file stays instead of leaving that line pointing into the trash.
+    assert (config.LIBRARY / "A/Singles/Old.m4a").is_file()
+    assert ".sync-conflict.m3u" in (task["warning"] or "")
+
+
+def test_a_replacement_with_every_playlist_rewritten_trashes_the_old_file(app, monkeypatch):
+    from adder import playlists
+
+    monkeypatch.setattr(playlists, "HISTORY_DIR", config.LIBRARY.parent / "history")
+    monkeypatch.setattr(runtime, "guard_real_library", lambda *a, **k: None)
+    youtube(app, monkeypatch, {"title": "A - Old", "uploader": "x"})
+    deezer(app, monkeypatch, None)
+    covers(app, monkeypatch)
+    run(app)
+    playlists.create("Вечер", ["A/Singles/Old.m4a"])
+
+    task = _replace(app, monkeypatch, "A/Singles/Old.m4a")
+
+    assert task["status"] == "done", task["error"]
+    assert not (config.LIBRARY / "A/Singles/Old.m4a").exists()
+    assert not task["warning"]
+
+
+def test_a_failure_after_the_move_does_not_fail_the_stored_track(app, monkeypatch):
+    from adder import analysis
+
+    def broken(*_a, **_k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(analysis, "analyse_track", broken)
+    monkeypatch.setattr(ingest, "_apply_replacement", broken)
+    monkeypatch.setattr(library, "invalidate_library_index", broken)
+    youtube(app, monkeypatch, {"title": "A - B", "uploader": "x"})
+    deezer(app, monkeypatch, None)
+    covers(app, monkeypatch)
+
+    task = run(app)
+
+    assert task["status"] == "done", task["error"]
+    assert task["result_path"] == "A/Singles/B.m4a"
+    assert "не заменён" in task["warning"]
+    assert library_files(app) == [Path("A/Singles/B.m4a")]
+
+
+def test_a_symlinked_library_path_still_finishes_the_task(app, monkeypatch, tmp_path):
+    """Файл ложился на место, а задача падала на relative_to — и пробовалась снова."""
+    real = tmp_path / "disk"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    monkeypatch.setattr(config, "LIBRARY", link)
+    youtube(app, monkeypatch, {"title": "A - B", "uploader": "x"})
+    deezer(app, monkeypatch, None)
+    covers(app, monkeypatch)
+
+    task = run(app)
+
+    assert task["status"] == "done", task["error"]
+    assert task["result_path"] == "A/Singles/B.m4a"
+
+
+def test_a_cover_looked_up_again_gets_a_new_thumbnail(app, monkeypatch):
+    """Правка тегов возвращает файлу mtime — миниатюра по «путь|mtime|размер»
+    оставалась от старой обложки навсегда."""
+    import subprocess
+
+    def jpeg(color):
+        return subprocess.run(
+            ["ffmpeg", "-v", "error", "-f", "lavfi", "-i", f"color={color}:s=64x64",
+             "-frames:v", "1", "-f", "mjpeg", "pipe:1"],
+            capture_output=True,
+            check=True,
+        ).stdout  # fmt: skip
+
+    red, blue = jpeg("red"), jpeg("blue")
+    youtube(app, monkeypatch, {"title": "A - B", "uploader": "x"})
+    deezer(app, monkeypatch, None)
+    monkeypatch.setattr(ingest, "fetch_cover_url", lambda url: (None, None))
+    monkeypatch.setattr(ingest, "fetch_cover", lambda a, t, th: (red, "jpg"))
+    run(app)
+    query = {"path": "A/Singles/B.m4a", "size": 96}
+    with _client(monkeypatch) as client:
+        before = client.get("/api/cover", params=query, headers=AUTH).content
+        monkeypatch.setattr(ingest, "get_hd_cover", lambda a, t: (blue, "jpg"))
+        edit = {"path": "A/Singles/B.m4a", "title": "B", "artists": ["A"], "refetch_cover": True}
+        assert client.patch("/api/track", json=edit, headers=AUTH).json()["cover"] == "updated"
+        after = client.get("/api/cover", params=query, headers=AUTH).content
+
+    assert after != before

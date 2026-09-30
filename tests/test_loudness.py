@@ -119,3 +119,16 @@ def test_backfill_without_an_analysis_database(tmp_path):
     shutil.copy(FIXTURE, root / "t.m4a")
 
     assert replaygain.backfill(root, tmp_path / "missing.db") == (1, 0, 0)
+
+
+def test_backfill_stops_when_the_service_does(tmp_path):
+    import threading
+
+    root = tmp_path / "library"
+    root.mkdir()
+    shutil.copy(FIXTURE, root / "t.m4a")
+    stop = threading.Event()
+    stop.set()
+
+    assert loudness.backfill(root, tmp_path / "missing.db", stop=stop) == (0, 0, 0)
+    assert library.read_tags(root / "t.m4a").get("gain") is None

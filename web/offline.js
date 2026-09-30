@@ -14,6 +14,12 @@
 
 const OFFLINE_AUDIO = "offline-audio-v1";
 const OFFLINE_META = "offline-meta-v1";
+// Обложки и тексты скачанных треков: отдельно от общей памяти sw.js, которую
+// та ограничивает по размеру, — иначе они вытеснялись бы вместе с прочим.
+const OFFLINE_EXTRAS = "offline-covers-v1";
+const COVER_SIZES = [96, 300, 600];  // те, что просят список, плеер и экран блокировки
+const RECHECK_MS = 24 * 3600 * 1000;
+const CHECKED_KEY = "offlineChecked";
 const PENDING_PLAYS_KEY = "pendingPlays";
 const PENDING_PLAYS_MAX = 500;
 
@@ -21,10 +27,13 @@ const offline = {
     supported: "caches" in window && "serviceWorker" in navigator && window.isSecureContext,
     paths: new Set(),     // что скачано
     running: null,        // {name, done, total, stop} — идущее скачивание подборки
+    epoch: 0,             // растёт при «удалить всё»: начатые до него скачивания не сохраняются
 };
 
 function offlineAudioKey(path) { return "/offline/audio?path=" + encodeURIComponent(path); }
 function offlineMetaKey(path) { return "/offline/meta?path=" + encodeURIComponent(path); }
+function coverKey(path, size) { return "/api/cover?path=" + encodeURIComponent(path) + "&size=" + size; }
+function lyricsKey(path) { return "/api/lyrics?path=" + encodeURIComponent(path); }
 
 function isDownloaded(path) { return offline.paths.has(path); }
 
@@ -50,16 +59,22 @@ function refreshOfflineMarks() {
 
 /* Один трек. Сначала звук, потом запись о нём: запись — признак того, что
  * трек скачан целиком. Удаление — в обратном порядке. */
-async function downloadTrack(track) {
-    if (!offline.supported || !track || isOutside(track) || isDownloaded(track.path)) return;
-    const stream = await streamUrlFor(track.path);
-    const response = await fetch(stream.url, { cache: "no-store" });
+async function downloadTrack(track, force = false) {
+    if (!offline.supported || !track || isOutside(track)) return;
+    if (isDownloaded(track.path) && !force) return;
+    const epoch = offline.epoch;
+    const stream = await streamUrlFor(track.path, true);
+    // fresh=1 и здесь: при перекачке sw.js иначе отдал бы прежнюю копию.
+    const response = await fetch(stream.url + "&fresh=1", { cache: "no-store" });
     if (!response.ok) throw new Error(`не скачался (${response.status})`);
     const blob = await response.blob();
     const expected = Number(response.headers.get("Content-Length"));
     if (expected && blob.size !== expected) throw new Error("скачался не целиком");
+    // Пока качалось, скачанное могли удалить целиком — тогда не возвращать.
+    if (epoch !== offline.epoch) return;
     const type = response.headers.get("Content-Type") || "audio/mp4";
-    await (await caches.open(OFFLINE_AUDIO)).put(offlineAudioKey(track.path), new Response(blob, {
+    const audio = await caches.open(OFFLINE_AUDIO);
+    await audio.put(offlineAudioKey(track.path), new Response(blob, {
         headers: { "Content-Type": type, "Content-Length": String(blob.size) },
     }));
     const meta = {
@@ -72,15 +87,35 @@ async function downloadTrack(track) {
         size: blob.size,
         at: Date.now(),
     };
-    await (await caches.open(OFFLINE_META)).put(offlineMetaKey(track.path), new Response(JSON.stringify(meta), {
-        headers: { "Content-Type": "application/json" },
-    }));
+    try {
+        if (epoch !== offline.epoch) throw new Error("removed meanwhile");
+        await (await caches.open(OFFLINE_META)).put(offlineMetaKey(track.path), new Response(JSON.stringify(meta), {
+            headers: { "Content-Type": "application/json" },
+        }));
+    } catch (e) {
+        await audio.delete(offlineAudioKey(track.path));  // без записи звук — сирота
+        throw e;
+    }
+    if (epoch !== offline.epoch) {
+        // «Удалить всё» пришлось ровно между проверкой и записью.
+        await (await caches.open(OFFLINE_META)).delete(offlineMetaKey(track.path));
+        await audio.delete(offlineAudioKey(track.path));
+        return;
+    }
     offline.paths.add(track.path);
-    /* Обложки тех размеров, что просят список, плеер и экран блокировки, —
-     * чтобы без сети была картинка, а не буква. Сохранит их sw.js. */
-    for (const size of [96, 300, 512]) {
-        fetch("/api/cover?path=" + encodeURIComponent(track.path) + "&size=" + size, { headers: headers() })
-            .catch(() => { /* без обложки */ });
+    markChecked(track.path);
+    await saveExtras(track.path);
+}
+
+/* Обложки и текст — чтобы без сети была картинка, а не буква, и слова. */
+async function saveExtras(path) {
+    const extras = await caches.open(OFFLINE_EXTRAS);
+    const urls = COVER_SIZES.map(size => coverKey(path, size)).concat([lyricsKey(path)]);
+    for (const url of urls) {
+        try {
+            const r = await fetch(url, { headers: headers(), cache: "no-store" });
+            if (r.ok) await extras.put(url, r);
+        } catch (e) { /* без неё */ }
     }
 }
 
@@ -88,7 +123,131 @@ async function removeDownloaded(path) {
     if (!offline.supported) return;
     await (await caches.open(OFFLINE_META)).delete(offlineMetaKey(path));
     await (await caches.open(OFFLINE_AUDIO)).delete(offlineAudioKey(path));
+    const extras = await caches.open(OFFLINE_EXTRAS);
+    for (const url of COVER_SIZES.map(size => coverKey(path, size)).concat([lyricsKey(path)])) {
+        await extras.delete(url);
+    }
     offline.paths.delete(path);
+    forgetOfflineLinks(path);
+}
+
+/* Ссылки на удалённую копию (sig=offline) сервер не пустит: приготовленная
+ * для следующего трека выбрасывается, а играющий трек переходит на ссылку
+ * сервера с того же места. */
+function forgetOfflineLinks(path) {
+    if (nextStream && (path === null || nextStream.path === path)) nextStream = null;
+    const current = player.queue[player.index];
+    const src = player.audio.getAttribute("src") || "";
+    if (current && (path === null || current.path === path) && src.includes("sig=offline")) {
+        reloadCurrentSource();
+    }
+}
+
+/* Скачанное сверяется с фонотекой раз в сутки на трек: трек удалили —
+ * копия уходит; заменили файл (другая версия, перевод в Opus) — копия
+ * перекачивается. Размер файла спрашивается одним байтом.
+ *
+ * Удаление — осторожно: 404 бывает и когда вся фонотека недоступна (диск не
+ * подключён, папку переименовывают), и одна такая сверка стёрла бы с телефона
+ * всё. Поэтому: сервер сам должен сказать, что фонотека в порядке; трек должен
+ * пропадать дольше суток (две сверки в разные дни); и не больше
+ * MAX_REMOVALS за проход. */
+const MISSING_KEY = "offlineMissing";
+const MISSING_GRACE_MS = 20 * 3600 * 1000;
+const MAX_REMOVALS = 10;
+
+function readMap(key) {
+    try { return JSON.parse(localStorage.getItem(key) || "{}"); } catch (e) { return {}; }
+}
+
+function writeMap(key, map) {
+    try { localStorage.setItem(key, JSON.stringify(map)); } catch (e) { /* без памяти — проверим ещё раз */ }
+}
+
+function markChecked(path) {
+    const checked = readMap(CHECKED_KEY);
+    checked[path] = Date.now();
+    writeMap(CHECKED_KEY, checked);
+}
+
+/* Записи о треках, которых на устройстве больше нет, не копятся. */
+function pruneMarks() {
+    for (const key of [CHECKED_KEY, MISSING_KEY]) {
+        const map = readMap(key);
+        for (const path of Object.keys(map)) if (!offline.paths.has(path)) delete map[path];
+        writeMap(key, map);
+    }
+}
+
+async function libraryIsHealthy() {
+    try {
+        const r = await fetch("/health", { headers: headers(), cache: "no-store" });
+        if (!r.ok) return false;
+        const health = await r.json();
+        return health.library === "ok" && Number(health.tracks) > 0;
+    } catch (e) {
+        return false;
+    }
+}
+
+async function hasExtras(path) {
+    const extras = await caches.open(OFFLINE_EXTRAS);
+    return Boolean(await extras.match(coverKey(path, 600)) || await extras.match(lyricsKey(path)));
+}
+
+let reconciling = false;
+
+async function reconcileDownloads() {
+    if (!offline.supported || reconciling || !token()) return;
+    reconciling = true;
+    const checked = readMap(CHECKED_KEY);
+    const missing = readMap(MISSING_KEY);
+    let removed = 0;
+    try {
+        if (!await libraryIsHealthy()) return;  // не сейчас: вывод «трека нет» был бы ложным
+        const metas = await caches.open(OFFLINE_META);
+        for (const path of [...offline.paths]) {
+            if (offline.running) break;  // не мешать скачиванию подборки
+            if (Date.now() - (checked[path] || 0) < RECHECK_MS) continue;
+            let stream;
+            try {
+                stream = await streamUrlFor(path, true);
+            } catch (e) {
+                if (e.status !== 404) break;  // сервер недоступен — в другой раз
+                missing[path] = missing[path] || Date.now();
+                writeMap(MISSING_KEY, missing);
+                if (Date.now() - missing[path] >= MISSING_GRACE_MS && removed < MAX_REMOVALS) {
+                    await removeDownloaded(path);
+                    removed += 1;
+                }
+                continue;
+            }
+            delete missing[path];
+            writeMap(MISSING_KEY, missing);
+            const probe = await fetch(stream.url + "&fresh=1", { headers: { Range: "bytes=0-0" }, cache: "no-store" })
+                .catch(() => null);
+            if (!probe || !probe.ok) break;
+            const total = Number(((probe.headers.get("Content-Range") || "").split("/")[1]) || 0);
+            let meta = {};
+            try { meta = await (await metas.match(offlineMetaKey(path))).json(); } catch (e) { /* пусто */ }
+            const current = player.queue[player.index];
+            const playing = current && current.path === path && !player.audio.paused;
+            if (total && meta.size && total !== meta.size) {
+                // Играющий сейчас — не трогать: его звук читается из этой копии.
+                if (playing) continue;
+                try {
+                    await downloadTrack({ ...meta, path }, true);
+                } catch (e) { continue; }
+            } else if (!await hasExtras(path)) {
+                await saveExtras(path);  // скачанное до обложек и текстов
+            }
+            markChecked(path);
+        }
+    } finally {
+        reconciling = false;
+        pruneMarks();
+        refreshOfflineMarks();
+    }
 }
 
 async function askToKeepStorage() {
@@ -143,15 +302,20 @@ function stopDownloading() {
 async function removePlaylistDownloads() {
     const pl = player.playlist;
     if (!pl) return;
+    if (offline.running && offline.running.name === pl.name) stopDownloading();
     for (const track of uniqueTracks(pl.entries)) await removeDownloaded(track.path);
     refreshOfflineMarks();
 }
 
 async function removeAllDownloads() {
     if (!offline.supported) return;
+    offline.epoch += 1;  // начатые скачивания не сохранят своё
+    stopDownloading();
     offline.paths = new Set();
     await caches.delete(OFFLINE_META);
     await caches.delete(OFFLINE_AUDIO);
+    await caches.delete(OFFLINE_EXTRAS);
+    forgetOfflineLinks(null);
     refreshOfflineMarks();
 }
 
@@ -266,12 +430,12 @@ async function flushPendingPlays() {
     }
 }
 
-window.addEventListener("online", () => { flushPendingPlays(); });
+window.addEventListener("online", () => { flushPendingPlays(); reconcileDownloads(); });
 
 (function initOffline() {
     if (offline.supported) {
         navigator.serviceWorker.register("/sw.js", { scope: "/" }).catch(() => { offline.supported = false; });
-        loadOfflineIndex();
+        loadOfflineIndex().then(() => setTimeout(reconcileDownloads, 15000));
     }
     flushPendingPlays();
 })();

@@ -130,6 +130,15 @@ def library_track(rel_path: str) -> Path:
     return candidate
 
 
+def library_relative(rel_path: str) -> str:
+    """The canonical library-relative form of ``rel_path``, as the index keys it.
+
+    «./A/x.m4a» and «A//x.m4a» name the same file as «A/x.m4a», but only the
+    last one matches a playlist line or an index row.
+    """
+    return str(library_track(rel_path).relative_to(config.LIBRARY.resolve()))
+
+
 LIBRARY_INDEX_TTL = 60
 # Files the last index pass could not read, relative to the library.
 UNREADABLE: list[str] = []

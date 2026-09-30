@@ -623,3 +623,31 @@ def test_a_crashed_worker_does_not_block_later_downloads(monkeypatch, running):
     assert wait_for(lambda: KEY in calls and outside.status(KEY) != "pending")
     outside.request([other])
     assert wait_for(lambda: outside.status(other) == "ready")
+
+
+@pytest.mark.parametrize(
+    ("error", "paused"),
+    [
+        ("ERROR: HTTP Error 429: Too Many Requests", True),
+        ("ERROR: Connection reset by peer", False),
+    ],
+)
+def test_a_rate_limit_or_a_network_blip_is_not_a_week_long_failure(
+    monkeypatch, running, error, paused
+):
+    """Такое проходит само: неделя «failed» значила, что трек не скачается,
+    даже когда YouTube уже снова отвечает. А после 429 надо притормозить все
+    вызовы yt-dlp, как делает очередь загрузок."""
+
+    def fetch(key):
+        raise RuntimeError(error)
+
+    monkeypatch.setattr(outside, "fetch", fetch)
+    outside.remember([item()])
+
+    outside.request([KEY])
+    assert wait_for(lambda: KEY not in outside._pending)
+
+    # «wanted» — следующая просьба плеера поставит его в очередь снова.
+    assert outside.status(KEY) == "wanted"
+    assert (runtime.youtube_pause_left() > 0) is paused

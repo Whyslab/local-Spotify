@@ -66,3 +66,44 @@ def test_swap_does_nothing_without_the_track(library):
 
     assert playlists.swap_everywhere("old.m4a", "new.m4a") == 0
     assert _paths("Чужая") == ["other.m4a"]
+
+
+@pytest.mark.parametrize("odd", [".sync-conflict", "x" * 130, "a\x01b"])
+def test_an_odd_playlist_file_is_left_out_and_does_not_stop_the_swap(library, odd):
+    """Файл, чьё имя не прошло бы safe_name, валил каждую замену ошибкой 400.
+
+    Новый трек к тому времени уже лежал в фонотеке, а старый оставался во
+    всех подборках.
+    """
+    (library / f"{odd}.m3u").write_text("#EXTM3U\nold.m4a\n", encoding="utf-8")
+    _make("Вечер", ["old.m4a"])
+
+    assert [p["name"] for p in playlists.listing()] == ["Вечер"]
+    assert playlists.swap_everywhere("old.m4a", "new.m4a") == 1
+    assert _paths("Вечер") == ["new.m4a"]
+
+
+def test_one_playlist_that_cannot_be_written_does_not_stop_the_others(library, monkeypatch):
+    _make("Первая", ["old.m4a"])
+    _make("Вторая", ["old.m4a"])
+    real = playlists._atomic_write
+
+    def flaky(path, text):
+        if path.stem == "Вторая":
+            raise OSError("disk says no")
+        real(path, text)
+
+    monkeypatch.setattr(playlists, "_atomic_write", flaky)
+
+    assert playlists.swap_everywhere("old.m4a", "new.m4a") == 1
+    assert _paths("Первая") == ["new.m4a"]
+
+
+def test_still_pointing_at_sees_every_m3u_including_hidden_ones(library):
+    _make("Mix", ["old.m4a"])
+    (library / ".conflict.m3u").write_text("#EXTM3U\nold.m4a\n")
+    (library / "Other.m3u").write_text("#EXTM3U\nother.m4a\n")
+
+    assert playlists.still_pointing_at("old.m4a") == [".conflict.m3u", "Mix.m3u"]
+    playlists.swap_everywhere("old.m4a", "new.m4a")
+    assert playlists.still_pointing_at("old.m4a") == [".conflict.m3u"]

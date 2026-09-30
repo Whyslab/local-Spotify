@@ -77,6 +77,10 @@ def split_artists(artist: str) -> list[str]:
     return out
 
 
+def _contributors(track: dict) -> list[str]:
+    return [c["name"] for c in track.get("contributors") or [] if c.get("name")]
+
+
 def lookup(artist: str, title: str) -> TrackInfo | None:
     """Find a track on Deezer. Returns None when it is not found or the network fails."""
     lead = (split_artists(artist) or [artist])[0]
@@ -87,22 +91,24 @@ def lookup(artist: str, title: str) -> TrackInfo | None:
 
     want = normalize(title)
     match = next((c for c in found["data"] if normalize(c.get("title", "")) == want), None)
-    if match is None:
+    # Без id у находки и без альбома у трека — «не найдено», а не KeyError:
+    # Deezer изредка отвечает и так, а этот модуль обещает не падать.
+    if match is None or not match.get("id"):
         return None
 
     full = _get(f"{DEEZER}/track/{match['id']}")
-    if not full or "album" not in full:
+    if not full or not isinstance(full.get("album"), dict):
         return None
 
     album = full["album"]
     total = 0
-    detail = _get(f"{DEEZER}/album/{album['id']}")
+    detail = _get(f"{DEEZER}/album/{album['id']}") if album.get("id") else None
     if detail:
         total = detail.get("nb_tracks") or 0
 
     return TrackInfo(
         album=album.get("title") or title,
-        artists=[c["name"] for c in full.get("contributors", [])] or split_artists(artist),
+        artists=_contributors(full) or split_artists(artist),
         track_number=full.get("track_position"),
         track_total=total,
         disc_number=full.get("disk_number") or 1,
@@ -127,10 +133,10 @@ def lookup_in_album(album_id: str, artist: str, title: str) -> TrackInfo | None:
     if match is None:
         return None
     album = _get(f"{DEEZER}/album/{album_id}") or {}
-    full = _get(f"{DEEZER}/track/{match['id']}") or {}
+    full = (_get(f"{DEEZER}/track/{match['id']}") if match.get("id") else None) or {}
     return TrackInfo(
         album=album.get("title") or title,
-        artists=[c["name"] for c in full.get("contributors", [])] or split_artists(artist),
+        artists=_contributors(full) or split_artists(artist),
         track_number=full.get("track_position") or match.get("track_position"),
         track_total=album.get("nb_tracks") or 0,
         disc_number=full.get("disk_number") or match.get("disk_number") or 1,

@@ -201,3 +201,48 @@ def test_a_youtube_music_album_link_is_a_playlist(monkeypatch, client):
 
     assert response.json()["source"] == "youtube"
     assert response.json()["queued"] == 2
+
+
+def test_the_album_is_on_the_task_before_a_worker_can_take_it(client, monkeypatch):
+    """Работник мог взять задачу раньше, чем у неё появлялся album_hint."""
+    seen = []
+    real_put = runtime.TASK_QUEUE.put
+
+    def put(item, *args, **kwargs):
+        tid = item[0]
+        seen.append(db.db_query("SELECT album_hint FROM tasks WHERE id = ?", (tid,))[0])
+        real_put(item, *args, **kwargs)
+
+    monkeypatch.setattr(runtime.TASK_QUEUE, "put", put)
+    client.post("/api/import-album", json={"id": "12047952"}, headers=AUTH)
+
+    assert seen == [{"album_hint": "12047952"}] * 2
+
+
+def test_a_retried_album_track_keeps_its_album(client):
+    """Трек альбома, упавший на лимите YouTube, после повтора ложился в «Singles»."""
+    from adder import app as app_module
+
+    tid = db.db_exec(
+        "INSERT INTO tasks(url, status, error_type, album_hint, updated_at) VALUES(?, 'error', "
+        "'rate_limited', '302127', datetime('now', 'localtime', '-2 hours'))",
+        ("https://www.youtube.com/watch?v=abcdefghijk",),
+    ).lastrowid
+
+    assert app_module.requeue_failed(auto=True) == [tid]
+    assert db.db_query("SELECT album_hint FROM tasks WHERE id = ?", (tid,))[0]["album_hint"] == (
+        "302127"
+    )
+
+
+def test_a_fresh_submission_forgets_the_old_album(client):
+    tid = db.db_exec(
+        "INSERT INTO tasks(url, status, album_hint) VALUES(?, 'error', '302127')",
+        ("https://www.youtube.com/watch?v=abcdefghijk",),
+    ).lastrowid
+
+    client.post(
+        "/api/add", json={"links": ["https://www.youtube.com/watch?v=abcdefghijk"]}, headers=AUTH
+    )
+
+    assert db.db_query("SELECT album_hint FROM tasks WHERE id = ?", (tid,))[0]["album_hint"] is None

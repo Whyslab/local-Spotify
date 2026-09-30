@@ -61,3 +61,26 @@ def test_tracks_that_already_have_a_cover_are_left_alone(tmp_path, monkeypatch):
     monkeypatch.setattr(ingest, "get_hd_cover", lambda *a: (_ for _ in ()).throw(AssertionError))
 
     assert fix_covers.backfill(tmp_path, delay=0, sleep=lambda s: None) == (0, 0)
+
+
+def test_the_backfill_stops_when_the_service_does(tmp_path, monkeypatch):
+    """sleep — это shutdown_event.wait: True значит «служба останавливается»."""
+    for artist in ("A", "B", "C"):
+        track(tmp_path, artist, "Song")
+    asked = []
+    monkeypatch.setattr(fix_covers, "find_cover", lambda artist, title: asked.append(artist))
+
+    fix_covers.backfill(tmp_path, delay=1.0, sleep=lambda seconds: True)
+
+    assert len(asked) == 1
+
+
+def test_a_new_cover_keeps_the_arrival_date(tmp_path, monkeypatch):
+    import os
+
+    path = track(tmp_path, "A", "Old")
+    os.utime(path, (1_600_000_000, 1_600_000_000))
+    monkeypatch.setattr(fix_covers, "find_cover", lambda artist, title: (JPEG, "jpg"))
+
+    assert fix_covers.backfill(tmp_path, delay=0, sleep=lambda seconds: None) == (1, 0)
+    assert path.stat().st_mtime == 1_600_000_000

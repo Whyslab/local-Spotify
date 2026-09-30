@@ -257,16 +257,43 @@ def swap_everywhere(old_path: str, new_path: str) -> int:
     changed = 0
     for entry in listing():
         name = entry["name"]
-        with _lock_for(name):
-            path = playlist_path(name)
-            paths = parse(path.read_text(encoding="utf-8")) if path.exists() else []
-            if old_path not in paths:
-                continue
-            _archive(path)
-            _atomic_write(path, render([new_path if p == old_path else p for p in paths]))
-            changed += 1
-            logger.info("Playlist %r: %s заменён на %s", name, old_path, new_path)
+        # Одна подборка, которую не вышло прочитать или записать, не должна
+        # останавливать остальные: новый трек к этому времени уже в фонотеке.
+        try:
+            with _lock_for(name):
+                path = playlist_path(name)
+                paths = parse(path.read_text(encoding="utf-8")) if path.exists() else []
+                if old_path not in paths:
+                    continue
+                _archive(path)
+                _atomic_write(path, render([new_path if p == old_path else p for p in paths]))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Playlist %r: замена %s не записана: %s", name, old_path, exc)
+            continue
+        changed += 1
+        logger.info("Playlist %r: %s заменён на %s", name, old_path, new_path)
     return changed
+
+
+def still_pointing_at(old_path: str) -> list[str]:
+    """Playlist files in the library root that still list ``old_path``.
+
+    Every *.m3u, including those listing() leaves out (hidden, odd names): a
+    replacement that could not rewrite one of them must not trash the file
+    it still points at. Unreadable files count as pointing -- unknown is not
+    "safe to delete".
+    """
+    root = config.LIBRARY
+    if not root.exists():
+        return []
+    left = []
+    for path in sorted(root.glob(f"*{SUFFIX}")):
+        try:
+            if old_path in parse(path.read_text(encoding="utf-8")):
+                left.append(path.name)
+        except (OSError, UnicodeDecodeError):
+            left.append(path.name)
+    return left
 
 
 def create(name: str, paths: list[str] | None = None) -> Playlist:
@@ -328,6 +355,14 @@ def listing() -> list[dict]:
         return []
     out = []
     for path in sorted(root.glob(f"*{SUFFIX}")):
+        # Только то, что можно открыть по имени: скрытый «.sync-conflict.m3u»
+        # или имя длиннее 120 знаков иначе попадали в список, а любое действие
+        # над ними — и замена трека во всех подборках — падало с 400.
+        try:
+            if safe_name(path.stem) != path.stem:
+                continue
+        except HTTPException:
+            continue
         try:
             count = len(parse(path.read_text(encoding="utf-8")))
         except (OSError, UnicodeDecodeError) as exc:

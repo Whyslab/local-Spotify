@@ -150,12 +150,17 @@ def pull_back(name: str, entry: dict) -> dict:
     # while the remote list is being fetched.
     current = playlists.read(name)
     local = [line.path for line in current.entries]
-    merged, kept = _merged(name, entry, local)
+    merged, kept, remote = _merged(name, entry, local)
 
     if merged == local:
+        _REMOTE[name] = remote
         return {"playlist": name, "changed": False, "tracks": len(local)}
 
     playlists.write(name, merged, expected_revision=current.revision)
+    # Только после записи: запомненный список, который так и не лёг в файл,
+    # на следующем проходе выдавал удалённое на телефоне за «ещё не
+    # просканированное», и трек возвращался.
+    _REMOTE[name] = remote
     logger.info("Playlist %r pulled back from Navidrome: %d tracks", name, len(merged))
     return {
         "playlist": name,
@@ -166,8 +171,12 @@ def pull_back(name: str, entry: dict) -> dict:
     }
 
 
-def _merged(name: str, entry: dict, local: list[str]) -> tuple[list[str], int]:
+def _merged(name: str, entry: dict, local: list[str]) -> tuple[list[str], int, set[str]]:
     """What the file should hold after taking Navidrome's order.
+
+    Returns (merged, how many local lines were kept, Navidrome's set). The set
+    is for the caller to remember once the merge is written -- a dry run or a
+    refused write must not.
 
     Declines (raises) rather than guess: an empty remote list for a non-empty
     file, or a remote path this library does not know -- a Navidrome upgrade
@@ -201,8 +210,7 @@ def _merged(name: str, entry: dict, local: list[str]) -> tuple[list[str], int]:
         for path in local
         if path not in remote_set and (path not in known or unseen_by_navidrome(path))
     ]
-    _REMOTE[name] = remote_set
-    return remote + kept, len(kept)
+    return remote + kept, len(kept), remote_set
 
 
 def _is_fresh(rel_path: str, now: float) -> bool:
@@ -235,7 +243,7 @@ def check(apply: bool = True) -> dict:
             else:
                 # The same merge the real pass would write, guards included.
                 local = [line.path for line in playlists.read(name).entries]
-                merged, _ = _merged(name, entry, local)
+                merged, _, _ = _merged(name, entry, local)
                 row["changed"] = merged != local
                 row["tracks"] = len(merged)
             # Only on success: a playlist that could not be read must be

@@ -19,6 +19,7 @@ const player = {
     index: -1,
     playlist: null,      // {name, revision, entries}
     reported: false,     // one journal entry per track, not one per pause
+    started: false,      // the current track has actually played ("playing" fired)
     queueMode: "manual", // "smart", "plain" or "manual" -- see reportPlay
     queueSource: null,   // {kind: "playlist", name} | {kind: "library"} | null
 
@@ -50,7 +51,10 @@ function reportPlay(finished) {
     const current = player.queue[player.index];
     /* Трек со стороны в журнал не пишется: журнал — про фонотеку, по нему
      * перемешивание решает, что давно не звучало, а этого трека в ней нет. */
-    if (!current || player.reported || isOutside(current)) return;
+    /* Только трек, который правда зазвучал: не скачанный без сети или не
+     * загрузившийся иначе записывался бы со временем и длиной предыдущего —
+     * как полное прослушивание. */
+    if (!current || player.reported || !player.started || isOutside(current)) return;
     player.reported = true;
 
     const played = player.audio.currentTime || 0;
@@ -79,9 +83,23 @@ function reportPlay(finished) {
 /* ---------------- Playback ---------------- */
 
 /* Ссылка и поправка громкости трека (ReplayGain) приходят вместе. */
-async function streamUrlFor(path) {
-    const r = await fetch("/api/stream-url?path=" + encodeURIComponent(path), { headers: headers() });
-    if (!r.ok) throw new Error("Не удалось получить ссылку на трек");
+async function streamUrlFor(path, fresh = false) {
+    let r;
+    try {
+        /* fresh — мимо скачанной копии (sw.js): спросить сам сервер. */
+        r = await fetch("/api/stream-url?path=" + encodeURIComponent(path) + (fresh ? "&fresh=1" : ""),
+            { headers: headers() });
+    } catch (e) {
+        const error = new Error("Сервер недоступен");
+        error.unreachable = true;
+        throw error;
+    }
+    if (!r.ok) {
+        const error = new Error(r.status === 404 ? "Трека нет в фонотеке" : "Не удалось получить ссылку на трек");
+        error.status = r.status;
+        error.unreachable = r.status >= 500;  // 502 от Tailscale, когда компьютер спит
+        throw error;
+    }
     const data = await r.json();
     const gain = typeof data.gain === "number" ? data.gain : null;
     /* Там, где странице громкость не подчиняется (iPhone), ReplayGain
@@ -172,24 +190,29 @@ async function playAt(position, skipped = 0, direction = 1) {
     const generation = ++player.generation;
     player.index = position;
     player.reported = false;
+    player.started = false;
     /* Метка для журнала — какой была очередь, когда трек включили: иначе
      * переключение режима посреди трека приписывало его не той очереди. */
     player.playingMode = player.queueMode;
     const track = player.queue[position];
 
     let url;
+    let gain;
     try {
         const stream = takePrefetched(track) || await streamUrlFor(track.path);
         url = stream.url;
-        player.trackGain = stream.gain;
+        gain = stream.gain;
     } catch (e) {
         if (generation !== player.generation) return false;
         /* Трек со стороны не успел или не смог скачаться. Тишина вместо
          * музыки хуже, чем пропуск: играем соседний, а этот просим докачать
          * — вдруг к нему ещё вернутся. Счётчик не даёт кружить по очереди,
          * в которой не скачалось ничего. */
-        /* Без сети то же с нескачанным треком: играем следующий скачанный. */
-        const offlineMiss = !navigator.onLine && !isDownloaded(track.path);
+        /* Без сети то же с нескачанным треком: играем следующий скачанный.
+         * «Без сети» — это и сервер, до которого не достучаться при живой
+         * связи (Tailscale выключен, компьютер спит): navigator.onLine тогда
+         * true, а на айфоне ему и вовсе нельзя верить. */
+        const offlineMiss = (!navigator.onLine || e.unreachable) && !isDownloaded(track.path);
         if ((isOutside(track) || offlineMiss) && skipped < player.queue.length) {
             if (isOutside(track)) requestOutside([outsideKey(track)]);
             const next = stepInOrder(direction);
@@ -202,10 +225,18 @@ async function playAt(position, skipped = 0, direction = 1) {
                 return played;
             }
         }
+        /* Прежний трек не должен звучать под новым названием: нажатие «играть»
+         * включило бы его снова. Без источника togglePlay пробует этот трек. */
+        player.audio.pause();
+        player.audio.removeAttribute("src");
+        player.audio.load();
+        renderPlayer();
         setPlayerNote(e.message);
         return false;
     }
     if (generation !== player.generation) return false;
+    // Only now: an older, slower call must not leave its gain on this track.
+    player.trackGain = gain;
     try {
         /* Новый трек начинается с нуля: если есть переход — из тишины. Ставим
          * это до src: смену трека браузер отмечает timeupdate сам, но только
@@ -891,6 +922,10 @@ function shufflePlaylist() {
 
 function togglePlay() {
     if (!player.queue.length) return;
+    if (player.audio.paused && !player.audio.getAttribute("src") && player.index >= 0) {
+        playAt(player.index);  // источник сброшен неудачной загрузкой — ещё попытка
+        return;
+    }
     if (player.audio.paused) {
         /* play() отказывает вслух — трек не грузится, браузер не разрешил. Без
          * catch это была немая ошибка в консоли и кнопка, которая «не жмётся». */
@@ -958,7 +993,7 @@ let errorSkips = 0;    // сколько подряд пропущено — ч�
 /* Попытка — одна на включение трека, и «playing» её не возвращает: файл,
  * битый в середине, после новой ссылки снова начинал играть с того же места,
  * снова падал — и так по кругу. */
-player.audio.addEventListener("playing", () => { errorSkips = 0; });
+player.audio.addEventListener("playing", () => { errorSkips = 0; player.started = true; });
 
 player.audio.addEventListener("error", async () => {
     const track = player.queue[player.index];
@@ -995,6 +1030,24 @@ player.audio.addEventListener("error", async () => {
     const played = await playAt(next);
     if (played) setPlayerNote(`«${title}» не играет — пропущен`);
 });
+
+/* Тот же трек по новой ссылке и с того же места — когда прежняя ссылка
+ * перестала годиться: скачанную копию удалили посреди трека, и ссылка на неё
+ * (sig=offline) сервер не пустит. */
+async function reloadCurrentSource() {
+    const track = player.queue[player.index];
+    if (!track) return;
+    const generation = player.generation;
+    const at = player.audio.currentTime;
+    const wasPlaying = !player.audio.paused;
+    try {
+        const { url } = await streamUrlFor(track.path, true);
+        if (generation !== player.generation) return;
+        player.audio.src = url;
+        player.audio.currentTime = at;
+        if (wasPlaying) await player.audio.play();
+    } catch (e) { /* дальше — обработчик error */ }
+}
 
 /* ---------------- Player bar ---------------- */
 
@@ -1059,7 +1112,7 @@ function announceTrack(track) {
     const meta = { title: track.title || track.path, artist: track.artist || "", album: track.album || "" };
     navigator.mediaSession.metadata = new MediaMetadata(meta);
     if (isOutside(track)) return;
-    fetch("/api/cover?path=" + encodeURIComponent(track.path) + "&size=512", { headers: headers() })
+    fetch("/api/cover?path=" + encodeURIComponent(track.path) + "&size=600", { headers: headers() })
         .then(r => (r.ok ? r.blob() : null))
         .then(blob => new Promise(resolve => {
             if (!blob) { resolve(null); return; }
@@ -1072,7 +1125,7 @@ function announceTrack(track) {
             // Пока грузилась обложка, могли переключить трек.
             if (!data || announced !== track) return;
             navigator.mediaSession.metadata = new MediaMetadata({
-                ...meta, artwork: [{ src: data.url, sizes: "512x512", type: data.type }],
+                ...meta, artwork: [{ src: data.url, sizes: "600x600", type: data.type }],
             });
         })
         .catch(() => { /* без обложки */ });
@@ -2651,6 +2704,13 @@ function sleepLevel() {
  * правила «слишком короткий — без перехода». */
 function fadeTick() {
     const a = player.audio;
+    /* Таймер сна ведёт setInterval, а его с погашенным экраном браузер может
+     * почти остановить; timeupdate же идёт, пока играет звук. Срок проверяется
+     * и здесь, чтобы музыка не играла дальше назначенного. */
+    if (player.sleep && player.sleep.until && Date.now() >= player.sleep.until && !a.paused) {
+        sleepTick();
+        return;
+    }
     let level = 1;
     if (player.fadeSeconds > 0) {
         const known = Number.isFinite(a.duration);

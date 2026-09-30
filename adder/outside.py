@@ -40,7 +40,7 @@ from pathlib import Path
 
 import httpx
 
-from . import ingest, runtime, similar
+from . import config, ingest, runtime, similar
 
 logger = logging.getLogger(__name__)
 
@@ -541,6 +541,16 @@ def _work() -> None:
                 return
             except Exception as exc:  # noqa: BLE001 — одна неудача не должна глушить остальные
                 logger.info("Трек со стороны %s не скачался: %s", key, exc)
+                kind = ingest.classify_error(str(exc))
+                if kind in ("rate_limited", "network_error"):
+                    # Проходит само. Неделя «failed» значила бы, что трек не
+                    # скачается и тогда, когда YouTube уже снова отвечает;
+                    # остаётся «wanted», и следующая просьба плеера поставит
+                    # его заново. После 429 тормозим все вызовы yt-dlp, как
+                    # очередь загрузок: второй вызов только продлил бы запрет.
+                    if kind == "rate_limited":
+                        runtime.pause_youtube(config.RATE_LIMIT_BACKOFF)
+                    continue
                 try:
                     _update_meta(
                         key, status="failed", failed_at=time.time(), reason=str(exc)[-300:]

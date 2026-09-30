@@ -132,3 +132,15 @@ def test_the_api(pair):
         )
         assert done.status_code == 200
         assert client.get("/api/duplicates", headers=AUTH).json() == []
+
+
+def test_a_copy_an_unwritable_playlist_still_lists_is_not_removed(pair):
+    # A hidden .m3u (a sync conflict) is left out of the playlists and cannot be
+    # rewritten: removing the copy it lists would leave it pointing at nothing.
+    (config.LIBRARY / ".sync-conflict.m3u").write_text("#EXTM3U\nArtist/Singles/Song.m4a\n")
+
+    with pytest.raises(RuntimeError):
+        duplicates.resolve(pair, "new")
+
+    assert (config.LIBRARY / "Artist/Singles/Song.m4a").exists()
+    assert len(duplicates.pairs()) == 1  # still waiting for a decision

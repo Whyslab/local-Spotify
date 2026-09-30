@@ -178,18 +178,63 @@ def test_a_track_cover_can_be_asked_for_small(tmp_path, monkeypatch):
         check=True,
     )  # fmt: skip
     art = (big.read_bytes(), "image/jpeg")
-    track = tmp_path / "t.m4a"
-    track.write_bytes(b"x")
 
-    small, kind = app_module._thumbnail(track, art, 96)
+    small, kind = app_module._thumbnail(art, 96)
     assert kind == "image/jpeg"
     assert len(small) < len(art[0]) / 5
     # Второй раз — из кэша, тот же результат.
-    assert app_module._thumbnail(track, art, 96)[0] == small
+    assert app_module._thumbnail(art, 96)[0] == small
     # Не картинка — отдаётся как есть, без ошибки.
-    other = tmp_path / "other.m4a"
-    other.write_bytes(b"y")
-    assert app_module._thumbnail(other, (b"not an image", "image/png"), 96) == (
+    assert app_module._thumbnail((b"not an image", "image/png"), 96) == (
         b"not an image",
         "image/png",
     )
+
+
+def _jpeg(color: str) -> bytes:
+    import subprocess
+
+    return subprocess.run(
+        ["ffmpeg", "-v", "error", "-f", "lavfi", "-i", f"color={color}:s=64x64", "-frames:v", "1",
+         "-f", "mjpeg", "pipe:1"],
+        capture_output=True,
+        check=True,
+    ).stdout  # fmt: skip
+
+
+def test_the_same_thumbnail_asked_for_at_once_is_not_an_error(tmp_path, monkeypatch):
+    """Два запроса писали один «<ключ>.part», и второй replace падал."""
+    import shutil
+    import subprocess
+    import threading
+
+    from adder import app as app_module
+
+    art = (_jpeg("red"), "image/jpeg")
+    errors = []
+    for _ in range(10):
+        shutil.rmtree(runtime.THUMB_DIR, ignore_errors=True)
+        ffmpeg_done = threading.Barrier(4)
+
+        # Все четыре выходят из ffmpeg разом и с большим ответом: запись
+        # «.part» длится, и окно гонки открыто каждый раз, а не изредка.
+        def ffmpeg(*_a, _done=ffmpeg_done, **_k):
+            _done.wait()
+            return subprocess.CompletedProcess([], 0, stdout=b"\xff" * 4_000_000)
+
+        monkeypatch.setattr(app_module.subprocess, "run", ffmpeg)
+
+        def one():
+            try:
+                app_module._thumbnail(art, 96)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(repr(exc))
+
+        threads = [threading.Thread(target=one) for _ in range(4)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+    assert not errors, errors[:3]
+    assert not list(runtime.THUMB_DIR.glob("*.part*"))

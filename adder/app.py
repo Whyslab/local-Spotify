@@ -7,6 +7,7 @@ in :mod:`adder.ingest`, the queue and its retry policy in :mod:`adder.queue`.
 
 import hashlib
 import logging
+import os
 import secrets
 import subprocess
 import threading
@@ -20,6 +21,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from . import (
     config,
@@ -219,9 +221,22 @@ class UploadSizeLimit:
 app.add_middleware(UploadSizeLimit)
 
 
+class PublicStaticFiles(StaticFiles):
+    """StaticFiles that never serves a dotfile or anything inside a dot folder.
+
+    web/ is a working directory too: tools leave .omc/, editors leave .swp, and
+    all of it went out over the LAN with a 200.
+    """
+
+    def lookup_path(self, path: str) -> tuple[str, os.stat_result | None]:
+        if any(part.startswith(".") for part in Path(path).parts):
+            return "", None
+        return super().lookup_path(path)
+
+
 app.mount(
     "/static",
-    StaticFiles(directory=str(runtime.PROJECT.parent / "web")),
+    PublicStaticFiles(directory=str(runtime.PROJECT.parent / "web")),
     name="static",
 )
 
@@ -386,7 +401,7 @@ def requeue_failed(auto: bool = False) -> list[int]:
         url = row["url"]
         if url.startswith("file:") and ingest.stashed_upload(url) is None:
             continue
-        tid = _queue_source(url)
+        tid = _queue_source(url, retry=True)
         if tid is None:
             continue
         count = (row["auto_requeues"] or 0) + 1 if auto else 0
@@ -548,6 +563,9 @@ def resolve_duplicate(req: DuplicateChoice, authenticated: bool = Depends(verify
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        # A playlist still points at the copy to be removed: refused, both kept.
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 class TrackEdit(BaseModel):
@@ -662,15 +680,19 @@ def lyrics_custom(req: LyricsTextRequest, authenticated: bool = Depends(verify_t
 THUMB_SIZES = (96, 300, 600)
 
 
-def _thumbnail(source: Path, art: tuple[bytes, str], size: int) -> tuple[bytes, str]:
+def _thumbnail(art: tuple[bytes, str], size: int) -> tuple[bytes, str]:
     """Обложка, уменьшенная до ``size`` по большей стороне, в JPEG.
 
     ffmpeg — не новая зависимость: без него служба не принимает ни одного
-    файла. Уменьшенное лежит в кэше по пути, размеру и времени изменения
-    файла; не вышло уменьшить — отдаём как есть.
+    файла. Уменьшенное лежит в кэше по хешу самой обложки и размеру; не
+    вышло уменьшить — отдаём как есть.
     """
-    stamp = source.stat().st_mtime_ns
-    key = hashlib.sha1(f"{source}|{stamp}|{size}".encode()).hexdigest()
+    # По обложке, а не по пути и времени изменения файла: edit_track
+    # возвращает mtime на место, и заново найденная обложка иначе навсегда
+    # показывалась старой миниатюрой. Заодно треки одного альбома делят одну.
+    digest = hashlib.sha1(art[0])
+    digest.update(f"|{size}".encode())
+    key = digest.hexdigest()
     cached = runtime.THUMB_DIR / f"{key}.jpg"
     if cached.is_file():
         return cached.read_bytes(), "image/jpeg"
@@ -690,9 +712,7 @@ def _thumbnail(source: Path, art: tuple[bytes, str], size: int) -> tuple[bytes, 
     if done.returncode != 0 or not done.stdout:
         return art
     runtime.THUMB_DIR.mkdir(parents=True, exist_ok=True)
-    partial = cached.with_suffix(".part")
-    partial.write_bytes(done.stdout)
-    partial.replace(cached)
+    ingest.write_atomic(cached, done.stdout)
     return done.stdout, "image/jpeg"
 
 
@@ -713,7 +733,7 @@ def track_cover(path: str, size: int = 0, authenticated: bool = Depends(verify_t
     if size > 0:
         # Ближайший из трёх размеров: иначе кэш рос бы на каждый пиксель.
         wanted = next((s for s in THUMB_SIZES if s >= size), THUMB_SIZES[-1])
-        art = _thumbnail(absolute, art, wanted)
+        art = _thumbnail(art, wanted)
     return Response(
         content=art[0],
         media_type=art[1],
@@ -752,9 +772,12 @@ def _can_requeue(task: dict) -> bool:
     return False
 
 
-def _reset_task(tid: int) -> None:
+def _reset_task(tid: int, keep_album: bool = False) -> None:
     # replace_of и result_path — тоже: старая неудавшаяся «замена A» иначе
     # оживала при обычном добавлении той же ссылки и уносила A в корзину.
+    # Альбом — только при новой отправке: повтор трека альбома, упавшего на
+    # лимите YouTube, должен лечь в тот же альбом, а не в «Singles».
+    fields: dict[str, Any] = {} if keep_album else {"album_hint": None}
     db.task_update(
         tid,
         status="queued",
@@ -764,18 +787,24 @@ def _reset_task(tid: int) -> None:
         error_type=None,
         warning=None,
         similar_to=None,
-        album_hint=None,
         retry_count=0,
         replace_of=None,
         result_path=None,
+        **fields,
     )
 
 
-def _queue_source(source_key: str, replace_of: str | None = None) -> int | None:
+def _queue_source(
+    source_key: str,
+    replace_of: str | None = None,
+    album_hint: str | None = None,
+    retry: bool = False,
+) -> int | None:
     """Put one source key in the queue, or skip it if it is already there.
 
     Same rules as a pasted link: an active or finished task is left alone, a
-    failed one is reset and tried again.
+    failed one is reset and tried again. ``retry`` is a requeue of the same
+    task rather than a new submission, so it keeps its album.
     """
     with runtime.FILE_LOCK:
         if source_key in runtime.PROCESSING_URLS:
@@ -788,17 +817,27 @@ def _queue_source(source_key: str, replace_of: str | None = None) -> int | None:
             if not _can_requeue(task):
                 return None
             tid = task["id"]
-            _reset_task(tid)
+            _reset_task(tid, keep_album=retry)
         else:
             cur = db.db_exec("INSERT INTO tasks(url, status) VALUES(?, 'queued')", (source_key,))
             tid = cur.lastrowid
         # До постановки в очередь: иначе работник мог взять задачу раньше, чем
-        # у неё появится пометка «это замена».
+        # у неё появится пометка «это замена» или альбом.
         if replace_of is not None:
             db.task_update(tid, replace_of=replace_of)
+        if album_hint is not None:
+            db.task_update(tid, album_hint=album_hint)
         runtime.TASK_QUEUE.put((tid, source_key))
         runtime.PROCESSING_URLS.add(source_key)
         return tid
+
+
+def _stash_and_queue(data: bytes, filename: str, replace_of: str | None = None) -> int | None:
+    # В потоке, а не в цикле событий: запись и sha256 двухсот мегабайт и
+    # ожидание FILE_LOCK останавливали бы на это время всё остальное —
+    # и воспроизведение тоже.
+    source_key, _ = ingest.stash_upload(data, filename)
+    return _queue_source(source_key, replace_of=replace_of)
 
 
 @app.post("/api/import")
@@ -839,8 +878,7 @@ async def import_files(
         if not data:
             skipped.append({"file": upload.filename, "reason": "empty file"})
             continue
-        source_key, _ = ingest.stash_upload(data, upload.filename or "track" + suffix)
-        tid = _queue_source(source_key)
+        tid = await run_in_threadpool(_stash_and_queue, data, upload.filename or "track" + suffix)
         if tid is None:
             skipped.append({"file": upload.filename, "reason": "already in the library or queued"})
         else:
@@ -869,8 +907,9 @@ def replace_track(req: ReplaceRequest, authenticated: bool = Depends(verify_toke
     Всё это происходит после загрузки, в рабочем потоке: страницу можно закрыть.
     """
     # Путь проверяется сразу: замену несуществующего трека лучше отвергнуть
-    # здесь, чем узнать об этом через минуту в журнале.
-    library.library_track(req.path)
+    # здесь, чем узнать об этом через минуту в журнале. И запоминается в том
+    # виде, в каком он стоит в подборках, а не как прислан.
+    replace_of = library.library_relative(req.path)
 
     is_valid, error_msg = ingest.validate_url(req.url)
     if not is_valid:
@@ -881,7 +920,7 @@ def replace_track(req: ReplaceRequest, authenticated: bool = Depends(verify_toke
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=f"Invalid YouTube URL: {exc}") from exc
 
-    tid = _queue_source(link, replace_of=req.path)
+    tid = _queue_source(link, replace_of=replace_of)
     if tid is None:
         raise HTTPException(
             status_code=409,
@@ -897,7 +936,7 @@ async def replace_track_with_file(
     authenticated: bool = Depends(verify_token),
 ):
     """То же самое, но правильная версия приходит файлом с диска."""
-    library.library_track(path)
+    replace_of = library.library_relative(path)
 
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in library.AUDIO_SUFFIXES:
@@ -909,8 +948,9 @@ async def replace_track_with_file(
     if not data:
         raise HTTPException(status_code=400, detail="Пустой файл")
 
-    source_key, _ = ingest.stash_upload(data, file.filename or "track" + suffix)
-    tid = _queue_source(source_key, replace_of=path)
+    tid = await run_in_threadpool(
+        _stash_and_queue, data, file.filename or "track" + suffix, replace_of
+    )
     if tid is None:
         raise HTTPException(status_code=409, detail="Этот файл уже в очереди или уже в фонотеке")
     return {"task": tid}
@@ -944,10 +984,10 @@ def _queue_candidates(
         if match is None:
             unmatched.append({"artist": candidate.artist, "title": candidate.title})
             continue
-        tid = _queue_source(ingest.canonicalize_youtube_url(match["url"]))
+        tid = _queue_source(
+            ingest.canonicalize_youtube_url(match["url"]), album_hint=album_hint or None
+        )
         if tid is not None:
-            if album_hint:
-                db.task_update(tid, album_hint=album_hint)
             queued.append(tid)
     return queued, unmatched
 
@@ -1309,7 +1349,10 @@ def sync_now(apply: bool = True, authenticated: bool = Depends(verify_token)):
     ``apply=false`` reports what it would rewrite and rewrites nothing.
     """
     try:
-        return sync.check(apply=apply)
+        # Под тем же замком, что и фоновый проход: два прохода разом писали
+        # одну подборку наперегонки.
+        with sync._CHECK_LOCK:
+            return sync.check(apply=apply)
     except navidrome.NavidromeUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 

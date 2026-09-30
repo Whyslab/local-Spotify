@@ -8,6 +8,7 @@ import time
 from datetime import datetime
 
 import pytest
+from fastapi import HTTPException
 
 from adder import config as adder_config
 from adder import covers, library, navidrome, playlists, runtime, sync
@@ -412,3 +413,67 @@ def test_renaming_to_the_same_file_name_is_a_no_op(temp_library):
     playlists.create("Тест", ["a.m4a"])
     assert playlists.rename("Тест", " Тест ").name == "Тест"
     assert playlists.rename("Тест", "Тест").name == "Тест"
+
+
+# ---------------------------------------------------------------------------
+# What Navidrome last showed is remembered only after it was written
+# ---------------------------------------------------------------------------
+
+
+def _phone_removed_b(temp_library, monkeypatch):
+    """«p» with a and b, Navidrome saw both, then the phone dropped b."""
+    for name in ("a.m4a", "b.m4a"):
+        (temp_library / name).write_bytes(b"x")
+    monkeypatch.setattr(library, "library_index", lambda: _index("a.m4a", "b.m4a"))
+    playlists.create("p", ["a.m4a", "b.m4a"])
+    monkeypatch.setattr(navidrome, "remote_tracks", lambda _id, _n: ["a.m4a", "b.m4a"])
+    sync.pull_back("p", _entry("p", playlists.playlist_path("p"), 2))
+    monkeypatch.setattr(navidrome, "remote_tracks", lambda _id, _n: ["a.m4a"])
+
+
+def test_a_dry_run_does_not_bring_back_a_track_removed_on_the_phone(temp_library, monkeypatch):
+    """«Что поменялось бы» запоминало список Navidrome, и настоящий проход
+    принимал b за «ещё не просканированный» и оставлял его."""
+    _phone_removed_b(temp_library, monkeypatch)
+    entry = _entry("p", playlists.playlist_path("p"), 1)
+    monkeypatch.setattr(navidrome, "configured", lambda: True)
+    monkeypatch.setattr(navidrome, "playlists", lambda: [entry])
+
+    assert sync.check(apply=False)["playlists"][0]["changed"] is True
+    sync.check(apply=True)
+
+    assert [e.path for e in playlists.read("p").entries] == ["a.m4a"]
+
+
+def test_a_refused_write_does_not_bring_back_a_track_removed_on_the_phone(
+    temp_library, monkeypatch
+):
+    _phone_removed_b(temp_library, monkeypatch)
+    calls = []
+
+    def laptop_writes_meanwhile(_id, _n):
+        if not calls:  # the file changes during the fetch, so the write gets 409
+            playlists.write("p", ["b.m4a", "a.m4a"], expected_revision=None)
+        calls.append(1)
+        return ["a.m4a"]
+
+    monkeypatch.setattr(navidrome, "remote_tracks", laptop_writes_meanwhile)
+    with pytest.raises(HTTPException):
+        sync.pull_back("p", _entry("p", playlists.playlist_path("p"), 1))
+    sync.pull_back("p", _entry("p", playlists.playlist_path("p"), 1))
+
+    assert [e.path for e in playlists.read("p").entries] == ["a.m4a"]
+
+
+def test_a_pass_from_the_panel_waits_for_the_background_one(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from adder import app as app_module
+
+    monkeypatch.setattr(adder_config, "API_TOKEN", "test-secret")
+    monkeypatch.setattr(sync, "check", lambda apply=True: {"locked": sync._CHECK_LOCK.locked()})
+    # Без «with»: запуск приложения здесь не нужен.
+    client = TestClient(app_module.app)
+    response = client.post("/api/sync", headers={"Authorization": "Bearer test-secret"})
+
+    assert response.json() == {"locked": True}

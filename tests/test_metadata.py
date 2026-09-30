@@ -100,6 +100,35 @@ def test_lookup_returns_none_rather_than_raising(monkeypatch, responses):
     assert lookup("Daft Punk", "Get Lucky") is None
 
 
+@pytest.mark.parametrize(
+    "responses",
+    [
+        # Deezer's own odd answers: an album without an id, no album at all,
+        # a search hit without an id, a contributor without a name.
+        {"/search": SEARCH, "/track/2": {**TRACK, "album": {"title": "X"}}},
+        {"/search": SEARCH, "/track/2": {**TRACK, "album": None}},
+        {"/search": {"data": [{"title": "Get Lucky"}]}},
+        {"/search": SEARCH, "/track/2": {**TRACK, "contributors": [{"id": 1}]}, "/album/77": ALBUM},
+    ],
+)
+def test_odd_deezer_answers_never_raise(monkeypatch, responses):
+    """«Every failure returns None, never raises» — KeyError тоже."""
+    monkeypatch.setattr(enrich, "_get", deezer(responses))
+
+    info = lookup("Daft Punk", "Get Lucky")
+
+    assert info is None or info.artists
+
+
+def test_odd_deezer_album_answers_never_raise(monkeypatch):
+    tracks = {"data": [{"title": "Get Lucky"}]}
+    monkeypatch.setattr(enrich, "_get", deezer({"/album/77/tracks": tracks, "/album/77": ALBUM}))
+
+    info = enrich.lookup_in_album("77", "Daft Punk", "Get Lucky")
+
+    assert info is None or info.album
+
+
 def test_describe_falls_back_to_a_single_named_after_the_track(monkeypatch):
     monkeypatch.setattr(enrich, "_get", deezer({}))
 

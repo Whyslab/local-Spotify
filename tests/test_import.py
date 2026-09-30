@@ -391,3 +391,127 @@ def test_a_crafted_delete_path_still_lands_in_the_trash(env):
         runtime.guard_real_library = monkeypatch_guard
     assert not target.exists()
     assert (runtime.TRASH_DIR / "A" / "Singles" / "t.m4a").exists(), result
+
+
+@pytest.mark.parametrize(
+    "sent", ["./A/Singles/x.m4a", "A//Singles/x.m4a", "A/Singles/../Singles/x.m4a"]
+)
+def test_a_replacement_remembers_the_path_the_playlists_use(client, env, sent):
+    """Подборки хранят «A/Singles/x.m4a»; «./A/…» не совпало бы ни с одной строкой."""
+    from adder import db
+
+    make_audio(config.LIBRARY / "A" / "Singles" / "x.m4a")
+    response = client.post(
+        "/api/replace", json={"path": sent, "url": "https://www.youtube.com/watch?v=abcdefghijk"}
+    )
+    upload = make_audio(env / "right.mp3", seconds=3)
+    by_file = client.post(
+        "/api/replace-file",
+        params={"path": sent},
+        files={"file": ("right.mp3", upload.read_bytes(), "audio/mpeg")},
+    )
+    while not runtime.TASK_QUEUE.empty():
+        runtime.TASK_QUEUE.get_nowait()
+        runtime.TASK_QUEUE.task_done()
+
+    assert response.status_code == by_file.status_code == 200, (response.text, by_file.text)
+    rows = db.db_query("SELECT replace_of FROM tasks ORDER BY id")
+    assert [r["replace_of"] for r in rows] == ["A/Singles/x.m4a"] * 2
+
+
+def test_the_same_upload_stashed_at_once_is_not_an_error(env):
+    """Две одинаковые загрузки писали один «<хеш>.part», и второй replace падал."""
+    import threading
+
+    payload = b"\x00" * 2_000_000
+    errors = []
+    for _ in range(10):
+        barrier = threading.Barrier(4)
+
+        def one(barrier=barrier):
+            barrier.wait()
+            try:
+                ingest.stash_upload(payload, "a.mp3")
+            except Exception as exc:  # noqa: BLE001
+                errors.append(repr(exc))
+
+        threads = [threading.Thread(target=one) for _ in range(4)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+    assert not errors, errors[:3]
+    assert [p.name for p in ingest.import_dir().iterdir() if ".part" in p.name] == []
+
+
+def test_an_upload_is_written_and_queued_off_the_event_loop(client, env, monkeypatch):
+    """Запись и sha256 двухсот мегабайт и ожидание FILE_LOCK в async-обработчике
+    останавливали цикл событий — а с ним и отдачу музыки."""
+    import asyncio
+
+    from adder import app as app_module
+
+    on_loop = []
+
+    def running_loop():
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return False
+        return True
+
+    real_stash, real_queue = ingest.stash_upload, app_module._queue_source
+
+    def stash(*args, **kwargs):
+        on_loop.append(("stash", running_loop()))
+        return real_stash(*args, **kwargs)
+
+    def queue_source(*args, **kwargs):
+        on_loop.append(("queue", running_loop()))
+        return real_queue(*args, **kwargs)
+
+    monkeypatch.setattr(ingest, "stash_upload", stash)
+    monkeypatch.setattr(app_module, "_queue_source", queue_source)
+    make_audio(config.LIBRARY / "A" / "Singles" / "x.m4a")
+    upload = make_audio(env / "u.mp3").read_bytes()
+    other = make_audio(env / "v.mp3", seconds=3).read_bytes()
+
+    client.post("/api/import", files={"files": ("u.mp3", upload, "audio/mpeg")})
+    client.post(
+        "/api/replace-file",
+        params={"path": "A/Singles/x.m4a"},
+        files={"file": ("v.mp3", other, "audio/mpeg")},
+    )
+    while not runtime.TASK_QUEUE.empty():
+        runtime.TASK_QUEUE.get_nowait()
+        runtime.TASK_QUEUE.task_done()
+
+    assert on_loop == [("stash", False), ("queue", False)] * 2
+
+
+def test_a_stashed_upload_keeps_the_usual_permissions(env):
+    """copy2 переносит права дальше, в фонотеку: файл 0600 от mkstemp
+    Navidrome — другой пользователь — прочесть бы не смог."""
+    _, stashed = ingest.stash_upload(b"audio", "a.mp3")
+    usual = ingest.import_dir() / "usual"
+    usual.write_bytes(b"x")
+
+    assert stashed.stat().st_mode & 0o777 == usual.stat().st_mode & 0o777
+
+
+def test_an_upload_is_readable_by_other_users_like_navidrome(tmp_path, monkeypatch):
+    # mkstemp would give 0600, and copy2 carries the mode into the library,
+    # where Navidrome (another user) could not read the track.
+    import os
+
+    from adder import ingest
+
+    monkeypatch.setattr(ingest.runtime, "TMP_DIR", tmp_path)
+    old = os.umask(0o022)
+    try:
+        _, stored = ingest.stash_upload(b"audio bytes", "song.mp3")
+    finally:
+        os.umask(old)
+    assert stored.stat().st_mode & 0o777 == 0o644
+    assert not list(stored.parent.glob(".*.part"))

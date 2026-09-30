@@ -19,6 +19,7 @@ import os
 import re
 import sqlite3
 import subprocess
+import threading
 from pathlib import Path
 
 import mutagen
@@ -146,8 +147,13 @@ def _analysis(db_path: Path) -> sqlite3.Connection | None:
     return con
 
 
-def backfill(root: Path, db_path: Path, limit: int | None = None) -> tuple[int, int, int]:
-    """Tag what is missing. Returns (measured, already tagged, failed)."""
+def backfill(
+    root: Path, db_path: Path, limit: int | None = None, stop: threading.Event | None = None
+) -> tuple[int, int, int]:
+    """Tag what is missing. Returns (measured, already tagged, failed).
+
+    ``stop`` is the service's shutdown_event when it runs inside the service.
+    """
     from . import library
 
     root = root.resolve()
@@ -159,6 +165,10 @@ def backfill(root: Path, db_path: Path, limit: int | None = None) -> tuple[int, 
     try:
         for path in files:
             if limit is not None and measured >= limit:
+                break
+            # Проход по всей фонотеке — минуты ffmpeg; остановке службы их
+            # ждать незачем, недомеренное доберёт следующий запуск.
+            if stop is not None and stop.is_set():
                 break
             try:
                 if library.read_tags(path).get("gain") is not None:

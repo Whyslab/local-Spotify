@@ -144,3 +144,27 @@ def test_the_play_journal_feeds_the_queue(lb, monkeypatch):
         )
     assert response.status_code == 200
     assert listenbrainz.pending_count() == 1
+
+
+def test_one_listen_listenbrainz_refuses_does_not_block_the_rest(lb, monkeypatch):
+    """Пачку с одной негодной строкой ListenBrainz отвергает целиком (400), и
+    она уходила снова и снова, а за ней стояли все следующие."""
+    for when, title in ((1, "Good"), (2, "Bad"), (3, "Also good")):
+        db.db_exec(
+            "INSERT INTO listens(listened_at, artist, title) VALUES(?, 'A', ?)", (when, title)
+        )
+    sent = []
+
+    def post(url, json, headers, timeout):
+        titles = [p["track_metadata"]["track_name"] for p in json["payload"]]
+        if "Bad" in titles:
+            return Response(400, "invalid listen")
+        sent.extend(titles)
+        return Response(200)
+
+    monkeypatch.setattr(listenbrainz.requests, "post", post)
+
+    assert listenbrainz.send_pending() == 2
+    assert sorted(sent) == ["Also good", "Good"]
+    assert listenbrainz.pending_count() == 0
+    assert listenbrainz.send_pending() == 0

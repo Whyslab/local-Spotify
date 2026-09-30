@@ -19,7 +19,11 @@ const SHELL = "shell-v1";
 const API = "api-v1";
 const AUDIO = "offline-audio-v1";
 const META = "offline-meta-v1";
+const COVERS = "offline-covers-v1";   // обложки скачанных треков — их не вытесняет API_MAX
+const KNOWN = [SHELL, API, AUDIO, META, COVERS];
 const NETWORK_TIMEOUT_MS = 6000;
+const API_MAX = 1500;                 // записей в API: старые вытесняются
+const SERVER_DOWN = new Set([502, 503, 504]);
 
 // Списки, которые стоит помнить на случай без сети. Только GET.
 const REMEMBERED = [
@@ -31,8 +35,40 @@ const REMEMBERED = [
     /^\/api\/lyrics$/,
 ];
 
-self.addEventListener("install", () => self.skipWaiting());
-self.addEventListener("activate", (event) => event.waitUntil(self.clients.claim()));
+/* Страница сохраняется сразу при установке. Иначе первое открытие проходило
+ * мимо: страница и её файлы грузились до того, как worker начинал отвечать, и
+ * ярлык, открытый потом без сети, показывал «нет соединения». */
+self.addEventListener("install", (event) => event.waitUntil(precacheShell().then(() => self.skipWaiting())));
+self.addEventListener("activate", (event) => event.waitUntil((async () => {
+    // Хранилища от прежних версий (v0, будущие v2) — не копить.
+    for (const name of await caches.keys()) {
+        if (!KNOWN.includes(name)) await caches.delete(name);
+    }
+    await self.clients.claim();
+})()));
+
+async function precacheShell() {
+    try {
+        const cache = await caches.open(SHELL);
+        const page = await fetch("/", { cache: "no-store" });
+        if (!page.ok) return;
+        const html = await page.clone().text();
+        await cache.put("/", page);
+        const assets = new Set(["/static/manifest.webmanifest", "/static/icon-180.png", "/static/icon.svg"]);
+        for (const match of html.matchAll(/(?:src|href)="(\/static\/[^"]+)"/g)) assets.add(match[1]);
+        for (const asset of assets) {
+            try {
+                const response = await fetch(asset, { cache: "no-store" });
+                if (response.ok) {
+                    await dropOtherVersions(cache, new URL(asset, self.location.origin).href);
+                    await cache.put(asset, response);
+                }
+            } catch (e) { /* без этого файла — догрузится при следующем открытии */ }
+        }
+    } catch (e) {
+        /* нет сети при установке — сохранится при следующем открытии */
+    }
+}
 
 function audioKey(path) { return "/offline/audio?path=" + encodeURIComponent(path); }
 function metaKey(path) { return "/offline/meta?path=" + encodeURIComponent(path); }
@@ -42,6 +78,8 @@ self.addEventListener("fetch", (event) => {
     if (request.method !== "GET") return;
     const url = new URL(request.url);
     if (url.origin !== self.location.origin) return;
+    // fresh=1 — спросить сам сервер, мимо скачанного (сверка копий в offline.js).
+    if (url.searchParams.get("fresh") === "1") return;
 
     if (url.pathname === "/api/stream") {
         event.respondWith(serveStream(request, url));
@@ -50,7 +88,9 @@ self.addEventListener("fetch", (event) => {
     } else if (url.pathname === "/" || url.pathname.startsWith("/static/")) {
         event.respondWith(networkFirst(request, SHELL, true));
     } else if (REMEMBERED.some((re) => re.test(url.pathname))) {
-        event.respondWith(networkFirst(request, API, false));
+        // Поиск по фонотеке не помнится: каждое нажатие клавиши — своя запись.
+        const search = url.pathname === "/api/library" && (url.searchParams.get("q") || "") !== "";
+        event.respondWith(search ? fetch(request) : networkFirst(request, API, false));
     }
 });
 
@@ -124,25 +164,42 @@ function withTimeout(promise, ms) {
     });
 }
 
-/* Сеть, а при удаче — копия в хранилище. Без сети (или сеть молчит дольше
- * NETWORK_TIMEOUT_MS) — последняя копия. Ответ с ошибкой (401 после смены
- * токена, 500) не сохраняется и не подменяется старой копией: страница
- * должна увидеть, что что-то не так. */
+/* Сеть, а при удаче — копия в хранилище. Без сети, при ответе «сервер
+ * недоступен» (502–504: так отвечает Tailscale, когда компьютер спит) или
+ * если сеть молчит дольше NETWORK_TIMEOUT_MS — последняя копия. Ждать
+ * дольше таймаута стоит, когда копии нет: тексты песен сервер ищет до 16 с,
+ * и обрыв на 6-й превращал медленный ответ в ошибку. Ответ с ошибкой (401
+ * после смены токена, 500) не сохраняется и не подменяется старой копией:
+ * страница должна увидеть, что что-то не так. */
 async function networkFirst(request, cacheName, dropOldVersions) {
     const cache = await caches.open(cacheName);
-    try {
-        const response = await withTimeout(fetch(request), NETWORK_TIMEOUT_MS);
+    const network = fetch(request).then(async (response) => {
         if (response.ok && response.status === 200) {
             const copy = response.clone();
             if (dropOldVersions) await dropOtherVersions(cache, request.url);
             await cache.put(request, copy);
+            if (cacheName === API) trimCache(cache, API_MAX);
         }
         return response;
+    });
+    network.catch(() => { /* ответ уже отдан из копии — поздняя ошибка не нужна */ });
+    // Копия ищется во всех хранилищах: обложка скачанного трека лежит в COVERS.
+    const cached = await caches.match(request);
+    if (!cached) return network;
+    try {
+        const response = await withTimeout(network, NETWORK_TIMEOUT_MS);
+        return SERVER_DOWN.has(response.status) ? cached : response;
     } catch (error) {
-        const cached = await cache.match(request);
-        if (cached) return cached;
-        throw error;
+        return cached;
     }
+}
+
+/* Старые записи — первыми: Cache API хранит их в порядке добавления. */
+async function trimCache(cache, max) {
+    try {
+        const keys = await cache.keys();
+        for (let i = 0; i < keys.length - max; i++) await cache.delete(keys[i]);
+    } catch (e) { /* не страшно */ }
 }
 
 /* /static/app.js?v=… после каждой новой версии — другой адрес. Старые

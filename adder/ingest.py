@@ -12,12 +12,14 @@ import json
 import logging
 import os
 import re
+import secrets
 import shutil
 import signal
 import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -1356,6 +1358,27 @@ def import_dir() -> Path:
     return path
 
 
+def write_atomic(target: Path, data: bytes) -> None:
+    """Write ``data`` to ``target`` through a temporary file of its own.
+
+    The temporary name is unique per writer: with one shared «.part» two
+    writers of the same file truncated each other's copy, and the second
+    rename failed because the first had already taken it. Not mkstemp: its
+    0600 would travel with the upload into the library (copy2 keeps the mode),
+    and Navidrome, another user, could not read the track.
+    """
+    name = target.with_name(f".{target.name}.{secrets.token_hex(8)}.part")
+    fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+        os.replace(name, target)
+    except BaseException:
+        with suppress(OSError):
+            os.unlink(name)
+        raise
+
+
 def stash_upload(data: bytes, original_name: str) -> tuple[str, Path]:
     """Save an uploaded file and return the source key it will be queued under.
 
@@ -1367,9 +1390,7 @@ def stash_upload(data: bytes, original_name: str) -> tuple[str, Path]:
     suffix = Path(original_name).suffix.lower() or ".mp3"
     digest = hashlib.sha256(data).hexdigest()
     target = import_dir() / f"{digest}{suffix}"
-    partial = target.with_name(target.name + ".part")
-    partial.write_bytes(data)
-    partial.replace(target)
+    write_atomic(target, data)
     # Настоящее имя файла — рядом: сам файл назван по содержимому, и без этого
     # «Кино - Группа крови.mp3» без тегов ложился в фонотеку под хешем.
     target.with_name(f"{digest}{NAME_SUFFIX}").write_text(
@@ -1485,6 +1506,22 @@ def _apply_replacement(tid: int, new_path: str) -> None:
     from . import playlists
 
     moved = playlists.swap_everywhere(old_path, new_path)
+    # Подборку, которую не вышло переписать, нельзя оставить со строкой на
+    # файл в корзине: тогда старая версия остаётся на месте, а человек видит,
+    # какие подборки проверить.
+    left = playlists.still_pointing_at(old_path)
+    if left:
+        logger.warning(
+            "Замена: %s оставлен — на него всё ещё ссылаются %s",
+            old_path,
+            ", ".join(left),
+            extra={"task_id": tid},
+        )
+        db.task_update(
+            tid,
+            warning=f"Старая версия оставлена: не обновились подборки {', '.join(left)}",
+        )
+        return
     try:
         # Тот же путь, что и у обычного удаления: файл уезжает в корзину, а
         # пустые папки за ним подчищаются.
@@ -1593,19 +1630,35 @@ def ingest_temp_file(tid: int, temp_path: Path, names: TrackNames, thumbnail: st
         final_target = unique_path(base_target)
         shutil.move(str(temp_path), str(final_target))
 
-    library.invalidate_library_index()  # a new track must show up in search now
+    # Файл уже в фонотеке. Всё, что дальше, — довесок: упавший шаг только
+    # пишется в журнал. Ошибка задачи здесь значила бы повтор и второй файл
+    # рядом с первым, а старый трек замены так и остался бы в подборках.
+    def best_effort(what: str, step: Callable[[], object]) -> bool:
+        try:
+            step()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Stored %s, but %s failed: %s", final_target, what, exc, extra={"task_id": tid}
+            )
+            return False
+        return True
+
+    # a new track must show up in search now
+    best_effort("the index refresh", library.invalidate_library_index)
 
     # Measure it now rather than waiting for the next full pass, so a track
     # added today can be placed by tempo tonight. It runs in its own bounded
     # scope, not in this process.
     from . import analysis
 
-    analysis.analyse_track(str(final_target))
+    best_effort("the analysis", lambda: analysis.analyse_track(str(final_target)))
 
     # Куда лёг файл — нужно для замены трека: подмену нельзя искать по артисту
-    # и названию, иначе в корзину уедет не тот.
-    relative = str(final_target.relative_to(config.LIBRARY.resolve()))
-    db.task_update(tid, result_path=relative)
+    # и названию, иначе в корзину уедет не тот. От того же config.LIBRARY, из
+    # которого путь собран: против resolve() одной стороны это падало, когда
+    # LIBRARY_PATH — ссылка или относительный путь.
+    relative = str(final_target.relative_to(config.LIBRARY))
+    best_effort("saving the path", lambda: db.task_update(tid, result_path=relative))
     if similar:
         # Kept on purpose: it may be a better recording, and which one to keep
         # is the listener's call. The panel shows this next to the task.
@@ -1615,16 +1668,29 @@ def ingest_temp_file(tid: int, temp_path: Path, names: TrackNames, thumbnail: st
             similar,
             extra={"task_id": tid},
         )
-        db.task_update(tid, warning=f"Похоже на уже имеющийся трек: {similar}", similar_to=similar)
-    _apply_replacement(tid, relative)
+        best_effort(
+            "the similar-track warning",
+            lambda: db.task_update(
+                tid, warning=f"Похоже на уже имеющийся трек: {similar}", similar_to=similar
+            ),
+        )
+    if not best_effort("the replacement", lambda: _apply_replacement(tid, relative)):
+        # Видно в панели: иначе «готово» читалось бы как «заменено».
+        best_effort(
+            "the replacement warning",
+            lambda: db.task_update(tid, warning="Трек добавлен, но старый не заменён — см. журнал"),
+        )
 
     # Текст — сразу, чтобы он был уже при первом включении. В своём потоке:
     # на промахе это несколько запросов к чужому каталогу, и ждать их незачем
     # ни очереди скачиваний, ни остановке службы. Не вышло — трек подберёт
     # обход фонотеки.
-    threading.Thread(
-        target=_lyrics_for_new_track, args=(relative,), name="lyrics-new", daemon=True
-    ).start()
+    best_effort(
+        "the lyrics lookup",
+        threading.Thread(
+            target=_lyrics_for_new_track, args=(relative,), name="lyrics-new", daemon=True
+        ).start,
+    )
     return "stored"
 
 

@@ -108,7 +108,6 @@ def _payload(row: dict) -> dict:
 
 def send_pending() -> int:
     """Send one batch of queued listens. Returns how many were accepted."""
-    global _rejected
     if not enabled() or _rejected:
         return 0
     rows = db.db_query(
@@ -116,6 +115,16 @@ def send_pending() -> int:
     )
     if not rows:
         return 0
+    return _send(rows)
+
+
+# sent = -1: ListenBrainz refused this listen itself (HTTP 400). Not sent and
+# never retried -- it would be refused again and hold up everything after it.
+REFUSED = -1
+
+
+def _send(rows: list[dict]) -> int:
+    global _rejected
     body = {
         "listen_type": "import" if len(rows) > 1 else "single",
         "payload": [_payload(r) for r in rows],
@@ -146,6 +155,23 @@ def send_pending() -> int:
         )
         notify.send(
             "ListenBrainz не принял токен", "Проверьте LISTENBRAINZ_TOKEN в adder/.env", urgent=True
+        )
+        return 0
+    if response.status_code == 400:
+        # Пачка с одной негодной строкой отвергается целиком, и повтор той же
+        # пачки держал бы очередь вечно. Делим пополам, пока не останется
+        # сама негодная строка, — остальные уходят.
+        if len(rows) > 1:
+            half = len(rows) // 2
+            accepted = _send(rows[:half])
+            return accepted + (0 if _rejected else _send(rows[half:]))
+        db.db_exec("UPDATE listens SET sent = ? WHERE id = ?", (REFUSED, ids[0]))
+        logger.warning(
+            "ListenBrainz refused a listen of %r by %r, dropped: %s",
+            rows[0]["title"],
+            rows[0]["artist"],
+            response.text[:200],
+            extra={"task_id": "system"},
         )
         return 0
     logger.warning(

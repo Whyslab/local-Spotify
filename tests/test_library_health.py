@@ -41,6 +41,9 @@ def lib(tmp_path, monkeypatch):
     monkeypatch.setattr(runtime, "DB_PATH", tmp_path / "tasks.db")
     monkeypatch.setattr(library, "_FILE_ROWS", {})
     monkeypatch.setattr(library_health, "_job", dict(library_health._job, running=False))
+    # Исправления останавливаются по shutdown_event, а выход TestClient
+    # предыдущего теста оставляет его поднятым.
+    runtime.shutdown_event.clear()
     track(root, "A/good.m4a", "Good", album="Real Album", cover=True, gain=-3.0, number=4)
     track(root, "A/bare.m4a", "Bare")
     track(root, "A/single.m4a", "Single", album="Single", cover=True, gain=-1.0)
@@ -76,6 +79,17 @@ def test_the_loudness_fix_measures_what_is_missing(lib):
 
     assert job["result"] == {"measured": 1, "failed": 1}  # the broken file cannot be measured
     assert library_health.report()["problems"]["no_loudness"]["count"] == 0
+
+
+def test_the_loudness_fix_stops_when_the_service_does(lib):
+    runtime.shutdown_event.set()
+    try:
+        library_health.start_fix("loudness")
+        job = _wait()
+    finally:
+        runtime.shutdown_event.clear()
+
+    assert job["result"] == {"measured": 0, "failed": 0}
 
 
 def test_the_cover_fix_uses_the_service_lookup(lib, monkeypatch):
