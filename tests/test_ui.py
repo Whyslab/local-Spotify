@@ -165,6 +165,12 @@ def row(page, title):
     return page.locator("#library .track").filter(has_text=title).first
 
 
+def row_action(page, title, action):
+    """Действия строки фонотеки живут в меню «⋯» (с 30.09.2026)."""
+    row(page, title).get_by_role("button", name="Что сделать с треком").click()
+    page.get_by_role("menuitem", name=action).click()
+
+
 # ---------------------------------------------------------------------------
 
 
@@ -179,7 +185,7 @@ def test_the_library_lists_tracks_and_renders_titles_as_text(page):
 
 def test_tags_are_edited_in_place(page, server):
     open_library(page)
-    row(page, "Quiet").get_by_role("button", name="Изменить теги").click()
+    row_action(page, "Quiet", "Изменить теги…")
 
     form = page.locator("form.edit-tags")
     form.get_by_label("Название").fill("Quiet Storm")
@@ -193,7 +199,7 @@ def test_tags_are_edited_in_place(page, server):
 
 def test_replaygain_turns_a_loud_track_down_but_not_the_slider(page):
     open_library(page)
-    row(page, "Loud").get_by_role("button", name="Играть").click()
+    row_action(page, "Loud", "Играть")
     page.wait_for_function("!player.audio.paused && player.audio.currentTime > 0")
     assert page.evaluate("player.audio.error") is None
 
@@ -206,7 +212,7 @@ def test_replaygain_turns_a_loud_track_down_but_not_the_slider(page):
 
 def test_fades_at_the_ends_of_a_track(page):
     open_library(page)
-    row(page, "Loud").get_by_role("button", name="Играть").click()
+    row_action(page, "Loud", "Играть")
     page.wait_for_function("!player.audio.paused && player.audio.duration > 10")
     page.evaluate("setFade(3); player.audio.pause()")
 
@@ -225,7 +231,7 @@ def test_a_track_starts_silent_when_fades_are_on(page):
     # full volume, dropped to silence once the duration arrived, and only
     # then faded in.
     open_library(page)
-    row(page, "Loud").get_by_role("button", name="Играть").click()
+    row_action(page, "Loud", "Играть")
     page.wait_for_function("!player.audio.paused && player.audio.duration > 10")
     page.evaluate("setFade(3); player.audio.pause()")
 
@@ -237,7 +243,7 @@ def test_a_track_starts_silent_when_fades_are_on(page):
 
 def test_a_fade_is_driven_by_a_fast_timer_only_while_it_runs(page):
     open_library(page)
-    row(page, "Loud").get_by_role("button", name="Играть").click()
+    row_action(page, "Loud", "Играть")
     page.wait_for_function("!player.audio.paused && player.audio.duration > 10")
     page.evaluate("setFade(3); player.audio.currentTime = 6; fadeTick()")
     assert page.evaluate("fadeTimer") is None  # middle of the track: no fade
@@ -251,7 +257,7 @@ def test_a_fade_is_driven_by_a_fast_timer_only_while_it_runs(page):
 
 def test_the_lock_screen_shows_the_track_and_its_state(page):
     open_library(page)
-    row(page, "Loud").get_by_role("button", name="Играть").click()
+    row_action(page, "Loud", "Играть")
     page.wait_for_function("!player.audio.paused")
     page.wait_for_function("navigator.mediaSession.metadata !== null")
 
@@ -513,7 +519,7 @@ def test_a_download_whose_file_changed_on_the_server_is_fetched_again(page):
 
 def test_the_sleep_timer_counts_down_and_stops_playback(page):
     open_library(page)
-    row(page, "Loud").get_by_role("button", name="Играть").click()
+    row_action(page, "Loud", "Играть")
     page.wait_for_function("!player.audio.paused")
 
     page.get_by_role("button", name="Таймер сна").click()
@@ -609,3 +615,68 @@ def test_a_duplicate_pair_is_shown_and_can_be_kept_both(page):
     pair.get_by_role("button", name="Оставить оба").click()
     page.wait_for_selector("#duplicatesHead", state="hidden")
     assert db.db_query("SELECT warning FROM tasks WHERE id = ?", (tid,))[0]["warning"] is None
+
+
+# --- Подборки без своего раздела, «⋯» у строк фонотеки (30.09.2026) -------
+
+
+def test_there_is_no_playlists_tab_or_page(page):
+    assert page.locator('.tab[data-view="viewPlaylists"]').count() == 0
+    assert page.locator("#viewPlaylists").count() == 0
+
+
+def test_a_library_row_has_one_menu_button_with_four_actions(page):
+    open_library(page)
+    buttons = row(page, "Quiet").get_by_role("button")
+    assert buttons.count() == 1
+    buttons.first.click()
+    items = page.get_by_role("menuitem").all_inner_texts()
+    assert items == ["Играть", "В подборку…", "Изменить теги…", "Удалить…"]
+    page.keyboard.press("Escape")
+    assert page.get_by_role("menuitem").count() == 0
+
+
+def test_the_rail_plus_creates_a_playlist_and_opens_it(page, server):
+    page.locator("#railNewPlaylist").click()
+    field = page.get_by_role("dialog", name="Новая подборка").get_by_role("textbox")
+    field.fill("Проверка плюса")
+    field.press("Enter")
+    page.wait_for_function("activeView === 'viewPlaylist'")
+    assert page.locator("#playlistName").inner_text() == "Проверка плюса"
+    assert (server["root"] / "Проверка плюса.m3u").exists()
+    page.wait_for_selector("#railPlaylists .rail-item:has-text('Проверка плюса')")
+    # «Назад» возвращает туда, откуда пришли, а не на пропавший раздел.
+    page.get_by_role("button", name="Назад").click()
+    page.wait_for_function("activeView === 'viewHome'")
+
+
+def test_an_empty_name_says_so_instead_of_doing_nothing(page):
+    page.locator("#railNewPlaylist").click()
+    dialog = page.get_by_role("dialog", name="Новая подборка")
+    dialog.get_by_role("button", name="Создать").click()
+    assert "Впиши название" in dialog.inner_text()
+
+
+def test_on_a_phone_playlists_are_in_the_more_menu(page, server):
+    (server["root"] / "Телефон.m3u").write_text("Quiet/Singles/Quiet.m4a\n", encoding="utf-8")
+    page.set_viewport_size({"width": 390, "height": 844})
+    page.evaluate("playlists()")
+    page.wait_for_function("knownPlaylists.some(p => p.name === 'Телефон')")
+    page.locator("#moreTab").click()
+    menu = page.locator("#moreMenu")
+    assert menu.get_by_role("menuitem", name="+ Новая подборка…").count() == 1
+    menu.get_by_role("menuitem", name="Телефон").click()
+    page.wait_for_function("activeView === 'viewPlaylist'")
+    assert page.locator("#playlistName").inner_text() == "Телефон"
+
+
+def test_playlist_rows_have_no_dots_but_still_drag(page, server):
+    (server["root"] / "Тащить.m3u").write_text(
+        "Quiet/Singles/Quiet.m4a\nLoud Band/Singles/Loud.opus\n", encoding="utf-8"
+    )
+    page.evaluate("openPlaylist('Тащить')")
+    page.wait_for_selector("#playlistTracks .playlist-track")
+    assert page.locator("#playlistTracks .handle").count() == 0
+    assert (
+        page.locator("#playlistTracks .playlist-track").first.get_attribute("draggable") == "true"
+    )

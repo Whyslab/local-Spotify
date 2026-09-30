@@ -112,13 +112,30 @@ function toggleMoreMenu(event) {
     menu.id = "moreMenu";
     menu.className = "row-menu more-menu";
     menu.setAttribute("role", "menu");
-    for (const [view, label] of MORE_VIEWS) {
+    const add = (label, onClick) => {
         const item = document.createElement("button");
         item.className = "row-menu-item";
         item.setAttribute("role", "menuitem");
         item.textContent = label;
-        item.onclick = () => { closeMoreMenu(); switchView(view); };
+        item.onclick = () => { closeMoreMenu(); onClick(); };
         menu.appendChild(item);
+        return item;
+    };
+    for (const [view, label] of MORE_VIEWS) add(label, () => switchView(view));
+    /* На телефоне рельсы нет — подборки здесь, отдельного раздела у них нет. */
+    if (!railShown()) {
+        const line = document.createElement("div");
+        line.className = "row-menu-line";
+        menu.appendChild(line);
+        const head = document.createElement("div");
+        head.className = "row-menu-label more-menu-head";
+        head.textContent = "Подборки";
+        menu.appendChild(head);
+        for (const p of knownPlaylists) add(p.name, () => openPlaylist(p.name));
+        add("+ Новая подборка…", () => askNewPlaylist(tab));
+    } else if (document.querySelector(".app.rail-slim")) {
+        /* Узкая рельса прячет заголовок с «+» — создание здесь. */
+        add("+ Новая подборка…", () => askNewPlaylist(tab));
     }
 
     tab.insertAdjacentElement("afterend", menu);
@@ -126,7 +143,10 @@ function toggleMoreMenu(event) {
     /* Ставим по месту кнопки: на телефоне ряд вкладок прижат к низу экрана,
      * на ноутбуке стоит наверху рельсы, и «всегда вверх» там уезжает за край. */
     const box = tab.getBoundingClientRect();
-    menu.style.left = Math.round(box.left) + "px";
+    /* «Ещё» на телефоне — крайняя правая вкладка: без поджатия меню с
+     * названиями подборок уходило за край экрана. */
+    const right = window.innerWidth - menu.offsetWidth - 8;
+    menu.style.left = Math.round(Math.max(8, Math.min(box.left, right))) + "px";
     if (window.innerHeight - box.bottom > 180) {
         menu.style.top = Math.round(box.bottom + 6) + "px";
     } else {
@@ -146,7 +166,6 @@ function toggleMoreMenu(event) {
 const VIEW_TITLES = {
     viewHome: "Главная",
     viewLibrary: "Фонотека",
-    viewPlaylists: "Подборки",
     viewPlaylist: "Подборка",
     viewAdd: "Добавить",
     viewService: "Сервис",
@@ -158,6 +177,20 @@ const PLAYLIST_KEY = "lastPlaylist";
 function setViewTitle(text) {
     const title = document.getElementById("viewTitle");
     if (title) title.textContent = text;
+}
+
+/* Раздела «Подборки» больше нет (30.09.2026): «Назад» из подборки ведёт
+ * туда, где был до неё. */
+let lastBrowseView = "viewHome";
+
+function leavePlaylist() {
+    switchView(lastBrowseView);
+}
+
+/* Рельса с подборками видна только на широком экране. */
+function railShown() {
+    const extra = document.querySelector(".rail-extra");
+    return !!extra && getComputedStyle(extra).display !== "none";
 }
 
 function switchView(id) {
@@ -177,14 +210,16 @@ function switchView(id) {
         section.hidden = section.id !== id;
     }
     if (id === "viewService") libraryHealth();
-    /* Внутри подборки подсвечен раздел «Подборки», откуда в неё пришли. */
-    const section = id === "viewPlaylist" ? "viewPlaylists" : id;
     for (const tab of document.querySelectorAll(".tab")) {
-        tab.classList.toggle("is-active", tab.dataset.view === section);
+        tab.classList.toggle("is-active", tab.dataset.view === id);
     }
-    /* Раздел спрятан за «Ещё» — пусть кнопка показывает, что мы внутри неё. */
+    /* Раздел спрятан за «Ещё» — пусть кнопка показывает, что мы внутри неё.
+     * Подборки на телефоне открываются оттуда же. */
     const more = document.getElementById("moreTab");
-    if (more) more.classList.toggle("is-active", MORE_VIEWS.some(([view]) => view === id));
+    if (more) more.classList.toggle("is-active", MORE_VIEWS.some(([view]) => view === id)
+        || (id === "viewPlaylist" && !railShown()));
+    /* Куда вернёт «Назад» из подборки: туда, откуда в неё пришли. */
+    if (id !== "viewPlaylist" && id !== "viewLyrics") lastBrowseView = id;
     /* Кнопка текста в плеере горит, пока открыт текст, — как бы из него ни
      * ушли: вкладкой, из рельсы или той же кнопкой. */
     const lyricsButton = document.getElementById("playerLyricsButton");
@@ -203,7 +238,7 @@ function switchView(id) {
 let searchScope = null;
 
 function scopeOf(view) {
-    if (view === "viewLibrary" || view === "viewPlaylists") return view;
+    if (view === "viewLibrary") return view;
     if (view === "viewPlaylist") return "playlist:" + (player.playlist ? player.playlist.name : "");
     return null;
 }
@@ -223,8 +258,7 @@ function keepSearchFor(view) {
 function updateSearchPlaceholder(view) {
     const field = document.getElementById("librarySearch");
     if (!field) return;
-    field.placeholder = view === "viewPlaylists" ? "Поиск по подборкам"
-        : view === "viewPlaylist" ? "Поиск в этой подборке"
+    field.placeholder = view === "viewPlaylist" ? "Поиск в этой подборке"
         : "Артист, трек или альбом";
 }
 
@@ -817,7 +851,6 @@ function scheduleLibrarySearch() {
 }
 
 function runSearchHere() {
-    if (activeView === "viewPlaylists") { filterPlaylists(); return; }
     if (activeView === "viewPlaylist") { filterOpenPlaylist(); return; }
     /* Из главной и остальных разделов искать всё равно логично по фонотеке —
      * там лежит всё, что можно найти. */
@@ -847,22 +880,6 @@ function showFilterEmpty(box, needle) {
 /* Совпадение по тексту строки целиком: в ней и название, и артист, и альбом. */
 function rowMatches(row, needle) {
     return !needle || (row.textContent || "").toLowerCase().includes(needle);
-}
-
-function filterPlaylists() {
-    const needle = searchText();
-    let shown = 0;
-    for (const row of document.querySelectorAll("#playlists .playlist-row")) {
-        const ok = rowMatches(row, needle);
-        row.hidden = !ok;
-        if (ok) shown += 1;
-    }
-    const empty = document.getElementById("playlistsEmpty");
-    if (empty) {
-        empty.hidden = shown > 0;
-        if (!shown && needle) showFilterEmpty(empty, needle);
-        else if (!shown) empty.textContent = "Пока ни одной.";
-    }
 }
 
 /* Строки прячем, а не пересобираем список: у каждой строки записан её номер в
@@ -1641,59 +1658,54 @@ function libraryRow(t, rows) {
 
     info.onclick = () => playFromLibrary(t, rows);
 
-    const play = document.createElement("button");
-    play.className = "icon-button";
-    play.setAttribute("aria-label", "Играть");
-    play.onclick = () => playFromLibrary(t, rows);
-    const playSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    playSvg.setAttribute("class", "icon");
-    playSvg.setAttribute("viewBox", "0 0 24 24");
-    const playPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
-    playPath.setAttribute("d", "M8 5v14l11-7z");
-    playSvg.appendChild(playPath);
-    play.appendChild(playSvg);
+    /* Четыре значка подряд (играть, в подборку, теги, удалить) у каждой
+     * строки — это ряд кнопок, умноженный на тысячу треков. Всё за одной «⋯»,
+     * и у действий там названия словами — как у строк подборки. Играть можно
+     * и нажатием на саму строку. */
+    const more = smallButton("⋯", "Что сделать с треком", (event) => {
+        event.stopPropagation();
+        openLibraryMenu(more, card, t, rows);
+    });
+    more.setAttribute("aria-haspopup", "menu");
+    more.setAttribute("aria-expanded", "false");
 
-    const toPlaylist = document.createElement("button");
-    toPlaylist.className = "icon-button";
-    toPlaylist.setAttribute("aria-label", "В подборку");
-    toPlaylist.title = "В подборку";
-    toPlaylist.onclick = () => askAddToPlaylist(card, t);
-    const addSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    addSvg.setAttribute("class", "icon");
-    addSvg.setAttribute("viewBox", "0 0 24 24");
-    const addPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
-    addPath.setAttribute("d", "M12 5v14M5 12h14");
-    addSvg.appendChild(addPath);
-    toPlaylist.appendChild(addSvg);
-
-    const del = document.createElement("button");
-    del.className = "icon-button danger";
-    del.setAttribute("aria-label", "Удалить");
-    del.onclick = () => askRemove(card, t);
-
-    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    svg.setAttribute("class", "icon");
-    svg.setAttribute("viewBox", "0 0 24 24");
-    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-    path.setAttribute("d", "M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6");
-    svg.appendChild(path);
-    del.appendChild(svg);
-
-    const editButton = document.createElement("button");
-    editButton.className = "icon-button";
-    editButton.setAttribute("aria-label", "Изменить теги");
-    editButton.title = "Изменить теги";
-    editButton.onclick = () => askEdit(card, t, rows);
-    const editSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    editSvg.setAttribute("class", "icon");
-    editSvg.setAttribute("viewBox", "0 0 24 24");
-    const editPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
-    editPath.setAttribute("d", "M4 20h4L19 9l-4-4L4 16zM14 6l4 4");
-    editSvg.appendChild(editPath);
-    editButton.appendChild(editSvg);
-
-    card.append(cover, info, play, toPlaylist, editButton, del);
+    card.append(cover, info, more);
     return card;
+}
+
+/* Меню строки фонотеки. Открытое меню одно на всю страницу — то же, что у
+ * строк подборки (openMenu, closeTrackMenu в player.js). */
+function openLibraryMenu(button, card, t, rows) {
+    const wasMine = openMenu && openMenu.button === button;
+    closeTrackMenu();
+    if (wasMine) return;  // повторное нажатие закрывает
+
+    const menu = document.createElement("div");
+    menu.className = "row-menu";
+    menu.setAttribute("role", "menu");
+    const item = (label, onClick) => {
+        const b = document.createElement("button");
+        b.className = "row-menu-item";
+        b.setAttribute("role", "menuitem");
+        b.textContent = label;
+        b.onclick = () => { closeTrackMenu(); onClick(); };
+        menu.appendChild(b);
+        return b;
+    };
+    item("Играть", () => playFromLibrary(t, rows));
+    item("В подборку…", () => askAddToPlaylist(card, t));
+    item("Изменить теги…", () => askEdit(card, t, rows));
+    const line = document.createElement("div");
+    line.className = "row-menu-line";
+    menu.appendChild(line);
+    item("Удалить…", () => askRemove(card, t)).classList.add("is-danger");
+
+    button.insertAdjacentElement("afterend", menu);
+    button.setAttribute("aria-expanded", "true");
+    openMenu = { menu, button };
+    document.addEventListener("keydown", menuKeydown, true);
+    document.addEventListener("pointerdown", menuPointerDown, true);
+    menu.querySelector(".row-menu-item").focus();
 }
 
 /* Правка тегов — на месте строки, как и удаление. Исполнители через «;»:

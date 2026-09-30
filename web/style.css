@@ -596,23 +596,14 @@ code {
 }
 .file-button:active { transform: scale(.98); }
 
-/* Ручка — чтобы тащить мышью. На iOS перетаскивание HTML не работает вовсе,
-   поэтому те же перестановки есть словами в меню «⋯» у каждой строки. */
-.playlist-track { gap: 8px; }
-
-.handle {
-    flex: 0 0 auto;
-    width: 24px;
-    text-align: center;
-    color: var(--text-3);
-    cursor: grab;
-    user-select: none;
-    font-size: 15px;
-}
+/* Строка подборки тащится целиком — зажать и вести мышью; ручки-точек слева
+   нет с 30.09.2026. На iOS перетаскивание HTML не работает вовсе, поэтому те
+   же перестановки есть словами в меню «⋯» у каждой строки. */
+.playlist-track { gap: 8px; cursor: grab; }
+.playlist-track.is-dragging { cursor: grabbing; }
 
 .playlist-track .track-info { cursor: pointer; }
 /* Идёт запись подборки — правки строк подождут, и это видно. */
-#playlistTracks[aria-busy="true"] .handle,
 #playlistTracks[aria-busy="true"] .icon-button { opacity: .4; pointer-events: none; }
 .playlist-track.is-dragging { opacity: 0.4; }
 .playlist-track.is-over { box-shadow: inset 0 2px 0 var(--accent); }
@@ -758,7 +749,14 @@ button.danger {
     position: fixed;
     right: auto;
     min-width: 180px;
+    /* На телефоне тут и список подборок — длинный не должен уходить за край. */
+    max-height: min(70vh, 520px);
+    overflow-y: auto;
 }
+.more-menu-head { padding: 4px 12px 2px; }
+
+/* Меню «⋯» строки фонотеки встаёт под своей строкой. */
+#library .track { position: relative; }
 
 .row-menu-item {
     min-height: 38px;
@@ -1645,6 +1643,9 @@ button.ghost.is-on { color: var(--text); border-color: var(--text); font-weight:
     }
 
     .rail-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
         padding: 12px 12px 6px;
         color: var(--text-3);
         font-size: 11px;
@@ -1654,6 +1655,23 @@ button.ghost.is-on { color: var(--text); border-color: var(--text); font-weight:
         border-top: 1px solid var(--line);
         margin-top: 6px;
     }
+
+    /* «+» — новая подборка; раздела со своей кнопкой создания больше нет. */
+    .rail-add {
+        flex: 0 0 auto;
+        width: 24px;
+        height: 24px;
+        min-height: 0;
+        padding: 0;
+        border: 1px solid var(--line-2);
+        border-radius: 7px;
+        background: none;
+        color: var(--text-2);
+        font-size: 16px;
+        line-height: 1;
+        cursor: pointer;
+    }
+    .rail-add:hover { color: var(--text); background: var(--surface); }
 
     .rail-list {
         flex: 1 1 auto;

@@ -1603,22 +1603,16 @@ function markPlayingRow() {
 
 /* ---------------- Playlists ---------------- */
 
+/* Последний ответ /api/playlists: из него строятся рельса слева и, на
+ * телефоне, список в меню «Ещё». Своей страницы у подборок нет с 30.09.2026. */
+let knownPlaylists = [];
+
 async function playlists() {
-    if (hasOpenChoice("playlists")) return;
-    const box = document.getElementById("playlists");
-    const empty = document.getElementById("playlistsEmpty");
     try {
         const r = await fetch("/api/playlists", { headers: headers() });
         if (!r.ok) return;
-        const data = await r.json();
-
-        empty.hidden = data.length > 0;
-        box.replaceChildren();
-        for (const p of data) box.appendChild(playlistRow(p));
-        renderRail(data);
-        /* Список перерисовывается фоновым опросом — без этого набранный поиск
-         * сбрасывался бы каждые три секунды прямо под руками. */
-        filterPlaylists();
+        knownPlaylists = await r.json();
+        renderRail(knownPlaylists);
     } catch (e) { /* the next poll retries */ }
 }
 
@@ -1682,30 +1676,6 @@ function loadPlaylistCover(host, name) {
         .catch(letter);
 }
 
-function playlistRow(p) {
-    const row = document.createElement("button");
-    row.className = "track playlist-row";
-    row.onclick = () => openPlaylist(p.name);
-
-    const cover = document.createElement("div");
-    cover.className = "cover";
-    cover.textContent = p.name.slice(0, 1).toUpperCase();
-    loadPlaylistCover(cover, p.name);
-
-    const info = document.createElement("div");
-    info.className = "track-info";
-    const name = document.createElement("div");
-    name.className = "track-title";
-    name.textContent = p.name;
-    const count = document.createElement("div");
-    count.className = "track-artist";
-    count.textContent = p.tracks === 1 ? "1 трек" : `${p.tracks} треков`;
-    info.append(name, count);
-
-    row.append(cover, info);
-    return row;
-}
-
 /* Возвращает true, если подборка открылась. Пока она грузилась, человек мог
  * уйти в другой раздел или открыть другую подборку — тогда этот ответ уже
  * не нужен, и возвращать его на экран подборки нельзя. */
@@ -1713,10 +1683,10 @@ async function openPlaylist(name) {
     const mine = ++navigation;
     const fail = (text) => {
         if (mine !== navigation) return false;
-        /* Ошибку видно там, где стоишь: в подборке или в списке подборок. */
         setPlaylistNote(text);
-        const listNote = document.getElementById("playlistsNote");
-        if (listNote) listNote.textContent = text;
+        /* Открывали из рельсы или меню, а не из подборки — её заметки не
+         * видно; строка под плеером видна отовсюду. */
+        if (activeView !== "viewPlaylist") setPlayerNote(text);
         return false;
     };
     let data;
@@ -1820,11 +1790,6 @@ function playlistTrackRow(entry, position) {
         info.click();
     };
 
-    const handle = document.createElement("div");
-    handle.className = "handle";
-    handle.textContent = "⠿";
-    handle.title = "Перетащить";
-
     // Обложка — как во всех остальных списках.
     const cover = document.createElement("div");
     cover.className = "cover";
@@ -1857,7 +1822,9 @@ function playlistTrackRow(entry, position) {
     more.setAttribute("aria-haspopup", "menu");
     more.setAttribute("aria-expanded", "false");
 
-    row.append(handle, cover, info, more);
+    /* Точек-ручки слева больше нет (30.09.2026): тащится вся строка —
+     * зажать и вести мышью. */
+    row.append(cover, info, more);
     return row;
 }
 
@@ -2196,17 +2163,68 @@ function playPlaylist() {
     }
 }
 
-async function createPlaylist() {
-    const field = document.getElementById("newPlaylist");
-    const note = document.getElementById("playlistsNote");
-    const name = field.value.trim();
-    /* Молчание на пустое поле читается как поломка кнопки: нажал — ничего не
-     * произошло, и почему, страница не говорит. */
-    if (!name) {
-        note.textContent = "Впиши название: подборка станет файлом с этим именем.";
-        field.focus();
-        return;
+/* Новая подборка: «+» у заголовка рельсы или пункт в меню «Ещё» на телефоне.
+ * Поле появляется прямо у кнопки — тем же правилом, что номер места и замена
+ * трека: родное окно браузера на телефоне легко смахнуть и оно ничего не
+ * объясняет. После создания подборка сразу открывается. */
+function askNewPlaylist(button) {
+    const wasMine = openMenu && openMenu.button === button;
+    closeTrackMenu();
+    if (wasMine) return;
+
+    const form = document.createElement("form");
+    form.className = "row-menu row-menu-form more-menu";
+    form.setAttribute("role", "dialog");
+    form.setAttribute("aria-label", "Новая подборка");
+    const label = document.createElement("span");
+    label.className = "row-menu-label";
+    label.textContent = "Новая подборка — станет файлом .m3u в фонотеке";
+    const field = document.createElement("input");
+    field.type = "text";
+    field.className = "row-menu-input";
+    field.placeholder = "Ночь, зал, за работой";
+    field.autocomplete = "off";
+    const note = document.createElement("span");
+    note.className = "row-menu-label";
+    const go = document.createElement("button");
+    go.type = "submit";
+    go.className = "row-menu-item";
+    go.textContent = "Создать";
+    form.onsubmit = async (event) => {
+        event.preventDefault();
+        const name = field.value.trim();
+        /* Молчание на пустое поле читается как поломка кнопки. */
+        if (!name) { note.textContent = "Впиши название."; field.focus(); return; }
+        go.disabled = true;
+        const error = await createPlaylist(name);
+        go.disabled = false;
+        if (error) { note.textContent = error; field.focus(); return; }
+        closeTrackMenu();
+        playlists();
+        openPlaylist(name);
+    };
+    form.append(label, field, note, go);
+    document.body.appendChild(form);
+
+    /* По месту кнопки: у рельсы — под ней, у нижней панели телефона — над ней. */
+    const box = button.getBoundingClientRect();
+    form.style.left = Math.round(Math.max(8, Math.min(box.left, window.innerWidth - form.offsetWidth - 8))) + "px";
+    if (window.innerHeight - box.bottom > 200) {
+        form.style.top = Math.round(box.bottom + 6) + "px";
+    } else {
+        form.style.top = "auto";
+        form.style.bottom = Math.round(window.innerHeight - box.top + 6) + "px";
     }
+
+    button.setAttribute("aria-expanded", "true");
+    openMenu = { menu: form, button };
+    document.addEventListener("keydown", menuKeydown, true);
+    document.addEventListener("pointerdown", menuPointerDown, true);
+    field.focus();
+}
+
+/* Создать подборку. Возвращает текст ошибки или "" при успехе. */
+async function createPlaylist(name) {
     try {
         const r = await fetch("/api/playlists", {
             method: "POST",
@@ -2214,14 +2232,11 @@ async function createPlaylist() {
             body: JSON.stringify({ name, paths: [] }),
         });
         const data = await r.json().catch(() => ({}));
-        if (!r.ok) { note.textContent = data.detail || "Ошибка"; return; }
+        if (!r.ok) return data.detail || "Не удалось создать";
     } catch (e) {
-        note.textContent = "Не удалось создать: " + e.message;
-        return;
+        return "Не удалось создать: " + e.message;
     }
-    field.value = "";
-    note.textContent = "";
-    playlists();
+    return "";
 }
 
 async function renamePlaylist() {
@@ -2313,7 +2328,7 @@ async function deletePlaylist(name) {
         return;
     }
     player.playlist = null;
-    switchView("viewPlaylists");
+    leavePlaylist();
     playlists();
 }
 
