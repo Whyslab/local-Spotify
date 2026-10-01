@@ -115,12 +115,19 @@ def send_pending() -> int:
     )
     if not rows:
         return 0
+    _refused_this_pass[0] = 0
     return _send(rows)
 
 
 # sent = -1: ListenBrainz refused this listen itself (HTTP 400). Not sent and
 # never retried -- it would be refused again and hold up everything after it.
 REFUSED = -1
+# Не больше стольких отказов за проход. Если 400 приходит на каждую строку,
+# дело не в строках (наш запрос сломан, сервис поменялся) — и делёж пачки
+# пополам пометил бы отвергнутой всю очередь навсегда. Сверх предела строки
+# остаются в очереди до следующего прохода.
+MAX_REFUSED_PER_PASS = 5
+_refused_this_pass = [0]
 
 
 def _send(rows: list[dict]) -> int:
@@ -165,6 +172,13 @@ def _send(rows: list[dict]) -> int:
             half = len(rows) // 2
             accepted = _send(rows[:half])
             return accepted + (0 if _rejected else _send(rows[half:]))
+        if _refused_this_pass[0] >= MAX_REFUSED_PER_PASS:
+            logger.warning(
+                "ListenBrainz refuses listen after listen; keeping the rest queued",
+                extra={"task_id": "system"},
+            )
+            return 0
+        _refused_this_pass[0] += 1
         db.db_exec("UPDATE listens SET sent = ? WHERE id = ?", (REFUSED, ids[0]))
         logger.warning(
             "ListenBrainz refused a listen of %r by %r, dropped: %s",

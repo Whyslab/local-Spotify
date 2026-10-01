@@ -196,15 +196,23 @@
             <button class="primary" onclick="playPlaylist()">Слушать</button>
             <button class="ghost" onclick="shufflePlaylist()"
                     title="Подборка вперемешку, плюс похожие треки — и из фонотеки, и новые">Перемешать</button>
-            <label class="ghost file-button">
-              Обложка
-              <input type="file" accept="image/jpeg,image/png,image/webp" onchange="uploadCover(this)" hidden>
-            </label>
-            <button id="playlistOffline" class="ghost" hidden
-                    title="Скачать треки подборки на это устройство — чтобы играли без сети">На телефон</button>
-            <button id="playlistEditToggle" class="ghost" onclick="togglePlaylistEdit()"
-                    aria-expanded="false" aria-controls="playlistEdit">Изменить</button>
-            <button class="ghost" onclick="leavePlaylist()">Назад</button>
+            <!-- Остальное — за «⋯» (с 01.10.2026): шесть кнопок в ряд читались
+                 как ряд одинаковых плашек. Сами кнопки остаются в странице
+                 скрытыми: их состояние (например, «На телефон 3 из 40») ведёт
+                 offline.js, а меню берёт подпись и действие у них. -->
+            <button id="playlistMore" class="ghost" onclick="openPlaylistMenu(this)"
+                    aria-haspopup="menu" aria-expanded="false" aria-label="Ещё действия с подборкой"
+                    title="Обложка, на телефон, переименовать, удалить">⋯</button>
+            <div id="playlistActions" hidden>
+              <label class="ghost file-button">
+                Обложка
+                <input id="playlistCoverInput" type="file" accept="image/jpeg,image/png,image/webp" onchange="uploadCover(this)" hidden>
+              </label>
+              <button id="playlistOffline" class="ghost" hidden
+                      title="Скачать треки подборки на это устройство — чтобы играли без сети">На телефон</button>
+              <button id="playlistEditToggle" class="ghost" onclick="togglePlaylistEdit()"
+                      aria-expanded="false" aria-controls="playlistEdit">Изменить</button>
+            </div>
           </div>
         </div>
       </div>
@@ -220,7 +228,7 @@
           <input id="playlistRename" class="grow" type="text" placeholder="Новое название" autocomplete="off">
           <button class="ghost" onclick="renamePlaylist()">Переименовать</button>
         </div>
-        <button class="danger block" onclick="askDeletePlaylist(this)">Удалить подборку</button>
+        <button id="playlistDelete" class="danger block" onclick="askDeletePlaylist(this)">Удалить подборку</button>
       </div>
 
       <p id="playlistNote" class="note"></p>

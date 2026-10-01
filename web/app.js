@@ -181,7 +181,9 @@ function setViewTitle(text) {
 
 /* Раздела «Подборки» больше нет (30.09.2026): «Назад» из подборки ведёт
  * туда, где был до неё. */
-let lastBrowseView = "viewHome";
+let lastBrowseView = (() => {
+    try { return localStorage.getItem("lastBrowseView") || "viewHome"; } catch (e) { return "viewHome"; }
+})();
 
 function leavePlaylist() {
     switchView(lastBrowseView);
@@ -219,7 +221,10 @@ function switchView(id) {
     if (more) more.classList.toggle("is-active", MORE_VIEWS.some(([view]) => view === id)
         || (id === "viewPlaylist" && !railShown()));
     /* Куда вернёт «Назад» из подборки: туда, откуда в неё пришли. */
-    if (id !== "viewPlaylist" && id !== "viewLyrics") lastBrowseView = id;
+    if (id !== "viewPlaylist" && id !== "viewLyrics") {
+        lastBrowseView = id;
+        try { localStorage.setItem("lastBrowseView", id); } catch (e) { /* приватное окно */ }
+    }
     /* Кнопка текста в плеере горит, пока открыт текст, — как бы из него ни
      * ушли: вкладкой, из рельсы или той же кнопкой. */
     const lyricsButton = document.getElementById("playerLyricsButton");
@@ -1528,7 +1533,8 @@ function fetchTrackCover(host, path, size) {
  */
 function hasOpenChoice(id) {
     const box = document.getElementById(id);
-    return !!box && !!box.querySelector(".confirm");
+    /* .row-menu — открытое «⋯»: перерисовка снесла бы его из-под руки. */
+    return !!box && !!box.querySelector(".confirm, .row-menu");
 }
 
 async function library() {
@@ -1685,7 +1691,7 @@ function libraryRow(t, rows) {
      * строки — это ряд кнопок, умноженный на тысячу треков. Всё за одной «⋯»,
      * и у действий там названия словами — как у строк подборки. Играть можно
      * и нажатием на саму строку. */
-    const more = smallButton("⋯", "Что сделать с треком", (event) => {
+    const more = smallButton("⋯", `Что сделать с треком «${t.title}»`, (event) => {
         event.stopPropagation();
         openLibraryMenu(more, card, t, rows);
     });
@@ -1724,6 +1730,7 @@ function openLibraryMenu(button, card, t, rows) {
     item("Удалить…", () => askRemove(card, t)).classList.add("is-danger");
 
     button.insertAdjacentElement("afterend", menu);
+    keepMenuOnScreen(menu);
     button.setAttribute("aria-expanded", "true");
     openMenu = { menu, button };
     document.addEventListener("keydown", menuKeydown, true);

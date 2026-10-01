@@ -227,6 +227,7 @@ async function playAt(position, skipped = 0, direction = 1) {
         }
         /* Прежний трек не должен звучать под новым названием: нажатие «играть»
          * включило бы его снова. Без источника togglePlay пробует этот трек. */
+        player.pauseReason = "смена трека";
         player.audio.pause();
         player.audio.removeAttribute("src");
         player.audio.load();
@@ -934,6 +935,7 @@ function togglePlay() {
             renderPlayer();
         });
     } else {
+        player.pauseReason = player.pauseReason || "кнопка в плеере";
         player.audio.pause();
     }
     renderPlayer();
@@ -995,9 +997,69 @@ let errorSkips = 0;    // сколько подряд пропущено — ч�
  * снова падал — и так по кругу. */
 player.audio.addEventListener("playing", () => { errorSkips = 0; player.started = true; });
 
+/* ---------------- Журнал плеера и сторож застревания ----------------
+ *
+ * 30.09.2026 в 00:31 музыка на странице молча остановилась, а сервер был
+ * жив — и нигде не осталось следа почему. Теперь пауза (с причиной: своя
+ * кнопка или «не из плеера» — наушники, браузер, смена устройства вывода),
+ * ошибка и застревание пишутся строкой в журнал службы:
+ *   journalctl --user -u music-adder | grep Player:
+ * А трек, который ждёт данных дольше STALL_MS, сам берёт свежую ссылку и
+ * продолжает с того же места — до STALL_RETRIES раз за включение.
+ */
+const STALL_MS = 12000;
+const STALL_RETRIES = 3;
+let stallTimer = null;
+let stallTries = 0;
+
+function playerEvent(event, detail = "") {
+    const track = player.queue[player.index];
+    fetch("/api/player-event", {
+        method: "POST",
+        headers: { ...headers(), "Content-Type": "application/json" },
+        body: JSON.stringify({
+            event,
+            path: track ? track.path : "",
+            at: Number.isFinite(player.audio.currentTime) ? Math.min(player.audio.currentTime, 86400) : null,
+            detail: String(detail).slice(0, 200),
+        }),
+        keepalive: true,
+    }).catch(() => { /* журнал — не повод мешать музыке */ });
+}
+
+function watchForStall() {
+    clearTimeout(stallTimer);
+    stallTimer = setTimeout(() => {
+        const a = player.audio;
+        if (a.paused || a.ended || a.readyState >= 3) return;
+        if (stallTries >= STALL_RETRIES) { playerEvent("stall-giveup", `попыток ${stallTries}`); return; }
+        stallTries += 1;
+        playerEvent("stall-reload", `попытка ${stallTries}`);
+        reloadCurrentSource();
+    }, STALL_MS);
+}
+
+for (const name of ["waiting", "stalled"]) player.audio.addEventListener(name, watchForStall);
+player.audio.addEventListener("playing", () => clearTimeout(stallTimer));
+player.audio.addEventListener("ended", () => clearTimeout(stallTimer));
+player.audio.addEventListener("emptied", () => { clearTimeout(stallTimer); stallTries = 0; });
+player.audio.addEventListener("pause", () => {
+    clearTimeout(stallTimer);
+    const reason = player.pauseReason;
+    player.pauseReason = "";
+    if (player.audio.ended || reason === "смена трека") return;
+    playerEvent("pause", reason || "не из плеера: наушники, браузер или смена устройства вывода");
+});
+if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+    navigator.mediaDevices.addEventListener("devicechange", () => {
+        if (!player.audio.paused) playerEvent("device", "сменилось устройство вывода звука");
+    });
+}
+
 player.audio.addEventListener("error", async () => {
     const track = player.queue[player.index];
     const error = player.audio.error;
+    if (error) playerEvent("error", `код ${error.code}${error.message ? ": " + error.message : ""}`);
     if (!track || !error || error.code === MediaError.MEDIA_ERR_ABORTED) return;
     const generation = player.generation;
     const at = player.audio.currentTime;
@@ -1150,7 +1212,11 @@ function sharePosition() {
         try { navigator.mediaSession.setActionHandler(action, handler); } catch (e) { /* не поддерживается */ }
     };
     on("play", () => { if (player.audio.paused) togglePlay(); });
-    on("pause", () => { if (!player.audio.paused) togglePlay(); });
+    on("pause", () => {
+        if (player.audio.paused) return;
+        player.pauseReason = "кнопка наушников или системы";
+        togglePlay();
+    });
     on("nexttrack", () => nextTrack());
     on("previoustrack", () => prevTrack());
     on("seekto", (d) => {
@@ -1621,15 +1687,25 @@ async function playlists() {
  * Раньше здесь были только название и счётчик: считалось, что в 232 пикселя
  * обложка не влезет. Влезает: 34 пикселя слева, текст рядом. Подборку узнаёшь
  * по картинке быстрее, чем читаешь название. */
+let railSignature = "";
+
 function renderRail(data) {
     const rail = document.getElementById("railPlaylists");
     if (!rail) return;
     const open = player.playlist ? player.playlist.name : null;
+    /* Опрос раз в 30 с пересобирал рельсу целиком, и фокус клавиатуры с
+     * подборки улетал на страницу. Ничего не поменялось — не трогаем. */
+    const signature = JSON.stringify([open, data.map(p => [p.name, p.tracks])]);
+    if (signature === railSignature && rail.childElementCount === data.length) return;
+    railSignature = signature;
     rail.replaceChildren();
     for (const p of data) {
         const item = document.createElement("button");
         item.className = "rail-item" + (p.name === open ? " is-active" : "");
         item.onclick = () => openPlaylist(p.name);
+        /* В узкой рельсе видна только обложка или буква — имя в подсказке. */
+        item.title = p.name;
+        item.setAttribute("aria-label", p.name);
 
         const art = document.createElement("span");
         art.className = "rail-art";
@@ -1685,8 +1761,12 @@ async function openPlaylist(name) {
         if (mine !== navigation) return false;
         setPlaylistNote(text);
         /* Открывали из рельсы или меню, а не из подборки — её заметки не
-         * видно; строка под плеером видна отовсюду. */
-        if (activeView !== "viewPlaylist") setPlayerNote(text);
+         * видно. Строка под плеером видна, только пока что-то играет; иначе —
+         * строка под заголовком страницы (её перепишет следующий опрос). */
+        if (activeView !== "viewPlaylist") {
+            if (!document.getElementById("player").hidden) setPlayerNote(text);
+            else document.getElementById("libraryStats").textContent = text;
+        }
         return false;
     };
     let data;
@@ -1845,7 +1925,26 @@ function closeTrackMenu() {
     document.removeEventListener("pointerdown", menuPointerDown, true);
 }
 
+/* Меню с role=menu ждут стрелок: вверх/вниз по пунктам, Home/End — к краям.
+ * Tab уводит фокус из меню — тогда меню закрывается, а не висит брошенным. */
 function menuKeydown(event) {
+    if (openMenu && ["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+        const items = [...openMenu.menu.querySelectorAll(".row-menu-item:not([disabled])")];
+        if (!items.length || openMenu.menu.querySelector("input:focus")) return;
+        event.preventDefault();
+        const at = items.indexOf(document.activeElement);
+        const next = event.key === "Home" ? 0
+            : event.key === "End" ? items.length - 1
+            : event.key === "ArrowDown" ? (at + 1) % items.length
+            : (at - 1 + items.length) % items.length;
+        items[next].focus();
+        return;
+    }
+    if (event.key === "Tab" && openMenu) {
+        const { menu } = openMenu;
+        setTimeout(() => { if (openMenu && openMenu.menu === menu && !menu.contains(document.activeElement)) closeTrackMenu(); });
+        return;
+    }
     if (event.key !== "Escape") return;
     const button = openMenu && openMenu.button;
     closeTrackMenu();
@@ -1859,6 +1958,16 @@ function menuPointerDown(event) {
      * меню закрывалось, а кнопка тут же открывала его снова. */
     if (openMenu && !openMenu.menu.contains(event.target) && !openMenu.button.contains(event.target)) {
         closeTrackMenu();
+    }
+}
+
+/* Меню у нижней строки уходило за край экрана: открываем его вверх, если
+ * снизу не помещается. Только для меню, стоящих у своей строки (absolute). */
+function keepMenuOnScreen(menu) {
+    const box = menu.getBoundingClientRect();
+    if (box.bottom > window.innerHeight - 8) {
+        menu.style.top = "auto";
+        menu.style.bottom = "calc(100% - 6px)";
     }
 }
 
@@ -1906,12 +2015,72 @@ function openTrackMenu(button, position) {
     menu.lastChild.classList.add("is-danger");
 
     button.insertAdjacentElement("afterend", menu);
+    keepMenuOnScreen(menu);
     button.setAttribute("aria-expanded", "true");
     openMenu = { menu, button };
     document.addEventListener("keydown", menuKeydown, true);
     document.addEventListener("pointerdown", menuPointerDown, true);
     const first = menu.querySelector(".row-menu-item:not([disabled])");
     if (first) first.focus();
+}
+
+/* «⋯» в шапке подборки: всё, кроме «Слушать» и «Перемешать». Кнопки, которые
+ * здесь заменены пунктами, лежат в странице скрытыми (#playlistActions):
+ * подпись и действие «На телефон» по-прежнему ведёт offline.js. */
+function openPlaylistMenu(button) {
+    const wasMine = openMenu && openMenu.button === button;
+    closeTrackMenu();
+    if (wasMine || !player.playlist) return;
+
+    const menu = document.createElement("div");
+    menu.className = "row-menu more-menu";
+    menu.setAttribute("role", "menu");
+    const item = (label, onClick) => {
+        const b = document.createElement("button");
+        b.className = "row-menu-item";
+        b.setAttribute("role", "menuitem");
+        b.textContent = label;
+        b.onclick = () => { closeTrackMenu(); onClick(); };
+        menu.appendChild(b);
+        return b;
+    };
+    item("Обложка…", () => document.getElementById("playlistCoverInput").click());
+    const offlineButton = document.getElementById("playlistOffline");
+    if (offlineButton && !offlineButton.hidden) {
+        item(offlineButton.textContent, () => offlineButton.click()).disabled = offlineButton.disabled;
+    }
+    item("Переименовать…", () => {
+        togglePlaylistEdit(true);
+        const field = document.getElementById("playlistRename");
+        if (field) { field.focus(); field.select(); }
+    });
+    item("Назад", () => leavePlaylist());
+    const line = document.createElement("div");
+    line.className = "row-menu-line";
+    menu.appendChild(line);
+    item("Удалить подборку…", () => {
+        togglePlaylistEdit(true);
+        const del = document.getElementById("playlistDelete");
+        if (del && del.isConnected) {
+            askDeletePlaylist(del);
+            document.getElementById("playlistEdit").scrollIntoView({ block: "nearest" });
+        }
+    }).classList.add("is-danger");
+
+    document.body.appendChild(menu);
+    const box = button.getBoundingClientRect();
+    menu.style.left = Math.round(Math.max(8, Math.min(box.left, window.innerWidth - menu.offsetWidth - 8))) + "px";
+    if (window.innerHeight - box.bottom > menu.offsetHeight + 12) {
+        menu.style.top = Math.round(box.bottom + 6) + "px";
+    } else {
+        menu.style.top = "auto";
+        menu.style.bottom = Math.round(window.innerHeight - box.top + 6) + "px";
+    }
+    button.setAttribute("aria-expanded", "true");
+    openMenu = { menu, button };
+    document.addEventListener("keydown", menuKeydown, true);
+    document.addEventListener("pointerdown", menuPointerDown, true);
+    menu.querySelector(".row-menu-item:not([disabled])").focus();
 }
 
 /* Спрашиваем номер прямо в списке, а не браузерным окном: тем же правилом
@@ -2232,6 +2401,9 @@ async function createPlaylist(name) {
             body: JSON.stringify({ name, paths: [] }),
         });
         const data = await r.json().catch(() => ({}));
+        if (r.status === 409 || /already exists/i.test(String(data.detail || ""))) {
+            return "Подборка с таким названием уже есть.";
+        }
         if (!r.ok) return data.detail || "Не удалось создать";
     } catch (e) {
         return "Не удалось создать: " + e.message;
@@ -2249,6 +2421,7 @@ async function renamePlaylist() {
             headers: { ...headers(), "Content-Type": "application/json" },
             body: JSON.stringify({ name: next }),
         });
+        if (r.status === 409) { setPlaylistNote("Подборка с таким названием уже есть."); return; }
         if (!r.ok) { setPlaylistNote("Не удалось переименовать"); return; }
         player.playlist = await r.json();
     } catch (e) {
@@ -2790,6 +2963,7 @@ function clearSleep() {
 function sleepTick() {
     if (!player.sleep || !player.sleep.until) return;
     if (Date.now() >= player.sleep.until) {
+        player.pauseReason = "таймер сна";
         player.audio.pause();
         clearSleep();
         return;

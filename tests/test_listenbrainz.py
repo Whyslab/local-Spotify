@@ -168,3 +168,18 @@ def test_one_listen_listenbrainz_refuses_does_not_block_the_rest(lb, monkeypatch
     assert sorted(sent) == ["Also good", "Good"]
     assert listenbrainz.pending_count() == 0
     assert listenbrainz.send_pending() == 0
+
+
+def test_when_every_listen_is_refused_most_stay_queued(lb, monkeypatch):
+    """400 на каждую строку — сломан запрос, а не строки: делёж пополам пометил
+    бы отвергнутой всю очередь навсегда. За проход — не больше предела."""
+    for when in range(1, 21):
+        db.db_exec(
+            "INSERT INTO listens(listened_at, artist, title) VALUES(?, 'A', ?)", (when, f"T{when}")
+        )
+    monkeypatch.setattr(listenbrainz.requests, "post", lambda *a, **k: Response(400, "bad request"))
+
+    assert listenbrainz.send_pending() == 0
+    refused = db.db_query("SELECT COUNT(*) AS n FROM listens WHERE sent = -1")[0]["n"]
+    assert refused == listenbrainz.MAX_REFUSED_PER_PASS
+    assert listenbrainz.pending_count() == 20 - listenbrainz.MAX_REFUSED_PER_PASS

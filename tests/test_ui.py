@@ -646,7 +646,8 @@ def test_the_rail_plus_creates_a_playlist_and_opens_it(page, server):
     assert (server["root"] / "Проверка плюса.m3u").exists()
     page.wait_for_selector("#railPlaylists .rail-item:has-text('Проверка плюса')")
     # «Назад» возвращает туда, откуда пришли, а не на пропавший раздел.
-    page.get_by_role("button", name="Назад").click()
+    page.locator("#playlistMore").click()
+    page.get_by_role("menuitem", name="Назад").click()
     page.wait_for_function("activeView === 'viewHome'")
 
 
@@ -680,3 +681,34 @@ def test_playlist_rows_have_no_dots_but_still_drag(page, server):
     assert (
         page.locator("#playlistTracks .playlist-track").first.get_attribute("draggable") == "true"
     )
+
+
+# --- Шапка подборки: «Слушать», «Перемешать» и «⋯» (01.10.2026) ------------
+
+
+def test_the_playlist_head_keeps_two_buttons_and_a_menu(page, server):
+    (server["root"] / "Шапка.m3u").write_text("Quiet/Singles/Quiet.m4a\n", encoding="utf-8")
+    page.evaluate("openPlaylist('Шапка')")
+    page.wait_for_function("activeView === 'viewPlaylist'")
+    visible = page.locator(".playlist-meta .row button:visible").all_inner_texts()
+    assert visible == ["Слушать", "Перемешать", "⋯"]
+    page.locator("#playlistMore").click()
+    items = page.get_by_role("menuitem").all_inner_texts()
+    assert items[0] == "Обложка…" and "Переименовать…" in items and items[-1] == "Удалить подборку…"
+    # Стрелки ходят по пунктам, Escape закрывает.
+    page.keyboard.press("ArrowDown")
+    assert page.evaluate("document.activeElement.textContent") == items[1]
+    page.keyboard.press("Escape")
+    assert page.get_by_role("menuitem").count() == 0
+
+
+def test_a_playlist_is_deleted_from_its_menu(page, server):
+    target = server["root"] / "Удалить меня.m3u"
+    target.write_text("Quiet/Singles/Quiet.m4a\n", encoding="utf-8")
+    page.evaluate("openPlaylist('Удалить меня')")
+    page.wait_for_function("activeView === 'viewPlaylist'")
+    page.locator("#playlistMore").click()
+    page.get_by_role("menuitem", name="Удалить подборку…").click()
+    page.locator("#playlistEdit .confirm").get_by_role("button", name="Удалить").click()
+    page.wait_for_function("activeView !== 'viewPlaylist'")
+    assert not target.exists()

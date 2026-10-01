@@ -184,3 +184,18 @@ def test_static_files_never_serve_dotfiles(monkeypatch, tmp_path):
     assert client.get("/static/app.js").status_code == 200
     for path in (".env", ".omc/state.json", "sub/.hidden", "sub/../.env", "%2eenv"):
         assert client.get(f"/static/{path}").status_code == 404, path
+
+
+def test_player_events_go_to_the_journal_and_need_the_token(client, caplog):
+    """Страница сообщает о паузе, ошибке и застревании: 30.09.2026 музыка
+    молча остановилась, и причину было не найти."""
+    import logging
+
+    body = {"event": "stall-reload", "path": "A/B.m4a", "at": 12.5, "detail": "попытка 1"}
+    assert client.post("/api/player-event", json=body).status_code in (401, 403)
+    with caplog.at_level(logging.INFO, logger="adder.app"):
+        r = client.post("/api/player-event", json=body, headers=AUTH)
+    assert r.status_code == 200
+    assert "Player: stall-reload at 12.5s A/B.m4a (попытка 1)" in caplog.text
+    bad = client.post("/api/player-event", json={"event": "rm -rf"}, headers=AUTH)
+    assert bad.status_code == 422

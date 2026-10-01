@@ -272,6 +272,19 @@ class PlaylistTracksRequest(BaseModel):
     revision: str | None = None
 
 
+class PlayerEvent(BaseModel):
+    """What the page's audio element did, for the service journal.
+
+    30.09.2026 playback stopped on the page at 00:31 while the server stayed
+    healthy, and nothing anywhere said why: the page never told the server.
+    """
+
+    event: Literal["pause", "error", "stall", "stall-reload", "stall-giveup", "device"]
+    path: str = Field(default="", max_length=4096)
+    at: float | None = Field(default=None, ge=0, le=86400, allow_inf_nan=False)
+    detail: str = Field(default="", max_length=200)
+
+
 class PlayRequest(BaseModel):
     path: str = Field(min_length=1, max_length=4096)
     # Не отрицательное и не NaN: по журналу считается доля пропусков, и одна
@@ -1711,6 +1724,34 @@ def blind_results(authenticated: bool = Depends(verify_token)):
 _PLAYS_WINDOW: dict[str, list[float]] = {}
 _PLAYS_LOCK = threading.Lock()
 PLAYS_PER_MINUTE = 60
+
+
+_EVENTS_WINDOW: list[float] = []
+EVENTS_PER_MINUTE = 60
+
+
+@app.post("/api/player-event")
+def player_event(req: PlayerEvent, authenticated: bool = Depends(verify_token)):
+    """One line in the journal per player event; nothing is stored."""
+    now = time.monotonic()
+    with _PLAYS_LOCK:
+        _EVENTS_WINDOW[:] = [t for t in _EVENTS_WINDOW if now - t < 60]
+        if len(_EVENTS_WINDOW) >= EVENTS_PER_MINUTE:
+            raise HTTPException(status_code=429, detail="Too many player events")
+        _EVENTS_WINDOW.append(now)
+    at = f" at {req.at:.1f}s" if req.at is not None else ""
+    detail = f" ({req.detail})" if req.detail else ""
+    level = logging.INFO if req.event == "pause" else logging.WARNING
+    logger.log(
+        level,
+        "Player: %s%s %s%s",
+        req.event,
+        at,
+        req.path,
+        detail,
+        extra={"task_id": "player"},
+    )
+    return {"ok": True}
 
 
 @app.post("/api/plays")
