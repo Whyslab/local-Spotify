@@ -1040,9 +1040,12 @@ function watchForStall() {
 }
 
 for (const name of ["waiting", "stalled"]) player.audio.addEventListener(name, watchForStall);
-player.audio.addEventListener("playing", () => clearTimeout(stallTimer));
+/* Попытки обнуляет только настоящее воспроизведение. Не «emptied»: его
+ * вызывает сама новая ссылка (reloadCurrentSource), и счётчик обнулялся бы
+ * на каждой попытке — сторож дёргал бы сервер раз в 12 с без конца. */
+player.audio.addEventListener("playing", () => { clearTimeout(stallTimer); stallTries = 0; });
 player.audio.addEventListener("ended", () => clearTimeout(stallTimer));
-player.audio.addEventListener("emptied", () => { clearTimeout(stallTimer); stallTries = 0; });
+player.audio.addEventListener("emptied", () => clearTimeout(stallTimer));
 player.audio.addEventListener("pause", () => {
     clearTimeout(stallTimer);
     const reason = player.pauseReason;

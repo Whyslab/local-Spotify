@@ -712,3 +712,25 @@ def test_a_playlist_is_deleted_from_its_menu(page, server):
     page.locator("#playlistEdit .confirm").get_by_role("button", name="Удалить").click()
     page.wait_for_function("activeView !== 'viewPlaylist'")
     assert not target.exists()
+
+
+def test_the_stall_watchdog_gives_up_after_three_tries(page):
+    """Новая ссылка сама вызывает emptied — счётчик попыток не должен от этого
+    обнуляться, иначе сторож перезапрашивал бы трек вечно."""
+    calls = page.evaluate(
+        """async () => {
+            let n = 0;
+            reloadCurrentSource = async () => { n += 1; player.audio.dispatchEvent(new Event('emptied')); };
+            Object.defineProperty(player.audio, 'paused', { get: () => false, configurable: true });
+            Object.defineProperty(player.audio, 'readyState', { get: () => 1, configurable: true });
+            const real = window.setTimeout;
+            window.setTimeout = (fn, ms) => real(fn, ms === STALL_MS ? 5 : ms);
+            for (let i = 0; i < 6; i++) {
+                watchForStall();
+                await new Promise(r => real(r, 30));
+            }
+            window.setTimeout = real;
+            return n;
+        }"""
+    )
+    assert calls == 3
