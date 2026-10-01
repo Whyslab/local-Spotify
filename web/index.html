@@ -21,24 +21,6 @@
 
 <div class="app">
 
-  <header class="topbar">
-    <div class="brand">
-      <h1 id="viewTitle">Главная</h1>
-      <p id="libraryStats">загружаю…</p>
-    </div>
-
-    <div class="search">
-      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
-      <input id="librarySearch" type="search" placeholder="Артист, трек или альбом"
-             oninput="scheduleLibrarySearch()" autocomplete="off" spellcheck="false">
-      <span id="libraryCount" class="muted"></span>
-    </div>
-
-    <div id="statusPill" class="pill pill-idle">
-      <span class="dot"></span>
-      <span id="statusText">проверяю</span>
-    </div>
-  </header>
 
   <!-- Shown only until a token is stored; it is a one-time step, not a panel. -->
   <section id="loginBox" class="gate" hidden>
@@ -49,6 +31,37 @@
   </section>
 
   <main id="views">
+    <!-- Крупный заголовок раздела — внутри прокрутки, как в iOS: уезжает
+         вместе со страницей. На страницах артиста, альбома, настроения и
+         подборки его нет — у них своя шапка. -->
+    <header class="topbar">
+      <div class="brand">
+        <h1 id="viewTitle">Главная</h1>
+        <p id="libraryStats">загружаю…</p>
+      </div>
+      <div class="top-actions">
+        <!-- «+»: на главной и в фонотеке — добавить музыку, в «Подборках» —
+             новая подборка (как в «Обложке»). -->
+        <button id="topAdd" class="icon-button top-add" type="button" onclick="topAddClick(this)"
+                aria-label="Добавить музыку" title="Добавить музыку" aria-haspopup="dialog">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
+        <!-- Состояние службы; нажатие — раздел «Служба» (на телефоне другого пути туда нет). -->
+        <button id="statusPill" class="pill pill-idle" type="button" onclick="switchView('viewService')"
+                title="Служба">
+          <span class="dot"></span>
+          <span id="statusText">проверяю</span>
+        </button>
+      </div>
+      <!-- Поле фильтра — у фонотеки и у подборки. Поиск по всему — во вкладке «Поиск». -->
+      <div class="search">
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <input id="librarySearch" type="search" placeholder="Артист, трек или альбом"
+               oninput="scheduleLibrarySearch()" autocomplete="off" spellcheck="false">
+        <span id="libraryCount" class="muted"></span>
+      </div>
+    </header>
+
 
     <!-- ---------------- Добавить ---------------- -->
     <section id="viewAdd" class="view" hidden>
@@ -137,34 +150,54 @@
     <!-- ---------------- Фонотека ---------------- -->
     <section id="viewLibrary" class="view" hidden>
 
-      <div class="row wrap shuffle-row">
-        <!-- Две кнопки запуска, а не переключатель: у обеих значок «играть» и
-             полное название, иначе пара читалась как «Треки · Альбомы» рядом. -->
-        <button class="primary with-icon" onclick="playSmartShuffle()">
-          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
-          Умное перемешивание
-        </button>
-        <button class="ghost with-icon" onclick="playPlainShuffle()">
-          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
-          Обычное перемешивание
-        </button>
-        <span id="shuffleNote" class="muted"></span>
+      <div class="o-seg" role="tablist" aria-label="Что показать">
+        <button id="modeTracks" class="o-seg-item is-on" type="button" role="tab" onclick="setLibraryMode('tracks')">Треки</button>
+        <button id="modeArtists" class="o-seg-item" type="button" role="tab" onclick="setLibraryMode('artists')">Артисты</button>
+        <button id="modeAlbums" class="o-seg-item" type="button" role="tab" onclick="setLibraryMode('albums')">Альбомы</button>
       </div>
 
-      <div class="row wrap library-modes">
-        <button id="modeTracks" class="ghost is-on" onclick="setLibraryMode('tracks')">Треки</button>
-        <button id="modeAlbums" class="ghost" onclick="setLibraryMode('albums')">Альбомы</button>
-        <button id="modeSingles" class="ghost" onclick="setLibraryMode('singles')">Синглы</button>
+      <div class="o-actions library-actions">
+        <button class="o-capsule" type="button" onclick="playWholeLibrary()">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" fill="currentColor" stroke="none"/></svg>
+          <span>Слушать</span>
+        </button>
+        <!-- Перемешать — с выбором: обычное (та же фонотека вперемешку) или
+             умное (похожее рядом, часть новых). -->
+        <button id="libraryShuffle" class="o-capsule" type="button" onclick="openLibraryShuffle(this)"
+                aria-haspopup="menu" aria-expanded="false">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M16 3h5v5M4 20 21 3M21 16v5h-5M15 15l6 6M4 4l5 5"/></svg>
+          <span>Перемешать</span>
+        </button>
+      </div>
+      <p id="shuffleNote" class="note"></p>
+
+      <div class="o-list-head">
+        <span id="libraryModeNote"></span>
         <!-- Порядок списка. Свежие сверху — то, ради чего фонотеку чаще всего
              и открывают: разложить только что приехавшее по подборкам. -->
-        <button id="librarySort" class="ghost is-on" onclick="toggleLibrarySort()"
+        <button id="librarySort" class="o-link" type="button" onclick="toggleLibrarySort()"
                 title="Сначала недавно добавленные">Свежие сверху</button>
-        <span id="libraryModeNote" class="muted"></span>
       </div>
 
       <div id="library" class="rows"></div>
       <p id="libraryEmpty" class="empty">Ничего не нашлось.</p>
 
+    </section>
+
+    <!-- ---------------- Артист, альбом, настроение, все подборки, поиск ----------------
+         Рисует web/views.js. Каждая — своя страница со своей шапкой и
+         кнопкой «Назад» (и «назад» браузера ведёт туда же). -->
+    <section id="viewArtist" class="view" hidden><div id="artistBody"></div></section>
+    <section id="viewAlbum" class="view" hidden><div id="albumBody"></div></section>
+    <section id="viewMood" class="view" hidden><div id="moodBody"></div></section>
+    <section id="viewPlaylists" class="view" hidden><div id="playlistsBody"></div></section>
+    <section id="viewSearch" class="view" hidden>
+      <label class="o-search">
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <input id="searchEverywhere" class="o-search-input" type="search" placeholder="Артисты, треки, альбомы"
+               autocomplete="off" spellcheck="false" enterkeyhint="search" aria-label="Поиск по фонотеке">
+      </label>
+      <div id="searchBody"></div>
     </section>
 
 
@@ -188,15 +221,20 @@
     <!-- ---------------- Одна подборка ---------------- -->
     <section id="viewPlaylist" class="view" hidden>
 
+      <div class="o-backbar"><button class="o-back" type="button" onclick="goBack('viewPlaylists')">
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m14.5 5-7 7 7 7"/></svg><span>Подборки</span></button></div>
+
       <div class="playlist-head">
         <div id="playlistCover" class="playlist-cover"></div>
         <div class="playlist-meta">
           <h2 id="playlistName"></h2>
           <p id="playlistCount" class="muted"></p>
           <div class="row wrap">
-            <button class="primary" onclick="playPlaylist()">Слушать</button>
-            <button class="ghost" onclick="shufflePlaylist()"
-                    title="Подборка вперемешку, плюс похожие треки — и из фонотеки, и новые">Перемешать</button>
+            <button class="o-capsule" type="button" onclick="playPlaylist()">
+              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" fill="currentColor" stroke="none"/></svg><span>Слушать</span></button>
+            <button class="o-capsule" type="button" onclick="openPlaylistShuffle(this)" aria-haspopup="menu" aria-expanded="false"
+                    title="Обычное или умное перемешивание">
+              <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M16 3h5v5M4 20 21 3M21 16v5h-5M15 15l6 6M4 4l5 5"/></svg><span>Перемешать</span></button>
             <!-- Остальное — за «⋯» (с 01.10.2026): шесть кнопок в ряд читались
                  как ряд одинаковых плашек. Сами кнопки остаются в странице
                  скрытыми: их состояние (например, «На телефон 3 из 40») ведёт
@@ -321,11 +359,14 @@
     <button id="playerArt" class="player-art" type="button" onclick="expandPlayer('art')"
             aria-label="Открыть плеер" title="Открыть плеер"></button>
     <div id="playerPanel" class="player-panel"></div>
-    <div class="player-track" onclick="expandPlayer()">
+    <div class="player-track" onclick="expandPlayer('track')">
       <div id="playerTitle" class="player-title"></div>
       <div id="playerArtist" class="player-artist"></div>
       <div id="playerNote" class="player-note"></div>
     </div>
+    <!-- Темп, тональность, энергия — в большом плеере на компьютере (узел
+         #nowFacts переезжает сюда, его заполняет player.js). -->
+    <div id="playerFacts" class="player-facts"></div>
     <button id="playerMore" class="icon-button player-more" type="button" onclick="openPlayerMore(this)"
             aria-label="Ещё" title="Ещё" aria-haspopup="menu" aria-expanded="false">
       <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg>
@@ -371,10 +412,6 @@
               aria-label="Повтор" title="Повтор выключен">
         <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M17 2l4 4-4 4M3 11V9a4 4 0 0 1 4-4h14M7 22l-4-4 4-4M21 13v2a4 4 0 0 1-4 4H3"/></svg>
         <span id="playerRepeatOne" class="repeat-one" hidden>1</span>
-      </button>
-      <button id="playerAsideButton" class="icon-button wide-only" onclick="toggleAside()"
-              aria-label="Панель трека" title="Скрыть панель трека" aria-pressed="true">
-        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4h18v16H3zM15 4v16"/></svg>
       </button>
       <button id="playerLyricsButton" class="icon-button" onclick="playerLyrics()"
               aria-label="Текст песни" title="Текст песни" aria-pressed="false">
@@ -430,52 +467,72 @@
   <!-- The rail exists only where there is room for one. On a phone this
        wrapper is display:contents, so the tab bar goes back to being what it
        has always been there: a fixed bar at the bottom edge. -->
+  <!-- Навигация «Обложки». На компьютере — левая панель (сужается кнопкой,
+       перетаскиванием края, двойным щелчком). На телефоне — четыре вкладки
+       внизу; .rail там раскладывается в display: contents. -->
   <div class="rail">
 
-  <!-- Сузить панель до значков и вернуть. То же делают двойной щелчок по краю
-       и перетаскивание края, но про них надо знать; кнопку видно. -->
-  <button id="railToggle" class="rail-toggle wide-only" type="button" onclick="toggleRailSlim()"
-          aria-label="Сузить панель" title="Сузить панель">
-    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16"/></svg>
-  </button>
-
-  <nav class="tabbar">
-    <button class="tab is-active" data-view="viewHome" onclick="switchView('viewHome')">
-      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11l9-8 9 8M5 10v10h14V10"/></svg>
-      <span>Главная</span>
+  <aside class="side" aria-label="Разделы">
+    <button id="railToggle" class="rail-toggle" type="button" onclick="toggleRailSlim()"
+            aria-label="Сузить панель" title="Сузить панель">
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M9 4v16"/></svg>
     </button>
-    <button class="tab" data-view="viewLibrary" onclick="switchView('viewLibrary')">
-      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
-      <span>Фонотека</span>
+    <label class="side-search" title="Поиск">
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/></svg>
+      <input id="sideSearch" type="search" placeholder="Поиск" aria-label="Поиск" autocomplete="off" spellcheck="false">
+    </label>
+    <button class="side-item" type="button" data-nav="viewHome viewMood" onclick="switchView('viewHome')">
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10.5 12 4l8 6.5V20h-5.5v-6h-5v6H4z"/></svg><span>Главная</span>
     </button>
-    <!-- Всё, к чему не тянутся каждый день: добавление и служебный раздел.
-         В постоянном ряду остаются Главная и Фонотека. Отдельного раздела
-         «Подборки» нет с 30.09.2026: на широком экране они в рельсе слева,
-         на телефоне — в этом же меню «Ещё». -->
-    <button id="moreTab" class="tab" onclick="toggleMoreMenu(event)"
-            aria-haspopup="menu" aria-expanded="false">
-      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg>
-      <span>Ещё</span>
+    <button class="side-item" type="button" data-nav="viewAdd" onclick="switchView('viewAdd')">
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg><span>Добавить</span>
     </button>
-  </nav>
-
-  <!-- The rest of the rail. Only ever visible where there is a rail to put it
-       in; on a phone the tab bar is the whole of navigation and this would be
-       a second copy of the Подборки tab. -->
-  <aside class="rail-extra">
-    <div class="rail-head">
-      <span>Подборки</span>
-      <button id="railNewPlaylist" class="rail-add" onclick="askNewPlaylist(this)"
+    <p class="side-label">Фонотека</p>
+    <button class="side-item" type="button" data-nav="viewLibrary:tracks" onclick="openLibrary('tracks')">
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18V6l10-2v12"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="16.5" cy="16" r="2.5"/></svg><span>Треки</span>
+    </button>
+    <button class="side-item" type="button" data-nav="viewLibrary:artists viewArtist" onclick="openLibrary('artists')">
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8.5" r="3.8"/><path d="M4.5 20c1.2-4 4-5.8 7.5-5.8s6.3 1.8 7.5 5.8"/></svg><span>Артисты</span>
+    </button>
+    <button class="side-item" type="button" data-nav="viewLibrary:albums viewAlbum" onclick="openLibrary('albums')">
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="2.2"/></svg><span>Альбомы</span>
+    </button>
+    <div class="side-label-row">
+      <p class="side-label">Подборки</p>
+      <button id="railNewPlaylist" class="rail-add" type="button" onclick="askNewPlaylist(this)"
               aria-label="Новая подборка" title="Новая подборка" aria-haspopup="dialog">+</button>
     </div>
+    <button class="side-item" type="button" data-nav="viewPlaylists" onclick="switchView('viewPlaylists')">
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.5"/></svg><span>Все подборки</span>
+    </button>
     <div id="railPlaylists" class="rail-list"></div>
-    <!-- Ни кнопки «Новая подборка», ни счётчика треков: первое повторяет
-         вкладку «Подборки», второе — строку под заголовком страницы. Внизу
-         остаётся только то, что меняется прямо сейчас, — ход загрузок. -->
+    <!-- Ход загрузок — то, что меняется прямо сейчас. -->
     <div class="rail-foot">
       <div id="railWork" class="muted"></div>
     </div>
+    <button class="side-item" type="button" data-nav="viewService" id="sideService" onclick="switchView('viewService')">
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 13h3.5l2-6 4 11 2-5H20"/></svg><span>Служба</span>
+    </button>
   </aside>
+
+  <nav class="tabbar" aria-label="Разделы">
+    <button class="tab" type="button" data-view="viewHome" data-nav="viewHome viewMood viewAdd viewService" onclick="switchView('viewHome')">
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10.5 12 4l8 6.5V20h-5.5v-6h-5v6H4z"/></svg>
+      <span>Главная</span>
+    </button>
+    <button class="tab" type="button" data-view="viewLibrary" data-nav="viewLibrary viewArtist viewAlbum" onclick="switchView('viewLibrary')">
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4v16M9.5 4v16"/><path d="m14 4.6 4.6 15"/></svg>
+      <span>Фонотека</span>
+    </button>
+    <button class="tab" type="button" data-view="viewPlaylists" data-nav="viewPlaylists viewPlaylist" onclick="switchView('viewPlaylists')">
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h11M4 11h11M4 16h7"/><circle cx="17" cy="17" r="2.6"/><path d="M19.6 17V7.5l2.4-1"/></svg>
+      <span>Подборки</span>
+    </button>
+    <button class="tab" type="button" data-view="viewSearch" data-nav="viewSearch" onclick="switchView('viewSearch')">
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/></svg>
+      <span>Поиск</span>
+    </button>
+  </nav>
 
   </div>
 
@@ -500,3 +557,4 @@
 <script src="/static/player.js"></script>
 <script src="/static/offline.js"></script>
 <script src="/static/look.js"></script>
+<script src="/static/views.js"></script>

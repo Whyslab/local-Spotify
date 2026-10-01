@@ -73,102 +73,18 @@ function applyLoginState() {
 
 /* ---------------- Views ---------------- */
 
-/* ---------------- «Ещё» ----------------
- *
- * Добавление и служебный раздел ушли из постоянного ряда: к ним обращаются
- * изредка, а место в ряду они занимали наравне с фонотекой. Теперь они за
- * одной кнопкой — дотянуться можно, но не задев локтем.
- */
-const MORE_VIEWS = [
-    ["viewAdd", "Добавить"],
-    ["viewService", "Сервис"],
-];
-
-function closeMoreMenu() {
-    const menu = document.getElementById("moreMenu");
-    if (menu) menu.remove();
-    const tab = document.getElementById("moreTab");
-    if (tab) tab.setAttribute("aria-expanded", "false");
-    document.removeEventListener("keydown", moreKeydown, true);
-    document.removeEventListener("pointerdown", morePointerDown, true);
-}
-
-function moreKeydown(event) {
-    if (event.key === "Escape") { closeMoreMenu(); document.getElementById("moreTab")?.focus(); }
-}
-
-function morePointerDown(event) {
-    const menu = document.getElementById("moreMenu");
-    const tab = document.getElementById("moreTab");
-    if (menu && !menu.contains(event.target) && !tab.contains(event.target)) closeMoreMenu();
-}
-
-function toggleMoreMenu(event) {
-    if (event) event.stopPropagation();
-    const tab = document.getElementById("moreTab");
-    if (document.getElementById("moreMenu")) { closeMoreMenu(); return; }
-
-    const menu = document.createElement("div");
-    menu.id = "moreMenu";
-    menu.className = "row-menu more-menu";
-    menu.setAttribute("role", "menu");
-    const add = (label, onClick) => {
-        const item = document.createElement("button");
-        item.className = "row-menu-item";
-        item.setAttribute("role", "menuitem");
-        item.textContent = label;
-        item.onclick = () => { closeMoreMenu(); onClick(); };
-        menu.appendChild(item);
-        return item;
-    };
-    for (const [view, label] of MORE_VIEWS) add(label, () => switchView(view));
-    /* На телефоне рельсы нет — подборки здесь, отдельного раздела у них нет. */
-    if (!railShown()) {
-        const line = document.createElement("div");
-        line.className = "row-menu-line";
-        menu.appendChild(line);
-        const head = document.createElement("div");
-        head.className = "row-menu-label more-menu-head";
-        head.textContent = "Подборки";
-        menu.appendChild(head);
-        for (const p of knownPlaylists) add(p.name, () => openPlaylist(p.name));
-        add("+ Новая подборка…", () => askNewPlaylist(tab));
-    } else if (document.querySelector(".app.rail-slim")) {
-        /* Узкая рельса прячет заголовок с «+» — создание здесь. */
-        add("+ Новая подборка…", () => askNewPlaylist(tab));
-    }
-
-    tab.insertAdjacentElement("afterend", menu);
-
-    /* Ставим по месту кнопки: на телефоне ряд вкладок прижат к низу экрана,
-     * на ноутбуке стоит наверху рельсы, и «всегда вверх» там уезжает за край. */
-    const box = tab.getBoundingClientRect();
-    /* «Ещё» на телефоне — крайняя правая вкладка: без поджатия меню с
-     * названиями подборок уходило за край экрана. */
-    const right = window.innerWidth - menu.offsetWidth - 8;
-    menu.style.left = Math.round(Math.max(8, Math.min(box.left, right))) + "px";
-    if (window.innerHeight - box.bottom > 180) {
-        menu.style.top = Math.round(box.bottom + 6) + "px";
-    } else {
-        /* top сбрасывается: у .row-menu он задан для меню строки, и вместе с
-         * bottom сжимал меню в полоску у нижнего края. */
-        menu.style.top = "auto";
-        menu.style.bottom = Math.round(window.innerHeight - box.top + 6) + "px";
-    }
-
-    tab.setAttribute("aria-expanded", "true");
-    document.addEventListener("keydown", moreKeydown, true);
-    document.addEventListener("pointerdown", morePointerDown, true);
-    menu.querySelector(".row-menu-item").focus();
-}
-
 /* Заголовок экрана. Раньше на всех было «Фонотека». */
 const VIEW_TITLES = {
     viewHome: "Главная",
     viewLibrary: "Фонотека",
     viewPlaylist: "Подборка",
+    viewPlaylists: "Подборки",
+    viewArtist: "Артист",
+    viewAlbum: "Альбом",
+    viewMood: "Настроение",
+    viewSearch: "Поиск",
     viewAdd: "Добавить",
-    viewService: "Сервис",
+    viewService: "Служба",
     viewLyrics: "Текст песни",
 };
 const VIEW_KEY = "lastView";
@@ -179,20 +95,15 @@ function setViewTitle(text) {
     if (title) title.textContent = text;
 }
 
-/* Раздела «Подборки» больше нет (30.09.2026): «Назад» из подборки ведёт
- * туда, где был до неё. */
+/* Куда вести «Назад» из подборки, если истории нет (открыли по ссылке,
+ * перезагрузили): туда, где был до неё. */
 let lastBrowseView = (() => {
     try { return localStorage.getItem("lastBrowseView") || "viewHome"; } catch (e) { return "viewHome"; }
 })();
 
 function leavePlaylist() {
-    switchView(lastBrowseView);
-}
-
-/* Рельса с подборками видна только на широком экране. */
-function railShown() {
-    const extra = document.querySelector(".rail-extra");
-    return !!extra && getComputedStyle(extra).display !== "none";
+    if (typeof goBack === "function") goBack(lastBrowseView);
+    else switchView(lastBrowseView);
 }
 
 function switchView(id) {
@@ -212,16 +123,12 @@ function switchView(id) {
         section.hidden = section.id !== id;
     }
     if (id === "viewService") libraryHealth();
-    for (const tab of document.querySelectorAll(".tab")) {
-        tab.classList.toggle("is-active", tab.dataset.view === id);
-    }
-    /* Раздел спрятан за «Ещё» — пусть кнопка показывает, что мы внутри неё.
-     * Подборки на телефоне открываются оттуда же. */
-    const more = document.getElementById("moreTab");
-    if (more) more.classList.toggle("is-active", MORE_VIEWS.some(([view]) => view === id)
-        || (id === "viewPlaylist" && !railShown()));
+    /* Вкладки и пункты левой панели подсвечивает views.js (syncNav): у
+     * пункта «Артисты» это и фонотека в режиме артистов, и страница артиста. */
+    if (typeof syncNav === "function") syncNav();
     /* Куда вернёт «Назад» из подборки: туда, откуда в неё пришли. */
-    if (id !== "viewPlaylist" && id !== "viewLyrics") {
+    /* Страницы артиста, альбома, настроения — шаги вглубь, а не «где был». */
+    if (!["viewPlaylist", "viewLyrics", "viewArtist", "viewAlbum", "viewMood"].includes(id)) {
         lastBrowseView = id;
         try { localStorage.setItem("lastBrowseView", id); } catch (e) { /* приватное окно */ }
     }
@@ -232,6 +139,7 @@ function switchView(id) {
         lyricsButton.classList.toggle("is-on", id === "viewLyrics");
         lyricsButton.setAttribute("aria-pressed", String(id === "viewLyrics"));
     }
+    if (typeof onViewShown === "function") onViewShown(id);
     refresh(true);
 }
 
@@ -257,6 +165,9 @@ function keepSearchFor(view) {
         field.value = "";
         libraryLimit = LIBRARY_PAGE;
     }
+    /* Число найденного — от прежнего места поиска, в новом оно врало бы. */
+    const found = document.getElementById("libraryCount");
+    if (found) found.textContent = "";
 }
 
 /* Поле одно, а ищет оно в разном — пусть само говорит, где именно. */
@@ -860,9 +771,6 @@ function runSearchHere() {
     /* Из главной и остальных разделов искать всё равно логично по фонотеке —
      * там лежит всё, что можно найти. */
     if (activeView !== "viewLibrary" && searchText()) switchView("viewLibrary");
-    /* Открытый альбом держится против фонового опроса, а заодно держался и
-     * против поиска: набирал — и ничего не происходило. Поиск его закрывает. */
-    if (searchText()) openAlbumGroup = null;
     library();
 }
 
@@ -994,200 +902,10 @@ async function home() {
     }
 }
 
-function homeShelf(title, hint, tracks, playAll) {
-    const card = document.createElement("div");
-    card.className = "card home-shelf";
-
-    const head = document.createElement("div");
-    head.className = "card-head";
-    const h = document.createElement("h2");
-    h.textContent = title;
-    head.appendChild(h);
-    if (hint) {
-        const note = document.createElement("span");
-        note.className = "muted";
-        note.textContent = hint;
-        head.appendChild(note);
-    }
-    if (playAll) {
-        const play = document.createElement("button");
-        /* Не белая: три белые кнопки на главной были ярче самих обложек. */
-        play.className = "ghost";
-        play.textContent = "Слушать";
-        play.onclick = playAll;
-        head.appendChild(play);
-    }
-
-    /* Полка — это ряд обложек, который листается вбок, а не список строк.
-     *
-     * Строками это занимало всю ширину экрана под четыреста пикселей текста
-     * и рядом с сеткой альбомов выглядело как список дел. Двенадцать плиток,
-     * а не сорок: полка на главной — приглашение, а не фонотека. Нажал
-     * «Слушать» — играет вся полка целиком. */
-    const shelf = document.createElement("div");
-    shelf.className = "shelf";
-    tracks.slice(0, 12).forEach((t, i) => shelf.appendChild(shelfTile(t, tracks, i)));
-
-    card.append(head, shelf);
-    return card;
-}
-
-function shelfTile(track, tracks, index) {
-    const tile = document.createElement("div");
-    tile.className = "shelf-tile";
-
-    const art = document.createElement("button");
-    art.className = "shelf-art";
-    art.setAttribute("aria-label", "Играть «" + (track.title || track.path) + "»");
-    art.onclick = () => playQueue(tracks, index, "manual");
-    loadTrackCover(art, track.path, THUMB_LARGE);
-
-    const play = document.createElement("button");
-    play.className = "album-play";
-    play.setAttribute("aria-label", "Играть");
-    play.onclick = event => { event.stopPropagation(); playQueue(tracks, index, "manual"); };
-    play.appendChild(playIcon());
-
-    const box = document.createElement("div");
-    box.className = "album-artbox";
-    box.append(art, play);
-
-    const name = document.createElement("div");
-    name.className = "shelf-name";
-    name.textContent = track.title || track.path;
-    const who = document.createElement("div");
-    who.className = "album-artist";
-    who.textContent = track.artist || "";
-
-    tile.append(box, name, who);
-    return tile;
-}
-
-/* Плитка находки. Обложки у неё нет и быть не может — файла-то нет, — поэтому
- * вместо неё буква артиста: пустой серый квадрат читался бы как не загрузившаяся
- * картинка. Нажатие ведёт в поиск, а не в плеер: играть пока нечего. */
-function findTile(find) {
-    const tile = document.createElement("div");
-    tile.className = "shelf-tile is-find";
-
-    const art = document.createElement("button");
-    art.className = "shelf-art";
-    art.textContent = (find.artist || find.title || "?").slice(0, 1).toUpperCase();
-    art.setAttribute("aria-label",
-        `Искать «${[find.artist, find.title].filter(Boolean).join(" — ")}» на YouTube`);
-    art.onclick = () => searchForFind(find);
-
-    const box = document.createElement("div");
-    box.className = "album-artbox";
-    box.appendChild(art);
-
-    const name = document.createElement("div");
-    name.className = "shelf-name";
-    name.textContent = find.title || "";
-
-    const who = document.createElement("div");
-    who.className = "album-artist";
-    who.textContent = find.artist || "";
-
-    const mark = document.createElement("div");
-    mark.className = "find-mark";
-    mark.textContent = "нет в фонотеке";
-
-    tile.append(box, name, who, mark);
-    return tile;
-}
-
-/* Находки приезжают позже своей полки: сеть не должна задерживать главную.
- * Поэтому они не перерисовывают её, а вставляются в уже собранный ряд — иначе
- * пролистанная полка отскочила бы в начало, что мы только что чинили. */
-function mixFindsIntoShelf(shelf, finds) {
-    if (!shelf || !finds.length) return;
-    /* Через две свои — одна чужая: полка остаётся про твою музыку, а находки
-     * попадаются по дороге, а не выстраиваются отдельной стеной. */
-    let at = 2;
-    for (const find of finds.slice(0, 4)) {
-        const before = shelf.children[at];
-        if (before) shelf.insertBefore(findTile(find), before);
-        else shelf.appendChild(findTile(find));
-        at += 3;
-    }
-}
-
+/* Главная «Обложки» (настроения, «Похоже на любимое», недавние, альбомы,
+ * артисты) — в views.js. */
 function renderHome(data) {
-    const box = document.getElementById("homeBody");
-    box.replaceChildren();
-
-    const discover = data.discover || {};
-    if ((discover.tracks || []).length) {
-        const on = (discover.based_on || []).slice(0, 3).join(", ");
-        const card = homeShelf(
-            "Может понравиться",
-            on ? `похоже на ${on}` : "",
-            discover.tracks,
-            () => playQueue(discover.tracks, 0, "manual"),
-        );
-        box.appendChild(card);
-        /* Полка про вкус, а не про то, что уже лежит на диске: к своим трекам
-         * подмешивается то, чего в фонотеке нет вовсе. */
-        externalFinds().then(finds => mixFindsIntoShelf(card.querySelector(".shelf"), finds));
-    }
-
-    for (const mood of data.moods || []) {
-        if (!(mood.tracks || []).length) continue;
-        box.appendChild(homeShelf(
-            mood.name, mood.hint, mood.tracks,
-            () => playQueue(mood.tracks, 0, "manual"),
-        ));
-    }
-
-    if ((data.albums || []).length) {
-        const card = document.createElement("div");
-        card.className = "card";
-        const head = document.createElement("div");
-        head.className = "card-head";
-        const h = document.createElement("h2");
-        h.textContent = "Альбомы";
-        const note = document.createElement("span");
-        note.className = "muted";
-        note.textContent = "самые большие";
-        head.append(h, note);
-
-        const grid = document.createElement("div");
-        grid.className = "rows";
-        for (const a of data.albums) {
-            const row = document.createElement("button");
-            row.className = "track playlist-row";
-            row.onclick = () => {
-                pendingAlbum = { artist: a.artist, album: a.album };
-                setLibraryMode("albums");
-                switchView("viewLibrary");
-            };
-            const cover = document.createElement("div");
-            cover.className = "cover";
-            cover.textContent = a.album.slice(0, 1).toUpperCase();
-            loadTrackCover(cover, a.cover);
-            const info = document.createElement("div");
-            info.className = "track-info";
-            const name = document.createElement("div");
-            name.className = "track-title";
-            name.textContent = a.album;
-            const who = document.createElement("div");
-            who.className = "track-artist";
-            who.textContent = a.artist;
-            const count = document.createElement("div");
-            count.className = "track-album";
-            count.textContent = plural(a.count, "трек", "трека", "треков");
-            info.append(name, who, count);
-            row.append(cover, info);
-            grid.appendChild(row);
-        }
-        card.append(head, grid);
-        box.appendChild(card);
-    }
-
-    if (!box.childElementCount) {
-        homeNote(box, "Пока нечего показать — фонотека ещё не измерена.");
-    }
+    renderLabHome(data);
 }
 
 /* ---------------- Альбомы и синглы ----------------
@@ -1236,11 +954,15 @@ initLibrarySort();
 function setLibraryMode(mode) {
     libraryMode = mode;
     libraryLimit = LIBRARY_PAGE;
-    openAlbumGroup = null;
-    for (const [name, id] of [["tracks", "modeTracks"], ["albums", "modeAlbums"], ["singles", "modeSingles"]]) {
+    for (const [name, id] of [["tracks", "modeTracks"], ["artists", "modeArtists"], ["albums", "modeAlbums"]]) {
         const b = document.getElementById(id);
-        if (b) b.classList.toggle("is-on", name === mode);
+        if (!b) continue;
+        b.classList.toggle("is-on", name === mode);
+        b.setAttribute("aria-selected", String(name === mode));
     }
+    if (typeof syncNav === "function") syncNav();
+    /* Режим — часть того, куда вернёт «назад». */
+    if (typeof recordTop === "function") recordTop();
     library();
 }
 
@@ -1262,143 +984,9 @@ function groupIntoAlbums(rows) {
         a.artist.localeCompare(b.artist, "ru") || a.album.localeCompare(b.album, "ru"));
 }
 
-/* Карточка альбома — плитка, а не строка.
- *
- * Строкой это выглядело плохо не случайно: обложка 34 пикселя, название,
- * артист и две кнопки в ряду шириной 1100 — девять десятых карточки пустые,
- * а обложку, ради которой альбом и узнают, не разглядеть. Плитки кладутся
- * сеткой, обложка в них квадратная и во всю ширину.
- *
- * Треки внутри карточки больше не разворачиваются: раскрытая плитка ломает
- * сетку, да и читать список в колонке шириной 170 пикселей нечем. По нажатию
- * альбом открывается целиком, со своим заголовком и кнопкой «Назад».
- */
-function albumTile(group) {
-    const tile = document.createElement("div");
-    tile.className = "album-tile";
-
-    const art = document.createElement("button");
-    art.className = "album-art";
-    art.setAttribute("aria-label", "Открыть «" + group.album + "»");
-    art.onclick = () => openAlbum(group);
-    const letter = document.createElement("span");
-    letter.className = "album-letter";
-    letter.textContent = group.album.slice(0, 1).toUpperCase();
-    art.appendChild(letter);
-    loadTrackCover(art, group.tracks[0].path, THUMB_LARGE);
-
-    const play = document.createElement("button");
-    play.className = "album-play";
-    play.setAttribute("aria-label", "Играть альбом");
-    play.title = "Играть альбом";
-    play.onclick = event => { event.stopPropagation(); playQueue(group.tracks, 0, "manual"); };
-    play.appendChild(playIcon());
-
-    const name = document.createElement("button");
-    name.className = "album-name";
-    name.textContent = group.album;
-    name.onclick = () => openAlbum(group);
-
-    const who = document.createElement("div");
-    who.className = "album-artist";
-    who.textContent = group.artist + " · " + plural(group.tracks.length, "трек", "трека", "треков");
-
-    const box = document.createElement("div");
-    box.className = "album-artbox";
-    box.append(art, play);
-    tile.append(box, name, who);
-    return tile;
-}
-
-/* Один альбом целиком. Показывается на месте сетки — так же, как подборка
- * показывается на месте списка подборок. */
-let openAlbumGroup = null;
-/* Какой именно альбом открыть, когда фонотека догрузится. С главной альбом
- * раньше открывал просто раздел «Альбомы» — и человек оказывался в сетке из
- * сотни изданий, без того, на что нажал. */
-let pendingAlbum = null;
-
+/* Альбом открывается своей страницей (views.js), а не поверх сетки. */
 function openAlbum(group) {
-    openAlbumGroup = group;
-    /* Альбом рисуется поверх сетки — «Назад» обязан её перерисовать, даже если
-     * данные те же. */
-    librarySignature = "";
-    const box = document.getElementById("library");
-    const note = document.getElementById("libraryModeNote");
-    box.replaceChildren();
-    if (note) note.textContent = group.artist;
-
-    const head = document.createElement("div");
-    head.className = "album-open";
-
-    const art = document.createElement("div");
-    art.className = "album-open-art";
-    art.textContent = group.album.slice(0, 1).toUpperCase();
-    loadTrackCover(art, group.tracks[0].path, THUMB_LARGE);
-
-    const meta = document.createElement("div");
-    meta.className = "album-open-meta";
-    const name = document.createElement("h2");
-    name.textContent = group.album;
-    const who = document.createElement("p");
-    who.className = "muted";
-    /* Сколько это играть — вопрос, который задают альбому первым после «чей он».
-     * Складываем то, что уже посчитано при чтении тегов. */
-    const seconds = group.tracks.reduce((sum, t) => sum + (t.duration || 0), 0);
-    who.textContent = group.artist
-        + " · " + plural(group.tracks.length, "трек", "трека", "треков")
-        + (seconds ? " · " + humanLength(seconds) : "");
-
-    const row = document.createElement("div");
-    row.className = "row wrap";
-    const play = document.createElement("button");
-    play.className = "primary";
-    play.textContent = "Слушать";
-    play.onclick = () => playQueue(group.tracks, 0, "manual");
-    /* Умно: альбом — костяк очереди, между его треками — похожее, в том числе
-     * то, чего в фонотеке нет. */
-    const mix = document.createElement("button");
-    mix.className = "ghost";
-    mix.textContent = "Перемешать";
-    mix.title = "Альбом вперемешку, плюс похожие треки — и из фонотеки, и новые";
-    mix.onclick = () => shuffleTracks(group.tracks, "albumNote");
-    const back = document.createElement("button");
-    back.className = "ghost";
-    back.textContent = "Назад";
-    back.onclick = () => { openAlbumGroup = null; library(); };
-    row.append(play, mix, back);
-    const albumNote = document.createElement("p");
-    albumNote.id = "albumNote";
-    albumNote.className = "note";
-
-    meta.append(name, who, row, albumNote);
-    head.append(art, meta);
-    box.appendChild(head);
-
-    const list = document.createElement("div");
-    list.className = "rows";
-    group.tracks.forEach((t, i) => {
-        const card = libraryRow(t, group.tracks);
-        /* Номер по порядку, а не из тега: тег track в этой фонотеке пустой у
-         * большинства файлов, а «третий сверху» человеку и нужен. */
-        const number = document.createElement("div");
-        number.className = "album-track-number";
-        number.textContent = String(i + 1);
-        card.insertBefore(number, card.firstChild);
-        list.appendChild(card);
-    });
-    box.appendChild(list);
-    markPlayingRow();
-}
-
-function playIcon() {
-    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    svg.setAttribute("class", "icon");
-    svg.setAttribute("viewBox", "0 0 24 24");
-    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-    path.setAttribute("d", "M8 5v14l11-7z");
-    svg.appendChild(path);
-    return svg;
+    openAlbumPage(group);
 }
 
 /* ---------------- Обложки ----------------
@@ -1540,7 +1128,7 @@ function hasOpenChoice(id) {
 async function library() {
     /* Открыт один альбом — фоновый опрос не должен смахивать его обратно в
      * сетку под руками. Выход из него — только кнопкой «Назад». */
-    if (openAlbumGroup || hasOpenChoice("library")) return;
+    if (hasOpenChoice("library")) return;
     const box = document.getElementById("library");
     const empty = document.getElementById("libraryEmpty");
     const count = document.getElementById("libraryCount");
@@ -1570,20 +1158,16 @@ async function library() {
         /* Пока ответ шёл, под строкой могли открыть вопрос («удалить?», «в
          * какую подборку?») — проверка в начале этого уже не видела. */
         if (hasOpenChoice("library")) return;
-        /* Пока мы ходили за фонотекой, мог открыться альбом: нажатие с главной
-         * запускает загрузку дважды — из setLibraryMode и из switchView, — и
-         * вторая перерисовка смахивала бы открытый альбом обратно в сетку. */
-        if (openAlbumGroup) return;
         /* Опрос принёс то же самое — список не трогаем: перерисовка сбивала
          * прокрутку и открытые под строкой вопросы. */
         const signature = [mode, limit, q, data.length, ...data.map(t => t.path)].join("\n");
-        if (signature === librarySignature && box.childElementCount && !pendingAlbum) return;
+        if (signature === librarySignature && box.childElementCount) return;
         librarySignature = signature;
         box.replaceChildren();
         empty.textContent = "Ничего не нашлось.";
 
         if (mode === "tracks") {
-            if (note) note.textContent = "";
+            if (note) note.textContent = q ? "" : libraryTotalNote();
             /* Число в поле — только при поиске: «200+» в пустом поле читалось
              * как «нашлось двести». */
             count.textContent = q && data.length ? String(data.length) + (data.length === limit ? "+" : "") : "";
@@ -1616,31 +1200,19 @@ async function library() {
             return;
         }
 
-        const groups = groupIntoAlbums(data);
-        if (mode === "albums") {
-            const albums = groups.filter(g => g.tracks.length > 1);
-            count.textContent = albums.length || "";
-            empty.hidden = albums.length > 0;
-            if (note) note.textContent = plural(albums.length, "издание", "издания", "изданий");
-            const grid = document.createElement("div");
-            grid.className = "album-grid";
-            for (const g of albums) grid.appendChild(albumTile(g));
-            box.appendChild(grid);
-
-            if (pendingAlbum) {
-                const wanted = albums.find(g =>
-                    g.album === pendingAlbum.album && g.artist === pendingAlbum.artist);
-                pendingAlbum = null;
-                if (wanted) { openAlbum(wanted); return; }
-            }
+        /* Артисты — строками с круглой обложкой, альбомы — сеткой карточек
+         * (views.js). Весь список нужен целиком: издание или артист могут
+         * начинаться на любую букву. */
+        if (mode === "artists") {
+            const artists = renderArtistList(box, data);
+            count.textContent = q && artists ? String(artists) : "";
+            empty.hidden = artists > 0;
+            if (note) note.textContent = plural(artists, "артист", "артиста", "артистов");
         } else {
-            /* Сингл — издание из одного трека. Показываем его обычной строкой:
-             * разворачивать там нечего. */
-            const singles = groups.filter(g => g.tracks.length === 1).map(g => g.tracks[0]);
-            count.textContent = singles.length || "";
-            empty.hidden = singles.length > 0;
-            if (note) note.textContent = plural(singles.length, "сингл", "сингла", "синглов");
-            for (const t of singles) box.appendChild(libraryRow(t, singles));
+            const albums = renderAlbumGrid(box, groupIntoAlbums(data));
+            count.textContent = q && albums ? String(albums) : "";
+            empty.hidden = albums > 0;
+            if (note) note.textContent = plural(albums, "альбом", "альбома", "альбомов");
         }
         markPlayingRow();
     } catch (e) {
@@ -1687,6 +1259,12 @@ function libraryRow(t, rows) {
 
     info.onclick = () => playFromLibrary(t, rows);
 
+    /* Длительность — справа, как в списках Apple Music; на телефоне её
+     * прячет CSS: там место — названию. */
+    const time = document.createElement("span");
+    time.className = "track-time";
+    time.textContent = t.duration ? formatSeconds(t.duration) : "";
+
     /* Четыре значка подряд (играть, в подборку, теги, удалить) у каждой
      * строки — это ряд кнопок, умноженный на тысячу треков. Всё за одной «⋯»,
      * и у действий там названия словами — как у строк подборки. Играть можно
@@ -1698,7 +1276,7 @@ function libraryRow(t, rows) {
     more.setAttribute("aria-haspopup", "menu");
     more.setAttribute("aria-expanded", "false");
 
-    card.append(cover, info, more);
+    card.append(cover, info, time, more);
     return card;
 }
 
@@ -1915,6 +1493,10 @@ function restoreView() {
         view = localStorage.getItem(VIEW_KEY);
         playlist = localStorage.getItem(PLAYLIST_KEY);
     } catch (e) { return false; }
+    /* Страница артиста, альбома, настроения после перезагрузки не знает,
+     * чья она, — открываем фонотеку (в том же режиме) или главную. */
+    if (view === "viewArtist" || view === "viewAlbum") view = "viewLibrary";
+    if (view === "viewMood") view = "viewHome";
     if (!view || !VIEW_TITLES[view] || view === "viewLyrics" || view === activeView) return false;
     if (view === "viewPlaylist") {
         if (!playlist || !token()) return false;
@@ -2182,7 +1764,6 @@ document.addEventListener("DOMContentLoaded", () => {
  */
 
 const RAIL_KEY = "railWidth";
-const ASIDE_KEY = "asideHidden";
 const RAIL_MIN = 72;      // ровно под значок с полями
 const RAIL_MAX = 360;
 const RAIL_SLIM_AT = 150; // уже этого подписи не помещаются
@@ -2201,19 +1782,6 @@ function saveRailWidth(width) {
     try { localStorage.setItem(RAIL_KEY, String(width)); } catch (e) { /* приватное окно */ }
 }
 
-function toggleAside() {
-    const app = document.querySelector(".app");
-    const button = document.getElementById("playerAsideButton");
-    if (!app) return;
-    const hidden = app.classList.toggle("aside-off");
-    try { localStorage.setItem(ASIDE_KEY, hidden ? "1" : "0"); } catch (e) { /* приватное окно */ }
-    if (button) {
-        button.classList.toggle("is-on", !hidden);
-        button.setAttribute("aria-pressed", String(!hidden));
-        button.title = hidden ? "Показать панель трека" : "Скрыть панель трека";
-    }
-}
-
 function initPanels() {
     const app = document.querySelector(".app");
     const grip = document.getElementById("railGrip");
@@ -2225,10 +1793,6 @@ function initPanels() {
         if (Number.isFinite(stored)) width = stored;
     } catch (e) { /* приватное окно — ширина по умолчанию */ }
     applyRailWidth(width);
-
-    try {
-        if (localStorage.getItem(ASIDE_KEY) === "1") toggleAside();
-    } catch (e) { /* приватное окно — панель на месте */ }
 
     if (!grip) return;
 

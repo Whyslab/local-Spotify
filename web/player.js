@@ -1611,20 +1611,6 @@ function resyncLyrics() {
 
 /* Откуда пришли в текст. Закрывая его, возвращаемся туда же: раньше выход
  * всегда вёл в фонотеку — читал текст, закрыл, и ты не там, где был. */
-let viewBeforeLyrics = null;
-
-function toggleLyricsView() {
-    const open = activeView !== "viewLyrics";
-    if (open) viewBeforeLyrics = activeView;
-    /* Подсветку кнопки ставит switchView: из текста уходят и вкладками. */
-    switchView(open ? "viewLyrics" : (viewBeforeLyrics || "viewHome"));
-    if (open) {
-        const track = player.queue[player.index];
-        if (track) loadLyrics(track);
-        else renderNoLyrics(document.getElementById("lyricsBody"), "Ничего не играет");
-    }
-}
-
 /* Ручную прокрутку узнаём по самому действию человека — колесо, палец,
  * клавиши, перетаскивание полосы, — а не по событию scroll. Своя плавная
  * прокрутка к строке тоже шлёт scroll, и отличать её по времени (700 мс)
@@ -1795,13 +1781,56 @@ function renderRail(data) {
  * Ссылка на объект освобождается сразу после отрисовки: картинка к этому
  * моменту уже декодирована, держать ссылку дальше незачем.
  */
+/* Первый трек подборки — для её обложки, когда своей нет. Подборка в рельсе
+ * и в сетке не загружена; спрашиваем её список один раз за сеанс. */
+const firstTrackOf = new Map();
+
+function playlistFirstTrack(name) {
+    if (player.playlist && player.playlist.name === name && player.playlist.entries.length) {
+        return Promise.resolve(player.playlist.entries[0].path);
+    }
+    if (!firstTrackOf.has(name)) {
+        firstTrackOf.set(name, fetch("/api/playlists/" + encodeURIComponent(name) + "/tracks", { headers: headers() })
+            .then(r => (r.ok ? r.json() : null))
+            .then(data => (data && data.entries && data.entries[0] ? data.entries[0].path : null))
+            .catch(() => null));
+    }
+    return firstTrackOf.get(name);
+}
+
 function loadPlaylistCover(host, name) {
     const letter = () => { host.replaceChildren(); host.textContent = name.slice(0, 1).toUpperCase(); };
+    /* Своей обложки нет — обложка первого трека, как в «Обложке»; нет и её —
+     * буква. */
+    /* Список подборки берём, только когда её обложка на экране: в рельсе на
+     * телефоне её не видно вовсе, а «Monday» — это 150 КБ. */
+    const fallback = () => {
+        if (typeof coverObserver !== "undefined" && coverObserver) {
+            host._coverJob = fallbackNow;
+            coverObserver.observe(host);
+        } else {
+            fallbackNow();
+        }
+    };
+    const fallbackNow = () => playlistFirstTrack(name).then(path => {
+        if (!path) { letter(); return; }
+        coverUrl(`track:${THUMB_LARGE}:${path}`, "/api/cover?path=" + encodeURIComponent(path) + "&size=" + THUMB_LARGE)
+            .then(url => {
+                if (!url) { letter(); return; }
+                const img = document.createElement("img");
+                img.alt = "";
+                img.onerror = letter;
+                img.src = url;
+                host.replaceChildren(img);
+            })
+            .catch(letter);
+    });
+    letter();
     /* Через общий кэш обложек: рельс перерисовывается каждым опросом, и без
      * него обложка подборки мигала бы на букву несколько раз в минуту. */
     coverUrl("playlist:" + name, "/api/playlists/" + encodeURIComponent(name) + "/cover")
         .then(url => {
-            if (!url) { letter(); return; }
+            if (!url) { fallback(); return; }
             const img = document.createElement("img");
             img.alt = "";
             img.onerror = letter;
@@ -1869,8 +1898,10 @@ function renderPlaylist() {
     if (!pl) return;
 
     document.getElementById("playlistName").textContent = pl.name;
+    const seconds = pl.entries.reduce((sum, e) => sum + (e.duration > 0 ? e.duration : 0), 0);
     document.getElementById("playlistCount").textContent =
-        pl.entries.length === 1 ? "1 трек" : `${pl.entries.length} треков`;
+        (pl.entries.length === 1 ? "1 трек" : `${pl.entries.length} треков`)
+        + (seconds ? ", " + humanLength(seconds) : "");
 
     const art = document.getElementById("playlistCover");
     art.replaceChildren();
@@ -1938,13 +1969,22 @@ function playlistTrackRow(entry, position) {
     info.className = "track-info";
     info.onclick = () => playQueue(player.playlist.entries, position, "manual",
         { kind: "playlist", name: player.playlist.name });
+    /* В подборке строка — «Артист - Название» из .m3u. Показываем как в
+     * фонотеке: название, под ним артист, длительность справа. */
+    const dash = (entry.title || "").indexOf(" - ");
     const title = document.createElement("div");
     title.className = "track-title";
-    title.textContent = entry.title;
+    title.textContent = dash > 0 ? entry.title.slice(dash + 3) : entry.title;
     info.appendChild(title);
+    if (dash > 0) {
+        const who = document.createElement("div");
+        who.className = "track-artist";
+        who.textContent = entry.title.slice(0, dash);
+        info.appendChild(who);
+    }
     if (entry.duration > 0) {
         const meta = document.createElement("div");
-        meta.className = "track-artist";
+        meta.className = "track-artist track-duration";
         meta.textContent = formatTime(entry.duration);
         info.appendChild(meta);
     }

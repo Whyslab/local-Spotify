@@ -88,7 +88,8 @@ body::before {
     transition: background .6s ease;
 }
 body:has(.app.is-tinted)::before {
-    background: radial-gradient(circle, color-mix(in srgb, var(--glow, #fff) 22%, transparent), transparent 64%);
+    /* --glow ставится только от настоящей обложки (look.js). */
+    background: radial-gradient(circle, color-mix(in srgb, var(--glow, transparent) 22%, transparent), transparent 64%);
 }
 
 .app {
@@ -830,7 +831,6 @@ button.danger {
     max-height: min(70vh, 520px);
     overflow-y: auto;
 }
-.more-menu-head { padding: 4px 12px 2px; }
 
 /* Меню «⋯» строки фонотеки встаёт под своей строкой. */
 #library .track { position: relative; }
@@ -869,26 +869,6 @@ button.danger {
     color: var(--text-3);
     font-size: 12px;
     font-variant-numeric: tabular-nums;
-}
-
-/* Находка на полке. Обложки нет — вместо неё буква, поэтому квадрат надо
-   нарисовать самому; пунктир отличает её от своих треков раньше, чем человек
-   дочитает подпись. */
-.shelf-tile.is-find .shelf-art {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border: 1px dashed var(--line-2);
-    background: var(--surface-2);
-    color: var(--text-3);
-    font-size: 26px;
-    font-weight: 650;
-}
-.shelf-tile.is-find .shelf-name { color: var(--text-2); }
-.find-mark {
-    margin-top: 2px;
-    color: var(--text-3);
-    font-size: 12px;
 }
 
 /* Текст песни — в середине экрана. Строки приглушены, светится та, что звучит
@@ -1025,192 +1005,11 @@ button.danger {
 
 /* Главная: полки-приглашения. Каждая показывает двенадцать обложек из сорока —
    это приглашение, а не список; «Слушать» ставит в очередь всю полку. */
-/* Полка — не карточка: на чёрном фоне заголовок и ряд обложек, как полки
-   Apple Music. Коробка вокруг каждой полки делала главную стопкой плашек. */
-.card.home-shelf { background: none; padding: 0; margin: 0 -16px 28px; border-radius: 0; }
-.home-shelf .card-head { display: flex; align-items: baseline; gap: 12px; padding: 0 16px; margin-bottom: 10px; }
-.home-shelf .card-head h2 { margin: 0; font-size: 22px; font-weight: 700; letter-spacing: -0.012em; }
-.home-shelf .card-head .muted { font-size: 14px; color: var(--text-3); }
-/* «Слушать» полки — словом цвета акцента, а не кнопкой: шесть кнопок вниз
-   по странице перетягивали внимание с обложек на себя. */
-.home-shelf .card-head .ghost {
-    margin-left: auto;
-    min-height: 32px;
-    padding: 0 4px;
-    font-size: 17px;
-    font-weight: 400;
-    background: none;
-    color: var(--accent);
-}
-.home-shelf .shelf { padding: 0 16px; scroll-padding: 0 16px; }
-
-/* Полка: ряд обложек, который листается вбок. Скроллбар убран — полка
-   листается пальцем и колесом, а полоса под каждой из шести полок была бы
-   шумом. */
-.shelf {
-    display: flex;
-    gap: 12px;
-    overflow-x: auto;
-    scroll-snap-type: x mandatory;
-    overscroll-behavior-x: contain;
-    padding-bottom: 2px;
-    scrollbar-width: none;
-}
-.shelf::-webkit-scrollbar { display: none; }
-
-.shelf-tile {
-    flex: 0 0 148px;
-    width: 148px;
-    scroll-snap-align: start;
-}
-
-.shelf-art {
-    display: block;
-    width: 148px;
-    height: 148px;
-    padding: 0;
-    border: 0;
-    border-radius: 8px;
-    overflow: hidden;
-    background: var(--surface-2);
-    cursor: pointer;
-}
-.shelf-art img { width: 100%; height: 100%; object-fit: cover; display: block; }
-
-.shelf-name {
-    margin-top: 7px;
-    color: var(--text);
-    font-size: 14px;
-    font-weight: 500;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-.shelf-tile:hover .album-play { opacity: 1; transform: none; }
-
-@media (max-width: 560px) {
-    .shelf-tile, .shelf-art { flex-basis: 148px; width: 148px; }
-    .shelf-art { height: 148px; }
-    /* На телефоне подпись полки («похоже на …») уезжала в пять строк и
-       сплющивала заголовок в две. Заголовок и кнопка остаются в одной
-       строке, подсказка уходит под них и обрезается. */
-    .home-shelf .card-head { flex-wrap: wrap; row-gap: 4px; }
-    .home-shelf .card-head h2 { flex: 1 1 auto; }
-    .home-shelf .card-head .muted {
-        order: 3;
-        flex: 1 0 100%;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-    }
-    /* Кнопка на обложке: на касании она видна всегда, и в 38 пикселей
-       закрывает треть плитки шириной 122. */
-    .album-play { width: 34px; height: 34px; right: 7px; bottom: 7px; }
-    .album-play .icon { width: 15px; height: 15px; }
-}
 
 /* Переключатель «Треки · Альбомы · Синглы» и карточка альбома. */
-/* «Треки · Альбомы · Синглы» и порядок — плашки iOS: выбранная светлее
-   соседних и с жирным текстом. */
-.library-modes { margin-bottom: 10px; gap: 8px; }
-.library-modes button { min-height: 34px; padding: 0 14px; border-radius: 999px; font-size: 15px; font-weight: 500; background: var(--fill-2); color: var(--text-2); }
-.library-modes .muted { margin-left: auto; font-size: 13px; }
+
 button.ghost.is-on { color: var(--accent-ink); background: var(--accent); font-weight: 650; }
 
-/* Альбомы плитками. Строкой это выглядело плохо не случайно: обложка в 34
-   пикселя на ряду шириной в тысячу — девять десятых пустоты, а узнают альбом
-   именно по обложке. */
-.album-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(152px, 1fr));
-    gap: 18px 14px;
-}
-
-.album-tile { min-width: 0; }
-
-.album-artbox { position: relative; }
-
-.album-art {
-    display: grid;
-    place-items: center;
-    width: 100%;
-    aspect-ratio: 1 / 1;
-    padding: 0;
-    border: 0;
-    border-radius: 8px;
-    overflow: hidden;
-    background: var(--surface-2);
-    cursor: pointer;
-}
-.album-art img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.album-letter { color: var(--text-3); font-size: 28px; font-weight: 650; }
-
-/* Кнопка появляется на обложке при наведении — как везде, где обложка
-   крупная. На касании наведения нет, поэтому там она видна всегда. */
-.album-play {
-    position: absolute;
-    right: 8px;
-    bottom: 8px;
-    display: grid;
-    place-items: center;
-    width: 38px;
-    height: 38px;
-    padding: 0;
-    border: 0;
-    border-radius: 50%;
-    /* Стекло поверх обложки, а не белый круг: на светлой обложке белый
-       круг пропадал, на тёмной — кричал. */
-    background: rgba(30, 30, 32, 0.55);
-    -webkit-backdrop-filter: blur(16px) saturate(1.6);
-    backdrop-filter: blur(16px) saturate(1.6);
-    color: #fff;
-    box-shadow: 0 6px 16px #0006;
-    cursor: pointer;
-    opacity: 0;
-    transform: translateY(6px);
-    transition: opacity .15s ease, transform .15s ease;
-}
-.album-play .icon { width: 18px; height: 18px; fill: currentColor; stroke: none; }
-.album-tile:hover .album-play,
-.album-play:focus-visible { opacity: 1; transform: none; }
-@media (hover: none) {
-    .album-play { opacity: 1; transform: none; }
-}
-
-.album-name {
-    display: block;
-    width: 100%;
-    margin-top: 9px;
-    padding: 0;
-    border: 0;
-    background: none;
-    color: var(--text);
-    font: inherit;
-    font-size: 13px;
-    font-weight: 550;
-    text-align: left;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    cursor: pointer;
-}
-.album-name:hover { text-decoration: underline; }
-.album-artist {
-    margin-top: 2px;
-    color: var(--text-3);
-    font-size: 11px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-/* Один альбом целиком, на месте сетки. */
-.album-open {
-    display: flex;
-    align-items: flex-end;
-    gap: 18px;
-    margin-bottom: 16px;
-}
 .album-open-art {
     flex: none;
     display: grid;
@@ -1230,8 +1029,8 @@ button.ghost.is-on { color: var(--accent-ink); background: var(--accent); font-w
 .album-open-meta p { margin: 0 0 12px; }
 
 @media (max-width: 560px) {
-    .album-grid { grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 14px 10px; }
-    .album-open { flex-direction: column; align-items: flex-start; gap: 12px; }
+    
+    
     .album-open-art { width: 120px; height: 120px; }
     .album-open-meta h2 { font-size: 20px; }
 }
@@ -1705,7 +1504,7 @@ html.sheet-lock, html.sheet-lock body { overflow: hidden; }
    убирает, на узком экране не существует. */
 .rail-grip,
 .wide-only { display: none; }
-.rail-extra { display: none; }
+
 /* display:flex in the wide layout would otherwise beat [hidden]. */
 .rail[hidden] { display: none; }
 
@@ -1728,6 +1527,11 @@ html.sheet-lock, html.sheet-lock body { overflow: hidden; }
        tab bar and the player -- both of which have moved. It is more specific
        than a bare .app, so without naming it here that padding stays and the
        layout stops 190px short of the bottom edge. */
+    /* Две колонки, как в «Обложке»: левая панель и страница. Плеер — полоса
+       внизу во всю ширину; «Сейчас играет» открывается поверх всего окна
+       (look.js), правой колонки больше нет. The second selector is not
+       decoration: outside this query .app:has(#player:not([hidden])) reserves
+       room at the bottom for the phone's player, and it outranks a bare .app. */
     .app,
     .app:has(#player:not([hidden])) {
         max-width: none;
@@ -1735,80 +1539,16 @@ html.sheet-lock, html.sheet-lock body { overflow: hidden; }
         padding: 0;
         overflow: hidden;
         display: grid;
-        grid-template-columns: var(--rail-w, 232px) minmax(0, 1fr) 296px;
-        grid-template-rows: auto minmax(0, 1fr) auto;
+        grid-template-columns: var(--rail-w, 248px) minmax(0, 1fr);
+        grid-template-rows: minmax(0, 1fr) auto;
         grid-template-areas:
-            "rail header aside"
-            "rail views  aside"
-            "bar  bar    bar";
-        column-gap: 0;
-    }
-
-    /* Nothing playing: no cover to show and no bar to show it under. Keeping
-       the column would leave a quarter of the screen empty. */
-    .app:has(#player[hidden]) {
-        grid-template-columns: var(--rail-w, 232px) minmax(0, 1fr);
-        grid-template-areas:
-            "rail header"
-            "rail views";
-        grid-template-rows: auto minmax(0, 1fr);
-    }
-
-
-    /* Правая панель — гость, а не часть каркаса: её убирают, когда нужно
-       место списку, и возвращают кнопкой в плеере. Скрываем показом, а не
-       атрибутом hidden: им уже распоряжается renderPlayer, и два хозяина у
-       одного признака — это гарантированный спор. */
-    /* Очередь вместо панели трека. Оба селектора — по той же причине, что и
-       ниже: соседнее правило написано через :has(#player…), а :has считается по
-       самому весомому доводу внутри, и там id. */
-    .app.queue-open,
-    .app.queue-open:has(#player:not([hidden])) {
-        grid-template-columns: var(--rail-w, 232px) minmax(0, 1fr) 296px;
-        grid-template-areas:
-            "rail header aside"
-            "rail views  aside"
-            "bar  bar    bar";
-    }
-    /* Обложка уступает место: показывать их разом негде, а очередь человек
-       только что попросил. */
-    .app.queue-open #nowPanel { display: none; }
-
-    .app.queue-open .play-queue {
-        position: static;
-        grid-area: aside;
-        width: auto;
-        max-width: none;
-        max-height: none;
-        margin: 0;
-        border: 0;
-        border-left: 1px solid var(--line);
-        border-radius: 0;
-        box-shadow: none;
-    }
-
-    /* Оба селектора нужны: соседнее правило написано через :has(#player…),
-       а :has считается по самому весомому доводу внутри — там это id, и по
-       весу оно перебивало простой класс. */
-    .app.aside-off,
-    .app.aside-off:has(#player:not([hidden])) {
-        grid-template-columns: var(--rail-w, 232px) minmax(0, 1fr);
-        grid-template-areas:
-            "rail header"
             "rail views"
             "bar  bar";
+        column-gap: 0;
     }
-    .app.aside-off #nowPanel { display: none; }
-    /* Панель трека убрана, а очередь открыли — третья колонка нужна ей. Без
-       этого правила очередь с grid-area: aside попадала в сетку без такой
-       области, и раскладка разъезжалась. */
-    .app.aside-off.queue-open,
-    .app.aside-off.queue-open:has(#player:not([hidden])) {
-        grid-template-columns: var(--rail-w, 232px) minmax(0, 1fr) 296px;
-        grid-template-areas:
-            "rail header aside"
-            "rail views  aside"
-            "bar  bar    bar";
+    .app:has(#player[hidden]) {
+        grid-template-rows: minmax(0, 1fr);
+        grid-template-areas: "rail views";
     }
 
     /* Край панели. Узкая полоса поверх стыка: курсор меняется на «тянуть»,
@@ -1836,11 +1576,10 @@ html.sheet-lock, html.sheet-lock body { overflow: hidden; }
        названия, и ради них панель и держат открытой. Прячутся только заголовок
        и текст строк. */
     .app.rail-slim .tab span,
-    .app.rail-slim .rail-head,
     .app.rail-slim .rail-item .rail-text,
     .app.rail-slim .rail-foot { display: none; }
 
-    .app.rail-slim .rail-extra { padding: 0 6px 10px; }
+    
     .app.rail-slim .rail-item {
         justify-content: center;
         padding-left: 0;
@@ -1964,25 +1703,9 @@ html.sheet-lock, html.sheet-lock body { overflow: hidden; }
     .tab.is-active { background: var(--fill); color: var(--text); }
     .tab:hover:not(.is-active) { background: var(--fill-2); }
 
-    .rail-extra {
-        display: flex;
-        flex: 1 1 auto;
-        flex-direction: column;
-        min-height: 0;
-        padding: 0 12px 12px;
-    }
+    
 
-    .rail-head {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        padding: 14px 10px 6px;
-        color: var(--text-3);
-        font-size: 12px;
-        font-weight: 600;
-        border-top: 0;
-        margin-top: 6px;
-    }
+    
 
     /* «+» — новая подборка; раздела со своей кнопкой создания больше нет. */
     .rail-add {
@@ -2143,7 +1866,6 @@ html.sheet-lock, html.sheet-lock body { overflow: hidden; }
        a zero would say the track has none. */
     .now-fact.is-unknown b { color: var(--text-3); }
 
-
     /* The bar keeps only what a bar is for: the transport and the position. */
     /* Полоса плеера внизу: обложка и название слева, управление, перемотка и
        режимы справа. Обложка открывает текст песни. */
@@ -2232,13 +1954,6 @@ html.sheet-lock, html.sheet-lock body { overflow: hidden; }
     font-size: 12px;
 }
 
-.shuffle-row { margin-bottom: 12px; align-items: center; flex-wrap: nowrap; }
-/* Два запуска рядом и одинаковой ширины — серые плашки с акцентным текстом,
-   как «Слушать / Перемешать» у альбома. */
-.shuffle-row > button { flex: 1 1 0; min-width: 0; padding: 0 10px; background: var(--fill-2); color: var(--accent); font-weight: 650; font-size: 15px; justify-content: center; }
-.shuffle-row > .muted { flex: 0 1 auto; }
-.shuffle-row .muted { font-size: 12px; }
-
 /* Метка трека, которого нет в подборке: подобран из фонотеки. */
 .queue-outside {
   flex: none;
@@ -2260,12 +1975,7 @@ html.sheet-lock, html.sheet-lock body { overflow: hidden; }
   border-color: var(--accent);
 }
 
-
 /* ---------------- Проверка интерфейса 16.09: мелочи ---------------- */
-
-/* Две кнопки запуска со значком «играть» — чтобы не читались как переключатель. */
-.with-icon { display: inline-flex; align-items: center; gap: 8px; }
-.with-icon .icon { width: 13px; height: 13px; fill: currentColor; stroke: none; }
 
 .library-more { margin-top: 4px; }
 
@@ -2327,7 +2037,6 @@ html.sheet-lock, html.sheet-lock body { overflow: hidden; }
         font-size: 18px;
     }
 }
-
 
 /* Таймер сна: меню над кнопкой, число оставшихся минут — как «1» у повтора. */
 .sleep-wrap { position: relative; display: inline-flex; }
@@ -2476,3 +2185,405 @@ html.sheet-lock, html.sheet-lock body { overflow: hidden; }
     .switch, .switch::after { transition: none; }
     .row-menu { animation: none; }
 }
+
+/* ================= «Обложка» целиком (01.10.2026, вторая часть) =================
+   Экраны и навигация из варианта «Обложка» (образец — web/design/). */
+
+/* Кнопки экранов варианта — не «кнопки» плеера: общий button{} давал им
+   высоту 46, поля и серый фон. Сбрасываем до нуля; дальше их рисуют
+   перенесённые правила (они ниже и того же веса). */
+.o-card, .o-mood-open, .o-artist-row, .o-back, .o-link, .o-browse, .o-col-sub,
+.o-yt-ask, .o-seg-item, .side-item, .o-play-round, .o-mood-play {
+    min-height: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    transition: transform .12s ease-out, background-color .15s;
+}
+
+/* Обложка экранов варианта (у строк трека своя .cover). */
+.o-cover {
+    position: relative;
+    overflow: hidden;
+    aspect-ratio: 1;
+    border-radius: 8px;
+    background: linear-gradient(135deg, hsl(var(--ph-hue, 220) 35% 26%), hsl(calc(var(--ph-hue, 220) + 40) 40% 14%));
+}
+.o-cover::after { content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; box-shadow: inset 0 0 0 0.5px rgba(255, 255, 255, 0.12); }
+.o-cover > img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
+.o-cover.is-round { border-radius: 50%; }
+.o-cover-letter { display: grid; place-items: center; color: rgba(255, 255, 255, 0.7); font-size: 44px; font-weight: 700; }
+.o-cover.is-find { box-shadow: inset 0 0 0 1px var(--line-2); }
+
+/* ================= «Обложка»: экраны из варианта (design/v1.css) =================
+   Перенесено из образца как есть; переменные варианта сведены к токенам
+   плеера (--tint → --accent, --label → --text, --sep → --line-2), обложки
+   экранов — .o-cover (у строк трека своя .cover), граница компьютера — 1100. */
+.o-section { margin-top: 26px; }
+.o-section-head { display: flex; align-items: baseline; justify-content: space-between; padding: 0 16px 10px; }
+.o-section-head h2 { margin: 0; font-size: 22px; font-weight: 700; letter-spacing: -0.012em; }
+.o-section-note { margin: -4px 16px 12px; color: var(--text-2); font-size: 15px; }
+.o-link { color: var(--accent); font-size: 17px; }
+.o-link.is-danger { color: #ff453a; }
+.o-muted { color: var(--text-2); font-size: 15px; }
+.o-shelf { display: grid; grid-auto-flow: column; grid-auto-columns: 148px; gap: 12px;
+  overflow-x: auto; overscroll-behavior-x: contain; scroll-snap-type: x mandatory;
+  padding: 0 16px; scroll-padding: 0 16px; scrollbar-width: none; }
+.o-shelf::-webkit-scrollbar { display: none; }
+.o-shelf > * { scroll-snap-align: start; }
+.o-card { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.o-card .o-cover { width: 100%; }
+.o-card-title { font-size: 14px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
+.o-card-sub { font-size: 13px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: -4px; }
+.o-card:active .o-cover { transform: scale(0.97); }
+.o-card .o-cover { transition: transform 160ms ease-out; }
+.o-shelf.is-artists { grid-auto-columns: 112px; }
+.o-card.is-artist { align-items: center; text-align: center; }
+.o-card.is-artist .o-card-title, .o-card.is-artist .o-card-sub { max-width: 100%; }
+.o-shelf.is-moods { grid-auto-columns: min(78vw, 300px); }
+.o-mood { position: relative; }
+.o-mood-open { display: block; position: relative; width: 100%; aspect-ratio: 4 / 5; border-radius: 14px; overflow: hidden; }
+.o-mood-open .o-cover { position: absolute; inset: 0; width: 100%; height: 100%; aspect-ratio: auto; border-radius: 0; }
+.o-mood-shade { position: absolute; inset: 0; background: linear-gradient(180deg, transparent 40%, rgba(0, 0, 0, 0.82)); }
+.o-mood-text { position: absolute; left: 16px; right: 72px; bottom: 16px; display: flex; flex-direction: column; gap: 4px; }
+.o-mood-name { font-size: 28px; font-weight: 800; letter-spacing: -0.02em; line-height: 1.05; }
+.o-mood-hint { font-size: 14px; color: rgba(255, 255, 255, 0.78); }
+.o-mood-play { position: absolute; right: 14px; bottom: 14px; width: 46px; height: 46px; border-radius: 50%;
+  display: grid; place-items: center; color: #fff;
+  background: rgba(255, 255, 255, 0.2); -webkit-backdrop-filter: blur(20px) saturate(1.6); backdrop-filter: blur(20px) saturate(1.6); }
+.o-mood-play .ic { width: 22px; height: 22px; margin-left: 2px; }
+.o-mood-open:active { transform: scale(0.985); }
+.o-mood-open { transition: transform 160ms ease-out; }
+.o-picks { display: grid; grid-auto-flow: column; grid-template-rows: repeat(4, auto); grid-auto-columns: calc(100% - 44px);
+  overflow-x: auto; scroll-snap-type: x mandatory; scrollbar-width: none; padding-right: 16px; }
+.o-picks::-webkit-scrollbar { display: none; }
+.o-list { display: flex; flex-direction: column; }
+.o-row-text { display: flex; flex-direction: column; min-width: 0; gap: 1px; }
+.o-row-title, .o-row-sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.o-row-title { font-size: 16px; }
+.o-row-sub { font-size: 14px; color: var(--text-2); }
+.o-artist-row { display: grid; grid-template-columns: 48px minmax(0, 1fr) auto; align-items: center; gap: 12px;
+  padding: 8px 16px; min-height: 64px; color: var(--text);
+  background-image: linear-gradient(var(--line-2), var(--line-2)); background-size: calc(100% - 76px) 0.5px;
+  background-position: right bottom; background-repeat: no-repeat; }
+.o-artist-row .o-cover { width: 48px; height: 48px; }
+.o-chev { transform: rotate(180deg); color: var(--text-3); width: 18px !important; height: 18px !important; }
+.o-seg { display: flex; margin: 4px 16px 14px; padding: 2px; border-radius: 9px; background: var(--fill-2); }
+.o-seg-item { flex: 1; height: 32px; border-radius: 7px; text-align: center !important; font-size: 14px; font-weight: 500; color: var(--text); }
+.o-seg-item.is-on { background: #636366; box-shadow: 0 3px 8px rgba(0, 0, 0, 0.25); font-weight: 600; }
+.o-actions { display: flex; gap: 12px; padding: 6px 16px 10px; align-items: center; }
+.o-actions.is-center { justify-content: center; }
+.o-actions.is-quiet { gap: 22px; padding-top: 2px; }
+.o-capsule { flex: 1; height: 48px; border-radius: 12px; display: inline-flex; align-items: center; justify-content: center !important; gap: 8px;
+  background: var(--fill-2); color: var(--accent) !important; font-size: 17px; font-weight: 600; max-width: 220px;
+  transition: transform 120ms ease-out, background-color 160ms ease-out; }
+.o-capsule .ic { width: 20px; height: 20px; }
+.o-capsule .ic-play [data-fill] { fill: var(--accent); }
+.o-capsule:active { transform: scale(0.97); background: var(--fill); }
+.o-capsule.is-tint { background: var(--accent); color: #000 !important; }
+.o-capsule.is-small { flex: none; height: 32px; padding: 0 14px; font-size: 14px; border-radius: 16px; margin-right: 16px; }
+.o-list-head { display: flex; justify-content: space-between; align-items: baseline; padding: 4px 16px 6px; color: var(--text-2); font-size: 15px; }
+.o-list-head .o-link { font-size: 15px; }
+.o-backbar { position: sticky; top: 0; z-index: 5; padding: 6px 8px; }
+.o-back { display: inline-flex; align-items: center; gap: 2px; height: 40px; padding: 0 8px 0 2px; color: var(--accent); font-size: 17px; }
+.o-back .ic { width: 26px; height: 26px; stroke-width: 2.2; }
+.o-col-head { display: flex; flex-direction: column; align-items: center; text-align: center; padding: 6px 16px 14px; }
+.o-col-art { width: min(68vw, 270px); }
+.o-col-art .o-cover { width: 100%; border-radius: 10px; box-shadow: 0 18px 40px rgba(0, 0, 0, 0.55); }
+.o-col-title { margin: 18px 0 2px; font-size: 22px; font-weight: 700; letter-spacing: -0.01em; text-wrap: balance; }
+.o-col-sub { color: var(--accent); font-size: 20px; text-align: center !important; }
+.o-col-sub:disabled { color: var(--text-2); font-size: 16px; cursor: default; }
+.o-col-meta { margin: 6px 0 10px; color: var(--text-2); font-size: 13px; }
+.o-col-head .o-actions { width: 100%; padding-left: 0; padding-right: 0; }
+.o-hero { position: relative; width: 100%; aspect-ratio: 1; max-height: 64dvh; overflow: hidden; }
+.o-hero > .o-cover { position: absolute; inset: 0; width: 100%; height: 100%; aspect-ratio: auto; border-radius: 0; }
+.o-hero > .o-cover::after { display: none; }
+.o-hero-shade { position: absolute; inset: 0; background: linear-gradient(180deg, rgba(0, 0, 0, 0.35) 0%, transparent 25%, transparent 50%, #000 100%); }
+.o-back-float { position: absolute; top: 8px; left: 8px; width: 40px; padding: 0; justify-content: center; border-radius: 50%; color: #fff;
+  background: rgba(0, 0, 0, 0.32); -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px); }
+.o-hero-text { position: absolute; left: 16px; right: 16px; bottom: 14px; display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; }
+.o-hero-text h1 { margin: 0; font-size: clamp(32px, 9vw, 56px); font-weight: 800; letter-spacing: -0.03em; line-height: 1; text-wrap: balance; }
+.o-play-round { width: 54px; height: 54px; flex: none; border-radius: 50%; display: grid; place-items: center; background: var(--accent); color: #000; }
+.o-play-round .ic { width: 24px; height: 24px; margin-left: 3px; }
+.o-artist .o-actions .o-capsule { flex: none; padding: 0 22px; }
+.o-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(148px, 1fr)); gap: 18px 14px; padding: 0 16px; }
+.o-grid .o-card-title { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.o-search { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 6px;
+  margin: 0 16px; padding: 0 10px; height: 40px; border-radius: 11px; background: #1c1c1e; color: var(--text-2);
+  box-shadow: 0 -12px 0 #000; }
+.o-search .ic { width: 18px; height: 18px; }
+.o-search-input { flex: 1; min-width: 0; height: 100%; border: 0; outline: 0; background: none; color: var(--text); font-size: 17px; }
+.o-search-input::placeholder { color: var(--text-3); }
+.o-browse-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 0 16px; }
+.o-browse { position: relative; height: 104px; border-radius: 10px; overflow: hidden; text-align: left; }
+.o-browse .o-cover { position: absolute; inset: 0; width: 100%; height: 100%; aspect-ratio: auto; border-radius: 0; filter: saturate(1.2); }
+.o-browse::after { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, rgba(0, 0, 0, 0.75), rgba(0, 0, 0, 0.1)); }
+.o-browse span { position: absolute; left: 12px; bottom: 10px; z-index: 1; font-weight: 700; font-size: 17px; }
+.o-yt { margin: 22px 16px 0; }
+.o-yt-ask { display: flex; align-items: center; gap: 10px; width: 100%; padding: 14px; border-radius: 12px; background: var(--fill-2); color: var(--accent); font-size: 16px; }
+.o-yt .o-section { margin-left: -16px; margin-right: -16px; }
+.o-empty { padding: 48px 24px; text-align: center; color: var(--text-2); }
+.o-empty p { margin: 0 auto 16px; max-width: 34ch; font-size: 17px; }
+.o-empty .o-capsule { margin: 0 auto; }
+
+@media (hover: hover) and (pointer: fine) {
+    .o-artist-row:hover { background-color: rgba(255, 255, 255, 0.05); }
+    .o-card:hover .o-cover { transform: scale(1.02); }
+}
+
+@media (min-width: 1100px) {
+    .o-shelf { grid-auto-columns: 176px; gap: 18px; }
+    .o-shelf.is-moods { grid-auto-columns: 280px; }
+    .o-picks { grid-auto-columns: 380px; gap: 0 24px; }
+    .o-grid { grid-template-columns: repeat(auto-fill, minmax(176px, 1fr)); gap: 26px 20px; }
+    .o-backbar { top: 0; }
+    .o-search { top: 0; max-width: 560px; }
+    .o-col-head { flex-direction: row; flex-wrap: wrap; align-items: flex-end; text-align: left; gap: 0 28px; padding: 10px 16px 24px; }
+    .o-col-art { width: 260px; }
+    .o-col-head > :not(.o-col-art) { flex-basis: calc(100% - 290px); }
+    .o-col-head { display: grid; grid-template-columns: 260px minmax(0, 1fr); grid-template-rows: auto auto auto auto 1fr; align-items: start; }
+    .o-col-art { grid-row: 1 / span 6; }
+    .o-col-title { margin-top: 70px; font-size: 30px; }
+    .o-col-sub { text-align: left !important; }
+    .o-col-head .o-actions { justify-content: flex-start; }
+    .o-hero { aspect-ratio: auto; height: 380px; border-radius: 14px; }
+    .o-browse-grid { grid-template-columns: repeat(4, 1fr); }
+}
+
+/* Поля. В варианте страница шла от края экрана, а у плеера поля 16 на .app;
+   экраны варианта выходят к краю (их полки и заголовки сами держат 16). */
+#homeBody, #artistBody, #albumBody, #moodBody, #playlistsBody, #searchBody { margin-inline: -16px; }
+#viewSearch > .o-search { margin-inline: 0; }
+#viewLibrary > .o-seg { margin-inline: 0; }
+#viewLibrary > .o-actions,
+#viewLibrary > .o-list-head { padding-inline: 0; }
+#library .o-list { margin-inline: -16px; }
+#library .o-grid { padding: 0; }
+/* Строки трека внутри экранов варианта — с полями 16, как строки варианта. */
+.o-rows { padding-inline: 16px; }
+.o-picks > .track { padding-left: 16px; }
+.o-artist-row .icon { width: 18px; height: 18px; color: var(--text-3); }
+.o-artist-row .o-cover { width: 48px; height: 48px; }
+.o-capsule .icon { width: 20px; height: 20px; }
+.o-empty { padding: 48px 24px; text-align: center; color: var(--text-2); }
+.o-empty p { margin: 0 auto 16px; max-width: 34ch; font-size: 17px; }
+.o-empty .o-capsule { margin: 0 auto; }
+.o-section:first-child { margin-top: 6px; }
+
+/* Шапка раздела: крупный заголовок; «+» — добавить музыку (на главной и в
+   фонотеке, как в варианте), справа — состояние службы. Поле фильтра — у
+   фонотеки; у подборки оно переезжает под её шапку (views.js). */
+.topbar { flex-wrap: wrap; align-items: center; padding: 14px 0 12px; }
+.topbar .brand { flex: 1 1 auto; }
+.brand p { display: none; }
+.top-actions { display: flex; align-items: center; gap: 8px; }
+.top-add { color: var(--accent); }
+.top-add .icon { width: 26px; height: 26px; }
+.app:not([data-view="viewHome"]):not([data-view="viewLibrary"]):not([data-view="viewPlaylists"]) .top-add { display: none; }
+#statusPill { min-height: 0; border: 0; cursor: pointer; }
+.topbar .search { display: none; order: 3; flex: 1 0 100%; margin: 12px 0 0; }
+.app[data-view="viewLibrary"] .topbar .search { display: flex; }
+#viewPlaylist .search { display: flex; margin: 4px 0 12px; }
+.app[data-view="viewArtist"] .topbar,
+.app[data-view="viewAlbum"] .topbar,
+.app[data-view="viewMood"] .topbar,
+.app[data-view="viewPlaylist"] .topbar { display: none; }
+.app[data-view="viewSearch"] .topbar .top-actions { display: none; }
+
+/* Правой колонки «что играет» больше нет: обложка, текст и очередь — в
+   большом плеере. Узел остаётся: player.js ведёт по нему обложку и цифры. */
+#nowPanel { display: none !important; }
+#playerAsideButton { display: none !important; }
+
+/* Телефон: четыре вкладки, левая панель не видна. */
+.side { display: none; }
+
+@media (max-width: 1099.98px) {
+    /* Шапка подборки и страниц варианта без заголовка раздела — сверху им
+       нужен отступ под часы айфона, который давала шапка. */
+    .app[data-view="viewArtist"] #views,
+    .app[data-view="viewAlbum"] #views,
+    .app[data-view="viewMood"] #views,
+    .app[data-view="viewPlaylist"] #views { padding-top: 0; }
+    .o-hero { margin-top: calc(-10px - env(safe-area-inset-top, 0px)); }
+}
+
+@media (min-width: 1100px) {
+    /* Страница прокручивается целиком, шапка — её часть. */
+    #views { padding: 6px 28px 40px; }
+    #views > * { max-width: 1240px; }
+    .topbar { grid-area: auto; padding: 22px 0 12px; border-bottom: 0; }
+    .brand h1 { font-size: 34px; }
+    .tabbar { display: none; }
+
+    /* Левая панель варианта. */
+    .side {
+        display: flex;
+        flex-direction: column;
+        gap: 1px;
+        min-height: 0;
+        height: 100%;
+        padding: 10px 10px 12px;
+        overflow-y: auto;
+        scrollbar-width: thin;
+    }
+    .rail { background: rgba(28, 28, 30, 0.55); box-shadow: inset -0.5px 0 0 var(--line-2); }
+    .rail-toggle { align-self: flex-end; margin: 0 0 6px; }
+    .side-search {
+        display: flex; align-items: center; gap: 6px; height: 32px; padding: 0 9px; margin-bottom: 12px;
+        border-radius: 8px; background: var(--fill-2); color: var(--text-3); cursor: text;
+    }
+    .side-search .icon { width: 16px; height: 16px; flex: none; }
+    .side-search input { flex: 1; min-width: 0; height: 100%; padding: 0; border: 0; background: none; color: var(--text); font-size: 15px; outline: 0; }
+    .side-item {
+        display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; border-radius: 8px;
+        font-size: 15px; color: var(--text); white-space: nowrap; min-width: 0;
+    }
+    .side-item .icon { width: 20px; height: 20px; color: var(--accent); flex: none; }
+    .side-item span { overflow: hidden; text-overflow: ellipsis; }
+    .side-item.is-active { background: var(--fill); }
+    .side-item:hover:not(.is-active) { background: var(--fill-2); }
+    .side-label { margin: 16px 10px 4px; font-size: 13px; font-weight: 600; color: var(--text-3); }
+    .side-label-row { display: flex; align-items: center; justify-content: space-between; padding-right: 4px; }
+    .side-label-row .side-label { margin-bottom: 4px; }
+    .rail-list { flex: 0 1 auto; overflow-y: auto; min-height: 0; }
+    .rail-item { gap: 10px; padding: 5px 10px; }
+    .rail-item .rail-art { width: 26px; height: 26px; border-radius: 4px; font-size: 11px; }
+    .rail-item small { display: none; }
+    .rail-item b { font-size: 15px; font-weight: 400; color: var(--text); }
+    .rail-foot { margin-top: auto; border-top: 0; padding: 8px 10px; }
+    #sideService { margin-top: 0; }
+
+    .app.rail-slim .side-item span,
+    .app.rail-slim .side-label,
+    .app.rail-slim .side-label-row,
+    .app.rail-slim .side-search,
+    .app.rail-slim .rail-item .rail-text,
+    .app.rail-slim .rail-foot { display: none; }
+    .app.rail-slim .side-item, .app.rail-slim .rail-item { justify-content: center; padding: 0; }
+    .app.rail-slim .side { padding-inline: 6px; }
+    .app.rail-slim .rail-toggle { align-self: center; }
+    .app.rail-slim .rail-list { margin-top: 12px; }
+
+    /* Полоса плеера внизу — в материале варианта. */
+    .player { background: rgba(22, 22, 24, 0.94); }
+
+    /* «Сейчас играет» на компьютере — во всё окно, как в варианте: обложка,
+       название и управление слева, текст или очередь справа. */
+    .app.player-open .player {
+        grid-template-columns: minmax(300px, 440px) minmax(0, 1fr);
+        grid-template-rows: auto minmax(0, 1fr) auto auto auto auto auto auto;
+        grid-template-areas:
+            "grab     grab"
+            "art      panel"
+            "track    panel"
+            "seek     panel"
+            "times    panel"
+            "controls panel"
+            "modes    panel"
+            "volume   panel";
+        column-gap: 72px;
+        padding: 0 56px 32px;
+    }
+    .app.player-open .player-grab { justify-content: start; height: 52px; }
+    .app.player-open .player-grab i { width: 22px; height: 22px; background: none; border: solid rgba(255, 255, 255, 0.7);
+        border-width: 0 2.5px 2.5px 0; transform: rotate(45deg) translate(-4px, -4px); border-radius: 1px; }
+    .app.player-open .player-art,
+    .app.player-open .player.is-lyrics .player-art,
+    .app.player-open .player.is-queue .player-art { display: block; grid-area: art; width: min(100%, 52vh); align-self: end; }
+    .app.player-open .player-panel { grid-area: panel; display: flex; flex-direction: column; margin: 0; }
+    .app.player-open .player-track { grid-area: track; }
+    .app.player-open .player-more { grid-area: track; justify-self: end; align-self: end; }
+    .app.player-open #playerSeek { grid-area: seek; }
+    .app.player-open #playerElapsed { grid-area: times; }
+    .app.player-open #playerTotal { grid-area: times; justify-self: end; }
+    .app.player-open .player-panel #viewLyrics .lyrics-body { padding: 30vh 8px 30vh; }
+    .app.player-open .lyric { font-size: 40px; }
+}
+
+/* Строка трека — две строчки, как в варианте: название и исполнитель.
+   Альбом виден на его странице и в «⋯». В пронумерованном списке альбома
+   вместо обложки — номер. */
+.track-album { display: none; }
+.o-rows.is-numbered .cover { display: none; }
+.o-rows.is-numbered .album-track-number { width: 32px; text-align: center; font-size: 15px; color: var(--text-2); }
+.track-time { display: none; color: var(--text-3); font-size: 14px; font-variant-numeric: tabular-nums; margin-left: auto; padding-left: 8px; }
+@media (min-width: 1100px) {
+    .track-time { display: block; }
+    .topbar .search { flex: 1 0 100%; max-width: 560px; margin: 12px 0 0; }
+}
+@media (min-width: 1100px) {
+    /* «⋯» стоит в одной ячейке с названием — название уступает ему место. */
+    .app.player-open .player-track { padding-right: 54px; }
+}
+
+/* Длительность строки подборки — справа, как в фонотеке (на телефоне её нет). */
+.playlist-track .track-duration { display: none; }
+@media (min-width: 1100px) {
+    .playlist-track .track-info { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 12px; }
+    .playlist-track .track-info > :not(.track-duration) { grid-column: 1; }
+    .playlist-track .track-duration { display: block; grid-column: 2; grid-row: 1 / span 2; align-self: center; color: var(--text-3); font-variant-numeric: tabular-nums; }
+}
+/* Поле поиска: без тени-заслонки варианта (там она прикрывала шапку при
+   прокрутке) и с серым крестиком вместо синего системного. */
+.o-search { box-shadow: none; }
+.o-search-input::-webkit-search-cancel-button { filter: grayscale(1) brightness(1.6); }
+
+/* «Слушать / Перемешать» и счётчик — только у треков, как в варианте. */
+#viewLibrary:not([data-mode="tracks"]) > .library-actions,
+#viewLibrary:not([data-mode="tracks"]) > #shuffleNote { display: none; }
+
+/* Плашка «‹ Назад» липнет к верху — с подложкой, иначе при прокрутке она
+   ложилась поверх строк; на телефоне — ниже часов. */
+/* Отрицательные поля — только у подборки: тела альбома и настроения уже
+   вынесены к краю (#albumBody, #moodBody), и вторые −16 делали страницу
+   шире экрана — нижние вкладки уезжали. */
+.o-backbar {
+    top: 0;
+    margin-inline: 0;
+    padding: calc(6px + env(safe-area-inset-top, 0px)) 16px 6px;
+    background: rgba(0, 0, 0, 0.72);
+    -webkit-backdrop-filter: var(--blur);
+    backdrop-filter: var(--blur);
+}
+#viewPlaylist > .o-backbar { margin-inline: -16px; margin-top: calc(-10px - env(safe-area-inset-top, 0px)); }
+
+/* Цифры трека — в большом плеере на компьютере, под названием. */
+.player-facts { display: none; }
+@media (min-width: 1100px) {
+    .o-backbar { padding-top: 6px; }
+    #viewPlaylist > .o-backbar { margin-inline: -28px; padding-inline: 28px; margin-top: -6px; }
+    /* На компьютере «Добавить» — в левой панели; «+» в заголовке остаётся
+       только у подборок (новая подборка). */
+    .app[data-view="viewHome"] .top-add,
+    .app[data-view="viewLibrary"] .top-add { display: none; }
+    .app.player-open .player {
+        grid-template-areas:
+            "grab     grab"
+            "art      panel"
+            "track    panel"
+            "facts    panel"
+            "seek     panel"
+            "times    panel"
+            "controls panel"
+            "modes    panel"
+            "volume   panel";
+        grid-template-rows: auto minmax(0, 1fr) auto auto auto auto auto auto auto;
+    }
+    .app.player-open .player-facts { display: block; grid-area: facts; padding-top: 10px; }
+    .player-facts .now-facts { display: flex; gap: 8px; margin: 0; }
+    .player-facts .now-fact { padding: 5px 10px; border-radius: 999px; background: rgba(255, 255, 255, 0.1); display: flex; gap: 6px; align-items: baseline; }
+    .player-facts .now-fact b { font-size: 13px; }
+    .player-facts .now-fact small { font-size: 12px; color: rgba(255, 255, 255, 0.6); }
+}
+/* «+» в заголовке «Подборок» виден везде — это и есть «новая подборка». */
+.app[data-view="viewPlaylists"] .top-add { display: grid; }
+
+/* Шапка подборки: «Слушать», «Перемешать» и «⋯» — одним рядом, как в
+   варианте (общее .row.wrap переносило «⋯» на свою строку). */
+.playlist-meta .row.wrap { flex-wrap: nowrap; }
+.playlist-meta .row > .o-capsule { flex: 1 1 0; min-width: 0; }

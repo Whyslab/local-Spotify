@@ -1952,7 +1952,15 @@ def index():
     """
     web = runtime.PROJECT.parent / "web"
     html = (web / "index.html").read_text(encoding="utf-8")
-    for name in ("style.css", "app.js", "player.js", "offline.js", "look.js", "fonts/fonts.css"):
+    for name in (
+        "style.css",
+        "app.js",
+        "player.js",
+        "offline.js",
+        "look.js",
+        "views.js",
+        "fonts/fonts.css",
+    ):
         path = web / name
         if not path.is_file():
             continue

@@ -42,24 +42,30 @@ function toHsl([r, g, b]) {
 function applyTint() {
     const app = document.querySelector(".app");
     if (!app) return;
-    /* Почти серая обложка (насыщенность ниже 15%) цвета не даёт: серый акцент
-     * был тусклее белого текста, и играющая строка терялась. Тогда — как без
-     * цвета, белым. */
-    const on = tintEnabled() && tintRgb && toHsl(tintRgb)[1] >= 15;
     for (const box of document.querySelectorAll("#coverTintSwitch")) box.checked = tintEnabled();
-    if (!on) {
+    if (!tintEnabled()) {
         app.classList.remove("is-tinted");
         for (const name of ["--tint", "--tint-deep", "--tint-mid"]) app.style.removeProperty(name);
         document.documentElement.style.removeProperty("--glow");
         return;
     }
-    const [h, s] = toHsl(tintRgb);
-    const sat = Math.max(55, Math.min(90, s + 20));
-    app.style.setProperty("--tint", `hsl(${h} ${sat}% 74%)`);
+    /* Ничего не играет или обложка почти серая (насыщенность ниже 15%) —
+     * малиновый «Обложки», как в варианте: серый акцент был тусклее белого
+     * текста, и играющая строка терялась. */
+    let h = 350, sat = 92, real = false;
+    if (tintRgb && toHsl(tintRgb)[1] >= 15) {
+        const [hue, s] = toHsl(tintRgb);
+        h = hue;
+        sat = Math.max(55, Math.min(90, s + 20));
+        real = true;
+    }
+    app.style.setProperty("--tint", `hsl(${h} ${sat}% 72%)`);
     app.style.setProperty("--tint-deep", `hsl(${h} ${Math.min(sat, 55)}% 14%)`);
     app.style.setProperty("--tint-mid", `hsl(${(h + 18) % 360} ${Math.min(sat, 60)}% 28%)`);
-    /* Подсветка за шапкой — у body, вне .app: ей цвет отдаётся отдельно. */
-    document.documentElement.style.setProperty("--glow", `hsl(${h} ${sat}% 60%)`);
+    /* Подсветка за шапкой — у body, вне .app: ей цвет отдаётся отдельно.
+     * Только от настоящей обложки: без неё в «Обложке» подсветки нет. */
+    if (real) document.documentElement.style.setProperty("--glow", `hsl(${h} ${sat}% 60%)`);
+    else document.documentElement.style.removeProperty("--glow");
     app.classList.add("is-tinted");
 }
 
@@ -130,22 +136,23 @@ function sheetOpen() {
 }
 
 function expandPlayer(from) {
-    if (WIDE.matches) {
-        /* На компьютере большой обложке есть место в правой колонке, а
-         * нажатие по мини-обложке ведёт к тексту — туда же, куда кнопка.
-         * Нажатие по названию там ничего не делает: его выделяют мышью. */
-        if (from === "art") toggleLyricsView();
-        return;
-    }
+    /* На компьютере название в полосе выделяют мышью — раскрывает только
+     * обложка (и кнопки текста и очереди). */
+    if (WIDE.matches && from === "track") return;
     const app = document.querySelector(".app");
     if (!app || sheetOpen() || document.getElementById("player").hidden) return;
     app.classList.add("player-open");
     document.documentElement.classList.add("sheet-lock");
     setModal(true);
+    const facts = document.getElementById("nowFacts");
+    if (facts) borrow(facts, document.getElementById("playerFacts"));
     /* Своя запись в истории: «назад» на телефоне сворачивает плеер, а не
      * уводит со страницы. */
     history.pushState({ playerOpen: true }, "");
     document.getElementById("playerGrab").focus({ preventScroll: true, focusVisible: false });
+    /* На компьютере справа место под текст — открываем сразу его, как в
+     * варианте; на телефоне — большая обложка. */
+    if (WIDE.matches && !sheetPanel) showInSheet("lyrics");
 }
 
 /* Раскрытый плеер — окно поверх страницы: диктор называет его диалогом, а
@@ -177,12 +184,19 @@ function collapsePlayer(fromHistory) {
     const bar = document.getElementById("player");
     const hadFocus = bar.contains(document.activeElement) || document.activeElement === document.body;
     showInSheet(null);
+    const facts = document.getElementById("nowFacts");
+    if (facts) giveBack(facts);
     app.classList.remove("player-open");
     document.documentElement.classList.remove("sheet-lock");
     setModal(false);
     /* Фокус — туда, откуда плеер открывали, а не в начало страницы. */
     if (hadFocus && !bar.hidden) document.getElementById("playerArt").focus({ preventScroll: true, focusVisible: false });
-    if (!fromHistory && history.state && history.state.playerOpen) history.back();
+    if (!fromHistory && history.state && history.state.playerOpen) {
+        /* Переход сразу после сворачивания (к артисту, в подборку) должен
+         * дождаться этого возврата — views.js смотрит на флаг. */
+        window.sheetBackPending = true;
+        history.back();
+    }
 }
 
 window.addEventListener("popstate", () => {
@@ -254,20 +268,27 @@ function showInSheet(kind) {
  * (текст в середине, очередь в правой колонке), на телефоне — внутри
  * большого плеера. */
 function playerLyrics() {
-    if (WIDE.matches) { toggleLyricsView(); return; }
-    if (!sheetOpen()) expandPlayer();
-    showInSheet(sheetPanel === "lyrics" ? null : "lyrics");
+    const wasOpen = sheetOpen();
+    if (!wasOpen) expandPlayer();
+    if (!wasOpen && sheetPanel === "lyrics") return;
+    /* На компьютере правая половина пустой не остаётся: «выключить текст»
+     * там значит закрыть большой плеер. */
+    if (sheetPanel === "lyrics") { if (WIDE.matches) collapsePlayer(); else showInSheet(null); return; }
+    showInSheet("lyrics");
 }
 
 function playerQueue() {
-    if (WIDE.matches) { toggleQueuePanel(); return; }
-    if (!sheetOpen()) expandPlayer();
-    showInSheet(sheetPanel === "queue" ? null : "queue");
+    const wasOpen = sheetOpen();
+    if (!wasOpen) expandPlayer();
+    if (sheetPanel === "queue") { if (WIDE.matches) showInSheet("lyrics"); else showInSheet(null); return; }
+    showInSheet("queue");
 }
 
-/* Повернули телефон или растянули окно до широкой раскладки — большой
- * плеер сворачивается, иначе он закрыл бы раскладку, где ему нет места. */
-WIDE.addEventListener("change", () => { if (WIDE.matches) collapsePlayer(); });
+/* Сменилась раскладка, пока плеер раскрыт: на компьютере справа должен
+ * быть текст или очередь, на телефоне пустая панель не мешает. */
+WIDE.addEventListener("change", () => {
+    if (sheetOpen() && WIDE.matches && !sheetPanel) showInSheet("lyrics");
+});
 
 /* Очередь опустела — сворачивать нечего показывать. */
 new MutationObserver(() => {

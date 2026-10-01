@@ -588,7 +588,7 @@ def test_album_search_lists_choices_and_downloads_the_chosen_one(page):
     page.route("**/api/import-album", import_album)
     page.evaluate("switchView('viewAdd')")
     page.fill("#searchQuery", "radiohead ok computer")
-    page.get_by_role("button", name="Альбом").click()
+    page.locator("#viewAdd").get_by_role("button", name="Альбом", exact=True).click()
     page.get_by_role("button", name="Скачать альбом").click()
 
     page.wait_for_selector("#searchNote:has-text('в очередь 11')")
@@ -617,12 +617,23 @@ def test_a_duplicate_pair_is_shown_and_can_be_kept_both(page):
     assert db.db_query("SELECT warning FROM tasks WHERE id = ?", (tid,))[0]["warning"] is None
 
 
-# --- Подборки без своего раздела, «⋯» у строк фонотеки (30.09.2026) -------
+# --- «⋯» у строк фонотеки (30.09.2026); подборки — свой раздел снова (01.10) --
 
 
-def test_there_is_no_playlists_tab_or_page(page):
-    assert page.locator('.tab[data-view="viewPlaylists"]').count() == 0
-    assert page.locator("#viewPlaylists").count() == 0
+def test_all_playlists_are_a_tab_with_a_grid(page, server):
+    (server["root"] / "Сетка.m3u").write_text("Quiet/Singles/Quiet.m4a\n", encoding="utf-8")
+    page.set_viewport_size({"width": 390, "height": 844})
+    page.evaluate("playlists()")
+    page.wait_for_function("knownPlaylists.some(p => p.name === 'Сетка')")
+    page.locator('.tab[data-view="viewPlaylists"]').click()
+    page.wait_for_function("activeView === 'viewPlaylists'")
+    card = page.locator("#playlistsBody .o-card").filter(has_text="Сетка")
+    card.click()
+    page.wait_for_function("activeView === 'viewPlaylist'")
+    assert page.locator("#playlistName").inner_text() == "Сетка"
+    # «Назад» возвращает к сетке — шагом истории, как жест на телефоне.
+    page.go_back()
+    page.wait_for_function("activeView === 'viewPlaylists'")
 
 
 def test_a_library_row_has_one_menu_button_with_four_actions(page):
@@ -658,17 +669,16 @@ def test_an_empty_name_says_so_instead_of_doing_nothing(page):
     assert "Впиши название" in dialog.inner_text()
 
 
-def test_on_a_phone_playlists_are_in_the_more_menu(page, server):
-    (server["root"] / "Телефон.m3u").write_text("Quiet/Singles/Quiet.m4a\n", encoding="utf-8")
+def test_on_a_phone_the_four_tabs_are_home_library_playlists_search(page):
     page.set_viewport_size({"width": 390, "height": 844})
-    page.evaluate("playlists()")
-    page.wait_for_function("knownPlaylists.some(p => p.name === 'Телефон')")
-    page.locator("#moreTab").click()
-    menu = page.locator("#moreMenu")
-    assert menu.get_by_role("menuitem", name="+ Новая подборка…").count() == 1
-    menu.get_by_role("menuitem", name="Телефон").click()
-    page.wait_for_function("activeView === 'viewPlaylist'")
-    assert page.locator("#playlistName").inner_text() == "Телефон"
+    tabs = page.locator(".tabbar .tab").all_inner_texts()
+    assert [t.strip() for t in tabs] == ["Главная", "Фонотека", "Подборки", "Поиск"]
+    # «Добавить» — плюс в заголовке, «Служба» — по нажатию на состояние.
+    page.locator("#topAdd").click()
+    page.wait_for_function("activeView === 'viewAdd'")
+    page.evaluate("switchView('viewHome')")
+    page.locator("#statusPill").click()
+    page.wait_for_function("activeView === 'viewService'")
 
 
 def test_playlist_rows_have_no_dots_but_still_drag(page, server):
@@ -839,3 +849,114 @@ def test_a_track_twice_in_a_playlist_is_shown_at_the_copy_that_plays(page, serve
     page.evaluate("revealTrack(player.queue[2])")
     page.wait_for_function("activeView === 'viewPlaylist'")
     assert page.locator("#playlistTracks .is-found").get_attribute("data-index") == "2"
+
+
+# --- Экраны «Обложки»: артисты, альбомы, поиск, главная (01.10.2026) ---------
+
+
+def test_artists_open_an_artist_page_and_back_returns(page):
+    page.evaluate("openLibrary('artists')")
+    page.wait_for_selector("#library .o-artist-row")
+    names = page.locator("#library .o-artist-row .o-row-title").all_inner_texts()
+    assert {"Loud Band", "Quiet"} <= set(names)
+    page.locator("#library .o-artist-row").filter(has_text="Loud Band").click()
+    page.wait_for_function("activeView === 'viewArtist'")
+    assert page.locator("#artistBody h1").inner_text() == "Loud Band"
+    assert page.locator("#artistBody .track-title").all_inner_texts() == ["Loud"]
+    # У артиста без альбомов не должно остаться пустого места словом «null».
+    assert "null" not in page.locator("#artistBody").inner_text()
+    page.go_back()
+    page.wait_for_function("activeView === 'viewLibrary' && libraryMode === 'artists'")
+
+
+def test_an_album_page_lists_its_tracks_in_order(page, server):
+    from adder import enrich as enrich_module
+
+    for title, number in (("One", 1), ("Two", 2)):
+        path = server["root"] / f"Duo/Singles/{title}.opus"
+        _track(server["root"], f"Duo/Singles/{title}.opus", "Duo", title, 2, gain=None)
+        ingest.write_tags(
+            path,
+            enrich_module.TrackInfo(album="Pair", artists=["Duo"], track_number=number),
+            title,
+            None,
+            None,
+        )
+    library.invalidate_library_index()
+    page.evaluate("labTracks = null")
+    page.evaluate("openLibrary('albums')")
+    page.wait_for_selector("#library .o-grid .o-card")
+    page.locator("#library .o-card").filter(has_text="Pair").click()
+    page.wait_for_function("activeView === 'viewAlbum'")
+    assert page.locator("#albumBody .o-col-title").inner_text() == "Pair"
+    assert page.locator("#albumBody .track-title").all_inner_texts() == ["One", "Two"]
+
+
+def test_search_finds_artists_and_tracks_in_the_library(page):
+    page.evaluate("switchView('viewSearch')")
+    page.locator("#searchEverywhere").fill("loud")
+    page.wait_for_selector("#searchBody .track-title")
+    assert "Loud" in page.locator("#searchBody .track-title").all_inner_texts()
+    assert page.locator("#searchBody .o-card.is-artist").filter(has_text="Loud Band").count() == 1
+    # Чего нет в фонотеке — тем же запросом на YouTube, во «Добавить».
+    assert page.locator("#searchBody .o-yt-ask").count() == 1
+
+
+def test_shuffle_offers_plain_and_smart(page):
+    open_library(page)
+    page.locator("#libraryShuffle").click()
+    items = page.get_by_role("menuitem").all_inner_texts()
+    assert [i.split("\n")[0] for i in items] == ["Обычное", "Умное"]
+    page.keyboard.press("Escape")
+    assert page.get_by_role("menuitem").count() == 0
+
+
+def test_back_after_switching_tabs_returns_to_that_tab(page, server):
+    (server["root"] / "Вкладки.m3u").write_text("Quiet/Singles/Quiet.m4a\n", encoding="utf-8")
+    page.set_viewport_size({"width": 390, "height": 844})
+    page.evaluate("playlists()")
+    page.wait_for_function("knownPlaylists.some(p => p.name === 'Вкладки')")
+    page.evaluate("openLibrary('artists')")
+    page.wait_for_selector("#library .o-artist-row")
+    # Шаг вглубь и обратно: теперь у текущей записи истории есть свой раздел…
+    page.locator("#library .o-artist-row").first.click()
+    page.wait_for_function("activeView === 'viewArtist'")
+    page.go_back()
+    page.wait_for_function("activeView === 'viewLibrary'")
+    # …и смена вкладки обязана его переписать.
+    page.locator('.tab[data-view="viewPlaylists"]').click()
+    page.locator("#playlistsBody .o-card").filter(has_text="Вкладки").click()
+    page.wait_for_function("activeView === 'viewPlaylist'")
+    page.go_back()
+    page.wait_for_function("activeView !== 'viewPlaylist'")
+    assert page.evaluate("activeView") == "viewPlaylists"
+
+
+def test_a_new_playlist_is_made_from_the_playlists_tab_on_a_phone(page):
+    page.set_viewport_size({"width": 390, "height": 844})
+    page.locator('.tab[data-view="viewPlaylists"]').click()
+    page.wait_for_function("activeView === 'viewPlaylists'")
+    page.locator("#topAdd").click()
+    assert page.get_by_role("dialog", name="Новая подборка").count() == 1
+
+
+def test_a_deep_page_opens_at_its_top(page):
+    page.set_viewport_size({"width": 390, "height": 844})
+    page.evaluate("openLibrary('tracks')")
+    page.wait_for_selector("#library .track")
+    page.evaluate("document.body.style.minHeight = '5000px'; window.scrollTo(0, 1500)")
+    page.evaluate("openArtistPage('Quiet')")
+    page.wait_for_function("activeView === 'viewArtist'")
+    page.wait_for_function("window.scrollY === 0")
+
+
+def test_deep_pages_are_no_wider_than_the_phone(page, server):
+    page.set_viewport_size({"width": 390, "height": 844})
+    page.evaluate("openArtistPage('Quiet')")
+    page.wait_for_function("activeView === 'viewArtist'")
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    page.evaluate(
+        "labIndex().then(rows => openAlbumPage(groupIntoAlbums(rows).find(g => g.tracks.length)))"
+    )
+    page.wait_for_function("activeView === 'viewAlbum'")
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
