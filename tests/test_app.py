@@ -258,7 +258,9 @@ def test_non_youtube_urls_are_rejected(client, url):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("script", ["app.js", "player.js", "offline.js", "look.js"])
+@pytest.mark.parametrize(
+    "script", ["app.js", "player.js", "offline.js", "look.js", "design/core.js", "design/v1.js"]
+)
 def test_static_scripts_do_not_render_api_data_with_innerhtml(client, script):
     # The previous version of this test checked GET / (index.html), but
     # index.html only contains a <script src="/static/app.js"> tag - the
@@ -291,7 +293,7 @@ def test_static_scripts_do_not_render_api_data_with_innerhtml(client, script):
     assert '"text/html"' not in js
     # The two that build rows out of library data must use the safe APIs;
     # offline.js and look.js render no such data, only the absence is checked.
-    if script in ("app.js", "player.js"):
+    if script in ("app.js", "player.js", "design/core.js", "design/v1.js"):
         assert "textContent" in js
         assert "replaceChildren" in js
 

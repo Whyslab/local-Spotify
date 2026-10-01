@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+  <meta name="theme-color" content="#000000">
+  <meta name="robots" content="noindex">
+  <title>Обложка — образец</title>
+  <link rel="icon" href="/static/favicon-32.png">
+  <link rel="stylesheet" href="/static/fonts/fonts.css">
+  <link rel="stylesheet" href="/static/design/lab.css">
+  <link rel="stylesheet" href="/static/design/v1.css" data-variant="v1">
+  <!-- Образец: вариант «Обложка» из лаборатории 01.10.2026 в том виде, в каком
+       его выбрали. Один вариант — переключатель и его полоса не нужны. -->
+  <style>.proto-picker { display: none; } :root { --lab-top: 0px; }</style>
+</head>
+<body>
+  <nav class="proto-picker" data-position="top" aria-label="Варианты дизайна">
+    <span class="proto-picker-highlight" aria-hidden="true"></span>
+  </nav>
+  <div id="stage" class="stage"></div>
+
+  <script src="/static/design/core.js"></script>
+  <script src="/static/design/v1.js"></script>
+  <script>Lab.start();</script>
+</body>
+</html>
