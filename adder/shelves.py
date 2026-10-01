@@ -17,6 +17,7 @@ Amperfy показывает только то, что Navidrome нашёл в �
 
 from __future__ import annotations
 
+import datetime
 import logging
 import random
 from collections import Counter
@@ -35,6 +36,17 @@ DISCOVER_NAME = "Может понравиться"
 # подборка. Такую полку не пишем вовсе, и вчерашний файл остаётся на месте:
 # вчерашняя подборка лучше пустой.
 MIN_TRACKS = 8
+
+# Полки меняются раз в сутки (с 01.10.2026; раньше перемешивались одинаково
+# каждый день). Сутки полок начинаются в 04:00 — до ночной выгрузки в 04:30,
+# чтобы файлы для телефона и главная в панели совпадали весь день.
+SHELF_DAY_STARTS_AT = datetime.timedelta(hours=4)
+
+
+def shelf_seed(now: datetime.datetime | None = None) -> int:
+    """Зерно перемешивания полок на сегодня: номер «суток полок»."""
+    moment = (now or datetime.datetime.now()) - SHELF_DAY_STARTS_AT
+    return moment.date().toordinal()
 
 
 def _favourites(rows: list[dict], top: int) -> list[str]:
@@ -59,7 +71,7 @@ def _neighbours(favourites: list[str]) -> set[str]:
     return neighbours - {name.lower() for name in favourites}
 
 
-def discover(rows: list[dict], top: int = 6, want: int = 24) -> dict:
+def discover(rows: list[dict], top: int = 6, want: int = 24, seed: int | None = None) -> dict:
     """Треки своей же фонотеки, о которых не думал.
 
     Deezer называет похожих на самых собранных артистов, и из фонотеки
@@ -77,7 +89,7 @@ def discover(rows: list[dict], top: int = 6, want: int = 24) -> dict:
         if similar.primary(row.get("artist") or "").lower() in lowered
         and similar.primary(row.get("artist") or "") not in favourites
     ]
-    random.Random(len(picked)).shuffle(picked)
+    random.Random(f"{seed}:discover" if seed is not None else len(picked)).shuffle(picked)
     return {
         "based_on": favourites,
         "tracks": [
@@ -162,8 +174,13 @@ def export(limit: int = 40) -> list[dict]:
     # и подборка должна вести себя так же, иначе в неё попадут битые строки.
     known = {row["path"] for row in rows}
 
-    shelves = [(mood.name, mood.paths) for mood in moods.collections(features, limit=limit)]
-    shelves.append((DISCOVER_NAME, [track["path"] for track in discover(rows)["tracks"]]))
+    seed = shelf_seed()
+    shelves = [
+        (mood.name, mood.paths) for mood in moods.collections(features, limit=limit, seed=seed)
+    ]
+    shelves.append(
+        (DISCOVER_NAME, [track["path"] for track in discover(rows, seed=seed)["tracks"]])
+    )
 
     report = []
     for shelf, paths in shelves:

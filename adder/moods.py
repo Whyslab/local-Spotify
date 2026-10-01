@@ -59,7 +59,10 @@ def collections(rows: list[dict], limit: int = 50, seed: int | None = None) -> l
         chosen = [r["path"] for r in measured if test(r)]
         if len(chosen) < 8:
             return None
-        rng = random.Random(seed if seed is not None else len(chosen))
+        # С зерном (день, см. shelves.shelf_seed) — своё на каждую полку, иначе
+        # все полки перемешались бы одинаково. Без зерна — как раньше, от числа
+        # треков: тогда полка не менялась, пока не менялась фонотека.
+        rng = random.Random(f"{seed}:{key}" if seed is not None else len(chosen))
         rng.shuffle(chosen)
         return Mood(key, name, hint, chosen[:limit])
 

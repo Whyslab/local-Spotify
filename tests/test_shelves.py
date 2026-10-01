@@ -140,3 +140,29 @@ def test_a_measured_track_that_left_the_library_is_not_written(shelf_library, mo
 
     for file in shelf_library.glob("*.m3u"):
         assert ghost not in playlists.parse(file.read_text(encoding="utf-8"))
+
+
+def test_shelves_change_from_day_to_day_and_hold_within_a_day():
+    """Полки перемешивались зерном «число треков» — и каждый день были одни и
+    те же, пока не менялась фонотека. Теперь зерно — сутки полок."""
+    import datetime
+
+    from adder import moods
+
+    rows = [
+        {"path": f"a/{i}.m4a", "tempo": 60 + i, "energy": 0.1 + i / 400, "brightness": 1000 + i}
+        for i in range(200)
+    ]
+
+    def car(seed):
+        return next(m.paths for m in moods.collections(rows, limit=10, seed=seed) if m.key == "car")
+
+    day = datetime.datetime(2026, 10, 1, 12, 0)
+    today = shelves.shelf_seed(day)
+    assert shelves.shelf_seed(day.replace(hour=5)) == today  # утро — те же сутки
+    assert shelves.shelf_seed(day.replace(hour=3)) == today - 1  # до 04:00 — ещё вчерашние
+    assert car(today) == car(today)
+    assert car(today) != car(today + 1)
+    # Полки одного дня перемешаны каждая по-своему, а не одним порядком.
+    one = {m.key: m.paths for m in moods.collections(rows, limit=200, seed=today)}
+    assert one["car"][:5] != [p for p in one["run"] if p in one["car"]][:5]

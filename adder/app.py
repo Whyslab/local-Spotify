@@ -1440,9 +1440,9 @@ def home(authenticated: bool = Depends(verify_token)):
     return {
         "moods": [
             {"key": m.key, "name": m.name, "hint": m.hint, "tracks": as_tracks(m.paths)}
-            for m in moods.collections(features, limit=40)
+            for m in moods.collections(features, limit=40, seed=shelves.shelf_seed())
         ],
-        "discover": shelves.discover(rows),
+        "discover": shelves.discover(rows, seed=shelves.shelf_seed()),
         "albums": [
             {
                 "artist": who,
