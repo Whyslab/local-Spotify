@@ -527,9 +527,9 @@ async function smartifyQueue() {
     player.queue = current ? [current, ...rest] : rest;
     player.index = current ? 0 : -1;
     player.queueMode = "smart";
-    /* Показать, откуда играет, умная очередь не может: в ней и подборка, и
-     * фонотека, и новое. Пусть ищет в фонотеке. */
-    player.queueSource = null;
+    /* Источник остаётся прежним: умная очередь — это та же подборка плюс
+     * подмешанное. Свои треки «показать, откуда играет» ищет в подборке,
+     * подмешанные из фонотеки (у них есть пометка outside) — в фонотеке. */
     buildOrder(player.index);
     markPlayingRow();
     renderQueuePanel();
@@ -802,28 +802,66 @@ function renderQueuePanel() {
 async function revealTrack(track) {
     if (!track) return;
     const source = player.queueSource;
+    /* На телефоне очередь открыта внутри большого плеера — он закрывает
+     * список, к которому мы ведём (look.js). */
+    if (typeof collapsePlayer === "function") collapsePlayer();
 
-    if (source && source.kind === "playlist") {
+    /* Трек из подборки — в ней, на своей строке. Подмешанный умным
+     * перемешиванием (outside) или уже убранный из подборки — в фонотеке. */
+    if (source && source.kind === "playlist" && !track.outside) {
         await openPlaylist(source.name);
-        flashTrackRow(track.path);
-        return;
+        if (flashTrackRow(track.path, track.index)) return;
     }
 
     /* Фонотека: подставляем название в поиск — иначе трек может лежать за
      * двухсотой строкой и на экране его не будет вовсе. */
     switchView("viewLibrary");
     const field = document.getElementById("librarySearch");
-    if (field) field.value = track.title || track.artist || "";
+    /* У строки подборки title — «Артист - Название», а артиста отдельно нет;
+     * фонотека по такой строке не находила ничего. Ищем по названию. */
+    let words = track.title || track.artist || "";
+    if (!track.artist && words.includes(" - ")) words = words.split(" - ").slice(1).join(" - ");
+    if (field) field.value = words;
     await library();
     flashTrackRow(track.path);
 }
 
-function flashTrackRow(path) {
-    const row = document.querySelector(`[data-track-path="${CSS.escape(path)}"]`);
-    if (!row) return;
-    row.scrollIntoView({ block: "center", behavior: "smooth" });
+/* true — строка нашлась и показана. Искать надо в открытом разделе: тот же
+ * трек может лежать строкой и в скрытой фонотеке, и подсвечивать его там —
+ * значит не показать ничего. */
+function flashTrackRow(path, index) {
+    const view = document.getElementById(activeView);
+    const scope = view || document;
+    /* Один файл бывает в подборке несколько раз (в Monday один — 34 раза).
+     * Очередь по порядку помнит номер строки — берём именно её; перемешанная
+     * сервером номера не знает, и тогда годится любая копия. */
+    const byPath = `[data-track-path="${CSS.escape(path)}"]`;
+    const exact = Number.isInteger(index) ? scope.querySelector(`[data-index="${index}"]${byPath}`) : null;
+    const selector = exact ? `[data-index="${index}"]${byPath}` : byPath;
+    let row = exact || scope.querySelector(byPath);
+    /* Поиск по подборке мог спрятать эту строку — сбрасываем его. */
+    if (row && row.hidden) {
+        const field = document.getElementById("librarySearch");
+        if (field && field.value) {
+            field.value = "";
+            if (typeof filterOpenPlaylist === "function") filterOpenPlaylist();
+        }
+        row = scope.querySelector(selector);
+    }
+    if (!row || row.hidden) return false;
+    /* Строки вне экрана браузер не раскладывает (content-visibility) и
+     * считает их высоту на глаз; в подборке на тысячу треков прыжок к
+     * четырёхсотой мимо цели на тысячи точек. Поэтому подводим несколько
+     * раз подряд: с каждым кадром строки по пути получают настоящую высоту. */
+    let tries = 0;
+    const settle = () => {
+        row.scrollIntoView({ block: "center" });
+        if (++tries < 6) requestAnimationFrame(settle);
+    };
+    settle();
     row.classList.add("is-found");
     setTimeout(() => row.classList.remove("is-found"), 2000);
+    return true;
 }
 
 function playQueue(tracks, startAt = 0, mode = "manual", source = null) {
@@ -875,7 +913,9 @@ async function loadShuffle(mode, playlist = "", noteId = "shuffleNote", paths = 
         player.shuffle = false;
         player.smartTicket += 1;
         renderPlayerModes();
-        playQueue(data.queue, 0, mode);
+        /* Подборку перемешали — очередь всё равно из неё: «показать, откуда
+         * играет» должно вести в подборку, а не в фонотеку. */
+        playQueue(data.queue, 0, mode, playlist ? { kind: "playlist", name: playlist } : null);
 
         if (mode !== "smart") { say(""); return; }
 
@@ -1137,7 +1177,12 @@ function renderPlayer() {
     const track = player.queue[player.index];
     bar.hidden = !track;
     document.getElementById("nowPanel").hidden = !track;
-    if (!track) return;
+    if (!track) {
+        /* Очередь опустела — обложки нет, и цвет оформления уходит вместе с
+         * ней (look.js слушает nowcover). */
+        if (nowRequested !== null) { nowRequested = null; announceCover(null); }
+        return;
+    }
 
     renderNowPanel(track);
     renderKeepButton();
@@ -1294,11 +1339,22 @@ function loadNowCover(track) {
         .then(blob => {
             if (nowRequested !== wanted) return;
             release();
-            if (!blob) { cover.style.backgroundImage = "none"; return; }
+            if (!blob) { cover.style.backgroundImage = "none"; announceCover(null); return; }
             nowCoverUrl = URL.createObjectURL(blob);
             cover.style.backgroundImage = `url("${nowCoverUrl}")`;
+            announceCover(nowCoverUrl);
         })
-        .catch(() => { if (nowRequested === wanted) cover.style.backgroundImage = "none"; });
+        .catch(() => {
+            if (nowRequested !== wanted) return;
+            cover.style.backgroundImage = "none";
+            announceCover(null);
+        });
+}
+
+/* Обложку играющего трека ждут и другие: мини-плеер, большой плеер и цвет
+ * оформления (look.js). Одна загрузка, одна ссылка — и событие о ней. */
+function announceCover(url) {
+    document.dispatchEvent(new CustomEvent("nowcover", { detail: { url } }));
 }
 
 /* Текст песни.
@@ -2809,7 +2865,9 @@ function trackPlayerHeight() {
     const bar = document.getElementById("player");
     if (!bar || typeof ResizeObserver === "undefined") return;
     new ResizeObserver(() => {
-        if (bar.hidden || !bar.offsetHeight) return;
+        /* Раскрытый на весь экран плеер — не полоса: его высота раздула бы
+         * отступ страницы и высоту текста песни под ним (look.js). */
+        if (bar.hidden || !bar.offsetHeight || document.querySelector(".app.player-open")) return;
         document.documentElement.style.setProperty("--player", bar.offsetHeight + "px");
     }).observe(bar);
 }

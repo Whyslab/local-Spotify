@@ -734,3 +734,108 @@ def test_the_stall_watchdog_gives_up_after_three_tries(page):
         }"""
     )
     assert calls == 3
+
+
+# --- «Обложка»: большой плеер на телефоне, цвет, «откуда играет» (01.10.2026) --
+
+
+def _play_on_phone(page):
+    page.set_viewport_size({"width": 390, "height": 844})
+    open_library(page)
+    row_action(page, "Loud", "Играть")
+    page.wait_for_function("!player.audio.paused")
+
+
+def test_the_phone_player_opens_full_screen_and_back_closes_it(page):
+    _play_on_phone(page)
+    page.locator("#playerArt").click()
+    page.wait_for_function("document.querySelector('.app').classList.contains('player-open')")
+    assert page.locator("#player").get_attribute("role") == "dialog"
+    # Текст песни переезжает внутрь большого плеера…
+    page.locator("#playerLyricsButton").click()
+    assert page.evaluate("document.getElementById('viewLyrics').parentElement.id") == "playerPanel"
+    # …а «назад» сворачивает плеер и возвращает текст на место, скрытым.
+    page.go_back()
+    page.wait_for_function("!document.querySelector('.app').classList.contains('player-open')")
+    assert page.evaluate("document.getElementById('viewLyrics').parentElement.id") == "views"
+    assert page.evaluate("document.getElementById('viewLyrics').hidden") is True
+    assert page.evaluate("activeView") == "viewLibrary"
+
+
+def test_escape_closes_a_menu_in_the_big_player_but_not_the_player(page):
+    _play_on_phone(page)
+    page.evaluate("expandPlayer()")
+    page.locator("#playerShuffle").click()
+    assert page.locator(".shuffle-menu").count() == 1
+    page.keyboard.press("Escape")
+    assert page.locator(".shuffle-menu").count() == 0
+    assert page.evaluate("document.querySelector('.app').classList.contains('player-open')")
+    page.keyboard.press("Escape")
+    assert not page.evaluate("document.querySelector('.app').classList.contains('player-open')")
+
+
+def test_the_cover_colour_can_be_switched_off(page):
+    page.evaluate("switchView('viewService')")
+    switch = page.locator("#coverTintSwitch")
+    assert switch.is_checked()
+    switch.click()
+    assert page.evaluate("localStorage.getItem('coverTint')") == "0"
+    assert not page.evaluate("document.querySelector('.app').classList.contains('is-tinted')")
+    page.reload()
+    page.wait_for_function("typeof switchView === 'function'")
+    page.evaluate("switchView('viewService')")
+    assert not page.locator("#coverTintSwitch").is_checked()
+
+
+def test_a_shuffled_playlist_shows_its_track_in_the_playlist(page, server):
+    (server["root"] / "Откуда.m3u").write_text(
+        "Quiet/Singles/Quiet.m4a\nLoud Band/Singles/Loud.opus\n", encoding="utf-8"
+    )
+    page.evaluate("openPlaylist('Откуда')")
+    page.wait_for_selector("#playlistTracks .playlist-track")
+    # «Перемешать» собирает очередь на сервере — она всё равно из подборки.
+    page.evaluate("loadShuffle('plain', 'Откуда', 'playlistNote')")
+    page.wait_for_function("player.queueSource && player.queueSource.name === 'Откуда'")
+    page.evaluate("switchView('viewHome')")
+
+    page.evaluate(
+        "revealTrack(player.queue.find(t => t.path === 'Quiet/Singles/Quiet.m4a' && !t.outside))"
+    )
+    page.wait_for_function("activeView === 'viewPlaylist'")
+    found = page.locator("#playlistTracks .is-found")
+    assert found.count() == 1
+    assert found.get_attribute("data-track-path") == "Quiet/Singles/Quiet.m4a"
+
+    # Подмешанный не из подборки — его место в фонотеке.
+    page.evaluate("revealTrack({path: 'Evil/Singles/evil.m4a', title: 'evil', outside: true})")
+    page.wait_for_function("activeView === 'viewLibrary'")
+
+
+def test_smart_shuffle_keeps_the_playlist_as_the_source(page, server):
+    (server["root"] / "Умно.m3u").write_text(
+        "Quiet/Singles/Quiet.m4a\nLoud Band/Singles/Loud.opus\n", encoding="utf-8"
+    )
+    page.evaluate("openPlaylist('Умно')")
+    page.wait_for_selector("#playlistTracks .playlist-track")
+    page.evaluate("playPlaylist()")
+    page.wait_for_function("player.queueSource && player.queueSource.name === 'Умно'")
+    page.evaluate("setShuffle('smart')")
+    page.wait_for_function("player.queueMode === 'smart'")
+    assert page.evaluate("player.queueSource && player.queueSource.name") == "Умно"
+
+
+def test_a_track_twice_in_a_playlist_is_shown_at_the_copy_that_plays(page, server):
+    (server["root"] / "Дважды.m3u").write_text(
+        "Quiet/Singles/Quiet.m4a\nLoud Band/Singles/Loud.opus\nQuiet/Singles/Quiet.m4a\n",
+        encoding="utf-8",
+    )
+    page.evaluate("openPlaylist('Дважды')")
+    page.wait_for_selector("#playlistTracks .playlist-track")
+    # Третья строка — вторая копия того же файла.
+    page.evaluate(
+        "playQueue(player.playlist.entries, 2, 'manual', {kind: 'playlist', name: 'Дважды'})"
+    )
+    page.evaluate("switchView('viewHome')")
+    page.evaluate("revealTrack(player.queue[2])")
+    page.wait_for_function("activeView === 'viewPlaylist'")
+    assert page.locator("#playlistTracks .is-found").get_attribute("data-index") == "2"

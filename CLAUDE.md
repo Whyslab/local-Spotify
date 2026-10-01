@@ -23,7 +23,9 @@ check has passed.
 - yt-dlp (+ `yt-dlp-ejs`) as a subprocess; needs **ffmpeg/ffprobe** and **Deno** on `PATH`
 - mutagen for tags (m4a, mp3, flac, opus); `requests`, `httpx`, `urllib` for HTTP
 - Optional librosa (`scripts/requirements-analysis.txt`) for tempo/key/energy analysis
-- Vanilla JS UI in `web/` (`app.js` panel, `player.js` player), served by the same app
+- Vanilla JS UI in `web/` (`app.js` panel, `player.js` player, `offline.js` downloads, `look.js`
+  the «Обложка» look: cover-colour tint and the phone's full-screen player), served by the same app;
+  the Onest font is self-hosted in `web/fonts/`
 - systemd user unit (`deploy/`); Navidrome as a separate system service
 - pytest, ruff; CI in `.github/workflows/ci.yml` (installs ffmpeg)
 

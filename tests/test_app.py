@@ -258,18 +258,7 @@ def test_non_youtube_urls_are_rejected(client, url):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "script",
-    [
-        "app.js",
-        "player.js",
-        "design/core.js",
-        "design/v1.js",
-        "design/v2.js",
-        "design/v3.js",
-        "design/v4.js",
-    ],
-)
+@pytest.mark.parametrize("script", ["app.js", "player.js", "offline.js", "look.js"])
 def test_static_scripts_do_not_render_api_data_with_innerhtml(client, script):
     # The previous version of this test checked GET / (index.html), but
     # index.html only contains a <script src="/static/app.js"> tag - the
@@ -300,22 +289,22 @@ def test_static_scripts_do_not_render_api_data_with_innerhtml(client, script):
         is None
     )
     assert '"text/html"' not in js
-    assert "textContent" in js
-    assert "replaceChildren" in js
+    # The two that build rows out of library data must use the safe APIs;
+    # offline.js and look.js render no such data, only the absence is checked.
+    if script in ("app.js", "player.js"):
+        assert "textContent" in js
+        assert "replaceChildren" in js
 
 
-def test_design_lab_page_links_versioned_files(client):
-    response = client.get("/design")
+def test_index_links_every_local_file_with_its_fingerprint(client):
+    """Each script and stylesheet the player links carries ?v=<hash>: one
+    left out of the list in index() is served stale from the browser cache,
+    and new markup then meets an old style sheet (look.js, the fonts)."""
+    html = client.get("/").text
 
-    assert response.status_code == 200
-    # Every file the page links carries its fingerprint: one left out of
-    # DESIGN_FILES would be served stale from the browser cache.
-    linked = re.findall(r'"(/static/design/[^"]+)"', response.text)
-    assert len(linked) == 11
+    linked = re.findall(r'(?:src|href)="(/static/[^"?]+\.(?:js|css)(?:\?[^"]*)?)"', html)
+    assert {"/static/look.js", "/static/fonts/fonts.css"} <= {h.split("?")[0] for h in linked}
     assert all("?v=" in href for href in linked)
-    # The page is chrome only: it takes the token from the player's storage
-    # and asks the API for everything, so it carries no library data itself.
-    assert client.get("/static/design/core.js").status_code == 200
 
 
 def test_processing_url_remains_locked_during_retry(app_module, monkeypatch):

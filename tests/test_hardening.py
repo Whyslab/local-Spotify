@@ -135,9 +135,7 @@ def test_every_route_but_the_public_few_needs_the_token(client):
     from adder import app as app_module
 
     # /sw.js is the offline worker: page code like /static/, no data in it.
-    # /design is page chrome like /: it asks the API for everything with the
-    # token from the player's storage (test_design_lab_page_links_versioned_files).
-    public = {"/api/stream", "/health", "/", "/sw.js", "/design"}
+    public = {"/api/stream", "/health", "/", "/sw.js"}
     open_routes = []
     for route in app_module.app.routes:
         if not isinstance(route, APIRoute) or route.path in public:

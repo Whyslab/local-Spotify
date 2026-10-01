@@ -55,6 +55,11 @@ async function precacheShell() {
         const html = await page.clone().text();
         await cache.put("/", page);
         const assets = new Set(["/static/manifest.webmanifest", "/static/icon-180.png", "/static/icon.svg"]);
+        /* Шрифт подключает fonts.css, а не страница, — в разметке его ссылок
+         * нет. Без него первый запуск без сети шёл бы запасным шрифтом. */
+        for (const subset of ["latin", "latin-ext", "cyrillic", "cyrillic-ext"]) {
+            assets.add(`/static/fonts/Onest-400_800-${subset}.woff2`);
+        }
         for (const match of html.matchAll(/(?:src|href)="(\/static\/[^"]+)"/g)) assets.add(match[1]);
         for (const asset of assets) {
             try {
