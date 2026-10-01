@@ -1959,3 +1959,34 @@ def index():
         stamp = hashlib.sha1(path.read_bytes()).hexdigest()[:10]
         html = html.replace(f"/static/{name}", f"/static/{name}?v={stamp}")
     return html
+
+
+DESIGN_FILES = (
+    "lab.css",
+    "core.js",
+    "v1.css",
+    "v1.js",
+    "v2.css",
+    "v2.js",
+    "v3.css",
+    "v3.js",
+    "v4.css",
+    "v4.js",
+    "fonts/fonts.css",
+)
+
+
+@app.get("/design", response_class=HTMLResponse)
+def design_lab():
+    """Четыре варианта дизайна плеера на настоящей фонотеке — посмотреть и
+    сравнить, переключая. Только чтение: кнопки, которые что-то меняют,
+    здесь лишь показывают действие. Отпечатки файлов — как у index()."""
+    web = runtime.PROJECT.parent / "web" / "design"
+    html = (web / "index.html").read_text(encoding="utf-8")
+    for name in DESIGN_FILES:
+        path = web / name
+        if not path.is_file():
+            continue
+        stamp = hashlib.sha1(path.read_bytes()).hexdigest()[:10]
+        html = html.replace(f"/static/design/{name}", f"/static/design/{name}?v={stamp}")
+    return html

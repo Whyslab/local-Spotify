@@ -258,7 +258,18 @@ def test_non_youtube_urls_are_rejected(client, url):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("script", ["app.js", "player.js"])
+@pytest.mark.parametrize(
+    "script",
+    [
+        "app.js",
+        "player.js",
+        "design/core.js",
+        "design/v1.js",
+        "design/v2.js",
+        "design/v3.js",
+        "design/v4.js",
+    ],
+)
 def test_static_scripts_do_not_render_api_data_with_innerhtml(client, script):
     # The previous version of this test checked GET / (index.html), but
     # index.html only contains a <script src="/static/app.js"> tag - the
@@ -282,8 +293,29 @@ def test_static_scripts_do_not_render_api_data_with_innerhtml(client, script):
     # own comments legitimately mention innerHTML when explaining why
     # it's avoided.)
     assert re.search(r"\.innerHTML\s*=", js) is None
+    # The other ways a string becomes markup. DOMParser is allowed only for
+    # the icon set, which is parsed as SVG from constants in the file.
+    assert (
+        re.search(r"\.innerHTML\s*\+=|\.outerHTML\s*=|insertAdjacentHTML|document\.write", js)
+        is None
+    )
+    assert '"text/html"' not in js
     assert "textContent" in js
     assert "replaceChildren" in js
+
+
+def test_design_lab_page_links_versioned_files(client):
+    response = client.get("/design")
+
+    assert response.status_code == 200
+    # Every file the page links carries its fingerprint: one left out of
+    # DESIGN_FILES would be served stale from the browser cache.
+    linked = re.findall(r'"(/static/design/[^"]+)"', response.text)
+    assert len(linked) == 11
+    assert all("?v=" in href for href in linked)
+    # The page is chrome only: it takes the token from the player's storage
+    # and asks the API for everything, so it carries no library data itself.
+    assert client.get("/static/design/core.js").status_code == 200
 
 
 def test_processing_url_remains_locked_during_retry(app_module, monkeypatch):
