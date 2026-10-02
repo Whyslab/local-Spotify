@@ -11,6 +11,7 @@ Needs the browser: `python -m playwright install chromium` (CI does this).
 
 from __future__ import annotations
 
+import importlib.util
 import socket
 import subprocess
 import threading
@@ -103,6 +104,7 @@ def server(tmp_path_factory):
     mp.setattr(lyrics, "start_backfill", lambda: None)
     mp.setattr(lyrics, "_ask", lambda *a, **k: {})
     mp.setattr(lyrics, "_search", lambda *a, **k: {})
+    mp.setattr(lyrics, "candidates", lambda *a, **k: [])  # «Найти текст»
     mp.setattr(listenbrainz, "start", lambda: None)
     mp.setattr(outside, "candidates", lambda *a, **k: [])
     mp.setattr(analysis, "analyse_track", lambda path: None)
@@ -1378,3 +1380,439 @@ def test_the_download_bar_sits_on_the_player_and_hides_the_rows(
     )
     assert abs(bar - floor) <= 1, f"полоса «Скачать» не у нижнего края: {bar} против {floor}"
     assert opacity == "1"
+
+
+# --- Каждая кнопка на каждом экране (план, шаг 1.4) --------------------------
+#
+# Обход: на каждом экране «Обложки» — на ноутбуке и на телефоне — нажать по
+# очереди каждую видимую доступную кнопку, после каждой вернуть экран как был и
+# убедиться, что страница не бросила исключение, не написала ошибку в консоль,
+# не получила ответ-ошибку и не упёрлась в CSP (последнее и исключения ловит ещё
+# и фикстура page).
+
+_MEASURE_UI = Path(__file__).resolve().parent.parent / "scripts" / "measure_ui.py"
+_spec = importlib.util.spec_from_file_location("measure_ui_for_sweep", _MEASURE_UI)
+assert _spec and _spec.loader
+measure_ui = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(measure_ui)
+
+SWEEP_CONTROLS = "button, [role=button], [role=menuitem], [role=tab], [role=switch], a[href]"
+
+# Чего обход НЕ нажимает — и почему. Это и есть список непокрытого: всё
+# остальное видимое и доступное на перечисленных экранах нажимается.
+# По доступному имени (aria-label, иначе текст, иначе title; без регистра):
+SWEEP_SKIP_NAMES = {
+    "удал": "удаляет: трек, подборку, скачанное (Удалить…, Удалить подборку…, Удалить всё скачанное)",
+    "вернуть фото": "удаляет свою шапку артиста",
+    "скачать": "качает: Скачать недостающее…, Скачать N треков, Скачать всё",
+    "на телефон": "качает всю подборку на устройство",
+    "youtube": "ищет на YouTube (yt-dlp) — «Найти … на YouTube и скачать»",
+    "забыть ключ": "выход: стирает ключ и уводит на экран входа",
+    "обложка…|шапка…": "открывает выбор файла",
+    "сохранить": "переписывает теги файла в общей для модуля фонотеке",
+    "найти обложки|измерить громкость": "фоновая работа по всей фонотеке: переписывает файлы, ищет обложки в сети",
+}
+# По селектору:
+SWEEP_SKIP_SELECTORS = {
+    '[onclick^="addTracks"]': "«Добавить» в разделе «Добавить» — загрузка ссылок с YouTube",
+    '[onclick^="runSearch"]': "«Искать» — поиск на YouTube (yt-dlp)",
+    '[onclick^="runAlbumSearch"]': "«Альбом» — поиск альбома в Deezer",
+    "label.file-button, label.drop-zone, input[type=file]": "выбор файлов",
+    ".handle, [role=separator]": "ручки перетаскивания (край рельсы и т. п.)",
+    'a[target="_blank"]': "ссылки, уводящие со страницы",
+}
+# Строки и карточки одного списка (треки, полка главной, подборки в рельсе,
+# очередь) рисует один код: нажимаются кнопки первых SWEEP_ROWS строк каждого
+# списка, остальные считаются и пропускаются — иначе обход рос бы вместе с
+# фонотекой. SWEEP_CAP — предохранитель на экран; сейчас на самом длинном 13.
+SWEEP_ROW = ".track, .o-card, .o-artist-row, .o-mood, .rail-item, .queue-row"
+SWEEP_ROWS = 2
+SWEEP_CAP = 30
+SWEEP_SETTLE_MS = 40
+
+_SWEEP_ENUMERATE = """([scope, controls, names, selectors, rowSelector, maxRows]) => {
+    const skipName = new RegExp(names, "i");
+    for (const n of document.querySelectorAll("[data-sweep]")) n.removeAttribute("data-sweep");
+    const found = [], skipped = [], seen = new Set(), lists = new Map();
+    let repeated = 0;
+    for (const root of document.querySelectorAll(scope)) {
+        const inside = [...(root.matches(controls) ? [root] : []), ...root.querySelectorAll(controls)];
+        for (const n of inside) {
+            if (seen.has(n)) continue;
+            seen.add(n);
+            if (!n.checkVisibility({ checkOpacity: true, visibilityProperty: true })) continue;
+            const box = n.getBoundingClientRect();
+            if (!box.width || !box.height) continue;
+            if (n.disabled || n.getAttribute("aria-disabled") === "true" || n.closest("[inert]")) continue;
+            const row = n.closest(rowSelector);
+            if (row) {
+                const rows = lists.get(row.parentElement) || new Set();
+                lists.set(row.parentElement, rows);
+                if (!rows.has(row) && rows.size >= maxRows) { repeated += 1; continue; }
+                rows.add(row);
+            }
+            const label = n.labels && n.labels.length ? n.labels[0].textContent : "";
+            const name = (n.getAttribute("aria-label") || n.textContent || label || n.title || "")
+                .replace(/\\s+/g, " ").trim().slice(0, 60);
+            if (skipName.test(name) || selectors.some((s) => n.matches(s) || n.querySelector(s))) {
+                skipped.push(name);
+                continue;
+            }
+            n.dataset.sweep = String(found.length);
+            found.push(name);
+        }
+    }
+    return { found, skipped, repeated, state: (__STATE__)() };
+}"""
+
+# Где мы (раздел, режим фонотеки, большой плеер и что в нём) и что поверх
+# (меню, таймер сна, диалог). Поверх закрывает Escape, «где» — открытие экрана.
+_SWEEP_STATE = """() => ({
+    place: [activeView, libraryMode, sheetOpen(), sheetPanel],
+    over: [!!openMenu, !document.getElementById("playerSleepMenu").hidden,
+           document.querySelectorAll("[role=dialog]:not(#player)").length],
+})"""
+
+DIALOG = "[role=dialog]:not(#player)"
+
+
+def _sweep_enumerate(page, scope):
+    """Пометить кнопки экрана data-sweep=N; вернуть их имена, пропущенные,
+    число повторных строк и состояние страницы (_SWEEP_STATE)."""
+    return page.evaluate(
+        _SWEEP_ENUMERATE.replace("__STATE__", _SWEEP_STATE),
+        [
+            scope,
+            SWEEP_CONTROLS,
+            "|".join(f"(?:{k})" for k in SWEEP_SKIP_NAMES),
+            list(SWEEP_SKIP_SELECTORS),
+            SWEEP_ROW,
+            SWEEP_ROWS,
+        ],
+    )
+
+
+def _sweep_calm(page, sheet=None):
+    """Закрыть меню, формы и диалоги; большой плеер оставить, только если он
+    открыт с панелью sheet ("" — без панели), иначе свернуть.
+
+    Открытая форма (теги под строкой, поиск текста песни) держит экран от
+    перерисовки — её закрывает её же «Отмена», как человек."""
+    collapse = page.evaluate(
+        """(sheet) => {
+            closeTrackMenu();
+            closeSleepMenu();
+            for (const b of document.querySelectorAll("button"))
+                if (b.textContent.trim() === "Отмена" && b.checkVisibility()) b.click();
+            for (const d of document.querySelectorAll("[role=dialog]:not(#player)")) d.remove();
+            return sheetOpen() && (sheet == null || (sheetPanel || "") !== sheet);
+        }""",
+        sheet,
+    )
+    if collapse:
+        page.evaluate("collapsePlayer()")
+        page.wait_for_function("!sheetOpen() && !window.sheetBackPending")
+
+
+def _sweep_track(page):
+    """Плеер с треком, который этот Chromium умеет играть (Opus)."""
+    if page.evaluate("!document.getElementById('player').hidden"):
+        return
+    page.evaluate(
+        "labIndex().then(rows => playQueue(rows.filter(t => t.path.endsWith('.opus')), 0, 'manual'))"
+    )
+    page.wait_for_function("!document.getElementById('player').hidden")
+
+
+def _sweep_view(view):
+    def open_view(page):
+        _sweep_calm(page)
+        page.evaluate(f"switchView('{view}')")
+        page.wait_for_function(f"activeView === '{view}'")
+
+    return open_view
+
+
+def _sweep_library(mode):
+    def open_library_mode(page):
+        _sweep_calm(page)
+        page.evaluate(f"openLibrary('{mode}')")
+        page.wait_for_function(
+            f"activeView === 'viewLibrary' && libraryMode === '{mode}'"
+            " && document.querySelector('#library > *')"
+        )
+
+    return open_library_mode
+
+
+def _sweep_artist(page):
+    _sweep_calm(page)
+    page.evaluate("openArtistPage('Quiet')")
+    page.wait_for_function(
+        "activeView === 'viewArtist' && document.querySelector('#artistBody h1')"
+    )
+
+
+def _sweep_album(page):
+    _sweep_calm(page)
+    page.evaluate(
+        "labIndex().then(rows => openAlbumPage(groupIntoAlbums(rows).find(g => g.tracks.length)))"
+    )
+    page.wait_for_function(
+        "activeView === 'viewAlbum' && document.querySelector('#albumBody .track')"
+    )
+
+
+def _sweep_mood(page):
+    # Настроения строятся по анализу звука, а его здесь нет: подборку
+    # подкладываем в данные главной, страницу рисует настоящий код.
+    _sweep_calm(page)
+    page.evaluate(
+        "homeDataForMoods = {moods: [{key: 'sweep', name: 'Обход', hint: 'для проверки',"
+        " tracks: [{path: 'Loud Band/Singles/Loud.opus', title: 'Loud', artist: 'Loud Band'}]}]};"
+        " openMoodPage('sweep')"
+    )
+    page.wait_for_function(
+        "activeView === 'viewMood' && document.querySelector('#moodBody .track')"
+    )
+
+
+def _sweep_playlist(page):
+    _sweep_calm(page)
+    page.evaluate("openPlaylist('Обход')")
+    page.wait_for_function(
+        "activeView === 'viewPlaylist' && document.querySelector('#playlistTracks .playlist-track')"
+    )
+
+
+def _sweep_search(page):
+    _sweep_calm(page)
+    page.evaluate("switchView('viewSearch')")
+    page.locator("#searchEverywhere").fill("loud")
+    page.wait_for_selector("#searchBody .track-title")
+
+
+def _sweep_bar(page):
+    _sweep_calm(page)
+    _sweep_track(page)
+
+
+def _sweep_sheet(panel):
+    """Большой плеер с панелью: "" — как его раскрывает обложка, "lyrics" —
+    кнопка текста, "queue" — кнопка очереди."""
+
+    def open_sheet(page):
+        _sweep_track(page)
+        wide = page.evaluate("WIDE.matches")
+        want = panel or ("lyrics" if wide else "")  # на компьютере справа всегда текст
+        _sweep_calm(page, sheet=want)
+        if page.evaluate("sheetOpen()"):
+            return
+        run = {"": "expandPlayer('art')", "lyrics": "playerLyrics()", "queue": "playerQueue()"}
+        page.evaluate(run[panel])
+        page.wait_for_function("p => sheetOpen() && (sheetPanel || '') === p", want)
+        if panel == "queue":
+            page.locator("#playQueue .queue-row").first.wait_for()
+
+    return open_sheet
+
+
+def _sweep_menu_shown(page, menu):
+    """Меню видно и доиграло появление (menu-in: от прозрачного к видимому):
+    иначе его пункты ещё прозрачны и обход их не видит."""
+    shown = page.locator(f"{menu}:visible").first
+    shown.wait_for()
+    shown.evaluate("m => Promise.all(m.getAnimations().map(a => a.finished))")
+
+
+def _sweep_menu(open_screen, button, menu="[role=menu]"):
+    """Экран, а поверх него открытое меню: нажимаются пункты меню."""
+
+    def open_menu(page):
+        open_screen(page)
+        target = button(page) if callable(button) else page.locator(button).first
+        target.click()
+        _sweep_menu_shown(page, menu)
+
+    return open_menu
+
+
+def _sweep_row_menu(open_screen, rows):
+    return _sweep_menu(
+        open_screen,
+        lambda page: page.locator(rows).first.get_by_role("button", name="Что сделать с треком"),
+    )
+
+
+def _sweep_player_menu(button, menu="[role=menu]"):
+    """Меню плеера: из полосы, а где кнопки в полосе нет (телефон) — из
+    большого плеера."""
+
+    def open_menu(page):
+        _sweep_track(page)
+        _sweep_calm(page, sheet="" if page.evaluate("!WIDE.matches") else None)
+        if not page.locator(button).is_visible():
+            _sweep_sheet("")(page)
+        # «Перемешать» при включённом перемешивании выключает его, а не
+        # открывает меню; предыдущие нажатия могли его включить.
+        page.evaluate("if (player.shuffle) setShuffle(false)")
+        page.locator(button).click()
+        _sweep_menu_shown(page, menu)
+
+    return open_menu
+
+
+def _sweep_new_playlist(page):
+    if page.locator("#railNewPlaylist").is_visible():
+        _sweep_view("viewHome")(page)
+        page.locator("#railNewPlaylist").click()
+    else:  # на телефоне «+» в заголовке «Подборок»
+        _sweep_view("viewPlaylists")(page)
+        page.locator("#topAdd").click()
+    _sweep_menu_shown(page, DIALOG)
+
+
+def _sweep_tag_editor(page):
+    _sweep_row_menu(_sweep_library("tracks"), "#library .track")(page)
+    page.get_by_role("menuitem", name="Изменить теги…").click()
+    page.locator("form.edit-tags").wait_for()
+
+
+# (экран, как открыть, где на нём кнопки)
+SWEEP_SCREENS = [
+    ("рельса, вкладки и шапка", _sweep_view("viewHome"), ".side, .tabbar, .topbar"),
+    ("главная", _sweep_view("viewHome"), "#viewHome"),
+    ("фонотека: треки", _sweep_library("tracks"), "#viewLibrary"),
+    ("фонотека: артисты", _sweep_library("artists"), "#viewLibrary"),
+    ("фонотека: альбомы", _sweep_library("albums"), "#viewLibrary"),
+    ("артист", _sweep_artist, "#viewArtist"),
+    ("альбом", _sweep_album, "#viewAlbum"),
+    ("настроение", _sweep_mood, "#viewMood"),
+    ("все подборки", _sweep_view("viewPlaylists"), "#viewPlaylists"),
+    ("подборка", _sweep_playlist, "#viewPlaylist"),
+    ("поиск", _sweep_search, "#viewSearch"),
+    ("добавить", _sweep_view("viewAdd"), "#viewAdd"),
+    ("служба", _sweep_view("viewService"), "#viewService"),
+    ("полоса плеера", _sweep_bar, "#player"),
+    ("большой плеер", _sweep_sheet(""), "#player"),
+    ("текст песни", _sweep_sheet("lyrics"), "#viewLyrics"),
+    ("очередь", _sweep_sheet("queue"), "#playQueue"),
+    ("изменить теги", _sweep_tag_editor, "form.edit-tags"),
+    ("⋯ строки фонотеки", _sweep_row_menu(_sweep_library("tracks"), "#library .track"), "[role=menu]"),
+    ("⋯ строки подборки", _sweep_row_menu(_sweep_playlist, "#playlistTracks .track"), "[role=menu]"),
+    ("⋯ строки артиста", _sweep_row_menu(_sweep_artist, "#artistBody .track"), "[role=menu]"),
+    ("⋯ подборки", _sweep_menu(_sweep_playlist, "#playlistMore"), "[role=menu]"),
+    ("⋯ артиста", _sweep_menu(_sweep_artist, "#artistBody .o-more-round"), "[role=menu]"),
+    ("перемешать фонотеку", _sweep_menu(_sweep_library("tracks"), "#libraryShuffle"), "[role=menu]"),
+    ("перемешать подборку", _sweep_menu(_sweep_playlist, "[onclick^='openPlaylistShuffle']"), "[role=menu]"),
+    ("⋯ плеера", _sweep_player_menu("#playerMore"), "[role=menu]"),
+    ("перемешать в плеере", _sweep_player_menu("#playerShuffle"), "[role=menu]"),
+    ("таймер сна", _sweep_player_menu("#playerSleep", "#playerSleepMenu"), "#playerSleepMenu"),
+    ("новая подборка", _sweep_new_playlist, DIALOG),
+]  # fmt: skip
+
+
+def _sweep_open(page, open_screen, where):
+    try:
+        open_screen(page)
+    except playwright.Error as exc:
+        pytest.fail(f"{where}: экран не открылся: {str(exc).splitlines()[0]}")
+
+
+@pytest.mark.parametrize("size", [(1280, 800), (390, 844)], ids=["laptop", "phone"])
+def test_every_control_on_every_screen_has_no_console_errors(page, server, size):
+    """Plan step 1.4, AC 1-2: every visible, enabled control on every screen,
+    one at a time, with the screen restored after each, leaves no page error,
+    no console error, no failed response and no CSP violation behind.
+
+    What is not clicked is listed in SWEEP_SKIP_NAMES / SWEEP_SKIP_SELECTORS;
+    SWEEP_CAP bounds a screen. "Failed to load resource" in the console is not
+    an error by itself: responses are judged by measure_ui.bad_response (a 404
+    for a cover is how the service says "no picture")."""
+    (server["root"] / "Обход.m3u").write_text(
+        "Loud Band/Singles/Loud.opus\nQuiet/Singles/Quiet.m4a\n", encoding="utf-8"
+    )
+    page.set_viewport_size({"width": size[0], "height": size[1]})
+    page.evaluate("playlists()")
+    page.wait_for_function("knownPlaylists.some(p => p.name === 'Обход')")
+
+    where = ["загрузка страницы"]
+    problems: list[str] = []
+
+    def on_console(message):
+        if message.type == "error" and not message.text.startswith("Failed to load resource"):
+            problems.append(f"{where[0]}: console: {message.text}")
+
+    def on_response(response):
+        if not response.url.startswith(server["url"]):
+            return
+        path = response.url.split(server["url"], 1)[-1].split("?")[0]
+        # 404 на фото артиста — тоже «картинки нет» (страница берёт обложку
+        # трека, см. app.artist_photo); правило measure_ui знает только обложки.
+        photo = path == "/api/artist-photo" and response.request.method == "GET"
+        if measure_ui.bad_response(response.status, path) and not (
+            photo and response.status == 404
+        ):
+            problems.append(f"{where[0]}: {response.status} {path}")
+
+    page.on("console", on_console)
+    page.on("response", on_response)
+    page.on("pageerror", lambda exc: problems.append(f"{where[0]}: pageerror: {exc}"))
+
+    clicked: dict[str, list[str]] = {}
+    skipped: dict[str, list[str]] = {}
+    repeated: dict[str, int] = {}
+    for screen, open_screen, scope in SWEEP_SCREENS:
+        where[0] = f"{screen}: открытие"
+        _sweep_open(page, open_screen, where[0])
+        now = _sweep_enumerate(page, scope)
+        base, total = now["state"], len(now["found"])
+        skipped[screen] = now["skipped"]
+        repeated[screen] = now["repeated"]
+        clicked[screen] = []
+        for index in range(min(total, SWEEP_CAP)):
+            if index >= len(now["found"]):
+                break
+            name = now["found"][index]
+            where[0] = f"{screen}: «{name}»"
+            try:
+                page.locator(f'[data-sweep="{index}"]').click(timeout=2000)
+            except playwright.Error:
+                # Список мог перерисоваться между перечнем и нажатием (очередь
+                # после смены трека) — метка пропала вместе со старым узлом.
+                # Перечислить заново и нажать ещё раз; не вышло — это ошибка.
+                now = _sweep_enumerate(page, scope)
+                if index >= len(now["found"]):
+                    break
+                name = now["found"][index]
+                where[0] = f"{screen}: «{name}»"
+                try:
+                    page.locator(f'[data-sweep="{index}"]').click(timeout=2000)
+                except playwright.Error as exc:
+                    problems.append(f"{where[0]}: не нажимается: {str(exc).splitlines()[0]}")
+            clicked[screen].append(name)
+            page.wait_for_timeout(SWEEP_SETTLE_MS)
+            assert page.url.startswith(server["url"]), f"{where[0]}: ушли со страницы"
+
+            # Вернуть экран: открытое поверх закрыть Escape, как человек;
+            # ушли с экрана или он стал другим — открыть его заново.
+            where[0] = f"{screen}: возврат после «{name}»"
+            over = page.evaluate(_SWEEP_STATE)["over"]
+            if over != base["over"] and any(over):
+                page.keyboard.press("Escape")
+            now = _sweep_enumerate(page, scope)
+            if now["state"] != base or len(now["found"]) != total:
+                _sweep_open(page, open_screen, where[0])
+                now = _sweep_enumerate(page, scope)
+    where[0] = "после обхода"
+    page.wait_for_timeout(300)
+
+    report = "\n".join(
+        f"{s}: {len(c)} {c} / не нажаты {skipped[s]} / повторных строк {repeated[s]}"
+        for s, c in clicked.items()
+    )
+    print(f"\n[{size[0]}x{size[1]}]\n{report}")
+    assert problems == [], "\n".join(problems)
+    # Обход, который ничего не нашёл, ничего и не проверил.
+    empty = [s for s, c in clicked.items() if not c and not skipped[s]]
+    assert empty == [], f"на этих экранах не нашлось ни одной кнопки: {empty}"

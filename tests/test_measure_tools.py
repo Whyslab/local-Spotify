@@ -75,6 +75,7 @@ def test_search_queries_are_short_substrings_that_change_the_result():
 def test_smoke_counts_a_missing_cover_as_fine_and_a_missing_page_as_not():
     assert not measure_ui.bad_response(404, "/api/cover")
     assert not measure_ui.bad_response(404, "/api/playlists/%E2%98%85%20X/cover")
+    assert not measure_ui.bad_response(404, "/api/artist-photo")
     assert measure_ui.bad_response(404, "/static/app.js")
     assert measure_ui.bad_response(500, "/api/cover")
     assert measure_ui.bad_response(401, "/api/library")

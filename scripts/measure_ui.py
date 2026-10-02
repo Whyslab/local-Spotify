@@ -478,8 +478,11 @@ def bad_response(status: int, path: str) -> bool:
         return True
     if status in (401, 403):
         return True
-    cover = path.startswith("/api/cover") or path.endswith("/cover")
-    return status == 404 and not cover
+    # «Картинки нет» по замыслу: обложка трека или подборки, фото артиста.
+    picture = (
+        path.startswith("/api/cover") or path.endswith("/cover") or path == "/api/artist-photo"
+    )
+    return status == 404 and not picture
 
 
 def smoke(pw, url: str, token: str) -> list[str]:
