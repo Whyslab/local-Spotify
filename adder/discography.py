@@ -146,7 +146,9 @@ def search_artists(query: str, limit: int = 8) -> list[dict]:
         return []
     with httpx.Client(timeout=similar.TIMEOUT) as client:
         rows = similar._get(client, similar.SEARCH, {"q": query, "limit": max(1, min(limit, 25))})
-    return [
+    # По числу слушателей: у Deezer первым бывает тёзка с 16 слушателями
+    # («Pharaoh»), а нужный — четвёртым.
+    found = [
         {
             "id": str(row["id"]),
             "name": row.get("name") or "",
@@ -157,6 +159,7 @@ def search_artists(query: str, limit: int = 8) -> list[dict]:
         for row in rows
         if row.get("id")
     ]
+    return sorted(found, key=lambda a: -a["fans"])
 
 
 def find_artist(name: str) -> dict | None:

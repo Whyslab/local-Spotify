@@ -415,3 +415,15 @@ def test_a_longer_clip_version_in_the_library_still_counts(monkeypatch):
     library = [{"artist": "GONE.Fludd", "title": "САХАРНЫЙ ЧЕЛОВЕК", "duration": 302}]
     data = discography.discography("7", library)
     assert data["releases"][0]["tracks"][0]["have"] is True
+
+
+def test_search_puts_the_most_listened_namesake_first(monkeypatch):
+    monkeypatch.setattr(
+        similar,
+        "_get",
+        lambda client, url, params: [
+            {"id": 1, "name": "Pharaoh", "nb_fan": 16, "nb_album": 2},
+            {"id": 2, "name": "Pharaoh", "nb_fan": 89507, "nb_album": 42},
+        ],
+    )
+    assert [a["id"] for a in discography.search_artists("PHARAOH")] == ["2", "1"]
