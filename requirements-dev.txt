@@ -3,7 +3,7 @@
 #
 #   .venv/bin/pip install -r requirements-dev.txt
 -r adder/requirements.txt
-pytest>=8.0,<9
+pytest>=9.0.3,<10
 # Unpinned on purpose, as in CI: ruff format output follows the latest release.
 ruff
 # Browser tests (tests/test_ui.py). Pinned exactly: each Playwright release

@@ -1,4 +1,8 @@
-fastapi==0.128.0
+fastapi==0.142.2
+# Floors for security fixes: Starlette below 1.3.1 and urllib3 below 2.8.0 have
+# known vulnerabilities (pip-audit, 2026-10-02).
+starlette>=1.3.1
+urllib3>=2.8.0
 uvicorn==0.40.0
 pydantic>=2.9,<3
 mutagen>=1.47,<2
