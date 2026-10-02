@@ -41,7 +41,7 @@ import threading
 import time
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -67,6 +67,14 @@ QUIET_WINDOW = ((2, 45), (5, 15))
 PLACEHOLDER_TOKEN = "CHANGE_ME_TO_A_LONG_RANDOM_SECRET"
 SERVER_THREAD = "stress-isolated-server"
 ALL_SCENARIOS = ("S1", "S2", "S3", "S4", "S5", "S6", "S7")
+# Пробы сверяются со снимком; старый снимок мог не увидеть то, что добавили после.
+SNAPSHOT_MAX_AGE = timedelta(hours=2)
+# Имя миниатюры — sha1 в hex (thumb_keys); другое имя из манифеста в путь не идёт.
+THUMB_KEY = re.compile(r"[0-9a-f]{40}")
+COLD_NOTE = (
+    "client and server run in the same process (isolated instance): "
+    "compare before/after only, not absolute"
+)
 
 
 @dataclass(frozen=True)
@@ -297,18 +305,51 @@ def parse_probe_links(text: str) -> tuple[list[str], str | None]:
     return probes, broken
 
 
+def snapshot_problems(snapshot: dict, library_rows: list[dict], now: datetime) -> list[str]:
+    """Why ``snapshot`` cannot be what cleanup deletes against; empty means it can."""
+    refresh = "refresh it with `stress.py snapshot --force`"
+    problems = []
+    try:
+        taken = datetime.fromisoformat(snapshot["taken_at"]).astimezone()
+    except (KeyError, TypeError, ValueError):
+        problems.append(f"the snapshot has no taken_at: {refresh}")
+    else:
+        if now - taken > SNAPSHOT_MAX_AGE:
+            problems.append(f"the snapshot is older than 2 h ({snapshot['taken_at']}): {refresh}")
+    before = set(snapshot.get("library_paths") or [])
+    current = {r["path"] for r in library_rows}
+    if before != current:
+        problems.append(
+            f"library changed since the snapshot (+{len(current - before)}, "
+            f"-{len(before - current)}): {refresh}"
+        )
+    return problems
+
+
 def probe_problems(
     links: list[str],
     rate_lines: list[str] | None,
     library_rows: list[dict],
     task_urls: list[str],
     manifest: dict | None,
-    snapshot_exists: bool,
+    snapshot: dict | None,
+    playlists: list[str] | None = None,
+    now: datetime | None = None,
 ) -> list[str]:
-    """Pre-conditions of S6/S7 (7.2, 7.4): anything listed here refuses the run."""
+    """Pre-conditions of S6/S7 (7.2, 7.4): anything listed here refuses the run.
+
+    ``playlists`` are the live playlist names, given when S6 will create
+    PROBE_PLAYLIST: an existing one of that name is someone's, not a probe's.
+    """
     problems = []
-    if not snapshot_exists:
+    if snapshot is None:
         problems.append("no snapshot: run `stress.py snapshot` first (7.4, step 1)")
+    else:
+        problems += snapshot_problems(snapshot, library_rows, now or datetime.now().astimezone())
+    if playlists is not None:
+        names = set(playlists) | set((snapshot or {}).get("playlists") or {})
+        if PROBE_PLAYLIST in names:
+            problems.append(f"a playlist {PROBE_PLAYLIST!r} already exists; S6 would take it over")
     if manifest_open(manifest):
         problems.append("an earlier probe manifest is not cleaned up: run `stress.py cleanup`")
     if rate_lines is None:
@@ -597,6 +638,38 @@ def probe_missing_ids(missing: list[dict], probe_paths: set[str]) -> list[str]:
     return [str(m["id"]) for m in missing if m.get("id") and m.get("path") in probe_paths]
 
 
+async def navidrome_auth(client: httpx.AsyncClient, nd: Navidrome) -> dict[str, str]:
+    login = await client.post(
+        f"{nd.url}/auth/login", json={"username": nd.user, "password": nd.password}
+    )
+    login.raise_for_status()
+    return {"x-nd-authorization": f"Bearer {login.json()['token']}"}
+
+
+async def navidrome_never_scanned(
+    client: httpx.AsyncClient, nd: Navidrome, probe_paths: set[str]
+) -> set[str]:
+    """Probe paths Navidrome has no song for at all, live or missing.
+
+    A probe deleted before Navidrome's scanner reached it never shows up in
+    /api/missing. ``GET /api/song?path=`` (its react-admin filter, a
+    ``LIKE 'path%'`` over media_file, missing rows included) tells the two
+    apart; only an exact path counts. Raises when Navidrome cannot be asked.
+    """
+    headers = await navidrome_auth(client, nd)
+    unknown = set()
+    for path in sorted(probe_paths):
+        response = await client.get(
+            f"{nd.url}/api/song",
+            params={"path": path, "_start": 0, "_end": 100},
+            headers=headers,
+        )
+        response.raise_for_status()
+        if not any(row.get("path") == path for row in response.json() or []):
+            unknown.add(path)
+    return unknown
+
+
 async def purge_navidrome_probes(
     client: httpx.AsyncClient,
     nd: Navidrome | None,
@@ -613,11 +686,7 @@ async def purge_navidrome_probes(
     """
     if nd is None or not probe_paths:
         return []
-    login = await client.post(
-        f"{nd.url}/auth/login", json={"username": nd.user, "password": nd.password}
-    )
-    login.raise_for_status()
-    headers = {"x-nd-authorization": f"Bearer {login.json()['token']}"}
+    headers = await navidrome_auth(client, nd)
     removed: list[str] = []
     deadline = time.monotonic() + wait
     while True:
@@ -662,15 +731,47 @@ async def collect_state(
     }
     if manifest is not None:
         before = library_before or set()
+        state.update(await service_queue_state(client))
         state["probe_rows"] = probe_rows(paths.db, manifest, before)
         state["leftover_files"] = leftover_files(paths, manifest, before)
         state["db_snapshot"] = db_snapshot_check(paths, manifest, before)
     return state
 
 
+async def service_queue_state(client: httpx.AsyncClient) -> dict:
+    """7.4.6, the cheap part: /health's navidrome_pending and /api/sync rows of the probe.
+
+    GET /api/sync only reads what the last pass found; POST would run one.
+    Each value is None when it cannot be read.
+    """
+    out: dict[str, Any] = {"navidrome_pending": None, "sync_probe": None}
+    try:
+        response = await client.get("/health")
+        response.raise_for_status()
+        pending = response.json().get("navidrome_pending")
+        out["navidrome_pending"] = int(pending) if pending is not None else None
+    except (httpx.HTTPError, ValueError, TypeError, AttributeError):
+        pass
+    try:
+        response = await client.get("/api/sync")
+        response.raise_for_status()
+        rows = (response.json().get("last_result") or {}).get("playlists") or []
+        out["sync_probe"] = [r for r in rows if r.get("playlist") == PROBE_PLAYLIST]
+    except (httpx.HTTPError, ValueError, AttributeError):
+        pass
+    return out
+
+
+def valid_thumb_keys(entry: dict) -> tuple[list[str], list[str]]:
+    """The entry's thumb keys split into (sha1 names, anything else)."""
+    keys = [str(k) for k in entry.get("thumb_keys") or []]
+    good = [k for k in keys if THUMB_KEY.fullmatch(k)]
+    return good, [k for k in keys if not THUMB_KEY.fullmatch(k)]
+
+
 def leftover_files(paths: Paths, manifest: dict, library_before: set[str]) -> list[str]:
     left = []
-    history = paths.playlist_history / manifest.get("playlist", PROBE_PLAYLIST)
+    history = paths.playlist_history / PROBE_PLAYLIST
     if manifest.get("playlist_requested") and history.exists():
         left.append(str(history))
     for entry in manifest.get("probes", []):
@@ -680,7 +781,7 @@ def leftover_files(paths: Paths, manifest: dict, library_before: set[str]) -> li
         result = entry.get("result_path")
         if not result or result in library_before:
             continue
-        for key in entry.get("thumb_keys", []):
+        for key in valid_thumb_keys(entry)[0]:
             if (paths.thumbs / f"{key}.jpg").exists():
                 left.append(str(paths.thumbs / f"{key}.jpg"))
         lyric = paths.lyrics / f"{lyrics_key(result)}.json"
@@ -745,6 +846,17 @@ def residue_problems(snapshot: dict, current: dict) -> list[str]:
         )
     for path in current.get("leftover_files") or []:
         problems.append(f"file left behind: {path}")
+    if "navidrome_pending" in current:
+        pending = current["navidrome_pending"]
+        if pending is None:
+            problems.append("navidrome_pending unknown: /health did not say")
+        elif pending:
+            problems.append(f"/health navidrome_pending is {pending}: Navidrome work still queued")
+    if "sync_probe" in current:
+        if current["sync_probe"] is None:
+            problems.append("GET /api/sync unreadable: check the sync state by hand")
+        for row in current["sync_probe"] or []:
+            problems.append(f"/api/sync: {PROBE_PLAYLIST!r} diverged ({row.get('reason')})")
     check = current.get("db_snapshot") or {}
     for table, count in (check.get("rows") or {}).items():
         if count:
@@ -800,10 +912,28 @@ async def record_thumb_keys(client: httpx.AsyncClient, entry: dict) -> None:
         entry["thumb_keys"] = thumb_keys(response.content)
 
 
+def ownership_problem(entry: dict, task_rows_: list[dict], source: str | None) -> str | None:
+    """Why the entry's result_path may not be deleted as the probe's own track.
+
+    Its tasks row (one of the entry's task ids, pointing at this path) must be
+    for the probe's video, and so must the file's own source tag. None: it may.
+    """
+    result, want = entry["result_path"], video_id(entry["link"])
+    rows = [r for r in task_rows_ if r.get("result_path") == result]
+    if not any(video_id(r.get("url") or "") == want for r in rows):
+        return f"{result!r}: no tasks row of this probe's video points at it; left alone"
+    if video_id(source or "") != want:
+        return f"{result!r}: its source tag is not this probe's video; left alone"
+    return None
+
+
 async def cleanup(
     client: httpx.AsyncClient, paths: Paths, manifest: dict, snapshot: dict | None
 ) -> list[str]:
-    """7.4 step 5. Touches only what the manifest names; returns what went wrong."""
+    """7.4 step 5. Touches only what the manifest names; returns what went wrong.
+
+    It never marks the manifest clean: finish_cleanup does, after Navidrome.
+    """
     errors: list[str] = []
     notes: list[str] = []
 
@@ -817,20 +947,26 @@ async def cleanup(
     await refresh_tasks(client, manifest, paths.db)
     save()
 
-    if manifest.get("playlist_requested") and not manifest.get("playlist_deleted"):
-        name = manifest.get("playlist", PROBE_PLAYLIST)
-        response = await client.delete(f"/api/playlists/{quote(name, safe='')}")
+    # Удаляется только подборка с постоянным именем: имя из манифеста в путь
+    # и в DELETE не идёт.
+    named = manifest.get("playlist", PROBE_PLAYLIST)
+    if named != PROBE_PLAYLIST:
+        errors.append(f"the manifest names playlist {named!r}, not {PROBE_PLAYLIST!r}; left alone")
+    elif manifest.get("playlist_requested") and not manifest.get("playlist_deleted"):
+        response = await client.delete(f"/api/playlists/{quote(PROBE_PLAYLIST, safe='')}")
         if response.status_code in (200, 404):
             manifest["playlist_deleted"] = True
         else:
-            errors.append(f"DELETE playlist {name!r}: HTTP {response.status_code}")
+            errors.append(f"DELETE playlist {PROBE_PLAYLIST!r}: HTTP {response.status_code}")
         save()
 
-    if manifest.get("playlist_deleted"):
+    if named == PROBE_PLAYLIST and manifest.get("playlist_deleted"):
         # Служба хранит прежние версии каждой подборки; у пробной их быть не должно.
-        history = paths.playlist_history / manifest.get("playlist", PROBE_PLAYLIST)
+        history = paths.playlist_history / PROBE_PLAYLIST
         if history.is_dir() and history.resolve().parent == paths.playlist_history.resolve():
             shutil.rmtree(history)
+
+    sources: dict[str, str] | None = None
 
     for entry in manifest.get("probes", []):
         result = entry.get("result_path")
@@ -848,6 +984,25 @@ async def cleanup(
             entry["kept_existing"] = True
             notes.append(f"{result}: was in the library before the test, left alone")
             save()
+            continue
+        if sources is None:
+            try:
+                sources = {r["path"]: r.get("source") or "" for r in await get_library(client)}
+            except (httpx.HTTPError, KeyError, ValueError, TypeError) as exc:
+                errors.append(
+                    f"library listing unavailable ({type(exc).__name__}); nothing deleted"
+                )
+                break
+        if result not in sources:
+            # Трека в фонотеке уже нет (как 404 у DELETE).
+            entry["deleted"] = True
+            save()
+            continue
+        problem = ownership_problem(
+            entry, task_rows(paths.db, entry.get("task_ids", [])), sources[result]
+        )
+        if problem:
+            errors.append(problem)
             continue
         await record_thumb_keys(client, entry)
         response = await client.request("DELETE", "/api/library", json={"path": result})
@@ -875,15 +1030,16 @@ async def cleanup(
         result = entry.get("result_path")
         if not result or library_before is None or result in library_before:
             continue
-        targets = [paths.thumbs / f"{k}.jpg" for k in entry.get("thumb_keys", [])]
+        keys, bad = valid_thumb_keys(entry)
+        if bad:
+            errors.append(f"thumb key(s) {bad!r} in the manifest are not sha1 names; left alone")
+        targets = [paths.thumbs / f"{k}.jpg" for k in keys]
         targets.append(paths.lyrics / f"{lyrics_key(result)}.json")
         for target in targets:
             with contextlib.suppress(FileNotFoundError):
                 target.unlink()
 
     manifest["cleanup_notes"] = notes
-    if not errors:
-        manifest["cleaned_at"] = now_iso()
     save()
     return errors
 
@@ -902,6 +1058,11 @@ def delete_probe_rows(db_path: Path, manifest: dict, library_before: set[str] | 
     try:
         with con:
             for entry in manifest.get("probes", []):
+                if entry.get("result_path") and not (
+                    entry.get("deleted") or entry.get("kept_existing")
+                ):
+                    # Пока трек на месте, строка задачи — то, чем он проверяется.
+                    continue
                 for tid in entry.get("task_ids", []):
                     row = con.execute(
                         "SELECT url, status FROM tasks WHERE id = ?", (tid,)
@@ -1181,7 +1342,8 @@ async def scenario_s3_cold(paths: list[str], root: Path) -> list[dict]:
                     instance.clear_thumbs()
                     jobs = _cover_jobs(client, paths, size)
                     label = f"covers cold (isolated) size={size}"
-                    runs.append(await measured(label, jobs, concurrency, own_probe, COVER_OK))
+                    run = await measured(label, jobs, concurrency, own_probe, COVER_OK)
+                    runs.append({**run, "note": COLD_NOTE})
     return runs
 
 
@@ -1251,6 +1413,8 @@ class IsolatedInstance:
     /api/cover is meant to be asked of it. The library is the configured one
     (read only) unless ``library`` is given.
     """
+
+    join_timeout = 15.0
 
     def __init__(self, root: Path, library: Path | None = None):
         self.root = root
@@ -1329,13 +1493,22 @@ class IsolatedInstance:
     def clear_thumbs(self) -> None:
         from adder import runtime
 
-        shutil.rmtree(runtime.THUMB_DIR, ignore_errors=True)
+        root, target = self.root.resolve(), Path(runtime.THUMB_DIR).resolve()
+        if target == root or not target.is_relative_to(root):
+            raise RuntimeError(f"thumb-cache {target} is not inside the instance's {root}")
+        shutil.rmtree(target, ignore_errors=True)
 
     def __exit__(self, *exc: object) -> None:
         if self._server is not None:
             self._server.should_exit = True
         if self._thread is not None:
-            self._thread.join(timeout=15)
+            self._thread.join(timeout=self.join_timeout)
+            if self._thread.is_alive():
+                # Вернуть живые пути под работающим сервером — значит дать ему
+                # писать в настоящие adder/ и trash/. Пути остаются временными.
+                message = "the isolated server is still running; live paths NOT restored"
+                print(f"stress: {message}", file=sys.stderr)
+                raise RuntimeError(message)
         for owner, name, value in reversed(self._saved):
             setattr(owner, name, value)
         self._saved.clear()
@@ -1420,11 +1593,13 @@ async def scenario_s6(
             ids += await post_probe(client, paths.manifest, repeat)
             save()
 
-            manifest["playlist_requested"] = True
-            save()
             created = await client.post(
                 "/api/playlists", json={"name": PROBE_PLAYLIST, "paths": []}
             )
+            if created.is_success:
+                # Только своя: 409 значит, что подборка с этим именем уже чья-то.
+                manifest["playlist_requested"] = True
+                save()
             created.raise_for_status()
 
             rows = await wait_for_tasks(client, ids, poll, timeout)
@@ -1570,6 +1745,7 @@ def table(report: dict) -> str:
     )
     lines = [head, "-" * len(head)]
     for name, result in report["scenarios"].items():
+        notes: set[str] = set()
         for run in result.get("runs", []):
             res = run.get("resources") or result.get("resources") or {}
             lines.append(
@@ -1578,6 +1754,9 @@ def table(report: dict) -> str:
                 f"{_cell(run.get('p95_ms'), 8)} {_cell(run.get('p99_ms'), 8)} "
                 f"{_cell(res.get('memory_peak_mb'), 7)} {_cell(res.get('ffmpeg_max'), 3)}"
             )
+            if run.get("note") and run["note"] not in notes:
+                notes.add(run["note"])
+                lines.append(f"{'':8} ^ {run['note']}")
         for key in ("checks", "skipped", "error"):
             if key in result:
                 lines.append(f"{name:8} {key}: {json.dumps(result[key], ensure_ascii=False)}")
@@ -1589,6 +1768,37 @@ def table(report: dict) -> str:
 # ---------------------------------------------------------------------------
 
 
+def service_workdir(unit: str = UNIT) -> str | None:
+    """The unit's WorkingDirectory, or None when systemd does not say."""
+    try:
+        done = subprocess.run(
+            ["systemctl", "--user", "show", unit, "-p", "WorkingDirectory", "--value"],
+            capture_output=True, text=True, timeout=5,
+        )  # fmt: skip
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if done.returncode != 0:
+        return None
+    return done.stdout.strip() or None
+
+
+def checkout_problem(paths: Paths, workdir: str | None) -> str | None:
+    """Why this checkout is not the service's; None means it is."""
+    hint = f"run it from the service's checkout (systemctl --user show {UNIT} -p WorkingDirectory)"
+    if not paths.db.is_file():
+        return f"{paths.db} not found: {hint}"
+    if workdir and Path(workdir).resolve() != paths.repo.resolve():
+        return f"the service runs from {workdir}, not {paths.repo}: {hint}"
+    return None
+
+
+def require_checkout(args: argparse.Namespace, paths: Paths) -> None:
+    # Юнит сравнивается только для службы по умолчанию: --base-url может быть другой.
+    workdir = service_workdir() if args.base_url == DEFAULT_BASE_URL else None
+    if problem := checkout_problem(paths, workdir):
+        raise SystemExit(problem)
+
+
 def parse_scenarios(text: str) -> list[str]:
     chosen = [s.strip().upper() for s in text.split(",") if s.strip()]
     unknown = [s for s in chosen if s not in ALL_SCENARIOS]
@@ -1598,6 +1808,7 @@ def parse_scenarios(text: str) -> list[str]:
 
 
 async def cmd_run(args: argparse.Namespace, paths: Paths) -> int:
+    require_checkout(args, paths)
     scenarios = parse_scenarios(args.scenarios)
     if in_quiet_window(datetime.now()) and not args.ignore_window:
         raise SystemExit("02:45-05:15 belongs to the nightly timers (7.1); run later")
@@ -1622,13 +1833,19 @@ async def cmd_run(args: argparse.Namespace, paths: Paths) -> int:
                 raise SystemExit("S6 together with S7 needs at least two probe links")
             log = journal("-2h")
             links = probes + [x for x in (broken, restart) if x]
+            live_playlists = None
+            if "S6" in scenarios:
+                listing = await client.get("/api/playlists")
+                listing.raise_for_status()
+                live_playlists = [str(p.get("name")) for p in listing.json()]
             problems = probe_problems(
                 links,
                 None if log is None else rate_limit_lines(log),
                 rows,
                 [r["url"] or "" for r in task_rows(paths.db)],
                 read_json(paths.manifest),
-                paths.snapshot.is_file(),
+                read_json(paths.snapshot),
+                live_playlists,
             )
             if problems:
                 print("refusing to probe:\n  " + "\n  ".join(problems), file=sys.stderr)
@@ -1715,9 +1932,7 @@ async def _cleanup_after(
 ) -> None:
     if report.get("cleanup"):
         return
-    snapshot = read_json(paths.snapshot)
-    errors = await cleanup(client, paths, manifest, snapshot)
-    purged = await _purge(paths, manifest, snapshot, errors)
+    errors, purged = await _finish(client, paths, manifest)
     report["cleanup"] = {
         "errors": errors,
         "notes": manifest.get("cleanup_notes", []),
@@ -1733,23 +1948,79 @@ def deleted_probe_paths(manifest: dict, snapshot: dict | None) -> set[str]:
     return {
         e["result_path"]
         for e in manifest.get("probes", [])
-        if e.get("deleted") and e.get("result_path") and e["result_path"] not in before
+        if e.get("deleted")
+        and not e.get("navidrome_purged")
+        and not e.get("navidrome_never_scanned")
+        and e.get("result_path")
+        and e["result_path"] not in before
     }
 
 
-async def _purge(paths: Paths, manifest: dict, snapshot: dict | None, errors: list[str]) -> list:
-    nd = Navidrome.from_env(read_env(paths.env))
-    try:
-        async with httpx.AsyncClient(timeout=30, trust_env=False) as nd_client:
-            return await purge_navidrome_probes(
-                nd_client, nd, deleted_probe_paths(manifest, snapshot)
-            )
-    except (httpx.HTTPError, KeyError, ValueError) as exc:
-        errors.append(f"Navidrome purge failed ({type(exc).__name__}): see 7.4 step 6")
-        return []
+async def finish_cleanup(
+    client: httpx.AsyncClient,
+    nd_client: httpx.AsyncClient,
+    nd: Navidrome | None,
+    paths: Paths,
+    manifest: dict,
+    snapshot: dict | None,
+    wait: float = 60.0,
+    step: float = 5.0,
+) -> tuple[list[str], list[str]]:
+    """cleanup, then the Navidrome purge (7.4 steps 5-6); returns (errors, purged).
+
+    The manifest is marked clean only when both went through. A probe path
+    left over after ``wait`` passes only if Navidrome has no song for it at
+    all (deleted before its scanner got there: ``navidrome_never_scanned``);
+    one it still knows, or a failed lookup, is an error.
+    """
+    errors = await cleanup(client, paths, manifest, snapshot)
+    pending = deleted_probe_paths(manifest, snapshot)
+    purged: list[str] = []
+    if pending and nd is None:
+        errors.append(
+            "Navidrome credentials are not in adder/.env: purge the probes' missing "
+            f"entries by hand (7.4 step 6): {sorted(pending)}"
+        )
+    elif pending and nd is not None:
+        try:
+            purged = await purge_navidrome_probes(nd_client, nd, pending, wait, step)
+        except (httpx.HTTPError, KeyError, ValueError) as exc:
+            errors.append(f"Navidrome purge failed ({type(exc).__name__}): see 7.4 step 6")
+        never: set[str] = set()
+        if left := pending - set(purged):
+            # Проба, удалённая до сканера, в «отсутствующих» не появится никогда.
+            try:
+                never = await navidrome_never_scanned(nd_client, nd, left)
+            except (httpx.HTTPError, KeyError, ValueError, TypeError, AttributeError) as exc:
+                errors.append(
+                    f"Navidrome song lookup failed ({type(exc).__name__}): {sorted(left)}"
+                )
+            else:
+                if known := sorted(left - never):
+                    errors.append(f"Navidrome still knows these paths, run again: {known}")
+        for entry in manifest.get("probes", []):
+            if entry.get("result_path") in purged:
+                entry["navidrome_purged"] = True
+            elif entry.get("result_path") in never:
+                entry["navidrome_never_scanned"] = True
+    if not errors:
+        manifest["cleaned_at"] = now_iso()
+    write_json(paths.manifest, manifest)
+    return errors, purged
+
+
+async def _finish(
+    client: httpx.AsyncClient, paths: Paths, manifest: dict
+) -> tuple[list[str], list[str]]:
+    env = read_env(paths.env)
+    async with httpx.AsyncClient(timeout=30, trust_env=False) as nd_client:
+        return await finish_cleanup(
+            client, nd_client, Navidrome.from_env(env), paths, manifest, read_json(paths.snapshot)
+        )
 
 
 async def cmd_snapshot(args: argparse.Namespace, paths: Paths) -> int:
+    require_checkout(args, paths)
     if paths.snapshot.is_file() and not args.force:
         raise SystemExit(f"{paths.snapshot} exists; --force to replace it")
     if manifest_open(read_json(paths.manifest)):
@@ -1771,15 +2042,14 @@ async def cmd_snapshot(args: argparse.Namespace, paths: Paths) -> int:
 
 
 async def cmd_cleanup(args: argparse.Namespace, paths: Paths) -> int:
+    require_checkout(args, paths)
     manifest = read_json(paths.manifest)
     if manifest is None:
         print("no probe manifest: nothing to clean")
         return 0
     env = read_env(paths.env)
-    snapshot = read_json(paths.snapshot)
     async with make_client(args.base_url, api_token(env)) as client:
-        errors = await cleanup(client, paths, manifest, snapshot)
-    purged = await _purge(paths, manifest, snapshot, errors)
+        errors, purged = await _finish(client, paths, manifest)
     for path in purged:
         print(f"Navidrome: removed missing entry {path}")
     for note in manifest.get("cleanup_notes", []):
@@ -1791,6 +2061,7 @@ async def cmd_cleanup(args: argparse.Namespace, paths: Paths) -> int:
 
 
 async def cmd_residue(args: argparse.Namespace, paths: Paths) -> int:
+    require_checkout(args, paths)
     snapshot = read_json(paths.snapshot)
     if snapshot is None:
         raise SystemExit("no snapshot to compare with")

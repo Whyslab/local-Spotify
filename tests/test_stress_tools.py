@@ -7,6 +7,7 @@ library in tmp_path.
 """
 
 import asyncio
+import importlib
 import importlib.util
 import json
 import shutil
@@ -15,6 +16,7 @@ import struct
 import sys
 import threading
 import zlib
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -25,6 +27,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PROBE_1 = "https://www.youtube.com/watch?v=probe000001"
 PROBE_2 = "https://www.youtube.com/watch?v=probe000002"
 BROKEN = "https://www.youtube.com/watch?v=broken00000"
+PROBE_3 = "https://www.youtube.com/watch?v=probe000003"
 UNRELATED = "https://www.youtube.com/watch?v=someoneelse"
 
 
@@ -137,8 +140,17 @@ def test_probe_links_file_is_limited():
         stress.parse_probe_links(f"{PROBE_1}\nhttps://youtu.be/probe000001")
 
 
+def fresh_snapshot(library_paths=(), playlists=None, age=timedelta(minutes=5)):
+    taken = datetime.now().astimezone() - age
+    return {
+        "taken_at": taken.isoformat(timespec="seconds"),
+        "library_paths": list(library_paths),
+        "playlists": playlists or {},
+    }
+
+
 def test_probe_preconditions():
-    clean = stress.probe_problems([PROBE_1], [], [], [], None, True)
+    clean = stress.probe_problems([PROBE_1], [], [], [], None, fresh_snapshot())
     assert clean == []
     problems = stress.probe_problems(
         [PROBE_1, PROBE_2],
@@ -146,7 +158,7 @@ def test_probe_preconditions():
         [{"path": "A/a.m4a", "source": PROBE_1}],
         [PROBE_2],
         {"cleaned_at": None, "probes": []},
-        False,
+        None,
     )
     text = "\n".join(problems)
     assert "no snapshot" in text
@@ -154,7 +166,36 @@ def test_probe_preconditions():
     assert "rate limit" in text
     assert "already in the library: probe000001" in text
     assert "already in the tasks table: probe000002" in text
-    assert "could not read" in "\n".join(stress.probe_problems([PROBE_1], None, [], [], None, True))
+    unread = stress.probe_problems([PROBE_1], None, [], [], None, fresh_snapshot())
+    assert "could not read" in "\n".join(unread)
+
+
+def test_probes_refuse_a_stale_or_outdated_snapshot():
+    rows = [{"path": "A/a.m4a", "source": ""}]
+
+    def problems(snapshot):
+        return "\n".join(stress.probe_problems([PROBE_1], [], rows, [], None, snapshot))
+
+    assert problems(fresh_snapshot(["A/a.m4a"])) == ""
+    assert "older than 2 h" in problems(fresh_snapshot(["A/a.m4a"], age=timedelta(hours=2.1)))
+    undated = {k: v for k, v in fresh_snapshot(["A/a.m4a"]).items() if k != "taken_at"}
+    assert "taken_at" in problems(undated)
+    naive = fresh_snapshot(["A/a.m4a"])
+    naive["taken_at"] = datetime.now().isoformat(timespec="seconds")  # без пояса — местное
+    assert problems(naive) == ""
+    changed = problems(fresh_snapshot(["A/a.m4a", "B/b.m4a"]))
+    assert "library changed since the snapshot" in changed
+    assert "snapshot --force" in changed
+
+
+def test_s6_refuses_an_existing_probe_playlist():
+    def problems(snapshot, live):
+        return "\n".join(stress.probe_problems([PROBE_1], [], [], [], None, snapshot, live))
+
+    assert problems(fresh_snapshot(), ["Mix"]) == ""
+    in_snapshot = fresh_snapshot(playlists={stress.PROBE_PLAYLIST: "r1"})
+    assert stress.PROBE_PLAYLIST in problems(in_snapshot, ["Mix"])
+    assert stress.PROBE_PLAYLIST in problems(fresh_snapshot(), ["Mix", stress.PROBE_PLAYLIST])
 
 
 def test_restart_waits_for_quiet():
@@ -337,6 +378,10 @@ def test_cleanup_deletes_exactly_the_manifest_paths(paths, tmp_path):
             return httpx.Response(200, json=[dict(zip(keys, r, strict=True)) for r in rows])
         if path == "/api/cover":
             return httpx.Response(200, content=b"probe-cover")
+        if request.method == "GET" and path == "/api/library":
+            sources = {"Probe/Singles/One.m4a": PROBE_1, "Old/Singles/Kept.m4a": PROBE_2}
+            listed = [p for p in sources if (library / p).exists()]
+            return httpx.Response(200, json=[{"path": p, "source": sources[p]} for p in listed])
         if request.method == "DELETE" and path == "/api/library":
             rel = json.loads(request.content)["path"]
             deleted.append(rel)
@@ -370,7 +415,9 @@ def test_cleanup_deletes_exactly_the_manifest_paths(paths, tmp_path):
     assert not probe_lyrics.exists()
     assert kept_lyrics.exists()
     saved = json.loads(paths.manifest.read_text())
-    assert saved["cleaned_at"]
+    # Чистой уборку объявляет finish_cleanup, после Navidrome.
+    assert saved["cleaned_at"] is None
+    assert saved["probes"][0]["deleted"] is True
     assert saved["probes"][1]["kept_existing"] is True
     assert not probe_history.exists(), "the probe playlist's saved versions go too"
     assert (paths.playlist_history / "Monday" / "1.m3u").exists()
@@ -413,7 +460,7 @@ def test_trash_removal_stays_inside_trash(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def residue_handler(library_paths, missing):
+def residue_handler(library_paths, missing, pending=0, sync_rows=()):
     def handler(request: httpx.Request) -> httpx.Response:
         path = request.url.path
         if request.url.port == 8787:
@@ -424,6 +471,13 @@ def residue_handler(library_paths, missing):
             return httpx.Response(200, json=[{"path": p} for p in library_paths])
         if request.url.port == 8787 and path == "/api/playlists":
             return httpx.Response(200, json=[{"name": "Mix", "revision": "r1"}])
+        if path == "/health":
+            if pending is None:
+                return httpx.Response(500)
+            return httpx.Response(200, json={"status": "healthy", "navidrome_pending": pending})
+        if path == "/api/sync":
+            result = {"navidrome": "ok", "playlists": list(sync_rows)}
+            return httpx.Response(200, json={"queued": pending, "last_result": result})
         if path == "/auth/login":
             return httpx.Response(200, json={"token": "nd"})
         if path == "/api/missing":
@@ -437,8 +491,8 @@ def residue_handler(library_paths, missing):
     return handler
 
 
-def state_of(paths, library_paths, missing, manifest=None, before=None):
-    handler = residue_handler(library_paths, missing)
+def state_of(paths, library_paths, missing, manifest=None, before=None, **service):
+    handler = residue_handler(library_paths, missing, **service)
     nd = stress.Navidrome("http://127.0.0.1:4533", "admin", "pw")
 
     async def go():
@@ -487,6 +541,25 @@ def test_residue_flags_track_task_row_and_missing_increase(paths):
     assert "Navidrome missing files: 3 before, 4 now" in problems
 
 
+def test_residue_flags_navidrome_queue_and_probe_sync(paths):
+    snapshot = state_of(paths, ["A/Singles/a.m4a"], 3)
+    before = set(snapshot["library_paths"])
+    clean_sync = [{"playlist": "Mix", "reason": "updated on the phone"}]
+    clean = state_of(paths, ["A/Singles/a.m4a"], 3, {"probes": []}, before, sync_rows=clean_sync)
+    assert stress.residue_problems(snapshot, clean) == []
+
+    probe_sync = [{"playlist": stress.PROBE_PLAYLIST, "reason": "updated on the phone"}]
+    busy = state_of(
+        paths, ["A/Singles/a.m4a"], 3, {"probes": []}, before, pending=2, sync_rows=probe_sync
+    )
+    problems = "\n".join(stress.residue_problems(snapshot, busy))
+    assert "navidrome_pending is 2" in problems
+    assert f"/api/sync: {stress.PROBE_PLAYLIST!r}" in problems
+
+    unknown = state_of(paths, ["A/Singles/a.m4a"], 3, {"probes": []}, before, pending=None)
+    assert "navidrome_pending unknown" in "\n".join(stress.residue_problems(snapshot, unknown))
+
+
 def test_residue_is_red_when_navidrome_count_is_unknown(paths):
     snapshot = state_of(paths, ["A/Singles/a.m4a"], 3)
     current = state_of(paths, ["A/Singles/a.m4a"], None, {"probes": []}, set())
@@ -516,14 +589,19 @@ def _png() -> bytes:
     )
 
 
-def _mtime(path: Path):
-    return path.stat().st_mtime_ns if path.exists() else None
+def _tree(root: Path) -> dict[str, int]:
+    """Every file and folder under ``root`` (with ``root``) and its mtime."""
+    if not root.exists():
+        return {}
+    found = {".": root.stat().st_mtime_ns}
+    found.update({str(p.relative_to(root)): p.stat().st_mtime_ns for p in root.rglob("*")})
+    return found
 
 
 def test_isolated_instance_starts_no_threads(tmp_path, monkeypatch):
     from mutagen.mp4 import MP4, MP4Cover
 
-    from adder import config, covers, lyrics, playlists, runtime
+    from adder import config, db, runtime
 
     library = tmp_path / "fixture-library"
     track = library / "Band" / "Singles" / "Song.m4a"
@@ -534,24 +612,39 @@ def test_isolated_instance_starts_no_threads(tmp_path, monkeypatch):
     tags.save()
     monkeypatch.setattr(config, "LIBRARY", library)
 
-    watched = [ROOT / "adder", ROOT / "trash", library, track.parent]
-    mtimes = {p: _mtime(p) for p in watched}
-    copies = {
-        "lyrics.CACHE_DIR": lambda: lyrics.CACHE_DIR,
-        "covers.COVERS_DIR": lambda: covers.COVERS_DIR,
-        "playlists.HISTORY_DIR": lambda: playlists.HISTORY_DIR,
-    }
-    before_paths = {name: getattr(runtime, name) for name in stress.RUNTIME_PATHS}
-    before_copies = {name: read() for name, read in copies.items()}
+    # «Живые» пути службы — в tmp, а не ROOT/adder: там настоящая служба пишет
+    # журнал SQLite, и время изменения папки плавало само по себе.
+    live = tmp_path / "live-adder"
+    for name, relative in stress.RUNTIME_PATHS.items():
+        monkeypatch.setattr(runtime, name, live / relative)
+    modules = {}
+    for (module, name), relative in stress.MODULE_COPIES.items():
+        modules[module, name] = importlib.import_module(f"adder.{module}")
+        monkeypatch.setattr(modules[module, name], name, live / relative)
+    live.mkdir()
+    db.db_init()
+    for relative in ("thumb-cache", "lyrics-cache", "trash", "playlist-history/Monday"):
+        (live / relative).mkdir(parents=True)
+        (live / relative / "old").write_bytes(b"live")
+    (live / "artist-import.json").write_text("[]")
+    monkeypatch.setattr(config, "NAVIDROME_USER", "someone")
+    monkeypatch.setattr(config, "NAVIDROME_PASSWORD", "pw")
+
+    def where() -> dict[str, Path]:
+        found = {name: getattr(runtime, name) for name in stress.RUNTIME_PATHS}
+        found.update({f"{m}.{n}": getattr(modules[m, n], n) for m, n in stress.MODULE_COPIES})
+        return found
+
+    before_paths = where()
+    assert all(p.is_relative_to(live) for p in before_paths.values())
+    before_trees = {"live": _tree(live), "library": _tree(library)}
     before_threads = {t.ident for t in threading.enumerate()}
     root = tmp_path / "isolated"
 
     with stress.IsolatedInstance(root) as instance:
-        for name in stress.RUNTIME_PATHS:
-            assert getattr(runtime, name).is_relative_to(root), name
-        for name, read in copies.items():
-            assert read().is_relative_to(root), name
-        assert config.NAVIDROME_USER == ""
+        for name, path in where().items():
+            assert path.is_relative_to(root), name
+        assert (config.NAVIDROME_USER, config.NAVIDROME_PASSWORD) == ("", "")
 
         with httpx.Client(base_url=instance.url, trust_env=False, timeout=30) as client:
             auth = {"Authorization": f"Bearer {instance.token}"}
@@ -563,6 +656,8 @@ def test_isolated_instance_starts_no_threads(tmp_path, monkeypatch):
         assert refused.status_code == 401
         if shutil.which("ffmpeg"):
             assert list((root / "thumb-cache").glob("*.jpg")), "thumbnail not in the temp dir"
+        instance.clear_thumbs()
+        assert not (root / "thumb-cache").exists()
 
         started = [t for t in threading.enumerate() if t.ident not in before_threads]
         names = {t.name for t in started}
@@ -572,10 +667,57 @@ def test_isolated_instance_starts_no_threads(tmp_path, monkeypatch):
         assert names <= {stress.SERVER_THREAD, "AnyIO worker thread"}, names
 
     assert not any(t.name == stress.SERVER_THREAD for t in threading.enumerate())
-    assert {name: getattr(runtime, name) for name in stress.RUNTIME_PATHS} == before_paths
-    assert {name: read() for name, read in copies.items()} == before_copies
+    assert where() == before_paths
+    assert (config.NAVIDROME_USER, config.NAVIDROME_PASSWORD) == ("someone", "pw")
     assert library == config.LIBRARY
-    assert {p: _mtime(p) for p in watched} == mtimes
+    assert {"live": _tree(live), "library": _tree(library)} == before_trees
+
+
+def test_clear_thumbs_stays_inside_the_instance(tmp_path, monkeypatch):
+    from adder import runtime
+
+    live_thumbs = tmp_path / "live-thumbs"
+    live_thumbs.mkdir()
+    (live_thumbs / "keep.jpg").write_bytes(b"jpg")
+    monkeypatch.setattr(runtime, "THUMB_DIR", live_thumbs)
+    instance = stress.IsolatedInstance(tmp_path / "isolated")
+    with pytest.raises(RuntimeError, match="not inside"):
+        instance.clear_thumbs()
+    assert (live_thumbs / "keep.jpg").exists()
+
+
+def test_exit_keeps_temp_paths_while_the_server_still_runs(tmp_path):
+    from types import SimpleNamespace
+
+    temp_thumbs = tmp_path / "isolated" / "thumb-cache"
+    owner = SimpleNamespace(THUMB_DIR=temp_thumbs)
+    release = threading.Event()
+    stuck = threading.Thread(target=release.wait, args=(5,), daemon=True)
+    stuck.start()
+    # Старый код ждал 15 с и всё равно возвращал пути; таймер не даёт ему висеть.
+    timer = threading.Timer(0.5, release.set)
+    timer.start()
+    instance = stress.IsolatedInstance(tmp_path / "isolated")
+    instance.join_timeout = 0.05
+    instance._server = SimpleNamespace(should_exit=False)
+    instance._thread = stuck
+    instance._saved = [(owner, "THUMB_DIR", tmp_path / "live" / "thumb-cache")]
+    try:
+        with pytest.raises(RuntimeError, match="still running"):
+            instance.__exit__(None, None, None)
+        assert owner.THUMB_DIR is temp_thumbs, "live path restored under a running server"
+    finally:
+        release.set()
+        timer.cancel()
+        stuck.join()
+
+
+def test_cold_cover_numbers_are_marked_relative(tmp_path):
+    runs = asyncio.run(stress.scenario_s3_cold([], tmp_path / "isolated"))
+    assert runs
+    assert all("same process" in run["note"] for run in runs)
+    text = stress.table({"scenarios": {"S3": {"runs": runs}}})
+    assert "same process" in text
 
 
 def test_range_offsets_stay_inside_the_file():
@@ -647,3 +789,297 @@ def test_purge_targets_only_deleted_probes_that_were_not_there_before():
     snapshot = {"library_paths": ["Old/Singles/Kept.m4a"]}
     assert stress.deleted_probe_paths(manifest, snapshot) == {"P/Singles/One.m4a"}
     assert stress.deleted_probe_paths(manifest, None) == set()
+
+
+# ---------------------------------------------------------------------------
+# Review hardening: what cleanup may delete, and where the tool may run
+# ---------------------------------------------------------------------------
+
+
+def test_cleanup_deletes_only_a_track_the_probe_owns(paths):
+    manifest = stress.new_manifest([PROBE_1, PROBE_2, PROBE_3], None)
+    for entry, tid in zip(manifest["probes"], (11, 12, 13), strict=True):
+        entry["task_ids"] = [tid]
+    stress.write_json(paths.manifest, manifest)
+    # 12: the row's link is someone else's; 13: the file's source is someone else's.
+    for tid, url, result in (
+        (11, PROBE_1, "Probe/Singles/One.m4a"),
+        (12, UNRELATED, "Swapped/Singles/Two.m4a"),
+        (13, PROBE_3, "Other/Singles/Three.m4a"),
+    ):
+        sql(
+            paths.db,
+            "INSERT INTO tasks(id, url, status, result_path) VALUES(?, ?, 'done', ?)",
+            (tid, url, result),
+        )
+    library = {
+        "Probe/Singles/One.m4a": PROBE_1,
+        "Swapped/Singles/Two.m4a": PROBE_2,
+        "Other/Singles/Three.m4a": UNRELATED,
+    }
+    deleted = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/api/tasks":
+            rows = sql(paths.db, "SELECT id, url, status, result_path FROM tasks")
+            keys = ("id", "url", "status", "result_path")
+            return httpx.Response(200, json=[dict(zip(keys, r, strict=True)) for r in rows])
+        if request.method == "GET" and path == "/api/library":
+            return httpx.Response(200, json=[{"path": p, "source": s} for p, s in library.items()])
+        if request.method == "DELETE" and path == "/api/library":
+            deleted.append(json.loads(request.content)["path"])
+            return httpx.Response(200, json={"trash": None})
+        return httpx.Response(404)
+
+    async def go():
+        async with client_for(handler) as client:
+            return await stress.cleanup(client, paths, manifest, {"library_paths": []})
+
+    errors = "\n".join(asyncio.run(go()))
+    assert deleted == ["Probe/Singles/One.m4a"]
+    assert "Swapped/Singles/Two.m4a" in errors
+    assert "Other/Singles/Three.m4a" in errors
+    # Строка задачи — улика: пока трек не убран, она остаётся.
+    assert sql(paths.db, "SELECT id FROM tasks ORDER BY id") == [(12,), (13,)]
+
+
+def test_cleanup_never_deletes_a_playlist_the_manifest_renames(paths):
+    manifest = stress.new_manifest([PROBE_1], None)
+    manifest["playlist"] = "Monday"
+    manifest["playlist_requested"] = True
+    stress.write_json(paths.manifest, manifest)
+    (paths.playlist_history / "Monday").mkdir(parents=True)
+    (paths.playlist_history / "Monday" / "1.m3u").write_text("#EXTM3U\n")
+    playlist_deletes = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "DELETE" and request.url.path.startswith("/api/playlists/"):
+            playlist_deletes.append(request.url.path)
+            return httpx.Response(200, json={})
+        return httpx.Response(200, json=[])
+
+    async def go():
+        async with client_for(handler) as client:
+            return await stress.cleanup(client, paths, manifest, {"library_paths": []})
+
+    errors = asyncio.run(go())
+    assert playlist_deletes == []
+    assert (paths.playlist_history / "Monday" / "1.m3u").exists()
+    assert any("Monday" in e for e in errors)
+
+    # Манифест, где удаление уже отмечено: история чужой подборки всё равно цела.
+    manifest["playlist_deleted"] = True
+    asyncio.run(go())
+    assert (paths.playlist_history / "Monday" / "1.m3u").exists()
+
+
+def test_cleanup_ignores_thumb_keys_that_are_not_sha1_names(paths):
+    good = stress.thumb_keys(b"probe-cover")[0]
+    manifest = stress.new_manifest([PROBE_1], None)
+    manifest["probes"][0].update(
+        result_path="Probe/Singles/One.m4a", deleted=True, thumb_keys=["../escape", good]
+    )
+    stress.write_json(paths.manifest, manifest)
+    paths.thumbs.mkdir(parents=True)
+    (paths.thumbs / f"{good}.jpg").write_bytes(b"jpg")
+    escape = paths.adder / "escape.jpg"
+    escape.write_bytes(b"not a thumbnail")
+    assert str(escape) not in stress.leftover_files(paths, manifest, set())
+    assert stress.valid_thumb_keys({"thumb_keys": None}) == ([], [])
+
+    async def go():
+        async with client_for(lambda r: httpx.Response(200, json=[])) as client:
+            return await stress.cleanup(client, paths, manifest, {"library_paths": []})
+
+    errors = asyncio.run(go())
+    assert escape.exists()
+    assert not (paths.thumbs / f"{good}.jpg").exists()
+    assert any("thumb key" in e for e in errors)
+
+
+def test_probe_playlist_is_ours_only_once_the_post_succeeded(paths):
+    manifest = stress.new_manifest([PROBE_1], None)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/add":
+            return httpx.Response(200, json={"added": [11]})
+        if request.method == "POST" and request.url.path == "/api/playlists":
+            return httpx.Response(409, json={"detail": "Playlist already exists"})
+        return httpx.Response(404)
+
+    async def go():
+        async with client_for(handler) as client:
+            await stress.scenario_s6(client, paths, manifest, [], poll=0.01, timeout=1)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        asyncio.run(go())
+    assert json.loads(paths.manifest.read_text())["playlist_requested"] is False
+
+
+def test_cleanup_is_marked_clean_only_after_navidrome_forgot_the_probes(paths):
+    manifest = stress.new_manifest([PROBE_1], None)
+    manifest["probes"][0].update(task_ids=[11], result_path="P/Singles/One.m4a", deleted=True)
+    stress.write_json(paths.manifest, manifest)
+    snapshot = {"library_paths": []}
+    nd = stress.Navidrome("http://nd", "admin", "pw")
+    scanned = []
+
+    def service(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[])
+
+    def navidrome(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/auth/login":
+            return httpx.Response(200, json={"token": "t"})
+        if request.method == "GET" and request.url.path == "/api/song":
+            # Сканер удаления ещё не видел: для Navidrome это живая песня.
+            live = [] if scanned else [{"path": "P/Singles/One.m4a", "missing": False}]
+            return httpx.Response(200, json=live)
+        if request.method == "GET" and request.url.path == "/api/missing":
+            return httpx.Response(200, json=[{"id": "p1", "path": p} for p in scanned])
+        if request.method == "DELETE" and request.url.path == "/api/missing":
+            scanned.clear()
+            return httpx.Response(200, json={})
+        return httpx.Response(404)
+
+    async def go(nd_):
+        async with (
+            client_for(service) as client,
+            httpx.AsyncClient(transport=httpx.MockTransport(navidrome)) as nd_client,
+        ):
+            return await stress.finish_cleanup(
+                client, nd_client, nd_, paths, manifest, snapshot, wait=0, step=0
+            )
+
+    def saved():
+        return json.loads(paths.manifest.read_text())
+
+    errors, purged = asyncio.run(go(None))
+    assert any("Navidrome credentials" in e for e in errors)
+    assert saved()["cleaned_at"] is None
+
+    # Сканер ещё не заметил удаления: «отсутствующего» нет, уборка не окончена.
+    errors, purged = asyncio.run(go(nd))
+    assert purged == []
+    assert any("P/Singles/One.m4a" in e for e in errors)
+    assert saved()["cleaned_at"] is None
+
+    scanned.append("P/Singles/One.m4a")
+    errors, purged = asyncio.run(go(nd))
+    assert (errors, purged) == ([], ["P/Singles/One.m4a"])
+    assert saved()["cleaned_at"]
+    assert saved()["probes"][0]["navidrome_purged"] is True
+
+
+@pytest.mark.parametrize("command", ["run", "snapshot", "cleanup", "residue"])
+def test_commands_refuse_a_checkout_without_the_service_database(tmp_path, monkeypatch, command):
+    other = stress.Paths(repo=tmp_path / "checkout")
+    other.adder.mkdir(parents=True)
+    monkeypatch.setattr(stress, "service_workdir", lambda unit="music-adder": None, raising=False)
+    # Порт, где никого нет: ни одна команда не должна дойти до живой службы.
+    argv = ["--base-url", "http://127.0.0.1:9", command]
+    if command == "run":
+        argv += ["--scenarios", "S1", "--ignore-window"]
+    args = stress.build_parser().parse_args(argv)
+    handler = {
+        "run": stress.cmd_run,
+        "snapshot": stress.cmd_snapshot,
+        "cleanup": stress.cmd_cleanup,
+        "residue": stress.cmd_residue,
+    }[command]
+    with pytest.raises(SystemExit, match="WorkingDirectory"):
+        asyncio.run(handler(args, other))
+
+
+def test_checkout_must_be_the_one_the_service_runs_from(paths, tmp_path):
+    assert stress.checkout_problem(paths, None) is None
+    assert stress.checkout_problem(paths, str(paths.repo)) is None
+    assert "WorkingDirectory" in str(stress.checkout_problem(paths, str(tmp_path / "elsewhere")))
+
+
+def navidrome_songs_handler(missing: list[dict], songs, deleted: list[list[str]]):
+    """Navidrome's native API: /api/missing, /api/song?path= (prefix, as LIKE 'p%')."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/auth/login":
+            return httpx.Response(200, json={"token": "t"})
+        assert request.headers["x-nd-authorization"] == "Bearer t"
+        if request.method == "GET" and request.url.path == "/api/missing":
+            gone = {i for batch in deleted for i in batch}
+            return httpx.Response(200, json=[m for m in missing if m["id"] not in gone])
+        if request.method == "DELETE" and request.url.path == "/api/missing":
+            deleted.append(request.url.params.get_list("id"))
+            return httpx.Response(200, json={})
+        if request.method == "GET" and request.url.path == "/api/song":
+            if songs is None:
+                return httpx.Response(500)
+            prefix = request.url.params["path"]
+            return httpx.Response(200, json=[s for s in songs if s["path"].startswith(prefix)])
+        return httpx.Response(404)
+
+    return handler
+
+
+def run_finish(paths, manifest, handler):
+    stress.write_json(paths.manifest, manifest)
+    nd = stress.Navidrome("http://nd", "admin", "pw")
+
+    async def go():
+        async with (
+            client_for(lambda r: httpx.Response(200, json=[])) as client,
+            httpx.AsyncClient(transport=httpx.MockTransport(handler)) as nd_client,
+        ):
+            return await stress.finish_cleanup(
+                client, nd_client, nd, paths, manifest, {"library_paths": []}, wait=0, step=0
+            )
+
+    errors, purged = asyncio.run(go())
+    return errors, purged, json.loads(paths.manifest.read_text())
+
+
+def deleted_probes(*result_paths):
+    manifest = stress.new_manifest([PROBE_1, PROBE_2, PROBE_3][: len(result_paths)], None)
+    for entry, result in zip(manifest["probes"], result_paths, strict=True):
+        entry.update(result_path=result, deleted=True)
+    return manifest
+
+
+def test_a_probe_navidrome_never_scanned_does_not_block_the_cleanup(paths):
+    known, never = "K/Singles/Known.m4a", "Kevin MacLeod/Singles/Strength of the Titans.m4a"
+    manifest = deleted_probes(known, never)
+    deleted: list[list[str]] = []
+    songs = [
+        {"path": known, "missing": True},
+        # Тот же префикс, другой файл: LIKE 'путь%' находит и его.
+        {"path": never + ".bak", "missing": False},
+    ]
+    handler = navidrome_songs_handler([{"id": "k1", "path": known}], songs, deleted)
+
+    errors, purged, saved = run_finish(paths, manifest, handler)
+
+    assert (errors, purged) == ([], [known])
+    assert deleted == [["k1"]]
+    assert saved["cleaned_at"]
+    assert saved["probes"][0]["navidrome_purged"] is True
+    assert saved["probes"][1]["navidrome_never_scanned"] is True
+    assert "navidrome_purged" not in saved["probes"][1]
+
+
+def test_a_probe_navidrome_still_plays_stays_an_error(paths):
+    live = "L/Singles/Live.m4a"
+    handler = navidrome_songs_handler([], [{"path": live, "missing": False}], [])
+    errors, purged, saved = run_finish(paths, deleted_probes(live), handler)
+    assert purged == []
+    assert any(live in e for e in errors)
+    assert saved["cleaned_at"] is None
+    assert "navidrome_never_scanned" not in saved["probes"][0]
+
+
+def test_a_failed_navidrome_lookup_stays_an_error(paths):
+    lost = "Kevin MacLeod/Singles/Strength of the Titans.m4a"
+    handler = navidrome_songs_handler([], None, [])
+    errors, purged, saved = run_finish(paths, deleted_probes(lost), handler)
+    assert any("lookup failed" in e for e in errors)
+    assert not any("still knows" in e for e in errors), "a failed lookup proves nothing"
+    assert saved["cleaned_at"] is None
+    assert "navidrome_never_scanned" not in saved["probes"][0]
