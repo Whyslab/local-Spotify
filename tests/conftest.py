@@ -20,6 +20,18 @@ if PROJECT_ROOT not in sys.path:
 
 import pytest  # noqa: E402
 
+# Playwright's WebKit build does not start on Arch (libvpx.so.9 is in neither
+# the repositories nor the AUR), so the iPhone-engine tests run in CI only,
+# where RUN_WEBKIT=1. Left out loudly, in the run's header, not skipped quietly.
+RUN_WEBKIT = os.environ.get("RUN_WEBKIT") == "1"
+collect_ignore = [] if RUN_WEBKIT else ["test_ui_webkit.py"]
+
+
+def pytest_report_header(config):
+    if RUN_WEBKIT:
+        return "WebKit (iPhone engine): tests/test_ui_webkit.py included"
+    return "WebKit (iPhone engine): tests/test_ui_webkit.py left out, runs in CI (RUN_WEBKIT=1)"
+
 
 @pytest.fixture(autouse=True)
 def _outside_stays_offline(monkeypatch, tmp_path, request):
