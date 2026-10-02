@@ -59,7 +59,13 @@ def test_the_library_renders_titles_as_text(page):
 def test_downloads_are_offered(page):
     # Service worker and Cache API: what keeps the library on the phone.
     assert page.evaluate("offline.supported") is True
-    assert page.evaluate("navigator.serviceWorker.ready.then(r => Boolean(r.active))") is True
+    ready = page.evaluate(
+        """Promise.race([
+            navigator.serviceWorker.ready.then(r => Boolean(r.active)),
+            new Promise(r => setTimeout(() => r("timeout"), 15000)),
+        ])"""
+    )
+    assert ready is True
 
 
 def test_an_aac_track_plays(page):

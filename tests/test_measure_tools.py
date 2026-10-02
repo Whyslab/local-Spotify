@@ -16,8 +16,9 @@ spec.loader.exec_module(measure_ui)
 
 def test_measure_parsers():
     got = measure_ui.stats([300.0, 100.0, 200.0, 400.0, 1000.0])
-    assert got == {"median": 300.0, "p90": 1000.0, "n": 5}
-    assert measure_ui.stats([]) == {"median": None, "p90": None, "n": 0}
+    assert got == {"median": 300.0, "p90": 1000.0, "n": 5, "failed": 0}
+    assert measure_ui.stats([]) == {"median": None, "p90": None, "n": 0, "failed": 0}
+    assert measure_ui.stats([100.0, None]) == {"median": 100.0, "p90": 100.0, "n": 1, "failed": 1}
 
 
 def test_budget_gate_fails_on_miss():
@@ -34,6 +35,10 @@ def test_budget_gate_fails_on_miss():
     # Not measured is a miss too: "no number" must not read as "fast".
     empty = {"laptop": {"covers": measure_ui.stats([])}}
     assert measure_ui.misses(empty) == ["laptop/covers: нет замера"]
+
+    # A run that never saw its result is a miss, not a quietly dropped sample.
+    timed_out = {"laptop": {"search": measure_ui.stats([100.0, None])}}
+    assert measure_ui.misses(timed_out) == ["laptop/search: 1 прогон(ов) не дождались результата"]
 
     # One long task while scrolling already breaks "none".
     janky = {"laptop": {"long_tasks": measure_ui.stats([1.0])}}
@@ -54,11 +59,17 @@ def test_token_is_read_like_dotenv(tmp_path):
     assert measure_ui.read_token(env) == "abc"
 
 
-def test_search_queries_are_short_substrings_of_titles():
-    qs = measure_ui.search_queries(["Биг бой", "Always", "17"], 20)
+def test_search_queries_are_short_substrings_that_change_the_result():
+    rows = [
+        {"title": "Биг бой", "artist": "Платина", "album": "x"},
+        {"title": "Always", "artist": "madk1d", "album": "Always"},
+        {"title": "Бентли", "artist": "PHARAOH", "album": "y"},
+    ]
+    qs = measure_ui.search_queries(rows, 20)
     assert len(qs) == 20
     assert all(1 <= len(q) <= 6 for q in qs)
-    assert all(any(q in w.lower() for w in ["биг", "бой", "always"]) for q in qs)
+    # The last letter must change what is found, or nothing is redrawn to time.
+    assert all(measure_ui._hits(rows, q) != measure_ui._hits(rows, q[:-1]) for q in qs)
 
 
 def test_smoke_counts_a_missing_cover_as_fine_and_a_missing_page_as_not():

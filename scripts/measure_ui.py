@@ -36,6 +36,7 @@ import random
 import statistics
 import sys
 import time
+from collections.abc import Sequence
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -59,13 +60,20 @@ PROFILES = ("laptop", "phone")
 # ---------------------------------------------------------------- чистые части
 
 
-def stats(values: list[float]) -> dict:
-    """Медиана, p90 и число прогонов. Пустой список — None вместо чисел."""
-    if not values:
-        return {"median": None, "p90": None, "n": 0}
-    ordered = sorted(values)
+def stats(values: Sequence[float | None]) -> dict:
+    """Медиана, p90, число удачных прогонов и неудачных (None — замер не дождался)."""
+    got = [v for v in values if v is not None]
+    failed = len(values) - len(got)
+    if not got:
+        return {"median": None, "p90": None, "n": 0, "failed": failed}
+    ordered = sorted(got)
     p90 = ordered[min(len(ordered) - 1, int(round(0.9 * (len(ordered) - 1))))]
-    return {"median": round(statistics.median(ordered), 1), "p90": round(p90, 1), "n": len(ordered)}
+    return {
+        "median": round(statistics.median(ordered), 1),
+        "p90": round(p90, 1),
+        "n": len(ordered),
+        "failed": failed,
+    }
 
 
 def misses(results: dict) -> list[str]:
@@ -82,6 +90,10 @@ def misses(results: dict) -> list[str]:
             median = value.get("median")
             if median is None:
                 found.append(f"{profile}/{name}: нет замера")
+            elif value.get("failed"):
+                found.append(
+                    f"{profile}/{name}: {value['failed']} прогон(ов) не дождались результата"
+                )
             elif median > target:
                 found.append(f"{profile}/{name}: {median:g} > {target:g}")
     return found
@@ -102,17 +114,29 @@ def read_token(env_file: Path) -> str:
     raise SystemExit(f"API_TOKEN не найден в {env_file}")
 
 
-def search_queries(titles: list[str], count: int, seed: int = 7) -> list[str]:
-    """Подстроки названий длиной 1–6 букв: так ищут на самом деле."""
+def _hits(rows: list[dict], q: str) -> int:
+    fields = ("title", "artist", "album")
+    return sum(any(q in (r.get(f) or "").lower() for f in fields) for r in rows)
+
+
+def search_queries(rows: list[dict], count: int, seed: int = 7) -> list[str]:
+    """Подстроки названий длиной 1–6 букв: так ищут на самом деле.
+
+    Только такие, где последняя буква меняет выдачу: иначе страница ничего не
+    перерисует, и «результат нарисован» не наступит вовсе.
+    """
     rnd = random.Random(seed)
-    words = [w for t in titles for w in t.split() if any(ch.isalpha() for ch in w)]
-    if not words:
-        return []
+    words = [
+        w for r in rows for w in (r.get("title") or "").split() if any(ch.isalpha() for ch in w)
+    ]
     out: list[str] = []
-    while len(out) < count:
+    for _ in range(count * 50):
+        if not words or len(out) >= count:
+            break
         word = rnd.choice(words)
-        size = rnd.randint(1, min(6, len(word)))
-        out.append(word[:size].lower())
+        q = word[: rnd.randint(1, min(6, len(word)))].lower()
+        if _hits(rows, q) != _hits(rows, q[:-1]):
+            out.append(q)
     return out
 
 
@@ -146,6 +170,19 @@ COVER_PROBE = """
     if (cover) p.finally(() => { window.__coverInflight--; });
     return p;
   };
+  // Обложка «в пути» — от вызова fetchTrackCover до вставки картинки или отказа:
+  // помечается сам квадрат, чтобы «догрузилось» судилось по тем, что на экране.
+  addEventListener("DOMContentLoaded", () => {
+    const orig = window.fetchTrackCover;
+    if (typeof orig !== "function") return;
+    window.fetchTrackCover = function (host, path, size) {
+      host.__coverPending = true;
+      orig.apply(this, arguments);
+      const key = `track:${size}:${path}`;
+      const pending = typeof coverUrls !== "undefined" ? coverUrls.get(key) : null;
+      Promise.resolve(pending).finally(() => setTimeout(() => { host.__coverPending = false; }, 0));
+    };
+  });
   window.__longTasks = [];
   try {
     new PerformanceObserver((list) => {
@@ -169,35 +206,41 @@ SCROLLER_JS = """
 
 COVERS_SETTLED_JS = """
 () => {
-  if (window.__coverInflight > 0) return false;
-  const vh = window.innerHeight;
-  for (const img of document.querySelectorAll("#library .cover img, #views img")) {
-    const r = img.getBoundingClientRect();
-    if (r.bottom < 0 || r.top > vh || r.width === 0) continue;
-    if (!img.complete || img.naturalWidth === 0) return false;
+  const vh = innerHeight, vw = innerWidth;
+  for (const host of document.querySelectorAll(".cover, .o-cover")) {
+    const r = host.getBoundingClientRect();
+    if (r.width === 0 || r.bottom <= 0 || r.top >= vh || r.right <= 0 || r.left >= vw) continue;
+    if (host._coverJob || host.__coverPending) return false;   // ещё не начата или в пути
+    const img = host.querySelector("img");
+    if (img && (!img.complete || img.naturalWidth === 0)) return false;
   }
   return true;
 }
 """
 
 # Время от ввода до первой перерисовки результата — внутри страницы, по её часам.
-SEARCH_JS = """
-async ([inputSel, bodySel, value]) => {
+# Взводится перед вводом последней буквы. Начало — время события клавиши
+# (keydown, а если буква вставлена без него — input): задержка ввода входит.
+# Конец — кадр после того, как текст выдачи изменился; появление картинок и
+# фоновый опрос без изменений текст не меняют и концом не считаются.
+SEARCH_ARM_JS = """
+([inputSel, bodySels]) => {
   const input = document.querySelector(inputSel);
-  const body = document.querySelector(bodySel);
-  input.value = value.slice(0, -1);
-  await new Promise(r => setTimeout(r, 400));
-  return await new Promise((resolve) => {
-    let t0 = 0;
+  const bodies = bodySels.map(s => document.querySelector(s)).filter(Boolean);
+  const sig = () => bodies.map(b => b.innerText).join("\\u0001");
+  const before = sig();
+  window.__searchDone = new Promise((resolve) => {
+    let t0 = null;
+    const mark = (e) => { if (t0 === null) t0 = e.timeStamp; };
+    input.addEventListener("keydown", mark, { capture: true, once: true });
+    input.addEventListener("input", mark, { capture: true, once: true });
     const obs = new MutationObserver(() => {
+      if (t0 === null || sig() === before) return;
       obs.disconnect();
       requestAnimationFrame(() => resolve(performance.now() - t0));
     });
-    obs.observe(body, { childList: true, subtree: true, characterData: true });
+    for (const b of bodies) obs.observe(b, { childList: true, subtree: true, characterData: true });
     setTimeout(() => { obs.disconnect(); resolve(null); }, 5000);
-    t0 = performance.now();
-    input.value = value;
-    input.dispatchEvent(new Event("input", { bubbles: true }));
   });
 }
 """
@@ -371,29 +414,39 @@ def measure_scroll(s: Session) -> dict:
     return {"long_tasks": result}
 
 
+def search_once(page, input_sel: str, bodies: list[str], q: str, wait_ms: int = 700):
+    """Набрать всё, кроме последней буквы, подождать, ввести её настоящей клавишей."""
+    page.fill(input_sel, q[:-1])
+    page.wait_for_timeout(wait_ms)
+    page.evaluate(SEARCH_ARM_JS, [input_sel, bodies])
+    page.focus(input_sel)
+    page.keyboard.type(q[-1])
+    return page.evaluate("window.__searchDone")
+
+
 def measure_search(s: Session, runs: int, idle: bool) -> dict:
     ctx = s.context()
     page = s.open(ctx)
-    titles = page.evaluate("labIndex().then(rows => rows.map(r => r.title || ''))")
-    queries = search_queries(titles, max(runs, 20))
+    rows = page.evaluate(
+        "labIndex().then(rows => rows.map(r =>"
+        " ({title: r.title, artist: r.artist, album: r.album})))"
+    )
+    queries = search_queries(rows, max(runs, 20))
     out = {}
 
     page.evaluate("switchView('viewSearch')")
     page.wait_for_selector("#searchEverywhere")
-    everywhere = [
-        page.evaluate(SEARCH_JS, ["#searchEverywhere", "#searchBody", q]) for q in queries
-    ]
-    out["search"] = stats([v for v in everywhere if v is not None])
+    everywhere = [search_once(page, "#searchEverywhere", ["#searchBody"], q) for q in queries]
+    out["search"] = stats(everywhere)
 
     _open_library(page)
-    in_library = [page.evaluate(SEARCH_JS, ["#librarySearch", "#library", q]) for q in queries]
-    out["search_library"] = stats([v for v in in_library if v is not None])
+    lib = ["#library", "#libraryEmpty"]
+    out["search_library"] = stats([search_once(page, "#librarySearch", lib, q) for q in queries])
 
     if idle:
         page.evaluate("switchView('viewSearch')")
-        page.wait_for_timeout(61_000)
-        once = page.evaluate(SEARCH_JS, ["#searchEverywhere", "#searchBody", queries[0] + "x"])
-        out["search_idle"] = stats([] if once is None else [once])
+        once = search_once(page, "#searchEverywhere", ["#searchBody"], queries[0], wait_ms=61_000)
+        out["search_idle"] = stats([once])
     ctx.close()
     return out
 

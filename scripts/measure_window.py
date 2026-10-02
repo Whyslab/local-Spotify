@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import select
 import shutil
 import subprocess
 import sys
@@ -57,8 +58,10 @@ def start_xvfb() -> tuple[subprocess.Popen, str]:
         stderr=subprocess.DEVNULL,
     )
     os.close(write)
+    # Xvfb пишет номер экрана, когда готов; повис — не ждать вечно.
+    ready, _, _ = select.select([read], [], [], 15)
     with os.fdopen(read) as pipe:
-        number = pipe.readline().strip()
+        number = pipe.readline().strip() if ready else ""
     if not number:
         proc.kill()
         raise SystemExit("Xvfb не запустился")
@@ -145,14 +148,20 @@ def measure(args, token: str, display: str) -> int:
             print(f"smoke: {'ok' if not problems else 'ошибки'} (готово за {ms:.0f} мс)")
             return 1 if problems else 0
 
-        cold = []
-        for i in range(args.runs):
-            ms, _ = launch(root / f"cold-{i}", token, display)
-            cold.append(ms)
+        # Запуск, который не дошёл до «готово», — промах (None), а не повод
+        # потерять все остальные цифры.
+        def attempt(profile: Path, **kw) -> tuple[float | None, list[dict]]:
+            try:
+                return launch(profile, token, display, **kw)
+            except (RuntimeError, subprocess.TimeoutExpired) as exc:
+                print(f"запуск не удался: {exc}", file=sys.stderr)
+                return None, []
+
+        cold = [attempt(root / f"cold-{i}")[0] for i in range(args.runs)]
         warm_profile = root / "warm"
-        launch(warm_profile, token, display)  # прогрев: кэш, service worker, localStorage
-        warm = [launch(warm_profile, token, display)[0] for _ in range(args.runs)]
-        _, events = launch(warm_profile, token, display, scroll=True, timeout=180)
+        attempt(warm_profile)  # прогрев: кэш, service worker, localStorage
+        warm = [attempt(warm_profile)[0] for _ in range(args.runs)]
+        _, events = attempt(warm_profile, scroll=True, timeout=180)
 
     scroll = next((e for e in events if e.get("event") == "scroll"), {})
     gaps = scroll.get("frame_gaps_over_50ms")
