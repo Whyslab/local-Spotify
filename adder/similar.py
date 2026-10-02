@@ -201,6 +201,67 @@ def similar_artists(artist: str, cache_dir: Path, limit: int = 12) -> list[str]:
     return names
 
 
+def _ask_picture(name: str) -> list[str] | None:
+    """Фото артиста. None — «не дозвонились», [] — «фото нет», иначе [адрес].
+
+    Только при совпадении имени: для похожих сойдёт и первый в выдаче, а в
+    шапке чужое лицо хуже, чем никакого. Имя сравнивается и латиницей: у
+    Deezer «Алина Орлова» с фото записана как «Alina Orlova», а кириллическая
+    запись — пустая. У артиста без фото Deezer отдаёт заглушку с пустым
+    идентификатором («/artist//») — такие не в счёт.
+    """
+    # Здесь, а не наверху: outside сам импортирует similar.
+    from .outside import _latin_words
+
+    try:
+        with httpx.Client(timeout=TIMEOUT) as client:
+            candidates = _get(client, SEARCH, {"q": name, "limit": 5})
+    except (_Unreachable, httpx.HTTPError) as exc:
+        logger.info("фото %s: %s", name, exc)
+        return None
+
+    def picture(candidate: dict) -> str:
+        url = candidate.get("picture_xl") or candidate.get("picture_big") or ""
+        return "" if "/artist//" in url else url
+
+    latin = _latin_words(name)
+    same = [
+        c
+        for c in candidates
+        if picture(c)
+        and (
+            (c.get("name") or "").strip().lower() == name.lower()
+            or (latin and _latin_words(c.get("name") or "") == latin)
+        )
+    ]
+    if not same:
+        return []
+    return [picture(max(same, key=lambda c: c.get("nb_fan") or 0))]
+
+
+def artist_picture(artist: str, cache_dir: Path) -> str:
+    """Адрес фото артиста в Deezer (1000×1000) или "" — фото нет.
+
+    Кэш тот же, что у похожих: фото меняется редко, а спрашивают его на
+    каждое открытие страницы артиста. Промах помнится месяц.
+    """
+    name = primary(artist)
+    if len(name) < 2:
+        return ""
+
+    slot = _slot(cache_dir, name, kind="pic:")
+    cached = _recall(slot, "picture")
+    if cached is not None:
+        return cached[0] if cached else ""
+
+    found = _ask_picture(name)
+    if found is None:
+        return ""
+
+    _remember(slot, cache_dir, name, "picture", found)
+    return found[0] if found else ""
+
+
 def top_tracks(artist: str, cache_dir: Path, limit: int = 5) -> list[dict]:
     """Популярные треки артиста: `[{"artist", "title", "duration", "album", "cover"}]`.
 

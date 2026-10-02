@@ -1382,7 +1382,7 @@ function loadLyrics(track, force = false) {
     lyrics.lines = [];
     lyrics.index = -1;
     box.replaceChildren();
-    box.classList.remove("has-lyrics", "is-synced");
+    box.classList.remove("has-lyrics", "is-synced", "is-empty");
 
     fetch("/api/lyrics?path=" + encodeURIComponent(track.path), { headers: headers() })
         .then(r => (r.ok ? r.json() : null))
@@ -1425,12 +1425,23 @@ function loadLyrics(track, force = false) {
         .catch(() => renderNoLyrics(box, "Не удалось получить текст"));
 }
 
+/* Текста нет — крупно, на месте самого текста: мелкая серая строчка
+ * терялась на экране (02.10.2026). Сбой — по-прежнему мелким пояснением:
+ * это не «текста нет», а «не дозвались». */
 function renderNoLyrics(box, reason) {
-    const note = document.createElement("p");
-    note.className = "lyric-note";
-    note.textContent = (reason || "Текста нет")
-        + " — кнопка «Найти текст» покажет варианты или даст вставить свой.";
-    box.replaceChildren(note);
+    const hint = document.createElement("p");
+    hint.className = "lyric-note";
+    if (reason) {
+        hint.textContent = reason + " — кнопка «Найти текст» покажет варианты или даст вставить свой.";
+        box.replaceChildren(hint);
+        return;
+    }
+    box.classList.add("is-empty");
+    const title = document.createElement("p");
+    title.className = "lyric-empty";
+    title.textContent = "Извините, но тут буквально ничего";
+    hint.textContent = "«Найти текст» покажет варианты или даст вставить свой.";
+    box.replaceChildren(title, hint);
 }
 
 /* Выбор текста руками.
@@ -1449,7 +1460,7 @@ function openLyricsFinder() {
     lyrics.path = null;
     lyrics.lines = [];
     lyrics.index = -1;
-    box.classList.remove("has-lyrics", "is-synced");
+    box.classList.remove("has-lyrics", "is-synced", "is-empty");
     updateSyncButton();
 
     const panel = document.createElement("div");
@@ -1734,10 +1745,16 @@ async function playlists() {
  * по картинке быстрее, чем читаешь название. */
 let railSignature = "";
 
+/* Какая подборка подсвечена в рельсе: открытая сейчас, а не последняя
+ * открытая — player.playlist остаётся и после ухода на другой экран. */
+function railOpenPlaylist() {
+    return activeView === "viewPlaylist" && player.playlist ? player.playlist.name : null;
+}
+
 function renderRail(data) {
     const rail = document.getElementById("railPlaylists");
     if (!rail) return;
-    const open = player.playlist ? player.playlist.name : null;
+    const open = railOpenPlaylist();
     /* Опрос раз в 30 с пересобирал рельсу целиком, и фокус клавиатуры с
      * подборки улетал на страницу. Ничего не поменялось — не трогаем. */
     const signature = JSON.stringify([open, data.map(p => [p.name, p.tracks])]);
@@ -2061,13 +2078,34 @@ function menuPointerDown(event) {
 }
 
 /* Меню у нижней строки уходило за край экрана: открываем его вверх, если
- * снизу не помещается. Только для меню, стоящих у своей строки (absolute). */
+ * снизу не помещается. Только для меню, стоящих у своей строки (absolute).
+ *
+ * Под полосой плеера и вкладками меню не видно — низ там, а не у края окна.
+ * Вверх — только если сверху оно помещается целиком: в низком окне (браузер
+ * в масштабе 150 %) меню вверх от первых строк уходило под край окна, и
+ * верхние пункты было не нажать. Не помещается ни туда, ни туда — остаётся
+ * под строкой, а страница сама прокручивается, чтобы его было видно. */
 function keepMenuOnScreen(menu) {
+    /* Низ — верх того, что прижато к низу окна: полосы плеера и, на
+     * телефоне, вкладок. Меряем сами элементы: --tabbar — это calc() с
+     * отступом под «чёлку», числом его не прочесть. Большой плеер на весь
+     * экран начинается сверху — он не «низ». */
+    let floor = window.innerHeight;
+    for (const node of document.querySelectorAll("#player, .tabbar")) {
+        const rect = node.getBoundingClientRect();
+        if (rect.height && rect.top > window.innerHeight / 2) floor = Math.min(floor, rect.top);
+    }
+    const bottomLimit = floor - 8;
     const box = menu.getBoundingClientRect();
-    if (box.bottom > window.innerHeight - 8) {
+    if (box.bottom <= bottomLimit) return;
+    const anchor = (menu.offsetParent || menu.parentElement).getBoundingClientRect();
+    if (anchor.top - box.height >= 8) {
         menu.style.top = "auto";
         menu.style.bottom = "calc(100% - 6px)";
+        return;
     }
+    menu.style.scrollMarginBottom = (window.innerHeight - bottomLimit) + "px";
+    menu.scrollIntoView({ block: "nearest" });
 }
 
 function openTrackMenu(button, position) {

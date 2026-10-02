@@ -824,32 +824,37 @@ function filterOpenPlaylist() {
  */
 /* ---------------- Находки извне ----------------
  *
- * Треки, которых в фонотеке нет вовсе. Спрашиваются один раз за жизнь страницы:
- * ими пользуются и очередь, и главная, а Deezer от повторных вопросов новых
- * артистов не придумает. Первый запрос ходит в сеть (секунды), дальше сервер
- * отвечает из своего кэша мгновенно.
+ * Треки, которых в фонотеке нет вовсе. С 02.10.2026 — новый набор на каждый
+ * заход на главную: одни и те же двенадцать переставали быть находками.
+ * Следующий набор готовится заранее, сразу с обложками, — заход на главную,
+ * и он уже на месте. Обложки лежат у службы на диске (/api/web-cover) и в
+ * памяти страницы (coverUrl), сами треки не качаются.
  *
  * Ничего не скачивается: находка — повод открыть поиск и выбрать версию руками.
  */
-let externalFindsCache = null;
-let externalFindsPromise = null;
+let findsNext = null;
 
-function externalFinds() {
-    if (externalFindsCache) return Promise.resolve(externalFindsCache);
-    if (externalFindsPromise) return externalFindsPromise;
+function findCover(url) {
+    return coverUrl("find:" + url, "/api/web-cover?url=" + encodeURIComponent(url) + "&size=" + THUMB_LARGE);
+}
 
-    externalFindsPromise = fetch("/api/discover-external?limit=12", { headers: headers() })
+function fetchFinds() {
+    return fetch("/api/discover-external?limit=12", { headers: headers() })
         .then(r => (r.ok ? r.json() : { tracks: [] }))
         .then(data => {
-            externalFindsCache = Array.isArray(data.tracks) ? data.tracks : [];
-            return externalFindsCache;
+            const finds = Array.isArray(data.tracks) ? data.tracks : [];
+            for (const f of finds) if (f.cover) findCover(f.cover);
+            return finds;
         })
-        .catch(() => {
-            /* Находки — дополнение, а не часть страницы: без них так без них. */
-            externalFindsCache = [];
-            return externalFindsCache;
-        });
-    return externalFindsPromise;
+        /* Находки — дополнение, а не часть страницы: без них так без них. */
+        .catch(() => []);
+}
+
+/* Набор для показа, и сразу за ним — заготовка следующего. */
+function externalFinds() {
+    const ready = findsNext || fetchFinds();
+    findsNext = ready.then(() => fetchFinds());
+    return ready;
 }
 
 /* «+» ничего не качает: открывает поиск с готовым запросом. Две загрузки одной

@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from . import (
+    artist_photos,
     config,
     covers,
     db,
@@ -43,8 +44,10 @@ from . import (
     shelves,
     shuffle,
     signing,
+    similar,
     sources,
     sync,
+    webcovers,
 )
 from . import queue as task_queue
 
@@ -1462,11 +1465,78 @@ def discover_external(limit: int = 12, authenticated: bool = Depends(verify_toke
     Ничего не скачивает и ничего не ставит в очередь — только называет. Дальше
     человек открывает поиск и выбирает версию сам, как и в /api/search.
 
+    Набор на каждый запрос новый: главная спрашивает при каждом заходе, и
+    каждый раз должно быть что-то другое.
+
     Пустой список — нормальный ответ: Deezer мог не отозваться, а находки
     к очереди пристроены сбоку. Отдавать 502 значило бы объявить сбоем то, что
     им не является.
     """
-    return {"tracks": shelves.external(library.library_index(), want=limit)}
+    seed = secrets.randbits(32)
+    return {"tracks": shelves.external(library.library_index(), want=limit, seed=seed)}
+
+
+def _picture_response(art: tuple[bytes, str], size: int, cache: str) -> Response:
+    if size > 0:
+        wanted = next((s for s in THUMB_SIZES if s >= size), THUMB_SIZES[-1])
+        art = _thumbnail(art, wanted)
+    return Response(content=art[0], media_type=art[1], headers={"Cache-Control": cache})
+
+
+@app.get("/api/web-cover")
+def web_cover(url: str, size: int = 0, authenticated: bool = Depends(verify_token)):
+    """Обложка находки из Deezer — через службу, с её диска.
+
+    Адрес приходит из /api/discover-external; чужие адреса (не CDN Deezer)
+    не качаются вовсе — см. webcovers.allowed.
+    """
+    art = webcovers.fetch(url)
+    if art is None:
+        raise HTTPException(status_code=404, detail="Картинки нет")
+    # Картинка по адресу не меняется: адрес Deezer содержит её хеш.
+    return _picture_response(art, size, "private, max-age=604800")
+
+
+@app.get("/api/artist-photo")
+def artist_photo(name: str, size: int = 0, authenticated: bool = Depends(verify_token)):
+    """Шапка артиста: своя, если поставлена, иначе фото из Deezer.
+
+    404 — ни того, ни другого: тогда страница берёт обложку трека, как раньше.
+    no-cache: свою шапку меняют, и браузер не должен показывать прежнюю.
+    """
+    art = artist_photos.read(name)
+    if art is None:
+        url = similar.artist_picture(name, runtime.PROJECT / "similar-cache")
+        art = webcovers.fetch(url) if url else None
+    if art is None:
+        raise HTTPException(status_code=404, detail="Фото артиста нет")
+    return _picture_response(art, size, "private, no-cache")
+
+
+@app.get("/api/artist-photo/info")
+def artist_photo_info(name: str, authenticated: bool = Depends(verify_token)):
+    """Своя ли шапка — чтобы «⋯» знал, предлагать ли вернуть фото из Deezer."""
+    return {"name": name, "own": artist_photos.read(name) is not None}
+
+
+@app.post("/api/artist-photo")
+def upload_artist_photo(
+    name: str,
+    image: UploadFile = File(...),
+    authenticated: bool = Depends(verify_token),
+):
+    """Своя шапка артиста вместо фото из Deezer."""
+    # Не больше лимита плюс байт: store() сам скажет «слишком большая».
+    data = image.file.read(config.MAX_COVER_BYTES + 1)
+    media = artist_photos.store(name, data)
+    return {"name": name, "media_type": media, "bytes": len(data)}
+
+
+@app.delete("/api/artist-photo")
+def delete_artist_photo(name: str, authenticated: bool = Depends(verify_token)):
+    """Убрать свою шапку — снова будет фото из Deezer."""
+    artist_photos.delete(name)
+    return {"name": name, "own": False}
 
 
 @app.get("/api/shuffle")

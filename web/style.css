@@ -630,7 +630,7 @@ code {
     color: var(--accent);
     font-weight: 650;
 }
-#playlistMore {
+#playlistMore, .o-more-round {
     flex: none;
     width: 46px;
     padding: 0;
@@ -855,6 +855,14 @@ button.danger {
     margin: 5px 6px;
     background: var(--line-2);
 }
+/* Под мышь пункты ниже: 44 точки — это размер под палец, а на ноутбуке
+   (тем более в масштабе 150 %) меню из девяти таких пунктов занимало
+   полэкрана и не помещалось ни под строкой, ни над ней. */
+@media (hover: hover) and (pointer: fine) {
+    .row-menu { min-width: 210px; padding: 5px; border-radius: 12px; }
+    .row-menu-item { min-height: 34px; padding: 0 10px; border-radius: 7px; font-size: 14px; }
+    .row-menu-line { margin: 4px 6px; }
+}
 
 .row-menu-form { gap: 6px; padding: 10px; }
 .row-menu-label { color: var(--text-3); font-size: 11px; }
@@ -942,6 +950,21 @@ button.danger {
    его читают сплошь, а не следят за строкой. */
 .lyric.plain { color: rgba(255, 255, 255, 0.86); font-size: .7em; font-weight: 700; margin-bottom: .35em; }
 .lyric-note { margin: 0; color: var(--text-3); font-size: 13px; }
+/* «Извините, но тут буквально ничего» — размером строки текста песни. */
+.lyric-empty {
+    margin: 0 0 12px;
+    color: var(--text);
+    font-size: clamp(26px, 3.4vw, 44px);
+    font-weight: 800;
+    letter-spacing: -0.02em;
+    line-height: 1.1;
+    text-wrap: balance;
+}
+.lyric-empty + .lyric-note { font-size: 15px; }
+/* Надпись — посередине окна текста и без тающих краёв: у верхнего края
+   на телефоне её первая строка уходила в затемнение. */
+.lyrics-body.is-empty { display: flex; flex-direction: column; justify-content: center; -webkit-mask-image: none; mask-image: none; }
+.lyrics-body.is-empty::after { display: none; }
 
 .lyrics-actions { margin-top: 0; flex: none; }
 
@@ -2302,6 +2325,10 @@ html.sheet-lock, html.sheet-lock body { overflow: hidden; }
 .o-hero { position: relative; width: 100%; aspect-ratio: 1; max-height: 64dvh; overflow: hidden; }
 .o-hero > .o-cover { position: absolute; inset: 0; width: 100%; height: 100%; aspect-ratio: auto; border-radius: 0; }
 .o-hero > .o-cover::after { display: none; }
+/* Фото артиста квадратное, а шапка на ноутбуке широкая: лицо обычно в
+   верхней трети снимка, и центр по вертикали его срезал. */
+.o-hero > .o-cover.is-hero img { object-position: 50% 28%; }
+.o-actions .o-more-round { margin-left: auto; }
 .o-hero-shade { position: absolute; inset: 0; background: linear-gradient(180deg, rgba(0, 0, 0, 0.35) 0%, transparent 25%, transparent 50%, #000 100%); }
 .o-back-float { position: absolute; top: 8px; left: 8px; width: 40px; padding: 0; justify-content: center; border-radius: 50%; color: #fff;
   background: rgba(0, 0, 0, 0.32); -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px); }
@@ -2495,6 +2522,28 @@ html.sheet-lock, html.sheet-lock body { overflow: hidden; }
     .app.player-open .player-art,
     .app.player-open .player.is-lyrics .player-art,
     .app.player-open .player.is-queue .player-art { display: block; grid-area: art; width: min(100%, 52vh); align-self: end; }
+    /* Размер обложки — от высоты её строки, а не от окна: строка забирает
+       то, что осталось от названия и кнопок, и в низком окне (масштаб 150 %)
+       52vh были выше строки — обложка уезжала за верхний край. */
+    .app.player-open .player-art,
+    .app.player-open .player.is-lyrics .player-art,
+    .app.player-open .player.is-queue .player-art {
+        width: auto;
+        /* 440 — ширина левой колонки: на ноутбуке она всегда полная, а
+           упрись обложка в ширину раньше высоты — вышла бы не квадратной. */
+        height: min(100%, 52vh, 440px);
+        max-width: 100%;
+        min-height: 0;
+        justify-self: center;
+        margin-top: 8px;
+    }
+    /* «Играть» — белый круг, как в полосе плеера. Общее правило большого
+       плеера снимало фон у всех кнопок управления, и значок оставался
+       чёрным на тёмном. */
+    .app.player-open .player-controls .icon-button.primary-round,
+    .app.player-open .player-controls .icon-button.primary-round:active { background: #fff; color: #000; }
+    .app.player-open .player-controls .icon-button.primary-round { width: 72px; height: 72px; min-height: 72px; }
+    .app.player-open .player-controls .icon-button.primary-round .icon { width: 34px; height: 34px; }
     .app.player-open .player-panel { grid-area: panel; display: flex; flex-direction: column; margin: 0; }
     .app.player-open .player-track { grid-area: track; }
     .app.player-open .player-more { grid-area: track; justify-self: end; align-self: end; }
@@ -2503,6 +2552,25 @@ html.sheet-lock, html.sheet-lock body { overflow: hidden; }
     .app.player-open #playerTotal { grid-area: times; justify-self: end; }
     .app.player-open .player-panel #viewLyrics .lyrics-body { padding: 30vh 8px 30vh; }
     .app.player-open .lyric { font-size: 40px; }
+}
+/* Низкое окно (ноутбук, браузер в масштабе 150 % — около 600 точек): всё,
+   кроме обложки, ужимается, чтобы обложке осталась строка. */
+@media (min-width: 1100px) and (max-height: 760px) {
+    .app.player-open .player { padding-bottom: 18px; }
+    .app.player-open .player-grab { height: 40px; }
+    .app.player-open .player-track { padding-top: 10px; }
+    .app.player-open .player-title { font-size: 19px; }
+    .app.player-open .player-artist { font-size: 16px; }
+    .app.player-open .player-facts { padding-top: 6px; }
+    .app.player-open #playerSeek { height: 22px; margin-top: 8px; }
+    .app.player-open .player-controls { padding: 4px 0; }
+    .app.player-open .player-controls .icon-button { width: 52px; height: 52px; min-height: 52px; }
+    .app.player-open .player-controls .icon-button .icon { width: 30px; height: 30px; }
+    .app.player-open .player-controls .icon-button.primary-round { width: 60px; height: 60px; min-height: 60px; }
+    .app.player-open .player-controls .icon-button.primary-round .icon { width: 28px; height: 28px; }
+    .app.player-open .player-modes { padding-top: 0; }
+    .app.player-open .player-volume { padding-top: 4px; }
+    .app.player-open .lyric { font-size: 30px; }
 }
 
 /* Строка трека — две строчки, как в варианте: название и исполнитель.

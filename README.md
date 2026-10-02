@@ -294,7 +294,9 @@ Authorise with an `Authorization: Bearer <API_TOKEN>` header. `/health` without 
 | `GET` `DELETE` | `/api/library` | The library (search, sort, paging) / move a track to `trash/` |
 | `POST` | `/api/replace` `/api/replace-file` | Replace a track by a better version, keeping its place in every playlist |
 | `GET` | `/api/home` | Home page shelves |
-| `GET` | `/api/discover-external` | Tracks by similar artists that are not in the library |
+| `GET` | `/api/discover-external` | Tracks by similar artists that are not in the library; a new set on every call, with Deezer covers |
+| `GET` | `/api/web-cover` | A Deezer picture (`?url=` on `*.dzcdn.net` only), fetched once and kept in `adder/web-covers/` |
+| `GET` `POST` `DELETE` | `/api/artist-photo` | Artist header: your own picture if uploaded, otherwise the Deezer photo; `/info` says which |
 | `POST` | `/api/shuffle/smart` | Smart shuffle of any set of tracks (album, current queue); about a third are new tracks |
 | `GET` `POST` | `/api/outside/status` `/api/outside/prefetch` | State of new (non-library) tracks; download ahead |
 | `POST` | `/api/outside/{key}/keep` | Put a new track into the library through the normal import |

@@ -88,6 +88,8 @@ def server(tmp_path_factory):
         "OUTSIDE_DIR": tmp / "outside",
         "THUMB_DIR": tmp / "thumbs",
         "CACHE_DIR": tmp / "cache",
+        "WEB_COVERS_DIR": tmp / "web-covers",
+        "ARTIST_PHOTOS_DIR": tmp / "artist-photos",
     }.items():
         mp.setattr(runtime, name, value)
     mp.setattr(playlists, "HISTORY_DIR", tmp / "history")
@@ -104,6 +106,7 @@ def server(tmp_path_factory):
     mp.setattr(analysis, "analyse_track", lambda path: None)
     mp.setattr(similar, "_ask", lambda *a, **k: None)  # the home page's "similar artists"
     mp.setattr(similar, "_ask_top", lambda *a, **k: None)
+    mp.setattr(similar, "_ask_picture", lambda *a, **k: None)  # фото артиста
     mp.setattr(enrich, "lookup", lambda a, t: None)
     mp.setattr(enrich, "musicbrainz_lookup", lambda a, t: None)
     mp.setattr(ingest, "check_dependencies", lambda: {"ffmpeg": "ok", "js_runtime": "ok"})
@@ -960,3 +963,145 @@ def test_deep_pages_are_no_wider_than_the_phone(page, server):
     )
     page.wait_for_function("activeView === 'viewAlbum'")
     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+
+
+# --- правки 02.10.2026 ------------------------------------------------------
+
+
+def _playlist(server, page, name, *paths):
+    (server["root"] / f"{name}.m3u").write_text("\n".join(paths) + "\n", encoding="utf-8")
+    page.evaluate("playlists()")
+    page.wait_for_function(f"knownPlaylists.some(p => p.name === {name!r})")
+
+
+def test_a_playlist_is_lit_in_the_rail_only_while_it_is_open(page, server):
+    page.set_viewport_size({"width": 1300, "height": 800})
+    _playlist(server, page, "Рельса", "Quiet/Singles/Quiet.m4a")
+    lit = "[...document.querySelectorAll('.rail-item.is-active')].map(i => i.title)"
+    page.evaluate("openPlaylist('Рельса')")
+    page.wait_for_function("activeView === 'viewPlaylist'")
+    assert page.evaluate(lit) == ["Рельса"]
+    # Ушли на главную — подборка в рельсе гаснет (раньше горела рядом с ней).
+    page.evaluate("switchView('viewHome')")
+    assert page.evaluate(lit) == []
+    page.evaluate("renderRail(knownPlaylists)")  # опрос раз в 30 с не зажигает её снова
+    assert page.evaluate(lit) == []
+
+
+@pytest.mark.parametrize("size", [(1266, 603), (390, 844)], ids=["laptop-150%", "phone"])
+def test_a_track_menu_stays_inside_a_low_window(page, server, size):
+    """Браузер в масштабе 150 %: около 600 точек в высоту, полоса плеера внизу."""
+    page.set_viewport_size({"width": size[0], "height": size[1]})
+    _playlist(server, page, "Низкое", *["Quiet/Singles/Quiet.m4a"] * 12)
+    page.evaluate("openPlaylist('Низкое')")
+    page.wait_for_selector("#viewPlaylist .track")
+    page.locator("#viewPlaylist .track .track-info").first.click()  # появляется полоса плеера
+    page.wait_for_function("!document.getElementById('player').hidden")
+    for index in (0, 5, 11):
+        target = page.locator("#viewPlaylist .track").nth(index)
+        target.scroll_into_view_if_needed()
+        target.get_by_role("button", name="Что сделать с треком").click()
+        box = page.evaluate(
+            "(() => { const b = document.querySelector('.row-menu').getBoundingClientRect();"
+            " const floor = Math.min(innerHeight, ...[...document.querySelectorAll('#player, .tabbar')]"
+            "   .map(n => n.getBoundingClientRect()).filter(r => r.height).map(r => r.top));"
+            " return [b.top, b.bottom, floor]; })()"
+        )
+        assert box[0] >= 0, f"строка {index}: меню уходит за верх окна ({box})"
+        assert box[1] <= box[2], f"строка {index}: меню уходит под полосу внизу ({box})"
+        page.keyboard.press("Escape")
+
+
+def test_the_big_player_fits_a_low_window_and_play_is_a_white_circle(page):
+    page.set_viewport_size({"width": 1266, "height": 603})
+    open_library(page)
+    row(page, "Loud").locator(".track-info").click()
+    page.wait_for_function("!document.getElementById('player').hidden")
+    page.evaluate("expandPlayer('art')")
+    page.wait_for_function("document.querySelector('.app').classList.contains('player-open')")
+    page.wait_for_timeout(500)  # лист выезжает снизу
+    art = page.locator("#playerArt").bounding_box()
+    assert art["y"] >= 0, f"обложка уходит за верх окна: {art}"
+    assert abs(art["width"] - art["height"]) < 2, f"обложка не квадратная: {art}"
+    play = page.evaluate(
+        "getComputedStyle(document.querySelector('.player-controls .primary-round')).backgroundColor"
+    )
+    assert play == "rgb(255, 255, 255)"
+
+
+def test_new_finds_on_every_visit_home(page, monkeypatch):
+    from adder import shelves
+
+    shown = iter(range(1000))
+
+    def external(rows, want=12, seed=None):
+        n = next(shown)
+        return [{"artist": f"Артист {n}", "title": f"Находка {n}", "cover": ""}]
+
+    monkeypatch.setattr(shelves, "external", external)
+    titles = "[...document.querySelectorAll('.o-card:has(.is-find) .o-card-title')].map(t => t.textContent)"
+    # Следующий набор страница готовит заранее — тот, что заготовлен до
+    # подмены, пропускаем лишним заходом.
+    page.evaluate("switchView('viewLibrary'); switchView('viewHome')")
+    page.evaluate("switchView('viewLibrary'); switchView('viewHome')")
+    page.wait_for_function(f"{titles}.length > 0")
+    first = page.evaluate(titles)
+    page.evaluate("switchView('viewLibrary')")
+    page.evaluate("switchView('viewHome')")
+    page.wait_for_function(f"{titles}[0] !== {first[0]!r}")
+    # Фоновый опрос главной набор не меняет — под рукой полка не прыгает.
+    second = page.evaluate(titles)
+    page.evaluate("refresh(true)")
+    page.wait_for_timeout(300)
+    assert page.evaluate(titles) == second
+
+
+def test_an_artist_page_shows_its_own_header(page):
+    from adder import artist_photos
+
+    artist_photos.store("Quiet", _tiny_png())
+    try:
+        page.evaluate("openArtistPage('Quiet')")
+        page.wait_for_selector("#artistBody .o-hero .o-cover img")
+        page.locator("#artistBody .o-more-round").click()
+        # Меню открывается после ответа «своя ли шапка» — ждём его.
+        page.get_by_role("menuitem").first.wait_for()
+        assert page.get_by_role("menuitem").all_inner_texts() == [
+            "Другая шапка…",
+            "Вернуть фото из Deezer",
+        ]
+    finally:
+        artist_photos.delete("Quiet")
+
+
+def _tiny_png() -> bytes:
+    import struct
+    import zlib
+
+    def chunk(kind, body):
+        return (
+            struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body))
+        )
+
+    header = struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+    pixels = zlib.compress(b"\x00\xff\x00\x00")
+    return (
+        b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", pixels) + chunk(b"IEND", b"")
+    )
+
+
+def test_no_lyrics_says_so_in_large_letters(page):
+    # На телефоне текст открывается кнопкой; на ноутбуке он и так справа.
+    page.set_viewport_size({"width": 390, "height": 844})
+    open_library(page)
+    row(page, "Loud").locator(".track-info").click()
+    page.wait_for_function("!document.getElementById('player').hidden")
+    page.evaluate("expandPlayer('art')")
+    page.locator("#playerLyricsButton").click()
+    empty = page.locator(".lyric-empty")
+    empty.wait_for()
+    assert empty.inner_text() == "Извините, но тут буквально ничего"
+    size = page.evaluate(
+        "parseFloat(getComputedStyle(document.querySelector('.lyric-empty')).fontSize)"
+    )
+    assert size >= 26

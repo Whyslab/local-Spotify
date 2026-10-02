@@ -80,6 +80,71 @@ function labPlaylistCover(name) {
     return box;
 }
 
+/* Фото артиста (своё или из Deezer, /api/artist-photo), а нет его — обложка
+ * трека, как было. Просим, только когда картинка подъезжает к экрану: в
+ * списке артистов их три сотни, и первый раз служба спрашивает Deezer. */
+function labArtistCover(name, fallbackPath, size, round) {
+    const box = el("div", "o-cover" + (round ? " is-round" : ""));
+    box.style.setProperty("--ph-hue", String(hueOf(name || fallbackPath || "?")));
+    const job = () => artistPhotoQueue(box, () => artistPhotoUrl(name, size)).then((url) => {
+        if (!box.isConnected) return;
+        if (url) {
+            const img = document.createElement("img");
+            img.alt = "";
+            img.src = url;
+            box.replaceChildren(img);
+        } else if (fallbackPath) {
+            fetchTrackCover(box, fallbackPath, size || THUMB_LARGE);
+        }
+    });
+    if (typeof coverObserver !== "undefined" && coverObserver) {
+        box._coverJob = job;
+        coverObserver.observe(box);
+    } else {
+        job();
+    }
+    return box;
+}
+
+/* Не больше двух фото за раз. Браузер держит к службе шесть соединений, а
+ * первый показ фото — это вопрос к Deezer (не чаще раза в 0,15 с): быстро
+ * пролистанный список из трёх сотен артистов занял бы все шесть, и звук
+ * ждал бы в очереди за картинками. Ушедшую со страницы картинку не просим. */
+const artistPhotoWaiting = [];
+let artistPhotoBusy = 0;
+
+function artistPhotoQueue(box, ask) {
+    return new Promise((resolve) => {
+        artistPhotoWaiting.push({ box, ask, resolve });
+        nextArtistPhoto();
+    });
+}
+
+function nextArtistPhoto() {
+    while (artistPhotoBusy < 2 && artistPhotoWaiting.length) {
+        const { box, ask, resolve } = artistPhotoWaiting.shift();
+        if (!box.isConnected) { resolve(null); continue; }
+        artistPhotoBusy += 1;
+        ask().catch(() => null).then((url) => {
+            artistPhotoBusy -= 1;
+            resolve(url);
+            nextArtistPhoto();
+        });
+    }
+}
+
+function artistPhotoUrl(name, size) {
+    return coverUrl(`artist:${name}:${size || 0}`,
+        "/api/artist-photo?name=" + encodeURIComponent(name) + "&size=" + (size || 0));
+}
+
+/* Шапку поменяли — все размеры её фото в памяти страницы устарели. */
+function forgetArtistPhoto(name) {
+    for (const key of [...coverUrls.keys()]) {
+        if (key.startsWith(`artist:${name}:`)) forgetCover(key);
+    }
+}
+
 function tracksWord(n) { return plural(n, "трек", "трека", "треков"); }
 
 function mainArtist(t) {
@@ -290,6 +355,15 @@ function syncNav() {
         node.classList.toggle("is-active", on);
         if (on) node.setAttribute("aria-current", "page"); else node.removeAttribute("aria-current");
     }
+    /* Подборка в левой панели подсвечена, только пока открыта её страница:
+     * раньше подсветка оставалась на последней открытой и горела рядом с
+     * «Главной» или «Артистами», как будто под мышью. */
+    const open = railOpenPlaylist();
+    for (const item of document.querySelectorAll(".rail-item")) {
+        const on = item.getAttribute("aria-label") === open;
+        item.classList.toggle("is-active", on);
+        if (on) item.setAttribute("aria-current", "page"); else item.removeAttribute("aria-current");
+    }
 }
 
 /* Поле фильтра одно (#librarySearch): в фонотеке оно под заголовком, в
@@ -307,6 +381,8 @@ function placeFilter(id) {
 
 function onViewShown(id) {
     placeFilter(id);
+    /* Каждый заход на главную — новые находки. */
+    if (id === "viewHome") showFinds(true);
     if (id === "viewPlaylists") renderPlaylistsGrid(true);
     if (id === "viewSearch") renderSearch(true);
     if (!LAB_PAGES.includes(id)) {
@@ -475,26 +551,59 @@ function renderLabHome(data) {
         const top = groupArtists(rows).sort((x, y) => y.tracks.length - x.tracks.length).slice(0, 14);
         if (top.length) {
             artistsSlot.replaceChildren(labSection("Чаще всего в фонотеке", { label: "Все", run: () => openLibrary("artists") },
-                labShelf(top.map((a) => labCard(labCover(a.cover, THUMB_SMALL * 2, a.name, true), a.name, tracksWord(a.tracks.length),
+                labShelf(top.map((a) => labCard(labArtistCover(a.name, a.cover, THUMB_SMALL * 2, true), a.name, tracksWord(a.tracks.length),
                     () => openArtistPage(a.name), "is-artist")), "is-artists")));
         }
     });
 
-    /* То, чего в фонотеке нет, но что слушают похожие артисты. Нажатие —
-     * поиск на YouTube с готовым запросом: какую загрузку брать, решает
-     * человек. */
-    externalFinds().then((finds) => {
-        if (!findsSlot.isConnected || !finds.length) return;
-        findsSlot.replaceChildren(labSection("Новое для вас", null,
-            el("p", "o-section-note", "Этого нет в фонотеке — нажмите, чтобы найти и скачать"),
-            labShelf(finds.slice(0, 12).map((f) => {
-                const cover = el("div", "o-cover o-cover-letter is-find", (f.artist || f.title || "?").slice(0, 1).toUpperCase());
-                cover.style.setProperty("--ph-hue", String(hueOf(f.artist || f.title || "")));
-                return labCard(cover, f.title || "", f.artist || "", () => searchForFind(f));
-            }))));
-    });
+    findsBox = findsSlot;
+    showFinds(false);
 
     if (!parts.length) homeNote(box, "Пока нечего показать — фонотека ещё не измерена.");
+}
+
+/* «Новое для вас» — то, чего в фонотеке нет, но что слушают похожие
+ * артисты. Нажатие — поиск на YouTube с готовым запросом: какую загрузку
+ * брать, решает человек.
+ *
+ * Набор меняется на каждый заход на главную (onViewShown), но не от
+ * перерисовки главной и не от фонового опроса: под рукой полка не прыгает. */
+let findsBox = null;
+let findsShown = null;
+/* Быстро ушли и вернулись — ответы приходят по очереди, и полка сменилась бы
+ * несколько раз подряд. Рисуем только ответ на последний заход. */
+let findsTicket = 0;
+
+function showFinds(fresh) {
+    const slot = findsBox;
+    if (!slot) return;
+    const ticket = ++findsTicket;
+    const got = !fresh && findsShown ? Promise.resolve(findsShown) : externalFinds();
+    got.then((finds) => {
+        if (ticket !== findsTicket || slot !== findsBox || !slot.isConnected) return;
+        findsShown = finds;
+        if (!finds.length) { slot.replaceChildren(); return; }
+        slot.replaceChildren(labSection("Новое для вас", null,
+            el("p", "o-section-note", "Этого нет в фонотеке — нажмите, чтобы найти и скачать"),
+            labShelf(finds.slice(0, 12).map((f) =>
+                labCard(findCoverBox(f), f.title || "", f.artist || "", () => searchForFind(f))))));
+    });
+}
+
+/* Обложка находки: буква на цвете, пока картинка не пришла (или её нет). */
+function findCoverBox(f) {
+    const cover = el("div", "o-cover o-cover-letter is-find", (f.artist || f.title || "?").slice(0, 1).toUpperCase());
+    cover.style.setProperty("--ph-hue", String(hueOf(f.artist || f.title || "")));
+    if (f.cover) {
+        findCover(f.cover).then((url) => {
+            if (!url) return;
+            const img = document.createElement("img");
+            img.alt = "";
+            img.src = url;
+            cover.replaceChildren(img);
+        });
+    }
+    return cover;
 }
 
 /* ---------------- Фонотека: артисты и альбомы ---------------- */
@@ -504,7 +613,7 @@ function renderArtistList(box, rows) {
     const list = el("div", "o-list");
     for (const a of artists) {
         list.appendChild(button("o-artist-row", () => openArtistPage(a.name),
-            labCover(a.cover, THUMB_SMALL, a.name, true),
+            labArtistCover(a.name, a.cover, THUMB_SMALL, true),
             el("span", "o-row-text", "", el("span", "o-row-title", a.name), el("span", "o-row-sub", tracksWord(a.tracks.length))),
             labIcon("chevron")));
     }
@@ -639,6 +748,105 @@ async function renderMoodPage(key) {
 
 /* ---------------- Артист ---------------- */
 
+/* Шапка — фото в полном размере (1000 точек): в шапку шириной в окно
+ * миниатюра 600 растягивалась и мылилась. */
+function artistHero(name, fallbackPath) {
+    const cover = labArtistCover(name, fallbackPath, 0);
+    cover.classList.add("is-hero");
+    return cover;
+}
+
+/* «⋯» артиста: своя шапка вместо фото из Deezer — и обратно. */
+async function openArtistMenu(anchor, name) {
+    const wasMine = openMenu && openMenu.button === anchor;
+    closeTrackMenu();
+    if (wasMine) return;
+    let own = false;
+    try {
+        const r = await fetch("/api/artist-photo/info?name=" + encodeURIComponent(name), { headers: headers() });
+        if (r.ok) own = !!(await r.json()).own;
+    } catch (e) { /* не знаем — покажем только «Своя шапка…» */ }
+    if (!anchor.isConnected) return;
+
+    const menu = el("div", "row-menu more-menu");
+    menu.setAttribute("role", "menu");
+    const item = (label, run) => {
+        const b = button("row-menu-item", () => { closeTrackMenu(); run(); }, document.createTextNode(label));
+        b.setAttribute("role", "menuitem");
+        menu.appendChild(b);
+        return b;
+    };
+    item(own ? "Другая шапка…" : "Своя шапка…", () => pickArtistPhoto(name));
+    if (own) item("Вернуть фото из Deezer", () => dropArtistPhoto(name));
+    document.body.appendChild(menu);
+
+    const box = anchor.getBoundingClientRect();
+    menu.style.left = Math.round(Math.max(8, Math.min(box.left, window.innerWidth - menu.offsetWidth - 8))) + "px";
+    if (window.innerHeight - box.bottom > menu.offsetHeight + 12) {
+        menu.style.top = Math.round(box.bottom + 6) + "px";
+    } else {
+        menu.style.top = "auto";
+        menu.style.bottom = Math.round(window.innerHeight - box.top + 6) + "px";
+    }
+    anchor.setAttribute("aria-expanded", "true");
+    openMenu = { menu, button: anchor };
+    document.addEventListener("keydown", menuKeydown, true);
+    document.addEventListener("pointerdown", menuPointerDown, true);
+    menu.querySelector(".row-menu-item").focus();
+}
+
+function artistNote(text) {
+    const note = document.getElementById("artistNote");
+    if (note) note.textContent = text;
+}
+
+function pickArtistPhoto(name) {
+    const picker = document.createElement("input");
+    picker.type = "file";
+    picker.accept = "image/jpeg,image/png,image/webp";
+    picker.onchange = async () => {
+        const file = picker.files && picker.files[0];
+        if (!file) return;
+        artistNote("Загружаю шапку…");
+        const form = new FormData();
+        form.append("image", file);
+        try {
+            const r = await fetch("/api/artist-photo?name=" + encodeURIComponent(name), {
+                method: "POST", headers: headers(), body: form,
+            });
+            const data = await r.json().catch(() => ({}));
+            if (!r.ok) { artistNote(data.detail || "Не удалось загрузить шапку"); return; }
+        } catch (e) {
+            artistNote("Не удалось загрузить шапку: " + e.message);
+            return;
+        }
+        artistNote("");
+        artistPhotoChanged(name);
+    };
+    picker.click();
+}
+
+async function dropArtistPhoto(name) {
+    try {
+        const r = await fetch("/api/artist-photo?name=" + encodeURIComponent(name), { method: "DELETE", headers: headers() });
+        if (!r.ok) { artistNote("Не удалось убрать шапку"); return; }
+    } catch (e) {
+        artistNote("Не удалось убрать шапку: " + e.message);
+        return;
+    }
+    artistPhotoChanged(name);
+}
+
+/* Новая шапка — на странице артиста сразу; кружки артиста на главной и в
+ * списке подхватят её при следующей отрисовке. */
+function artistPhotoChanged(name) {
+    forgetArtistPhoto(name);
+    if (activeView !== "viewArtist") return;
+    const hero = document.querySelector("#artistBody .o-hero > .o-cover");
+    const artist = groupArtists(labTracks || []).find((a) => a.name === name);
+    if (hero) hero.replaceWith(artistHero(name, artist && artist.cover));
+}
+
 function openArtistPage(name) {
     pushPage({ view: "viewArtist", name });
     renderArtistPage(name);
@@ -665,14 +873,19 @@ async function renderArtistPage(name) {
     shuffle.setAttribute("aria-haspopup", "menu");
     const note = el("p", "note");
     note.id = "artistNote";
+    const more = button("o-more-round", () => openArtistMenu(more, name), document.createTextNode("⋯"));
+    more.setAttribute("aria-haspopup", "menu");
+    more.setAttribute("aria-expanded", "false");
+    more.setAttribute("aria-label", "Шапка артиста");
+    more.title = "Своя шапка или фото из Deezer";
 
     put(body,
         el("header", "o-hero", "",
-            labCover(artist.cover, 600, name),
+            artistHero(name, artist.cover),
             el("div", "o-hero-shade"),
             back,
             el("div", "o-hero-text", "", el("h1", "", name), playAll)),
-        el("div", "o-actions", "", shuffle, el("span", "o-muted", tracksWord(artist.tracks.length))),
+        el("div", "o-actions", "", shuffle, el("span", "o-muted", tracksWord(artist.tracks.length)), more),
         note,
         labSection("Треки", null, labRows(artist.tracks, false, name)),
         albums.length ? labSection("Альбомы", null, labShelf(albums.map((g) =>

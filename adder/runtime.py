@@ -29,6 +29,12 @@ OUTSIDE_DIR = PROJECT / "outside-cache"
 # Уменьшенные обложки треков для списков: полноразмерные весили до 7 МБ при
 # показе в 34 пикселя, и первые двести строк фонотеки тянули 81 МБ.
 THUMB_DIR = PROJECT / "thumb-cache"
+# Картинки из Deezer — обложки «Нового для вас» и фото артистов. Временный
+# кэш, чистится сам (adder/webcovers.py).
+WEB_COVERS_DIR = PROJECT / "web-covers"
+# Своя шапка артиста, поставленная вместо фото из Deezer. Это не кэш: её
+# выбрал человек, и пропасть сама она не должна.
+ARTIST_PHOTOS_DIR = PROJECT / "artist-photos"
 # yt-dlp keeps player data here and Deno its compiled scripts (both honour
 # XDG_CACHE_HOME). Their default, ~/.cache, is read-only under the systemd
 # unit's ProtectHome=read-only, so each call started from scratch.

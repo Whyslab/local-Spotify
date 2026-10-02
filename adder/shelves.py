@@ -106,7 +106,7 @@ def _key(artist: str, title: str) -> tuple[str, str]:
     return similar.primary(artist).strip().lower(), (title or "").strip().lower()
 
 
-def external(rows: list[dict], want: int = 12) -> list[dict]:
+def external(rows: list[dict], want: int = 12, seed: int | None = None) -> list[dict]:
     """Треки, которых в фонотеке нет вовсе.
 
     То же начало, что у `discover` — любимцы и похожие на них, — но берутся уже
@@ -119,6 +119,14 @@ def external(rows: list[dict], want: int = 12) -> list[dict]:
 
     Сеть может не ответить — тогда список пустой. Для очереди это не ошибка:
     находки к ней пристроены сбоку, играть она может и без них.
+
+    `seed` — какой набор показать. Главная просит новый на каждый заход
+    (с 02.10.2026): находок около двух сотен, а видно двенадцать, и одни и те
+    же двенадцать каждый раз переставали быть находками. Без `seed` порядок
+    прежний, неизменный.
+
+    У находки есть обложка (адрес Deezer, может быть пустым) — показать
+    картинку, а не первую букву имени.
     """
     favourites = _favourites(rows, top=6)
     if not favourites:
@@ -138,9 +146,10 @@ def external(rows: list[dict], want: int = 12) -> list[dict]:
             if not all(key) or key in have or key in seen:
                 continue
             seen.add(key)
-            found.append({"artist": track["artist"], "title": track["title"]})
+            cover = track.get("cover") or ""
+            found.append({"artist": track["artist"], "title": track["title"], "cover": cover})
 
-    random.Random(len(found)).shuffle(found)
+    random.Random(f"{seed}:external" if seed is not None else len(found)).shuffle(found)
 
     # Подряд идущие треки одного артиста читаются как его список, а не как
     # находки, поэтому следующий берётся первый, чей артист не тот же. Когда

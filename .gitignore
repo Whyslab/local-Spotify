@@ -93,6 +93,10 @@ adder/numba-cache/
 adder/outside-cache/
 # Уменьшенные обложки для списков — кэш, собирается сам.
 adder/thumb-cache/
+# Картинки из Deezer (находки, фото артистов) — кэш; свои шапки артистов —
+# данные, как обложки подборок, в историю не идут.
+adder/web-covers/
+adder/artist-photos/
 # yt-dlp and Deno caches (XDG_CACHE_HOME for yt-dlp calls)
 adder/cache/
 
