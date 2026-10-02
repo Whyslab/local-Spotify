@@ -258,9 +258,23 @@ def test_non_youtube_urls_are_rejected(client, url):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "script", ["app.js", "player.js", "offline.js", "look.js", "design/core.js", "design/v1.js"]
+WEB_DIR = Path(__file__).resolve().parent.parent / "web"
+# Every script the page can load, found rather than listed: views.js (the whole
+# «Обложка» look) was missing from a hand-written list and went unchecked.
+WEB_SCRIPTS = sorted(
+    p.relative_to(WEB_DIR).as_posix()
+    for p in WEB_DIR.rglob("*.js")
+    if not any(part.startswith(".") for part in p.relative_to(WEB_DIR).parts)
 )
+# The ones that put library data on the page must do it through the safe APIs.
+ROW_BUILDERS = {"app.js", "player.js", "views.js", "design/core.js", "design/v1.js"}
+
+
+def test_the_script_list_covers_the_page():
+    assert {"app.js", "player.js", "views.js", "offline.js", "look.js", "sw.js"} <= set(WEB_SCRIPTS)
+
+
+@pytest.mark.parametrize("script", WEB_SCRIPTS)
 def test_static_scripts_do_not_render_api_data_with_innerhtml(client, script):
     # The previous version of this test checked GET / (index.html), but
     # index.html only contains a <script src="/static/app.js"> tag - the
@@ -293,7 +307,7 @@ def test_static_scripts_do_not_render_api_data_with_innerhtml(client, script):
     assert '"text/html"' not in js
     # The two that build rows out of library data must use the safe APIs;
     # offline.js and look.js render no such data, only the absence is checked.
-    if script in ("app.js", "player.js", "design/core.js", "design/v1.js"):
+    if script in ROW_BUILDERS:
         assert "textContent" in js
         assert "replaceChildren" in js
 
