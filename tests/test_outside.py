@@ -5,6 +5,7 @@
 возвращается там, где он проверяется, — conftest по умолчанию его глушит.
 """
 
+import threading
 import time
 
 import pytest
@@ -303,6 +304,21 @@ def item(key=KEY, **extra):
     return {"key": key, "artist": "Markul", "title": "Fata Morgana", "duration": 183, **extra}
 
 
+@pytest.fixture(autouse=True)
+def late_deezer_threads_finish(monkeypatch):
+    """Let the question pool's late threads finish before the stubs come off.
+
+    outside._gather does not wait for slow answers - in the service the late
+    threads finish their request and leave it in the cache. In a test that
+    request would then run after monkeypatch had restored the real network
+    call, and the network guard failed whichever test came next.
+    """
+    yield
+    for thread in threading.enumerate():
+        if thread.name.startswith("deezer"):
+            thread.join(timeout=5)
+
+
 @pytest.fixture
 def running():
     """Служба не останавливается: иначе фоновое скачивание сразу выходит.
@@ -311,6 +327,15 @@ def running():
     """
     runtime.shutdown_event.clear()
     yield
+    # The fetch thread is module state and outlived the test: the next test's
+    # job could be taken by it, with that test's stubs already gone - the
+    # network guard then failed an innocent test now and then. Stop it here.
+    worker = outside._worker
+    if worker is not None and worker.is_alive():
+        runtime.shutdown_event.set()
+        worker.join(timeout=5)
+        assert not worker.is_alive(), "the outside fetch thread did not stop"
+    outside._worker = None
     runtime.shutdown_event.clear()
 
 
