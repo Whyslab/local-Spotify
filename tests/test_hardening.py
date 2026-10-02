@@ -4,6 +4,8 @@
 без ключа и что происходит с кривым вводом.
 """
 
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -199,3 +201,42 @@ def test_player_events_go_to_the_journal_and_need_the_token(client, caplog):
     assert "Player: stall-reload at 12.5s A/B.m4a (попытка 1)" in caplog.text
     bad = client.post("/api/player-event", json={"event": "rm -rf"}, headers=AUTH)
     assert bad.status_code == 422
+
+
+def test_backup_rotation_removes_wal_and_shm(tmp_path):
+    """Old snapshots went, their -wal and -shm stayed behind for good."""
+    import shutil
+    import sqlite3
+    import subprocess
+
+    project = tmp_path / "project"
+    (project / "deploy").mkdir(parents=True)
+    (project / "adder").mkdir()
+    shutil.copy(Path(__file__).resolve().parent.parent / "deploy" / "backup.sh", project / "deploy")
+    con = sqlite3.connect(project / "adder" / "adder.db")
+    con.execute("CREATE TABLE tasks (id INTEGER PRIMARY KEY)")
+    con.commit()
+    con.close()
+
+    backups = tmp_path / "backups"
+    backups.mkdir()
+    # Ten older snapshots: the run adds an eleventh, so the oldest one goes.
+    for day in range(10, 20):
+        (backups / f"adder_202609{day}_030000.db").write_bytes(b"db")
+    for side in ("-wal", "-shm"):
+        (backups / f"adder_20260910_030000.db{side}").write_bytes(b"")  # goes with its db
+        (backups / f"adder_20260901_030000.db{side}").write_bytes(b"")  # db long gone
+    (backups / "adder_20260919_030000.db-shm").write_bytes(b"")  # db stays: kept
+
+    subprocess.run(
+        ["bash", str(project / "deploy" / "backup.sh")],
+        env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "BACKUP_DIR": str(backups)},
+        check=True,
+        capture_output=True,
+    )
+
+    names = sorted(p.name for p in backups.iterdir())
+    assert len([n for n in names if n.endswith(".db")]) == 10
+    assert "adder_20260910_030000.db" not in names
+    sides = [n for n in names if n.endswith(("-wal", "-shm"))]
+    assert sides == ["adder_20260919_030000.db-shm"]
