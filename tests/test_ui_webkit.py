@@ -19,7 +19,15 @@ playwright = pytest.importorskip("playwright.sync_api")
 # The shared server points every path into its own temp dir.
 OWN_RUNTIME = True
 
-from test_ui import TOKEN, XSS_TITLE, open_library, row, row_action, server  # noqa: E402, F401
+from test_ui import (  # noqa: E402, F401
+    TOKEN,
+    XSS_TITLE,
+    csp_safe_wait,
+    open_library,
+    row,
+    row_action,
+    server,
+)
 
 
 @pytest.fixture(scope="module")
@@ -36,6 +44,7 @@ def page(server, iphone):  # noqa: F811
     context = browser.new_context(**device)
     context.add_init_script(f"localStorage.setItem('token', '{TOKEN}');")
     page = context.new_page()
+    page.wait_for_function = csp_safe_wait(page)
     errors = []
     page.on("pageerror", lambda exc: errors.append(str(exc)))
     page.goto(server["url"] + "/")

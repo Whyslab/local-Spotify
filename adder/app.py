@@ -2117,6 +2117,27 @@ def service_worker():
     )
 
 
+# Второй рубеж за textContent: чужие скрипты, фреймы, адреса отправки и
+# соединения закрыты. 'unsafe-inline' в script-src — из-за onclick= в
+# index.html, и внедрённый в страницу обработчик он не остановит; первый рубеж —
+# textContent и тест против innerHTML. Картинки Deezer (поиск альбомов, фото
+# артистов, релизы) страница ставит прямо с их CDN.
+CONTENT_SECURITY_POLICY = "; ".join(
+    (
+        "default-src 'self'",
+        "script-src 'self' 'unsafe-inline'",
+        "style-src 'self'",
+        "img-src 'self' blob: data: https://*.dzcdn.net",
+        "media-src 'self' blob:",
+        "connect-src 'self'",
+        "object-src 'none'",
+        "base-uri 'none'",
+        "frame-ancestors 'none'",
+        "form-action 'self'",
+    )
+)
+
+
 @app.get("/", response_class=HTMLResponse)
 def index():
     """Страница вместе с версиями файлов, которые она подключает.
@@ -2146,4 +2167,4 @@ def index():
             continue
         stamp = hashlib.sha1(path.read_bytes()).hexdigest()[:10]
         html = html.replace(f"/static/{name}", f"/static/{name}?v={stamp}")
-    return html
+    return HTMLResponse(html, headers={"Content-Security-Policy": CONTENT_SECURITY_POLICY})

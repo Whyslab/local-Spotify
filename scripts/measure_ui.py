@@ -246,6 +246,23 @@ SEARCH_ARM_JS = """
 """
 
 
+def wait_until(page, expression: str, timeout_ms: int = 20000):
+    """Ждать, пока выражение на странице не станет истинным.
+
+    Не через wait_for_function: Playwright проверяет строку через eval внутри
+    страницы, а её Content-Security-Policy eval запрещает. page.evaluate идёт
+    через протокол отладки, и CSP его не касается.
+    """
+    deadline = time.monotonic() + timeout_ms / 1000
+    while True:
+        value = page.evaluate(expression)
+        if value:
+            return value
+        if time.monotonic() > deadline:
+            raise TimeoutError(f"не дождался: {expression}")
+        page.wait_for_timeout(10)
+
+
 class Session:
     def __init__(self, pw, url: str, token: str, profile: str):
         self.pw = pw
@@ -282,9 +299,7 @@ class Session:
         return page
 
     def ready_at(self, page) -> float:
-        page.wait_for_function(
-            "performance.getEntriesByName('app-ready').length > 0", timeout=20000
-        )
+        wait_until(page, "performance.getEntriesByName('app-ready').length > 0")
         return float(page.evaluate("performance.getEntriesByName('app-ready')[0].startTime"))
 
     def open(self, ctx, path: str = "/"):
@@ -371,7 +386,7 @@ def measure_scroll(s: Session) -> dict:
         if not more.count():
             break
         more.click()
-        page.wait_for_function("!document.querySelector('#library .library-more[disabled]')")
+        wait_until(page, "!document.querySelector('#library .library-more[disabled]')")
     scroller = page.evaluate_handle(SCROLLER_JS, "#library")
     gaps = page.evaluate(
         """async (el) => {

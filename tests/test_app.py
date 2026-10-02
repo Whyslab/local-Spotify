@@ -885,3 +885,60 @@ def test_the_iphone_shortcut_request_is_accepted(client, app_module):
     # The shortcut reads an empty "added" as "already there".
     assert again.json()["added"] == []
     _drain()
+
+
+def _csp_directives(header: str) -> dict[str, list[str]]:
+    out = {}
+    for part in header.split(";"):
+        words = part.split()
+        if words:
+            out[words[0]] = words[1:]
+    return out
+
+
+def test_index_sends_csp(client):
+    """A second line behind textContent: no foreign scripts, frames or form targets.
+
+    'unsafe-inline' stays in script-src for the onclick= handlers of index.html,
+    so it does not stop a handler injected into the page; textContent and the
+    innerHTML guard above are the first line, this is the second.
+    """
+    response = client.get("/")
+    csp = _csp_directives(response.headers["content-security-policy"])
+    assert csp["default-src"] == ["'self'"]
+    assert csp["object-src"] == ["'none'"]
+    assert csp["base-uri"] == ["'none'"]
+    assert csp["frame-ancestors"] == ["'none'"]
+    assert csp["connect-src"] == ["'self'"]
+    assert "https:" not in csp["script-src"] and "*" not in csp["script-src"]
+    # Deezer's CDN: album search, artist photos and releases set it straight.
+    assert "https://*.dzcdn.net" in csp["img-src"]
+
+
+@pytest.mark.parametrize(
+    ("url", "allowed"),
+    [
+        # The shapes Deezer's API hands out in cover_medium / picture_medium.
+        ("https://e-cdns-images.dzcdn.net/images/cover/1a2b/250x250-000000-80-0-0.jpg", True),
+        ("https://cdn-images.dzcdn.net/images/artist/9f/250x250-000000-80-0-0.jpg", True),
+        ("https://cdns-images.dzcdn.net/images/cover/x/250x250.jpg", True),
+        ("http://cdn-images.dzcdn.net/a.jpg", False),
+        ("https://dzcdn.net.evil.com/a.jpg", False),
+        ("https://evil.com/a.jpg", False),
+    ],
+)
+def test_backend_image_hosts_within_csp(client, url, allowed):
+    from urllib.parse import urlsplit
+
+    sources = _csp_directives(client.get("/").headers["content-security-policy"])["img-src"]
+    parts = urlsplit(url)
+
+    def matches(source: str) -> bool:
+        if not source.startswith("https://"):
+            return False
+        host = source[len("https://") :]
+        if host.startswith("*."):
+            return parts.scheme == "https" and parts.hostname.endswith(host[1:])
+        return parts.scheme == "https" and parts.hostname == host
+
+    assert any(matches(s) for s in sources) is allowed

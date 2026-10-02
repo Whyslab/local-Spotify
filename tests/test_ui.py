@@ -152,14 +152,50 @@ def browser():
 def page(server, browser):
     context = browser.new_context()
     context.add_init_script(f"localStorage.setItem('token', '{TOKEN}');")
+    context.add_init_script(CSP_WATCH)
     page = context.new_page()
+    page.wait_for_function = csp_safe_wait(page)
     errors = []
     page.on("pageerror", lambda exc: errors.append(str(exc)))
     page.goto(server["url"] + "/")
     page.wait_for_function("typeof switchView === 'function'")
     yield page
+    violations = page.evaluate("window.__csp || []")
     context.close()
     assert errors == [], f"JavaScript errors on the page: {errors}"
+    # The page runs under its real Content-Security-Policy: anything it blocks
+    # here would be broken for the user too.
+    assert violations == [], f"blocked by the page's CSP: {violations}"
+
+
+def csp_safe_wait(page):
+    """page.wait_for_function that works under the page's real CSP.
+
+    Playwright checks a string predicate with eval inside the page, which the
+    Content-Security-Policy (no 'unsafe-eval') refuses. page.evaluate goes
+    through the debugging protocol and is not subject to it, so the predicate
+    is polled with that instead.
+    """
+
+    def wait_for_function(expression, arg=None, timeout=None, polling=None):
+        deadline = time.monotonic() + (timeout if timeout is not None else 30000) / 1000
+        while True:
+            value = page.evaluate(expression) if arg is None else page.evaluate(expression, arg)
+            if value:
+                return value
+            if time.monotonic() > deadline:
+                raise TimeoutError(f"wait_for_function timed out: {expression}")
+            page.wait_for_timeout(20)
+
+    return wait_for_function
+
+
+# Every test's page records what its Content-Security-Policy refused.
+CSP_WATCH = """
+window.__csp = [];
+document.addEventListener("securitypolicyviolation", (e) =>
+    window.__csp.push(e.effectiveDirective + " " + e.blockedURI));
+"""
 
 
 def open_library(page):
@@ -188,6 +224,36 @@ def test_app_ready_is_marked_once_when_the_first_screen_has_its_data(page):
     open_library(page)
     page.evaluate("switchView('viewHome')")
     assert page.evaluate("performance.getEntriesByName('app-ready').length") == 1
+
+
+def test_deezer_images_pass_the_csp_and_a_foreign_host_does_not(page):
+    """Album search, artist photos and releases set Deezer CDN addresses straight."""
+    page.route(
+        "https://*.dzcdn.net/**",
+        lambda route: route.fulfill(status=200, content_type="image/png", body=b""),
+    )
+    deezer = "https://e-cdns-images.dzcdn.net/images/cover/1a2b/250x250-000000-80-0-0.jpg"
+    page.evaluate(
+        """(src) => {
+            const row = albumRow({ title: "A", artist: "B", cover: src, tracks: 3, id: 1 },
+                                 document.createElement("p"));
+            document.body.appendChild(row);
+            row.scrollIntoView();  // the image is loading="lazy"
+        }""",
+        deezer,
+    )
+    # The image really was requested: otherwise "no violation" proves nothing.
+    page.wait_for_function("document.querySelector('img[src*=\"dzcdn\"]').complete")
+    assert page.evaluate("window.__csp") == []
+
+    # The control: the same test does see a host outside img-src.
+    page.evaluate(
+        "() => { const i = new Image(); i.src = 'https://evil.example/x.png';"
+        " document.body.appendChild(i); }"
+    )
+    page.wait_for_function("window.__csp.length > 0")
+    assert page.evaluate("window.__csp") == ["img-src https://evil.example/x.png"]
+    page.evaluate("window.__csp = []")  # the fixture asserts none are left
 
 
 def test_the_library_lists_tracks_and_renders_titles_as_text(page):
