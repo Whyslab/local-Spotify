@@ -102,8 +102,10 @@ def test_the_cache_keeps_only_the_most_recently_shown(cdn, monkeypatch):
 # --- фото артиста из Deezer ---------------------------------------------------
 
 
-def _artist(name, picture="https://cdn-images.dzcdn.net/images/artist/abc/1000x1000.jpg", fans=1):
-    return {"name": name, "picture_xl": picture, "nb_fan": fans}
+def _artist(
+    name, picture="https://cdn-images.dzcdn.net/images/artist/abc/1000x1000.jpg", fans=1, albums=5
+):
+    return {"name": name, "picture_xl": picture, "nb_fan": fans, "nb_album": albums}
 
 
 @pytest.fixture
@@ -131,10 +133,27 @@ def test_the_photo_of_the_artist_with_that_name(search, tmp_path):
 
 def test_a_cyrillic_name_finds_its_latin_spelling(search, tmp_path):
     search["rows"] = [
-        _artist("Alina Orlova", "https://cdn-images.dzcdn.net/images/artist/lat/1.jpg"),
-        _artist("Алина Орлова", "https://cdn-images.dzcdn.net/images/artist//1000x1000.jpg"),
+        _artist("Monetochka", "https://cdn-images.dzcdn.net/images/artist/lat/1.jpg"),
     ]
-    assert similar.artist_picture("Алина Орлова", tmp_path).endswith("/lat/1.jpg")
+    assert similar.artist_picture("Монеточка", tmp_path).endswith("/lat/1.jpg")
+
+
+def test_an_empty_exact_entry_gives_way_to_the_latin_spelling(search, tmp_path):
+    """«Алина Орлова» кириллицей у Deezer — пустышка без релизов, а её песни
+    («Летели облака») — под «Alina Orlova»."""
+    search["rows"] = [
+        _artist("Alina Orlova", "https://cdn-images.dzcdn.net/images/artist/lt/1.jpg", 12000),
+        _artist("Алина Орлова", "https://cdn-images.dzcdn.net/images/artist//1.jpg", 300, albums=0),
+    ]
+    assert similar.artist_picture("Алина Орлова", tmp_path).endswith("/lt/1.jpg")
+
+
+def test_a_real_exact_entry_without_photo_does_not_borrow_a_namesakes(search, tmp_path):
+    search["rows"] = [
+        _artist("Boris", "https://cdn-images.dzcdn.net/images/artist/other/1.jpg", 9000),
+        _artist("Борис", "https://cdn-images.dzcdn.net/images/artist//1.jpg", 40, albums=3),
+    ]
+    assert similar.artist_picture("Борис", tmp_path) == ""
 
 
 def test_no_photo_rather_than_a_stranger(search, tmp_path):

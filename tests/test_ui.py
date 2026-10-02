@@ -29,6 +29,7 @@ from adder import (  # noqa: E402
     analysis,
     config,
     covers,
+    discography,
     enrich,
     ingest,
     library,
@@ -90,6 +91,7 @@ def server(tmp_path_factory):
         "CACHE_DIR": tmp / "cache",
         "WEB_COVERS_DIR": tmp / "web-covers",
         "ARTIST_PHOTOS_DIR": tmp / "artist-photos",
+        "ARTIST_IMPORT_FILE": tmp / "artist-import.json",
     }.items():
         mp.setattr(runtime, name, value)
     mp.setattr(playlists, "HISTORY_DIR", tmp / "history")
@@ -107,6 +109,7 @@ def server(tmp_path_factory):
     mp.setattr(similar, "_ask", lambda *a, **k: None)  # the home page's "similar artists"
     mp.setattr(similar, "_ask_top", lambda *a, **k: None)
     mp.setattr(similar, "_ask_picture", lambda *a, **k: None)  # фото артиста
+    mp.setattr(discography, "start", lambda queue_one: None)  # поиск на YouTube в фоне
     mp.setattr(enrich, "lookup", lambda a, t: None)
     mp.setattr(enrich, "musicbrainz_lookup", lambda a, t: None)
     mp.setattr(ingest, "check_dependencies", lambda: {"ffmpeg": "ok", "js_runtime": "ok"})
@@ -1067,6 +1070,7 @@ def test_an_artist_page_shows_its_own_header(page):
         # Меню открывается после ответа «своя ли шапка» — ждём его.
         page.get_by_role("menuitem").first.wait_for()
         assert page.get_by_role("menuitem").all_inner_texts() == [
+            "Скачать недостающее…",
             "Другая шапка…",
             "Вернуть фото из Deezer",
         ]
@@ -1105,3 +1109,72 @@ def test_no_lyrics_says_so_in_large_letters(page):
         "parseFloat(getComputedStyle(document.querySelector('.lyric-empty')).fontSize)"
     )
     assert size >= 26
+
+
+# --- Артист целиком ----------------------------------------------------------
+
+
+@pytest.fixture
+def fake_deezer_artist(monkeypatch):
+    artist = {"id": "77", "name": "Quiet", "picture": "", "fans": 12, "albums": 2}
+    disco = {
+        "artist": {"id": "77", "name": "Quiet"},
+        "hidden": 2,
+        "releases": [
+            {
+                "id": "1",
+                "title": "Тишина",
+                "kind": "album",
+                "year": "2020",
+                "cover": "",
+                "tracks": [
+                    {"artist": "Quiet", "title": "Quiet", "duration": 12, "have": True},
+                    {"artist": "Quiet", "title": "Шёпот", "duration": 100, "have": False},
+                ],
+            },
+            {
+                "id": "2",
+                "title": "Шорох",
+                "kind": "single",
+                "year": "2021",
+                "cover": "",
+                "tracks": [{"artist": "Quiet", "title": "Шорох", "duration": 90, "have": False}],
+            },
+        ],
+    }
+    monkeypatch.setattr(discography, "search_artists", lambda q, limit=8: [artist])
+    monkeypatch.setattr(discography, "find_artist", lambda name: artist)
+    monkeypatch.setattr(discography, "discography", lambda aid, rows: disco)
+    yield
+    discography.clear_finished()
+    runtime.ARTIST_IMPORT_FILE.unlink(missing_ok=True)
+
+
+def test_an_artist_is_downloaded_from_a_ticked_list(page, fake_deezer_artist):
+    page.evaluate("switchView('viewAdd')")
+    page.locator("#artistQuery").fill("quiet")
+    page.locator("#artistImport button.primary").click()
+    page.locator(".disco-choice").filter(has_text="Quiet").click()
+    page.wait_for_selector(".disco-track")
+    # Что уже есть — не отметить; кнопка ждёт выбора.
+    assert page.locator(".disco-track.is-have input").is_disabled()
+    take = page.locator(".disco-actions button")
+    assert take.is_disabled()
+    page.get_by_role("button", name="Отметить все").click()
+    assert take.inner_text() == "Скачать 2 трека"
+    take.click()
+    page.wait_for_selector("#artistImportStatus:not([hidden])")
+    assert "Ищу на YouTube: 0 из 2" in page.locator("#artistImportStatus").inner_text()
+    titles = [i["title"] for i in discography._load()]
+    assert titles == ["Шёпот", "Шорох"]
+    assert [i["album"] for i in discography._load()] == ["1", "2"]
+
+
+def test_the_artist_page_offers_what_is_missing(page, fake_deezer_artist):
+    page.evaluate("openArtistPage('Quiet')")
+    page.wait_for_function("activeView === 'viewArtist'")
+    page.locator("#artistBody .o-more-round").click()
+    page.get_by_role("menuitem", name="Скачать недостающее…").click()
+    page.wait_for_function("activeView === 'viewAdd'")
+    page.wait_for_selector(".disco-track")
+    assert page.locator("#artistQuery").input_value() == "Quiet"

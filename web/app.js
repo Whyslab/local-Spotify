@@ -188,6 +188,7 @@ function refresh(now = false) {
     if (document.hidden && !now) return;
     if (activeView === "viewAdd") {
         tasks();
+        artistImportStatus();
         /* Загрузки идут — их число в рельсе и состояние сервиса видны сразу. */
         if (downloadsActive) health();
     }
@@ -1623,6 +1624,294 @@ function albumRow(album, note) {
     };
     card.append(cover, info, take);
     return card;
+}
+
+/* ---------------- Артист целиком ----------------
+ *
+ * Найти артиста в Deezer (с фото — не спутать с тёзкой), открыть его
+ * альбомы, EP и синглы списком с галочками и скачать отмеченное. Версии
+ * (ремиксы, sped up, концертные) служба в список не кладёт, что уже есть в
+ * фонотеке — помечено и не отмечается. Поиск каждого трека на YouTube идёт
+ * на сервере в фоне, по одному: страницу можно закрыть. */
+let artistTicket = 0;
+
+function artistBox() { return document.getElementById("artistResults"); }
+function artistSay(text) { document.getElementById("artistNote").textContent = text; }
+
+async function runArtistSearch() {
+    const query = document.getElementById("artistQuery").value.trim();
+    const ticket = ++artistTicket;
+    artistBox().replaceChildren();
+    if (!query) { artistSay("Введи имя артиста"); return; }
+    artistSay("Ищу артиста…");
+    try {
+        const r = await fetch("/api/artists/search?q=" + encodeURIComponent(query), { headers: headers() });
+        const found = await r.json();
+        if (ticket !== artistTicket) return;
+        if (!r.ok) { artistSay(found.detail || ("Ошибка " + r.status)); return; }
+        artistSay(found.length ? "Какой из них?" : "Такого артиста Deezer не знает");
+        for (const artist of found) artistBox().appendChild(artistChoiceRow(artist));
+    } catch (e) {
+        if (ticket === artistTicket) artistSay(e.message);
+    }
+}
+
+function artistChoiceRow(artist) {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "disco-choice";
+    const pic = document.createElement("span");
+    pic.className = "disco-pic";
+    if (artist.picture) {
+        const img = document.createElement("img");
+        img.src = artist.picture;  // Deezer CDN, публичная картинка
+        img.alt = "";
+        img.loading = "lazy";
+        pic.appendChild(img);
+    }
+    const text = document.createElement("span");
+    text.className = "disco-choice-text";
+    const name = document.createElement("b");
+    name.textContent = artist.name;
+    const facts = document.createElement("small");
+    facts.textContent = [plural(artist.fans || 0, "слушатель", "слушателя", "слушателей"),
+        artist.albums ? plural(artist.albums, "релиз", "релиза", "релизов") : null].filter(Boolean).join(" · ");
+    text.append(name, facts);
+    row.append(pic, text);
+    row.onclick = () => openDiscography(artist.id, artist.name);
+    return row;
+}
+
+/* С чужой страницы (артист фонотеки → «Скачать недостающее»): сразу его
+ * дискография, если Deezer знает его под тем же именем; иначе — выбор. */
+async function downloadArtistFromLibrary(name) {
+    switchView("viewAdd");
+    document.getElementById("artistQuery").value = name;
+    document.getElementById("artistImport").scrollIntoView({ block: "start" });
+    const ticket = ++artistTicket;
+    artistBox().replaceChildren();
+    artistSay("Ищу артиста…");
+    try {
+        const r = await fetch("/api/artists/find?name=" + encodeURIComponent(name), { headers: headers() });
+        const data = await r.json();
+        if (ticket !== artistTicket) return;
+        if (r.ok && data.artist) { openDiscography(data.artist.id, data.artist.name); return; }
+    } catch (e) { /* дальше — обычный поиск */ }
+    if (ticket === artistTicket) runArtistSearch();
+}
+
+async function openDiscography(id, name) {
+    const ticket = ++artistTicket;
+    artistBox().replaceChildren();
+    artistSay(`Собираю дискографию «${name}»… У плодовитых это до полуминуты.`);
+    let data;
+    try {
+        const r = await fetch("/api/artists/" + encodeURIComponent(id) + "/discography", { headers: headers() });
+        data = await r.json();
+        if (ticket !== artistTicket) return;
+        if (!r.ok) { artistSay(data.detail || ("Ошибка " + r.status)); return; }
+    } catch (e) {
+        if (ticket === artistTicket) artistSay(e.message);
+        return;
+    }
+    renderDiscography(data);
+}
+
+function renderDiscography(data) {
+    const box = artistBox();
+    const all = [];
+    const list = document.createElement("div");
+    list.className = "disco";
+    const footer = document.createElement("div");
+    footer.className = "disco-actions";
+    const take = document.createElement("button");
+    take.className = "primary grow";
+    const update = () => {
+        const n = all.filter(x => x.box.checked).length;
+        take.textContent = n ? `Скачать ${plural(n, "трек", "трека", "треков")}` : "Отметь, что скачать";
+        take.disabled = !n;
+        for (const sync of releaseSyncs) sync();
+    };
+    const releaseSyncs = [];
+
+    for (const release of data.releases) {
+        const section = document.createElement("section");
+        section.className = "disco-release";
+        const head = document.createElement("label");
+        head.className = "disco-release-head";
+        const whole = document.createElement("input");
+        whole.type = "checkbox";
+        const cover = document.createElement("span");
+        cover.className = "disco-pic is-square";
+        if (release.cover) {
+            const img = document.createElement("img");
+            img.src = release.cover;  // Deezer CDN
+            img.alt = "";
+            img.loading = "lazy";
+            cover.appendChild(img);
+        }
+        const text = document.createElement("span");
+        text.className = "disco-choice-text";
+        const title = document.createElement("b");
+        title.textContent = release.title;
+        const facts = document.createElement("small");
+        facts.textContent = [{ album: "альбом", ep: "EP", single: "сингл" }[release.kind] || release.kind, release.year]
+            .filter(Boolean).join(" · ");
+        text.append(title, facts);
+        head.append(whole, cover, text);
+        section.appendChild(head);
+
+        const mine = [];
+        for (const track of release.tracks) {
+            const line = document.createElement("label");
+            line.className = "disco-track" + (track.have ? " is-have" : "");
+            const tick = document.createElement("input");
+            tick.type = "checkbox";
+            tick.disabled = track.have;
+            const name = document.createElement("span");
+            name.className = "disco-track-title";
+            name.textContent = track.title;
+            line.append(tick, name);
+            /* Трек с его релиза, но другого артиста — подписать, кто это. */
+            if (track.artist && track.artist !== data.artist.name) {
+                const who = document.createElement("small");
+                who.className = "disco-track-artist";
+                who.textContent = track.artist;
+                line.appendChild(who);
+            }
+            if (track.have) {
+                const mark = document.createElement("small");
+                mark.textContent = "есть";
+                line.appendChild(mark);
+            } else {
+                const item = { box: tick, track: { ...track, album: release.id } };
+                all.push(item);
+                mine.push(item);
+                tick.onchange = update;
+            }
+            section.appendChild(line);
+        }
+        whole.disabled = !mine.length;
+        whole.onchange = () => { for (const x of mine) x.box.checked = whole.checked; update(); };
+        releaseSyncs.push(() => {
+            const on = mine.filter(x => x.box.checked).length;
+            whole.checked = mine.length > 0 && on === mine.length;
+            whole.indeterminate = on > 0 && on < mine.length;
+        });
+        list.appendChild(section);
+    }
+
+    const tracks = data.releases.reduce((n, r) => n + r.tracks.length, 0);
+    const have = tracks - all.length;
+    const parts = [`${data.artist.name}: ${plural(tracks, "трек", "трека", "треков")}`];
+    if (have) parts.push(`${have} уже есть`);
+    if (data.hidden) parts.push(`скрыто версий и повторов: ${data.hidden}`);
+    if (data.hidden_releases) parts.push(`релизов-версий: ${data.hidden_releases}`);
+    artistSay(parts.join(", ") + (all.length ? "" : ". Скачивать нечего."));
+
+    const pickAll = document.createElement("button");
+    pickAll.className = "ghost";
+    pickAll.textContent = "Отметить все";
+    pickAll.onclick = () => { for (const x of all) x.box.checked = true; update(); };
+    const pickNone = document.createElement("button");
+    pickNone.className = "ghost";
+    pickNone.textContent = "Снять все";
+    pickNone.onclick = () => { for (const x of all) x.box.checked = false; update(); };
+    const picks = document.createElement("div");
+    picks.className = "row";
+    picks.append(pickAll, pickNone);
+
+    take.onclick = async () => {
+        const chosen = all.filter(x => x.box.checked).map(x => x.track);
+        take.disabled = true;
+        const ticket = artistTicket;
+        try {
+            const r = await fetch("/api/artists/import", {
+                method: "POST",
+                headers: { ...headers(), "Content-Type": "application/json" },
+                body: JSON.stringify({ tracks: chosen }),
+            });
+            const body = await r.json();
+            if (!r.ok) throw new Error(typeof body.detail === "string" ? body.detail : ("Ошибка " + r.status));
+            showArtistImport(body);
+            /* Пока шёл ответ, могли начать новый поиск — его не стираем. */
+            if (ticket !== artistTicket) return;
+            artistBox().replaceChildren();
+            artistSay(`${plural(chosen.length, "трек", "трека", "треков")} ждут поиска на YouTube — по одному, в фоне. Страницу можно закрыть.`);
+        } catch (e) {
+            artistSay(e.message);
+            take.disabled = false;
+        }
+    };
+    footer.appendChild(take);
+    if (all.length) box.append(picks, list, footer); else box.append(list);
+    update();
+}
+
+/* Ход фоновой загрузки — пока на экране «Добавить» и есть что показать. */
+async function artistImportStatus() {
+    try {
+        const r = await fetch("/api/artists/import", { headers: headers() });
+        if (r.ok) showArtistImport(await r.json());
+    } catch (e) { /* покажем в следующий раз */ }
+}
+
+let artistImportShown = "";
+
+function showArtistImport(st) {
+    const box = document.getElementById("artistImportStatus");
+    if (!box) return;
+    /* Опрос раз в несколько секунд: без перемен не перерисовываем — иначе
+     * нажатие на кнопку здесь могло пропасть в момент перерисовки. */
+    const signature = JSON.stringify(st);
+    if (signature === artistImportShown) return;
+    artistImportShown = signature;
+    box.hidden = !st.total;
+    if (!st.total) { box.replaceChildren(); return; }
+    const done = st.total - st.wait;
+    const line = document.createElement("p");
+    line.className = "disco-status-line";
+    line.textContent = (st.wait ? `Ищу на YouTube: ${done} из ${st.total}` : `Готово: ${st.total}`)
+        + ` · поставлено в загрузку ${st.queued}` + (st.had ? ` · уже были ${st.had}` : "")
+        + (st.missed ? ` · не нашлось ${st.missed}` : "");
+    const parts = [line];
+    if (st.failing) {
+        const failing = document.createElement("p");
+        failing.className = "note";
+        failing.textContent = `Поиск не удался у ${st.failing} — повторю через несколько минут`
+            + (st.last_error ? ` (${st.last_error})` : "") + ".";
+        parts.push(failing);
+    }
+    if (st.missed_tracks && st.missed_tracks.length) {
+        const missed = document.createElement("p");
+        missed.className = "note";
+        missed.textContent = "Не нашлось той же записи: "
+            + st.missed_tracks.slice(0, 8).map(t => t.title).join("; ")
+            + (st.missed_tracks.length > 8 ? ` и ещё ${st.missed_tracks.length - 8}` : "")
+            + ". Их можно поискать по названию выше.";
+        parts.push(missed);
+    }
+    const action = (label, query) => {
+        const b = document.createElement("button");
+        b.className = "ghost small";
+        b.textContent = label;
+        b.onclick = async () => {
+            b.disabled = true;
+            try {
+                const r = await fetch("/api/artists/import" + query, { method: "DELETE", headers: headers() });
+                if (r.ok) showArtistImport(await r.json());
+            } catch (e) {
+                b.disabled = false;
+            }
+        };
+        return b;
+    };
+    const row = document.createElement("div");
+    row.className = "row";
+    if (st.wait) row.appendChild(action("Отменить оставшиеся", "?waiting=true"));
+    if (done) row.appendChild(action("Убрать итог", ""));
+    parts.push(row);
+    box.replaceChildren(...parts);
 }
 
 /* ---------------- Search ---------------- */

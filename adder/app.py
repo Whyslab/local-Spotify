@@ -16,7 +16,10 @@ from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any, Literal
 
+import httpx
 from fastapi import Depends, FastAPI, File, HTTPException, Request, Security, UploadFile, status
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
@@ -28,6 +31,7 @@ from . import (
     config,
     covers,
     db,
+    discography,
     duplicates,
     ingest,
     library,
@@ -129,6 +133,9 @@ async def lifespan(app: FastAPI):
 
     listenbrainz.start()
 
+    # «Артист целиком»: то, что ждало поиска на YouTube до перезапуска.
+    discography.start(_queue_artist_track)
+
     # Задачи, упавшие из-за ограничения YouTube, через час пробуют снова сами.
     threading.Thread(target=_auto_requeue_loop, name="auto-requeue", daemon=True).start()
 
@@ -186,6 +193,16 @@ async def lifespan(app: FastAPI):
 # Без /docs, /redoc и /openapi.json: служба слушает сеть общежития, и карта
 # всего API без ключа там ни к чему.
 app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """422 без присланного значения. Стандартный ответ повторяет его, а NaN
+    (его отклоняет allow_inf_nan=False) в JSON не записать — вместо 422
+    выходил 500."""
+    errors = [{k: v for k, v in e.items() if k not in ("input", "ctx")} for e in exc.errors()]
+    return JSONResponse(status_code=422, content={"detail": jsonable_encoder(errors)})
+
 
 # Limits on a request body, checked before it is read. Starlette writes a
 # whole multipart part to /tmp (RAM on this machine) before the handler sees
@@ -1041,6 +1058,99 @@ def import_album(req: AlbumImportRequest, authenticated: bool = Depends(verify_t
     if not req.id.isdigit():
         raise HTTPException(status_code=400, detail="Album id must be a Deezer number")
     return _import_deezer_album(req.id)
+
+
+# ---------------------------------------------------------------------------
+# Артист целиком (adder/discography.py)
+# ---------------------------------------------------------------------------
+
+
+def _queue_artist_track(item: dict) -> str:
+    """Найти один трек артиста на YouTube и поставить в загрузку.
+
+    Выбор ролика — тот же, что у умного перемешивания (outside.choose_video):
+    длительность из Deezer, имена и латиницей, концертники и клипы мимо.
+    Сбой поиска — TryLater: это «не дозвались», а не «такой записи нет»;
+    после 429 тормозим все вызовы yt-dlp, как очередь загрузок.
+    """
+    try:
+        entries = outside._search(f"{item['artist']} {item['title']}")
+    except runtime.ShutdownRequested:
+        raise
+    except Exception as exc:
+        if ingest.classify_error(str(exc)) == "rate_limited":
+            runtime.pause_youtube(config.RATE_LIMIT_BACKOFF)
+        raise discography.TryLater(str(exc)) from exc
+    match = outside.choose_video(entries, item["artist"], item["title"], item.get("duration"))
+    if match is None:
+        return "missed"
+    url = ingest.canonicalize_youtube_url(f"https://www.youtube.com/watch?v={match['id']}")
+    tid = _queue_source(url, album_hint=item.get("album") or None)
+    return "queued" if tid is not None else "had"
+
+
+def _deezer_call(run):
+    try:
+        return run()
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (similar._Unreachable, httpx.HTTPError) as exc:
+        raise HTTPException(status_code=502, detail=f"Deezer не ответил: {exc}"[:300]) from exc
+
+
+@app.get("/api/artists/search")
+def artists_search(q: str, authenticated: bool = Depends(verify_token)):
+    """Артисты Deezer по имени — выбрать нужного, а не тёзку."""
+    return _deezer_call(lambda: discography.search_artists(q))
+
+
+@app.get("/api/artists/find")
+def artists_find(name: str, authenticated: bool = Depends(verify_token)):
+    """Артист фонотеки в Deezer — для «Скачать недостающее» на его странице."""
+    return {"artist": _deezer_call(lambda: discography.find_artist(name))}
+
+
+@app.get("/api/artists/{artist_id}/discography")
+def artist_discography(artist_id: str, authenticated: bool = Depends(verify_token)):
+    """Альбомы, EP и синглы с треками; что уже есть — помечено."""
+    if not (artist_id.isascii() and artist_id.isdigit()):
+        raise HTTPException(status_code=400, detail="Artist id must be a Deezer number")
+    return _deezer_call(lambda: discography.discography(artist_id, library.library_index()))
+
+
+class ArtistTrack(BaseModel):
+    artist: str = Field(max_length=300)
+    title: str = Field(max_length=300)
+    # NaN выключал бы сверку длительности, и в фонотеку шёл бы любой клип.
+    duration: float | None = Field(default=None, ge=0, le=86400, allow_inf_nan=False)
+    # Номер альбома Deezer — он уходит в адрес запроса к Deezer.
+    album: str = Field(default="", max_length=20, pattern=r"^\d*$")
+
+
+class ArtistImportRequest(BaseModel):
+    tracks: list[ArtistTrack] = Field(max_length=2000)
+
+
+@app.post("/api/artists/import")
+def artists_import(req: ArtistImportRequest, authenticated: bool = Depends(verify_token)):
+    """Выбранные треки — в ожидание; дальше их по одному ищет фоновый поток."""
+    added = discography.add([t.model_dump() for t in req.tracks])
+    return {"added": added, **discography.status()}
+
+
+@app.get("/api/artists/import")
+def artists_import_status(authenticated: bool = Depends(verify_token)):
+    return discography.status()
+
+
+@app.delete("/api/artists/import")
+def artists_import_clear(waiting: bool = False, authenticated: bool = Depends(verify_token)):
+    """Убрать итоги прошлых загрузок; `waiting=true` — и не искать оставшееся."""
+    if waiting:
+        discography.cancel_waiting()
+    else:
+        discography.clear_finished()
+    return discography.status()
 
 
 @app.post("/api/import-playlist")

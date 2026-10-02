@@ -97,6 +97,8 @@ adder/thumb-cache/
 # данные, как обложки подборок, в историю не идут.
 adder/web-covers/
 adder/artist-photos/
+# «Артист целиком»: ожидание поиска на YouTube — состояние, не исходник.
+adder/artist-import.json
 # yt-dlp and Deno caches (XDG_CACHE_HOME for yt-dlp calls)
 adder/cache/
 

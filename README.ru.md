@@ -296,6 +296,9 @@ curl -s http://127.0.0.1:8787/health     # {"status":"healthy"}
 | `GET`  | `/api/home` | Полки главной |
 | `GET`  | `/api/discover-external` | Треки похожих артистов, которых нет в фонотеке; на каждый запрос новый набор, с обложками Deezer |
 | `GET`  | `/api/web-cover` | Картинка Deezer (`?url=` только с `*.dzcdn.net`), скачивается один раз и лежит в `adder/web-covers/` |
+| `GET`  | `/api/artists/search` `/api/artists/find` | Артисты Deezer по имени / артист фонотеки в Deezer (сначала точное имя) |
+| `GET`  | `/api/artists/{id}/discography` | Альбомы, EP и синглы с треками; версии и повторы скрыты, что есть в фонотеке — помечено |
+| `GET` `POST` `DELETE` | `/api/artists/import` | Выбранные треки ждут на диске и по одному ищутся на YouTube в фоне |
 | `GET` `POST` `DELETE` | `/api/artist-photo` | Шапка артиста: своя, если загружена, иначе фото из Deezer; `/info` — какая |
 | `POST` | `/api/shuffle/smart` | Умное перемешивание любого набора (альбом, текущая очередь); примерно треть — новое |
 | `GET` `POST` | `/api/outside/status` `/api/outside/prefetch` | Состояние новых (не из фонотеки) треков; скачать заранее |

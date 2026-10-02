@@ -205,10 +205,9 @@ def _ask_picture(name: str) -> list[str] | None:
     """Фото артиста. None — «не дозвонились», [] — «фото нет», иначе [адрес].
 
     Только при совпадении имени: для похожих сойдёт и первый в выдаче, а в
-    шапке чужое лицо хуже, чем никакого. Имя сравнивается и латиницей: у
-    Deezer «Алина Орлова» с фото записана как «Alina Orlova», а кириллическая
-    запись — пустая. У артиста без фото Deezer отдаёт заглушку с пустым
-    идентификатором («/artist//») — такие не в счёт.
+    шапке чужое лицо хуже, чем никакого. Латиницей («Монеточка» —
+    «Monetochka») — только если точной записи с релизами в выдаче нет. У
+    артиста без фото Deezer отдаёт заглушку с пустым идентификатором.
     """
     # Здесь, а не наверху: outside сам импортирует similar.
     from .outside import _latin_words
@@ -224,19 +223,21 @@ def _ask_picture(name: str) -> list[str] | None:
         url = candidate.get("picture_xl") or candidate.get("picture_big") or ""
         return "" if "/artist//" in url else url
 
-    latin = _latin_words(name)
-    same = [
+    # Точное имя главнее латиницы — но не пустышка без релизов: «Алина
+    # Орлова» кириллицей у Deezer пуста (ни фото, ни альбомов), а её песни —
+    # под «Alina Orlova». Точная запись с релизами и без фото — значит, фото
+    # нет: чужое лицо от тёзки-латиницы хуже, чем никакого.
+    exact = [
         c
         for c in candidates
-        if picture(c)
-        and (
-            (c.get("name") or "").strip().lower() == name.lower()
-            or (latin and _latin_words(c.get("name") or "") == latin)
-        )
+        if (c.get("name") or "").strip().lower() == name.lower() and c.get("nb_album")
     ]
+    latin = _latin_words(name)
+    same = exact or [c for c in candidates if latin and _latin_words(c.get("name") or "") == latin]
     if not same:
         return []
-    return [picture(max(same, key=lambda c: c.get("nb_fan") or 0))]
+    url = picture(max(same, key=lambda c: c.get("nb_fan") or 0))
+    return [url] if url else []
 
 
 def artist_picture(artist: str, cache_dir: Path) -> str:

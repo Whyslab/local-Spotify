@@ -97,6 +97,23 @@
         <div id="searchResults" class="rows"></div>
       </div>
 
+      <!-- Артист целиком: найти в Deezer, отметить нужное в его дискографии,
+           скачать. Ремиксы, sped up и концертные сюда не попадают. -->
+      <div class="card" id="artistImport">
+        <div class="card-head">
+          <svg class="icon accent" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>
+          <h2>Артист целиком</h2>
+        </div>
+        <div class="row">
+          <input id="artistQuery" class="grow" type="text" placeholder="Имя артиста"
+                 autocomplete="off" onkeydown="if(event.key==='Enter')runArtistSearch()">
+          <button class="primary" onclick="runArtistSearch()">Найти</button>
+        </div>
+        <p id="artistNote" class="note"></p>
+        <div id="artistResults"></div>
+        <div id="artistImportStatus" class="disco-status" hidden></div>
+      </div>
+
       <div class="card">
         <div class="card-head">
           <svg class="icon accent" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12M8 11l4 4 4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>

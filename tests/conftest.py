@@ -31,12 +31,16 @@ def _outside_stays_offline(monkeypatch, tmp_path, request):
     """
     import queue
 
-    from adder import outside, runtime
+    from adder import discography, outside, runtime
 
     monkeypatch.setattr(runtime, "OUTSIDE_DIR", tmp_path / "outside-cache")
     monkeypatch.setattr(runtime, "THUMB_DIR", tmp_path / "thumb-cache")
     monkeypatch.setattr(runtime, "WEB_COVERS_DIR", tmp_path / "web-covers")
     monkeypatch.setattr(runtime, "ARTIST_PHOTOS_DIR", tmp_path / "artist-photos")
+    monkeypatch.setattr(runtime, "ARTIST_IMPORT_FILE", tmp_path / "artist-import.json")
+    # Фоновый разбор «Артиста целиком» тестам не нужен: шаг проверяется
+    # напрямую (discography.step), а живой поток ходил бы на YouTube.
+    monkeypatch.setattr(discography, "start", lambda queue_one: None)
     monkeypatch.setattr(runtime, "CACHE_DIR", tmp_path / "cache")
     monkeypatch.setattr(outside, "candidates", lambda *args, **kwargs: [])
     # Добавление трека измеряет его отдельным процессом и спрашивает Deezer

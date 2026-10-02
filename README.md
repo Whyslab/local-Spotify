@@ -296,6 +296,9 @@ Authorise with an `Authorization: Bearer <API_TOKEN>` header. `/health` without 
 | `GET` | `/api/home` | Home page shelves |
 | `GET` | `/api/discover-external` | Tracks by similar artists that are not in the library; a new set on every call, with Deezer covers |
 | `GET` | `/api/web-cover` | A Deezer picture (`?url=` on `*.dzcdn.net` only), fetched once and kept in `adder/web-covers/` |
+| `GET` | `/api/artists/search` `/api/artists/find` | Deezer artists by name / the library artist on Deezer (exact name first) |
+| `GET` | `/api/artists/{id}/discography` | Albums, EPs and singles with tracks; versions and repeats hidden, what the library has is marked |
+| `GET` `POST` `DELETE` | `/api/artists/import` | Chosen tracks wait on disk and are searched on YouTube one by one in the background |
 | `GET` `POST` `DELETE` | `/api/artist-photo` | Artist header: your own picture if uploaded, otherwise the Deezer photo; `/info` says which |
 | `POST` | `/api/shuffle/smart` | Smart shuffle of any set of tracks (album, current queue); about a third are new tracks |
 | `GET` `POST` | `/api/outside/status` `/api/outside/prefetch` | State of new (non-library) tracks; download ahead |

@@ -2655,3 +2655,38 @@ html.sheet-lock, html.sheet-lock body { overflow: hidden; }
    варианте (общее .row.wrap переносило «⋯» на свою строку). */
 .playlist-meta .row.wrap { flex-wrap: nowrap; }
 .playlist-meta .row > .o-capsule { flex: 1 1 0; min-width: 0; }
+
+/* ---------------- Артист целиком (02.10.2026) ---------------- */
+.disco-choice {
+    display: flex; align-items: center; gap: 12px; width: 100%;
+    min-height: 0; padding: 8px; margin: 0; border: 0; border-radius: 10px;
+    background: none; color: var(--text); text-align: left; font: inherit;
+}
+.disco-choice:hover { background: var(--fill-2); }
+.disco-pic { flex: none; width: 48px; height: 48px; border-radius: 50%; overflow: hidden; background: var(--fill-2); }
+.disco-pic.is-square { width: 44px; height: 44px; border-radius: 6px; }
+.disco-pic img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.disco-choice-text { display: flex; flex-direction: column; min-width: 0; }
+.disco-choice-text b { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.disco-choice-text small { color: var(--text-3); font-size: 13px; }
+.disco { display: flex; flex-direction: column; gap: 14px; margin: 10px 0; }
+.disco-release-head { display: flex; align-items: center; gap: 12px; padding: 6px 4px; cursor: pointer; }
+.disco-track {
+    display: flex; align-items: center; gap: 12px; min-height: 40px;
+    padding: 0 4px 0 4px; border-top: 0.5px solid var(--line-2); cursor: pointer;
+}
+.disco-track-title { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.disco-track.is-have { color: var(--text-3); cursor: default; }
+.disco-track small { color: var(--text-3); font-size: 12px; }
+.disco input[type="checkbox"] { flex: none; width: 20px; height: 20px; margin: 0; accent-color: var(--accent); }
+/* «Скачать N треков» — всегда под рукой, сколько ни листай дискографию. */
+.disco-actions {
+    position: sticky; z-index: 3; display: flex; padding: 8px 0 0;
+    /* Над вкладками и полосой плеера — и над «чёлкой» айфона: полоса плеера
+       сама стоит выше неё на safe-area-inset-bottom. */
+    bottom: calc(var(--tabbar) + var(--player) + env(safe-area-inset-bottom, 0px) + 8px);
+}
+@media (min-width: 1100px) { .disco-actions { bottom: calc(var(--player) + 8px); } }
+.disco-track-artist { flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.disco-status { margin-top: 12px; padding-top: 12px; border-top: 0.5px solid var(--line-2); }
+.disco-status-line { margin: 0 0 6px; font-weight: 600; }
