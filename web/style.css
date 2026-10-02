@@ -2679,14 +2679,26 @@ html.sheet-lock, html.sheet-lock body { overflow: hidden; }
 .disco-track.is-have { color: var(--text-3); cursor: default; }
 .disco-track small { color: var(--text-3); font-size: 12px; }
 .disco input[type="checkbox"] { flex: none; width: 20px; height: 20px; margin: 0; accent-color: var(--accent); }
-/* «Скачать N треков» — всегда под рукой, сколько ни листай дискографию. */
+/* «Скачать N треков» — всегда под рукой, сколько ни листай дискографию:
+   сплошная полоса цвета карточки у нижнего края, строки под ней не
+   просвечивают (02.10.2026: неактивная кнопка была полупрозрачной, и под
+   надписью читалось название трека). */
 .disco-actions {
-    position: sticky; z-index: 3; display: flex; padding: 8px 0 0;
-    /* Над вкладками и полосой плеера — и над «чёлкой» айфона: полоса плеера
-       сама стоит выше неё на safe-area-inset-bottom. */
+    position: sticky; z-index: 3; display: flex; align-items: center; gap: 12px;
+    margin: 0 -16px; padding: 10px 16px;
+    background: var(--surface);
+    border-top: 0.5px solid var(--line-2);
+    /* Телефон: прокручивается всё окно, а вкладки и полоса плеера лежат
+       поверх него — встаём над ними (и над «чёлкой» айфона). Полоса плеера
+       сама приподнята над вкладками на 8 точек. */
     bottom: calc(var(--tabbar) + var(--player) + env(safe-area-inset-bottom, 0px) + 8px);
 }
-@media (min-width: 1100px) { .disco-actions { bottom: calc(var(--player) + 8px); } }
+/* Ноутбук: прокручивается область страниц (#views), и она уже кончается над
+   полосой плеера — ещё раз высота плеера поднимала кнопку на середину
+   списка. −40 — её нижний отступ: иначе под полосой оставалась щель, и в ней
+   проезжали строки. */
+@media (min-width: 1100px) { .disco-actions { bottom: -40px; } }
+.disco-actions button:disabled { opacity: 1; background: var(--fill-2); color: var(--text-3); }
 .disco-track-artist { flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .disco-status { margin-top: 12px; padding-top: 12px; border-top: 0.5px solid var(--line-2); }
 .disco-status-line { margin: 0 0 6px; font-weight: 600; }

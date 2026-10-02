@@ -1178,3 +1178,45 @@ def test_the_artist_page_offers_what_is_missing(page, fake_deezer_artist):
     page.wait_for_function("activeView === 'viewAdd'")
     page.wait_for_selector(".disco-track")
     assert page.locator("#artistQuery").input_value() == "Quiet"
+
+
+@pytest.mark.parametrize("size", [(1266, 603), (390, 844)], ids=["laptop-150%", "phone"])
+def test_the_download_bar_sits_on_the_player_and_hides_the_rows(
+    page, fake_deezer_artist, monkeypatch, size
+):
+    """02.10.2026: на ноутбуке кнопка висела посреди списка (высота плеера
+    учитывалась дважды), а неактивная была полупрозрачной — сквозь неё
+    читались строки."""
+    many = [
+        {"artist": "Quiet", "title": f"Песня {n}", "duration": 100 + n, "have": False}
+        for n in range(40)
+    ]
+    disco = {
+        "artist": {"id": "77", "name": "Quiet"},
+        "hidden": 0,
+        "releases": [
+            {"id": "1", "title": "Много", "kind": "album", "year": "", "cover": "", "tracks": many}
+        ],
+    }
+    monkeypatch.setattr(discography, "discography", lambda aid, rows: disco)
+    page.set_viewport_size({"width": size[0], "height": size[1]})
+    open_library(page)
+    row(page, "Loud").locator(".track-info").click()  # полоса плеера на месте
+    page.wait_for_function("!document.getElementById('player').hidden")
+    page.evaluate("switchView('viewAdd')")
+    page.locator("#artistQuery").fill("quiet")
+    page.locator("#artistImport button.primary").click()
+    page.locator(".disco-choice").first.click()
+    page.wait_for_selector(".disco-track")
+    page.evaluate("document.querySelectorAll('.disco-track')[15].scrollIntoView({block: 'center'})")
+    page.wait_for_timeout(200)
+    bar, floor, opacity = page.evaluate(
+        "(() => { const b = document.querySelector('.disco-actions').getBoundingClientRect();"
+        " const tops = [...document.querySelectorAll('#player, .tabbar')]"
+        "   .map(n => n.getBoundingClientRect()).filter(r => r.height && r.top > innerHeight / 2)"
+        "   .map(r => r.top);"
+        " return [b.bottom, Math.min(innerHeight, ...tops),"
+        "   getComputedStyle(document.querySelector('.disco-actions button')).opacity]; })()"
+    )
+    assert abs(bar - floor) <= 1, f"полоса «Скачать» не у нижнего края: {bar} против {floor}"
+    assert opacity == "1"
