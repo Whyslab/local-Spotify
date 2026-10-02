@@ -21,6 +21,17 @@ let librarySearchTimer = null;
  * тем временем ушёл в фонотеку) не должен возвращать его обратно. */
 let navigation = 0;
 
+/* Первый экран нарисован тем, что пришло с сервера, — точка «готово», до которой
+ * меряется скорость открытия (scripts/measure_ui.py, measure_window.py). Один раз
+ * за жизнь страницы: дальше — переходы, а не открытие. Метка ставится в кадре
+ * после отрисовки, а не в момент вставки узлов. */
+let appReady = false;
+function markAppReady() {
+    if (appReady) return;
+    appReady = true;
+    requestAnimationFrame(() => performance.mark("app-ready"));
+}
+
 /* ---------------- Token ---------------- */
 
 function token() {
@@ -895,6 +906,7 @@ async function home() {
             renderHome(homeCache);
             homeRendered = homeCache;
         }
+        markAppReady();
         return;
     }
     try {
@@ -903,6 +915,7 @@ async function home() {
         homeCache = await r.json();
         renderHome(homeCache);
         homeRendered = homeCache;
+        markAppReady();
     } catch (e) {
         homeNote(box, "Не собралось.");
     }
@@ -1203,6 +1216,7 @@ async function library() {
                 box.appendChild(more);
             }
             markPlayingRow();
+            markAppReady();
             return;
         }
 
@@ -1221,6 +1235,7 @@ async function library() {
             if (note) note.textContent = plural(albums, "альбом", "альбома", "альбомов");
         }
         markPlayingRow();
+        markAppReady();
     } catch (e) {
         // Same reasoning as tasks(): the next keystroke or poll retries.
     }

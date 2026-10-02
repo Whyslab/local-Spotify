@@ -1931,6 +1931,7 @@ function renderPlaylist() {
     filterOpenPlaylist();
     markPlayingRow();
     renderPlaylistOffline();
+    markAppReady();
 }
 
 const DRAG_TYPE = "application/x-ls-index";

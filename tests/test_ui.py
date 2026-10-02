@@ -180,6 +180,16 @@ def row_action(page, title, action):
 # ---------------------------------------------------------------------------
 
 
+def test_app_ready_is_marked_once_when_the_first_screen_has_its_data(page):
+    """The "ready" the speed targets are measured to (plan AC 14): the first
+    screen drawn with what came from the API - not the bare page."""
+    page.wait_for_function("performance.getEntriesByName('app-ready').length === 1")
+    assert page.locator("#homeBody > *").count() > 0
+    open_library(page)
+    page.evaluate("switchView('viewHome')")
+    assert page.evaluate("performance.getEntriesByName('app-ready').length") == 1
+
+
 def test_the_library_lists_tracks_and_renders_titles_as_text(page):
     open_library(page)
 
