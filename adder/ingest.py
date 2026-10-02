@@ -127,8 +127,12 @@ def channel_artist(uploader: str) -> str:
 def split_artist_title(meta: dict):
     artist = meta.get("artist") or meta.get("creator") or ""
     title = meta.get("track") or meta.get("title") or "Unknown"
-    if not artist and " - " in title:
-        artist, title = title.split(" - ", 1)
+    # "Artist - Title", and the same with an en or em dash: YouTube titles use
+    # all three, and a missed split left the channel as the artist. Only a dash
+    # with spaces round it; the one in "T-Fest" is part of the name.
+    split = re.search(r"\s[-–—]\s", title) if not artist else None
+    if split:
+        artist, title = title[: split.start()].strip(), title[split.end() :].strip()
     elif artist and not meta.get("track"):
         # YouTube Music fills "artist" but not always "track"; the video title
         # then repeats the artist, which used to end up inside the title tag.

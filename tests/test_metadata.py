@@ -388,3 +388,17 @@ def test_musicbrainz_requests_are_spaced_and_identified(monkeypatch):
 
     assert sleeps == [pytest.approx(1.1)]  # MusicBrainz allows one request per second
     assert "local-Spotify" in headers[0]["User-agent"]
+
+
+def test_a_title_split_by_an_en_or_em_dash_names_the_artist_not_the_channel():
+    """ "МУЗЫКА в ТРЕНДЕ/Singles/T-Fest x Truwer – На волну.m4a" (2026-10-02).
+
+    Only " - " was read as "artist - title"; YouTube titles often use " – " or
+    " — ", and the channel became the artist folder. The dash inside "T-Fest"
+    has no spaces around it and stays where it is.
+    """
+    for dash in ("–", "—", "-"):
+        meta = {"title": f"T-Fest x Truwer {dash} На волну", "uploader": "МУЗЫКА в ТРЕНДЕ"}
+        fs_artist, fs_title, full_artist, title = split_artist_title(meta)
+        assert full_artist == "T-Fest x Truwer", dash
+        assert title == "На волну", dash
