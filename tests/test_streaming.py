@@ -1,6 +1,7 @@
 """Signed stream links: what they allow, and for how long."""
 
 import subprocess
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -143,3 +144,24 @@ def test_the_signed_path_is_the_decoded_one(client):
 def test_the_key_is_not_the_api_token(client):
     """A leaked stream signature must not walk back to the token itself."""
     assert config.API_TOKEN.encode() not in signing._key()
+
+
+def test_a_correctly_signed_link_still_cannot_leave_the_library(client):
+    """Defence in depth: /api/stream-url refuses such a path, but should a
+    signature for one ever exist, /api/stream itself must not follow it."""
+    import time as _time
+
+    from adder import config
+
+    # An audio file right outside the library: only the "inside the library"
+    # check stands between it and the stream, not the suffix check.
+    outside = config.LIBRARY.parent / "outside.m4a"
+    outside.write_bytes((Path(__file__).parent / "fixtures" / "tone.m4a").read_bytes())
+    fresh = TestClient(client.app)
+    for path in ("../outside.m4a", "../../etc/passwd", "A/../../outside.m4a"):
+        expires = int(_time.time()) + 600
+        response = fresh.get(
+            "/api/stream",
+            params={"path": path, "exp": expires, "sig": signing.sign(path, expires)},
+        )
+        assert response.status_code in (400, 403, 404), path
