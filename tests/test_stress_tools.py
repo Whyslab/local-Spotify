@@ -321,6 +321,12 @@ def test_cleanup_deletes_exactly_the_manifest_paths(paths, tmp_path):
     kept_lyrics = paths.lyrics / f"{stress.lyrics_key('Old/Singles/Kept.m4a')}.json"
     kept_lyrics.write_text("{}")
 
+    probe_history = paths.playlist_history / "zz-stress-probe"
+    probe_history.mkdir(parents=True)
+    (probe_history / "1.m3u").write_text("#EXTM3U\n")
+    (paths.playlist_history / "Monday").mkdir()
+    (paths.playlist_history / "Monday" / "1.m3u").write_text("#EXTM3U\n")
+
     deleted, playlist_deletes = [], []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -366,6 +372,8 @@ def test_cleanup_deletes_exactly_the_manifest_paths(paths, tmp_path):
     saved = json.loads(paths.manifest.read_text())
     assert saved["cleaned_at"]
     assert saved["probes"][1]["kept_existing"] is True
+    assert not probe_history.exists(), "the probe playlist's saved versions go too"
+    assert (paths.playlist_history / "Monday" / "1.m3u").exists()
 
 
 def test_cleanup_without_snapshot_deletes_no_track(paths):
@@ -592,3 +600,50 @@ def test_file_size_is_read_from_content_range():
             return await stress.file_size(c, "/api/stream?path=a")
 
     assert asyncio.run(go()) == 1489054
+
+
+def test_leftover_probe_playlist_history_is_flagged(paths):
+    manifest = stress.new_manifest([PROBE_1], None)
+    manifest["playlist_requested"] = True
+    (paths.playlist_history / "zz-stress-probe").mkdir(parents=True)
+    left = stress.leftover_files(paths, manifest, set())
+    assert left == [str(paths.playlist_history / "zz-stress-probe")]
+
+
+def test_navidrome_purge_removes_only_the_probes_missing_entries():
+    nd = stress.Navidrome("http://nd", "admin", "pw")
+    missing = [
+        {"id": "p1", "path": "Kevin MacLeod/Singles/Outback Call.m4a"},
+        {"id": "old", "path": "Baby Melo/Singles/Slappy Tap.m4a"},
+    ]
+    deleted: list[list[str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/auth/login":
+            return httpx.Response(200, json={"token": "t"})
+        assert request.headers["x-nd-authorization"] == "Bearer t"
+        if request.method == "GET" and request.url.path == "/api/missing":
+            gone = {i for batch in deleted for i in batch}
+            return httpx.Response(200, json=[m for m in missing if m["id"] not in gone])
+        if request.method == "DELETE" and request.url.path == "/api/missing":
+            deleted.append(request.url.params.get_list("id"))
+            return httpx.Response(200, json={})
+        return httpx.Response(404)
+
+    async def go():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await stress.purge_navidrome_probes(
+                client, nd, {"Kevin MacLeod/Singles/Outback Call.m4a"}, wait=0, step=0
+            )
+
+    assert asyncio.run(go()) == ["Kevin MacLeod/Singles/Outback Call.m4a"]
+    assert deleted == [["p1"]], "an entry that was missing before the test is left alone"
+
+
+def test_purge_targets_only_deleted_probes_that_were_not_there_before():
+    manifest = stress.new_manifest([PROBE_1, PROBE_2], None)
+    manifest["probes"][0].update(result_path="P/Singles/One.m4a", deleted=True)
+    manifest["probes"][1].update(result_path="Old/Singles/Kept.m4a", deleted=True)
+    snapshot = {"library_paths": ["Old/Singles/Kept.m4a"]}
+    assert stress.deleted_probe_paths(manifest, snapshot) == {"P/Singles/One.m4a"}
+    assert stress.deleted_probe_paths(manifest, None) == set()

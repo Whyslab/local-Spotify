@@ -100,6 +100,10 @@ class Paths:
         return self.adder / "lyrics-cache"
 
     @property
+    def playlist_history(self) -> Path:
+        return self.adder / "playlist-history"
+
+    @property
     def db_snapshots(self) -> Path:
         return self.adder / "snapshots"
 
@@ -588,6 +592,52 @@ async def navidrome_state(client: httpx.AsyncClient, nd: Navidrome | None) -> di
 # ---------------------------------------------------------------------------
 
 
+def probe_missing_ids(missing: list[dict], probe_paths: set[str]) -> list[str]:
+    """Ids of Navidrome's "missing" entries that are exactly the probes' files."""
+    return [str(m["id"]) for m in missing if m.get("id") and m.get("path") in probe_paths]
+
+
+async def purge_navidrome_probes(
+    client: httpx.AsyncClient,
+    nd: Navidrome | None,
+    probe_paths: set[str],
+    wait: float = 60.0,
+    step: float = 5.0,
+) -> list[str]:
+    """7.4 step 6: Navidrome keeps deleted files as "missing"; remove the probes'.
+
+    Only entries whose path is one of the probes' result paths are touched
+    (``DELETE /api/missing?id=…``, what its admin "Missing Files" page sends).
+    Its scanner notices a deletion some seconds later, so this polls for
+    ``wait`` seconds. Returns the paths it removed.
+    """
+    if nd is None or not probe_paths:
+        return []
+    login = await client.post(
+        f"{nd.url}/auth/login", json={"username": nd.user, "password": nd.password}
+    )
+    login.raise_for_status()
+    headers = {"x-nd-authorization": f"Bearer {login.json()['token']}"}
+    removed: list[str] = []
+    deadline = time.monotonic() + wait
+    while True:
+        listing = await client.get(
+            f"{nd.url}/api/missing", params={"_start": 0, "_end": 5000}, headers=headers
+        )
+        listing.raise_for_status()
+        rows = listing.json() or []
+        ids = probe_missing_ids(rows, probe_paths)
+        if ids:
+            response = await client.delete(
+                f"{nd.url}/api/missing", params=[("id", i) for i in ids], headers=headers
+            )
+            response.raise_for_status()
+            removed += [m["path"] for m in rows if str(m.get("id")) in ids]
+        if set(removed) >= probe_paths or time.monotonic() >= deadline:
+            return removed
+        await asyncio.sleep(step)
+
+
 async def collect_state(
     client: httpx.AsyncClient,
     nd_client: httpx.AsyncClient,
@@ -620,6 +670,9 @@ async def collect_state(
 
 def leftover_files(paths: Paths, manifest: dict, library_before: set[str]) -> list[str]:
     left = []
+    history = paths.playlist_history / manifest.get("playlist", PROBE_PLAYLIST)
+    if manifest.get("playlist_requested") and history.exists():
+        left.append(str(history))
     for entry in manifest.get("probes", []):
         trash = entry.get("trash")
         if trash and Path(trash).exists():
@@ -772,6 +825,12 @@ async def cleanup(
         else:
             errors.append(f"DELETE playlist {name!r}: HTTP {response.status_code}")
         save()
+
+    if manifest.get("playlist_deleted"):
+        # Служба хранит прежние версии каждой подборки; у пробной их быть не должно.
+        history = paths.playlist_history / manifest.get("playlist", PROBE_PLAYLIST)
+        if history.is_dir() and history.resolve().parent == paths.playlist_history.resolve():
+            shutil.rmtree(history)
 
     for entry in manifest.get("probes", []):
         result = entry.get("result_path")
@@ -1656,8 +1715,38 @@ async def _cleanup_after(
 ) -> None:
     if report.get("cleanup"):
         return
-    errors = await cleanup(client, paths, manifest, read_json(paths.snapshot))
-    report["cleanup"] = {"errors": errors, "notes": manifest.get("cleanup_notes", [])}
+    snapshot = read_json(paths.snapshot)
+    errors = await cleanup(client, paths, manifest, snapshot)
+    purged = await _purge(paths, manifest, snapshot, errors)
+    report["cleanup"] = {
+        "errors": errors,
+        "notes": manifest.get("cleanup_notes", []),
+        "navidrome_purged": purged,
+    }
+
+
+def deleted_probe_paths(manifest: dict, snapshot: dict | None) -> set[str]:
+    """Result paths the cleanup removed: probes' own tracks, never a pre-existing one."""
+    before = set(snapshot["library_paths"]) if snapshot else None
+    if before is None:
+        return set()
+    return {
+        e["result_path"]
+        for e in manifest.get("probes", [])
+        if e.get("deleted") and e.get("result_path") and e["result_path"] not in before
+    }
+
+
+async def _purge(paths: Paths, manifest: dict, snapshot: dict | None, errors: list[str]) -> list:
+    nd = Navidrome.from_env(read_env(paths.env))
+    try:
+        async with httpx.AsyncClient(timeout=30, trust_env=False) as nd_client:
+            return await purge_navidrome_probes(
+                nd_client, nd, deleted_probe_paths(manifest, snapshot)
+            )
+    except (httpx.HTTPError, KeyError, ValueError) as exc:
+        errors.append(f"Navidrome purge failed ({type(exc).__name__}): see 7.4 step 6")
+        return []
 
 
 async def cmd_snapshot(args: argparse.Namespace, paths: Paths) -> int:
@@ -1687,14 +1776,17 @@ async def cmd_cleanup(args: argparse.Namespace, paths: Paths) -> int:
         print("no probe manifest: nothing to clean")
         return 0
     env = read_env(paths.env)
+    snapshot = read_json(paths.snapshot)
     async with make_client(args.base_url, api_token(env)) as client:
-        errors = await cleanup(client, paths, manifest, read_json(paths.snapshot))
+        errors = await cleanup(client, paths, manifest, snapshot)
+    purged = await _purge(paths, manifest, snapshot, errors)
+    for path in purged:
+        print(f"Navidrome: removed missing entry {path}")
     for note in manifest.get("cleanup_notes", []):
         print(f"note: {note}")
     for error in errors:
         print(f"error: {error}", file=sys.stderr)
     print("cleanup: done" if not errors else "cleanup: incomplete, run it again")
-    print("Navidrome keeps deleted files as 'missing': purge them there (7.4, step 6)")
     return 1 if errors else 0
 
 
