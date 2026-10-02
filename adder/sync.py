@@ -38,6 +38,7 @@ overwrites a playlist of a thousand tracks.
 import logging
 import threading
 import time
+import unicodedata
 from datetime import datetime
 from typing import Any
 
@@ -193,6 +194,16 @@ def _merged(name: str, entry: dict, local: list[str]) -> tuple[list[str], int, s
     if stray:
         raise RuntimeError(f"Navidrome lists {len(stray)} path(s) this library does not know")
 
+    # Navidrome matches an .m3u line to a file ignoring case (and Unicode form),
+    # so a line spelled "Slappy Tap.m4a" for the file "slappy tap.m4a" is on its
+    # list as that file. Read here as a missing file, it was kept at the end as
+    # well, and Navidrome counted the kept copy as one more on the next scan:
+    # Monday grew by a line every pass. Such a line is the file.
+    by_key: dict[str, str] = {}
+    for path in sorted(known):
+        by_key.setdefault(_path_key(path), path)
+    local = [path if path in known else by_key.get(_path_key(path), path) for path in local]
+
     # Kept even though Navidrome does not list them: files missing from the
     # library (it cannot see them), and files too new for it to have scanned.
     # Taking its list as the whole truth would drop both.
@@ -211,6 +222,11 @@ def _merged(name: str, entry: dict, local: list[str]) -> tuple[list[str], int, s
         if path not in remote_set and (path not in known or unseen_by_navidrome(path))
     ]
     return remote + kept, len(kept), remote_set
+
+
+def _path_key(path: str) -> str:
+    """A path as Navidrome compares .m3u lines with files: case and Unicode form aside."""
+    return unicodedata.normalize("NFC", path).casefold()
 
 
 def _is_fresh(rel_path: str, now: float) -> bool:

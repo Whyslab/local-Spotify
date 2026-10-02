@@ -477,3 +477,31 @@ def test_a_pass_from_the_panel_waits_for_the_background_one(monkeypatch):
     response = client.post("/api/sync", headers={"Authorization": "Bearer test-secret"})
 
     assert response.json() == {"locked": True}
+
+
+def test_a_line_differing_from_its_file_only_in_case_does_not_grow_the_playlist(
+    temp_library, monkeypatch
+):
+    """Monday held "Baby Melo/Singles/Slappy Tap.m4a"; the file is "slappy tap.m4a".
+
+    Navidrome matches .m3u lines to files ignoring case, so it listed that line
+    as the real file. The pull-back took the line for a missing file, kept it
+    at the end as well, and Navidrome read the kept copy as one more "slappy
+    tap" on its next scan: one more line every pass, 28 extra by 2026-09-29.
+    The line is the file under another spelling - it is written back as the
+    file, once, and the playlist stays put however often it is read back.
+    """
+    real = "Baby Melo/Singles/slappy tap.m4a"
+    monkeypatch.setattr(library, "library_index", lambda: _index("a.m4a", real, "b.m4a"))
+    playlists.create("p", ["a.m4a", "Baby Melo/Singles/Slappy Tap.m4a", "b.m4a"])
+
+    def navidrome_reads_the_file(_id, _n):
+        # Navidrome's view of whatever the file holds now, case-insensitively.
+        files = {p.casefold(): p for p in ("a.m4a", real, "b.m4a")}
+        return [files[e.path.casefold()] for e in playlists.read("p").entries]
+
+    monkeypatch.setattr(navidrome, "remote_tracks", navidrome_reads_the_file)
+    for _ in range(3):
+        sync.pull_back("p", _entry("p", playlists.playlist_path("p"), 3))
+
+    assert [e.path for e in playlists.read("p").entries] == ["a.m4a", real, "b.m4a"]
