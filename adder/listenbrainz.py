@@ -68,8 +68,17 @@ def _describe(path: str) -> dict | None:
     }
 
 
-def queue_listen(path: str, played_seconds: float | None, duration: float | None) -> bool:
-    """Queue one play for sending if it counts as a listen. Returns whether it was queued."""
+def queue_listen(
+    path: str,
+    played_seconds: float | None,
+    duration: float | None,
+    listened_at: float | None = None,
+) -> bool:
+    """Queue one play for sending if it counts as a listen. Returns whether it was queued.
+
+    ``listened_at`` is when listening started (epoch seconds); without it, the
+    play is taken to have just ended.
+    """
     if not enabled() or not counts_as_listen(played_seconds, duration):
         return False
     meta = _describe(path)
@@ -80,7 +89,7 @@ def queue_listen(path: str, played_seconds: float | None, duration: float | None
         "VALUES(?, ?, ?, ?, ?, ?)",
         (
             # When the listen started, which is what ListenBrainz means.
-            int(time.time() - (played_seconds or 0)),
+            int(listened_at if listened_at is not None else time.time() - (played_seconds or 0)),
             meta["artist"],
             meta["title"],
             meta["album"],

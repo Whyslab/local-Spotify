@@ -465,6 +465,88 @@ def test_a_play_heard_offline_is_sent_when_the_network_returns(page, server):
     assert db.db_query("SELECT COUNT(*) AS n FROM plays")[0]["n"] == before + 1
 
 
+def test_a_play_heard_offline_keeps_the_time_it_was_heard(page, server):
+    """Без сети прослушивание ждёт в очереди и уходит позже — со временем, когда
+    трек звучал (начало прослушивания), а не когда вернулась сеть."""
+    import json
+    from datetime import datetime
+
+    from adder import db
+
+    open_library(page)
+    page.evaluate("localStorage.setItem('pendingPlays', '[]')")
+    page.evaluate(
+        "playQueue([{path: 'Loud Band/Singles/Loud.opus', title: 'Loud', artist: 'Loud Band',"
+        " duration: 12}], 0)"
+    )
+    page.wait_for_function("!player.audio.paused && player.audio.currentTime > 2")
+    page.evaluate("player.audio.pause()")
+
+    # No network: the play goes to the queue with the time it was heard.
+    page.route("**/api/plays", lambda route: route.abort())
+    heard = page.evaluate("Date.now() / 1000 - player.audio.currentTime")
+    page.evaluate("reportPlay(false)")
+    page.wait_for_function("JSON.parse(localStorage.getItem('pendingPlays') || '[]').length === 1")
+    queued = page.evaluate("JSON.parse(localStorage.getItem('pendingPlays'))[0]")
+    assert abs(queued["heard_at"] - heard) < 2
+
+    # The network is back some time later: the queued time travels unchanged.
+    page.wait_for_timeout(1500)
+    page.unroute("**/api/plays")
+    sent = []
+    page.on(
+        "request",
+        lambda r: sent.append(json.loads(r.post_data)) if r.url.endswith("/api/plays") else None,
+    )
+    page.evaluate("flushPendingPlays()")
+    page.wait_for_function("JSON.parse(localStorage.getItem('pendingPlays') || '[]').length === 0")
+    assert sent == [queued]
+    row = db.db_query("SELECT played_at FROM plays ORDER BY id DESC LIMIT 1")[0]
+    ended = datetime.fromtimestamp(int(queued["heard_at"] + queued["played_seconds"]))
+    assert row["played_at"] == ended.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def test_plays_survive_rate_limit(page):
+    """60 прослушиваний в минуту — предел сервера (429). Отказ по пределу терял
+    живое прослушивание, а отправка накопленного вставала на первом отказе до
+    следующего события «online», которого при живой сети не бывает."""
+    import json
+
+    open_library(page)
+    page.evaluate("localStorage.setItem('pendingPlays', '[]')")
+    answers = [429]  # then 200 for everything
+    posts = []
+
+    def answer(route):
+        posts.append(json.loads(route.request.post_data))
+        status = answers.pop(0) if answers else 200
+        route.fulfill(status=status, json={"detail": "limit"} if status == 429 else {})
+
+    page.route("**/api/plays", answer)
+
+    # A live play answered 429 is kept for later, not dropped.
+    page.evaluate(
+        "player.queue = [{path: 'Loud Band/Singles/Loud.opus', title: 'Loud'}]; player.index = 0;"
+        "player.started = true; player.reported = false; reportPlay(true)"
+    )
+    page.wait_for_function("JSON.parse(localStorage.getItem('pendingPlays') || '[]').length === 1")
+
+    # A backlog bigger than the limit: the third one is refused, and the rest
+    # still go out on a timer -- the network never "comes back".
+    backlog = [
+        {"path": f"Loud Band/Singles/{n}.opus", "played_seconds": n, "source": "player"}
+        for n in range(1, 6)
+    ]
+    page.evaluate("(items) => localStorage.setItem('pendingPlays', JSON.stringify(items))", backlog)
+    answers[:] = [200, 200, 429]
+    posts.clear()
+    page.evaluate("PLAY_RETRY_MS = 300; flushPendingPlays()")
+    page.wait_for_function(
+        "JSON.parse(localStorage.getItem('pendingPlays') || '[]').length === 0", timeout=5000
+    )
+    assert posts == backlog[:3] + backlog[2:]
+
+
 LOUD = "{path: 'Loud Band/Singles/Loud.opus', title: 'Loud', artist: 'Loud Band', duration: 12}"
 
 

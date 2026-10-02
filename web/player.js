@@ -68,15 +68,19 @@ function reportPlay(finished) {
          * rates cannot be reconstructed later, so the label has to travel
          * with the play. */
         mode: player.playingMode || player.queueMode,
+        /* Когда трек начал звучать, по часам устройства. Прослушивание без
+         * сети уходит позже (offline.js), и время отправки соврало бы. */
+        heard_at: Math.floor(Date.now() / 1000 - played),
     };
     fetch("/api/plays", {
         method: "POST",
         headers: { ...headers(), "Content-Type": "application/json" },
         body: JSON.stringify(body),
     })
-        /* Без сети или при недоступном сервере — в очередь (offline.js): уйдёт,
-         * когда сеть вернётся. Воспроизведение из-за журнала не прерывается. */
-        .then(r => { if (!r.ok && r.status >= 500) queuePlay(body); })
+        /* Без сети, при недоступном сервере или сверх предела в минуту (429) —
+         * в очередь (offline.js): уйдёт позже. Воспроизведение из-за журнала
+         * не прерывается. */
+        .then(r => { if (!r.ok && (r.status >= 500 || r.status === 429)) queuePlay(body, r); })
         .catch(() => queuePlay(body));
 }
 

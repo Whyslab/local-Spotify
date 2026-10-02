@@ -942,3 +942,63 @@ def test_backend_image_hosts_within_csp(client, url, allowed):
         return parts.scheme == "https" and parts.hostname == host
 
     assert any(matches(s) for s in sources) is allowed
+
+
+def test_play_keeps_time_it_was_heard(client, app_module, monkeypatch):
+    """Телефон копит прослушивания без сети и шлёт их позже. Журнал и
+    ListenBrainz должны получить время, когда трек звучал, а не когда дошёл
+    запрос: иначе «давно не звучало» и история врут на часы и дни."""
+    import time
+    from datetime import datetime
+
+    from adder import library, listenbrainz
+
+    monkeypatch.setattr(app_module, "_PLAYS_WINDOW", {})
+    monkeypatch.setattr(config, "PLAY_HISTORY_DAYS", 30)
+    monkeypatch.setattr(config, "LISTENBRAINZ_TOKEN", "lb-token")
+    monkeypatch.setattr(
+        library,
+        "library_index",
+        lambda: [{"path": "A/Singles/B.m4a", "artist": "A", "title": "B", "album": ""}],
+    )
+
+    def local(epoch: float) -> str:
+        return datetime.fromtimestamp(int(epoch)).strftime("%Y-%m-%d %H:%M:%S")
+
+    def play(**extra):
+        body = {"path": "A/Singles/B.m4a", "played_seconds": 200, "duration": 248, **extra}
+        return client.post("/api/plays", json=body, headers=auth_headers())
+
+    def last():
+        row = db.db_query("SELECT played_at FROM plays ORDER BY id DESC LIMIT 1")[0]
+        listen = db.db_query("SELECT listened_at FROM listens ORDER BY id DESC LIMIT 1")[0]
+        return row["played_at"], listen["listened_at"]
+
+    # Heard three days ago (listening started then), sent now.
+    heard = time.time() - 3 * 86400
+    assert play(heard_at=heard).status_code == 200
+    played_at, listened_at = last()
+    assert listened_at == int(heard)  # ListenBrainz: when listening started
+    assert played_at == local(heard + 200)  # journal: when the play ended, as before
+
+    # Too far in the future (a broken clock) and older than the journal keeps.
+    count = len(db.db_query("SELECT id FROM plays"))
+    assert play(heard_at=time.time() + 3600).status_code == 422
+    assert play(heard_at=time.time() - 31 * 86400).status_code == 422
+    assert play(heard_at="yesterday").status_code == 422
+    assert len(db.db_query("SELECT id FROM plays")) == count
+
+    # A clock slightly ahead is accepted, but nothing lands in the future.
+    before = time.time()
+    assert play(heard_at=before + 120).status_code == 200
+    played_at, listened_at = last()
+    assert played_at <= local(time.time())
+    assert listened_at <= int(time.time()) - 200 + 1
+
+    # An old queued play without the field still counts, as of now.
+    before = time.time()
+    assert play().status_code == 200
+    played_at, listened_at = last()
+    assert local(before) <= played_at <= local(time.time())
+    assert int(before) - 200 <= listened_at <= int(time.time()) - 200 + 1
+    assert listenbrainz.pending_count() == 3

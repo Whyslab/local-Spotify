@@ -396,12 +396,31 @@ async function renderOfflineCard() {
  * Журнал прослушиваний без сети не отправить, а терять его жалко: по нему
  * умное перемешивание решает, что давно не звучало. Неотправленное копится
  * здесь и уходит, когда сеть вернётся. */
-function queuePlay(body) {
+function queuePlay(body, response) {
     try {
         const pending = JSON.parse(localStorage.getItem(PENDING_PLAYS_KEY) || "[]");
         pending.push(body);
         localStorage.setItem(PENDING_PLAYS_KEY, JSON.stringify(pending.slice(-PENDING_PLAYS_MAX)));
-    } catch (e) { /* приватное окно — без журнала */ }
+    } catch (e) { return; /* приватное окно — без журнала */ }
+    retryPendingPlaysLater(response);
+}
+
+/* Повтор по таймеру, а не только по «online»: сервер мог не принять при живой
+ * сети (предел 60 прослушиваний в минуту — 429, компьютер спит — 502), и
+ * события «online» тогда не будет. Один таймер на всё; Retry-After сервера,
+ * если он есть, — иначе минута. */
+let PLAY_RETRY_MS = 60 * 1000;
+let playRetryTimer = null;
+
+function retryPendingPlaysLater(response) {
+    const after = response ? Number(response.headers.get("Retry-After")) : NaN;
+    const delay = after > 0 ? Math.min(after * 1000, 10 * PLAY_RETRY_MS) : PLAY_RETRY_MS;
+    clearTimeout(playRetryTimer);
+    playRetryTimer = setTimeout(() => { playRetryTimer = null; flushPendingPlays(); }, delay);
+}
+
+function readPendingPlays() {
+    return JSON.parse(localStorage.getItem(PENDING_PLAYS_KEY) || "[]");
 }
 
 let flushingPlays = false;
@@ -409,22 +428,26 @@ let flushingPlays = false;
 async function flushPendingPlays() {
     if (flushingPlays || !token()) return;
     let pending;
-    try { pending = JSON.parse(localStorage.getItem(PENDING_PLAYS_KEY) || "[]"); } catch (e) { return; }
+    try { pending = readPendingPlays(); } catch (e) { return; }
     if (!pending.length) return;
     flushingPlays = true;
     try {
         while (pending.length) {
+            const item = pending[0];
             const r = await fetch("/api/plays", {
                 method: "POST",
                 headers: { ...headers(), "Content-Type": "application/json" },
-                body: JSON.stringify(pending[0]),
+                body: JSON.stringify(item),
             });
-            if (!r.ok && r.status !== 422) break;  // сервер недоступен — в другой раз; 422 — битая запись, выбросить
-            pending.shift();
+            /* Сервер не принял — повтор позже; 422 — битая запись, выбросить. */
+            if (!r.ok && r.status !== 422) { retryPendingPlaysLater(r); break; }
+            /* Перечитать: пока шёл запрос, queuePlay мог дописать новое. */
+            pending = readPendingPlays();
+            if (pending.length && JSON.stringify(pending[0]) === JSON.stringify(item)) pending.shift();
             localStorage.setItem(PENDING_PLAYS_KEY, JSON.stringify(pending));
         }
     } catch (e) {
-        /* сети всё ещё нет */
+        retryPendingPlaysLater();  /* сети всё ещё нет */
     } finally {
         flushingPlays = false;
     }

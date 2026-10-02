@@ -317,6 +317,15 @@ class PlayRequest(BaseModel):
     # of skip rates between the two, and that comparison needs the label at the
     # moment the track is played -- it cannot be reconstructed afterwards.
     mode: Literal["manual", "smart", "plain"] = "manual"
+    # When listening started, by the client's clock (epoch seconds) -- the
+    # same moment ListenBrainz calls listened_at. The phone sends plays heard
+    # without network later, and the time of the request would be hours or
+    # days off. Plays queued before the field existed come without it.
+    heard_at: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+
+
+# A client clock this far ahead is still believed (and pulled back to now).
+HEARD_AT_SKEW_SECONDS = 300
 
 
 @app.post("/api/add")
@@ -1943,6 +1952,16 @@ def record_play(req: PlayRequest, authenticated: bool = Depends(verify_token)):
     question gets its data -- which also means it only ever sees the laptop,
     since the phone plays through Amperfy.
     """
+    wall = time.time()
+    started = wall - req.played_seconds
+    if req.heard_at is not None:
+        if req.heard_at > wall + HEARD_AT_SKEW_SECONDS:
+            raise HTTPException(status_code=422, detail="heard_at is in the future")
+        if req.heard_at < wall - config.PLAY_HISTORY_DAYS * 86400:
+            raise HTTPException(status_code=422, detail="heard_at is older than the journal keeps")
+        # A clock slightly ahead would put the end of the play in the future.
+        started = min(req.heard_at, started)
+
     now = time.monotonic()
     with _PLAYS_LOCK:
         window = [t for t in _PLAYS_WINDOW.get("all", []) if now - t < 60]
@@ -1956,9 +1975,11 @@ def record_play(req: PlayRequest, authenticated: bool = Depends(verify_token)):
 
     db.db_exec(
         "INSERT INTO plays(path, played_at, played_seconds, duration, skipped, source, mode) "
-        "VALUES(?, datetime('now','localtime'), ?, ?, ?, ?, ?)",
+        "VALUES(?, datetime(?, 'unixepoch', 'localtime'), ?, ?, ?, ?, ?)",
         (
             req.path,
+            # played_at has always been when the play ended: kept so.
+            int(started + req.played_seconds),
             req.played_seconds,
             req.duration,
             1 if req.skipped else 0,
@@ -1968,7 +1989,7 @@ def record_play(req: PlayRequest, authenticated: bool = Depends(verify_token)):
     )
     # A listen by ListenBrainz's rule is queued for sending; never fails the journal.
     with suppress(Exception):
-        listenbrainz.queue_listen(req.path, req.played_seconds, req.duration)
+        listenbrainz.queue_listen(req.path, req.played_seconds, req.duration, started)
     return {"recorded": req.path}
 
 
