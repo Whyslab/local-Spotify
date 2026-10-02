@@ -166,3 +166,24 @@ def test_shelves_change_from_day_to_day_and_hold_within_a_day():
     # Полки одного дня перемешаны каждая по-своему, а не одним порядком.
     one = {m.key: m.paths for m in moods.collections(rows, limit=200, seed=today)}
     assert one["car"][:5] != [p for p in one["run"] if p in one["car"]][:5]
+
+
+def test_home_answers_over_http_with_moods_discover_and_albums(shelf_library, monkeypatch):
+    """The home page's one request, end to end through the route (it had no test)."""
+    from fastapi.testclient import TestClient
+
+    from adder import app as app_module
+    from adder import navidrome
+
+    monkeypatch.setattr(config, "API_TOKEN", "test-secret")
+    monkeypatch.setattr(navidrome, "configured", lambda: False)
+    client = TestClient(app_module.app)
+
+    assert client.get("/api/home").status_code == 401
+    response = client.get("/api/home", headers={"Authorization": "Bearer test-secret"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body) == {"moods", "discover", "albums"}
+    assert body["moods"] and all({"key", "name", "tracks"} <= set(m) for m in body["moods"])
+    assert len(body["discover"]["tracks"]) == 10

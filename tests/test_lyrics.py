@@ -478,3 +478,46 @@ def test_candidates_survive_records_without_id_or_with_a_strange_length(monkeypa
     )
     found = lyrics.candidates(ROW)
     assert [item["id"] for item in found] == [5]
+
+
+class _Answer:
+    def __init__(self, ok=True, data=None):
+        self.ok = ok
+        self._data = data or {}
+
+    def json(self):
+        return self._data
+
+
+def test_a_chosen_catalogue_record_is_kept_and_served(client, monkeypatch):
+    asked = []
+
+    def fake_get(url, *a, **k):
+        asked.append(url)
+        return _Answer(data={"plainLyrics": "строка один\nстрока два"})
+
+    monkeypatch.setattr(lyrics, "_get", fake_get)
+    response = client.post("/api/lyrics/choose", json={"path": ROW["path"], "id": 42})
+    assert response.status_code == 200
+    assert response.json()["chosen"] is True
+    assert asked == ["https://lrclib.net/api/get/42"]
+    served = client.get("/api/lyrics", params={"path": ROW["path"]}).json()
+    assert served["plain"] == "строка один\nстрока два"
+
+
+def test_choosing_when_the_catalogue_is_down_says_so(client, monkeypatch):
+    monkeypatch.setattr(lyrics, "_get", lambda *a, **k: _Answer(ok=False))
+    response = client.post("/api/lyrics/choose", json={"path": ROW["path"], "id": 42})
+    assert response.status_code == 502
+
+
+def test_choosing_a_record_without_text_is_a_404(client, monkeypatch):
+    monkeypatch.setattr(lyrics, "_get", lambda *a, **k: _Answer(data={"plainLyrics": ""}))
+    response = client.post("/api/lyrics/choose", json={"path": ROW["path"], "id": 42})
+    assert response.status_code == 404
+
+
+def test_choosing_for_a_path_outside_the_library_is_refused(client, monkeypatch):
+    monkeypatch.setattr(lyrics, "_get", lambda *a, **k: _Answer(data={"plainLyrics": "x"}))
+    response = client.post("/api/lyrics/choose", json={"path": "../../etc/passwd", "id": 1})
+    assert response.status_code in (400, 404)
