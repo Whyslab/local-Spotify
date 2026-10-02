@@ -240,3 +240,40 @@ def test_backup_rotation_removes_wal_and_shm(tmp_path):
     assert "adder_20260910_030000.db" not in names
     sides = [n for n in names if n.endswith(("-wal", "-shm"))]
     assert sides == ["adder_20260919_030000.db-shm"]
+
+
+def test_install_env_value_matches_dotenv(tmp_path):
+    """install.sh writes LIBRARY_PATH into the unit; it must read .env as the service does.
+
+    It used to strip quotes only: "export X=…" and a trailing "# comment" reached
+    the unit and Navidrome's config as part of the path.
+    """
+    import subprocess
+    import sys
+
+    from dotenv import dotenv_values
+
+    install = (Path(__file__).resolve().parent.parent / "deploy" / "install.sh").read_text()
+    start = install.index("env_value() {")
+    function = install[start : install.index("\n}\n", start) + 3]
+    repo = tmp_path / "repo"
+    (repo / "adder").mkdir(parents=True)
+    (repo / ".venv" / "bin").mkdir(parents=True)
+    (repo / ".venv" / "bin" / "python").symlink_to(sys.executable)
+    env = repo / "adder" / ".env"
+    env.write_text(
+        "export LIBRARY_PATH=/srv/music  # the big disk\n"
+        "PORT = '8787'\n"
+        'SHUTDOWN_TIMEOUT="30"\n'
+        "API_TOKEN=abc#def\n",
+        encoding="utf-8",
+    )
+    expected = dotenv_values(env)
+    for key in ("LIBRARY_PATH", "PORT", "SHUTDOWN_TIMEOUT", "API_TOKEN", "MISSING"):
+        got = subprocess.run(
+            ["bash", "-c", f'REPO="$1"\n{function}\nenv_value {key}', "_", str(repo)],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        assert got == (expected.get(key) or ""), key

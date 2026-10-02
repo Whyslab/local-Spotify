@@ -16,18 +16,15 @@ if [[ ! -f "$REPO/adder/.env" ]]; then
   exit 1
 fi
 
-# One value from adder/.env, read the way python-dotenv reads it: surrounding
-# whitespace and one pair of matching quotes removed. A plain sed kept the
-# quotes, so LIBRARY_PATH="/srv/music" reached the unit with them.
+# One value from adder/.env, read by python-dotenv itself - the parser the
+# service uses. A sed copy of its rules kept "export " and a trailing
+# "# comment", and LIBRARY_PATH reached the unit as "/srv/music  # the disk".
 env_value() {
-  local value
-  value="$(sed -n "s/^[[:space:]]*$1[[:space:]]*=//p" "$REPO/adder/.env" | head -n1 | tr -d '\r')"
-  value="${value#"${value%%[![:space:]]*}"}"
-  value="${value%"${value##*[![:space:]]}"}"
-  if [[ ${#value} -ge 2 && ( ( "${value:0:1}" == '"' && "${value: -1}" == '"' ) || ( "${value:0:1}" == "'" && "${value: -1}" == "'" ) ) ]]; then
-    value="${value:1:${#value}-2}"
-  fi
-  printf '%s' "$value"
+  "$REPO/.venv/bin/python" -c '
+import sys
+from dotenv import dotenv_values
+print(dotenv_values(sys.argv[1]).get(sys.argv[2]) or "", end="")
+' "$REPO/adder/.env" "$1"
 }
 
 API_TOKEN_VALUE="$(env_value API_TOKEN)"
