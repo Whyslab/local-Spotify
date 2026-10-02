@@ -10,6 +10,7 @@
 """
 
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -38,25 +39,54 @@ def find_cover(artist: str, title: str):
     return None
 
 
+def as_jpeg(data: bytes) -> bytes | None:
+    """The same picture as a real JPEG (ffmpeg), or None if it cannot be read."""
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-v", "error", "-i", "pipe:0", "-frames:v", "1", "-f", "mjpeg", "pipe:1"],
+            input=data,
+            capture_output=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    out = result.stdout
+    return out if result.returncode == 0 and ingest.image_format(out) == "jpg" else None
+
+
 def backfill(library: Path, delay: float, sleep=time.sleep) -> tuple[int, int]:
-    """Add covers to every M4A without one. Returns (added, not found)."""
+    """Add covers to every M4A without one. Returns (added, not found).
+
+    A cover that is not really a JPEG or PNG counts as none: before 2026-09-24
+    the service embedded YouTube's WebP thumbnails labelled JPEG, which the
+    browser shows but ffmpeg, Navidrome and phone players may not. For those a
+    real cover is looked up first; failing that the same picture is re-encoded.
+    """
     files = sorted(library.rglob("*.m4a"))
-    missing = []
+    missing: list[tuple[Path, MP4, bytes | None]] = []
+    broken = 0
     for f in files:
         try:
             audio = MP4(f)
         except Exception:
             continue
-        if not audio.get("covr"):
-            missing.append((f, audio))
+        covers = audio.get("covr")
+        if not covers:
+            missing.append((f, audio, None))
+        elif ingest.image_format(bytes(covers[0])) is None:
+            missing.append((f, audio, bytes(covers[0])))
+            broken += 1
 
-    print(f"Всего файлов: {len(files)} | без обложек: {len(missing)}")
+    print(f"Всего файлов: {len(files)} | без обложек: {len(missing) - broken} | битых: {broken}")
     ok = miss = 0
-    for i, (f, audio) in enumerate(missing, 1):
+    for i, (f, audio, old) in enumerate(missing, 1):
         artist = (audio.get("\xa9ART") or [f.parent.parent.name])[0]
         title = (audio.get("\xa9nam") or [f.stem])[0]
 
         cover = find_cover(artist, title)
+        if not cover and old:
+            converted = as_jpeg(old)
+            cover = (converted, "jpg") if converted else None
         if cover:
             data, fmt = cover
             fmt_c = MP4Cover.FORMAT_PNG if fmt == "png" else MP4Cover.FORMAT_JPEG

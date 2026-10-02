@@ -84,3 +84,59 @@ def test_a_new_cover_keeps_the_arrival_date(tmp_path, monkeypatch):
 
     assert fix_covers.backfill(tmp_path, delay=0, sleep=lambda seconds: None) == (1, 0)
     assert path.stat().st_mtime == 1_600_000_000
+
+
+def _webp(tmp_path: Path) -> bytes:
+    import subprocess
+
+    out = tmp_path / "thumb.webp"
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=red:s=64x36", "-frames:v", "1",
+         str(out)],
+        check=True,
+    )  # fmt: skip
+    return out.read_bytes()
+
+
+def _audio_md5(path: Path) -> str:
+    import subprocess
+
+    return subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", str(path), "-map", "0:a", "-c", "copy", "-f", "md5", "-"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()  # fmt: skip
+
+
+def _with_webp_cover(path: Path, webp: bytes) -> None:
+    from mutagen.mp4 import MP4Cover
+
+    audio = MP4(path)
+    # What the service did before 2026-09-24: a YouTube WebP labelled JPEG.
+    audio["covr"] = [MP4Cover(webp, imageformat=MP4Cover.FORMAT_JPEG)]
+    audio.save()
+
+
+def test_a_webp_labelled_as_jpeg_is_replaced_by_a_real_cover(tmp_path, monkeypatch):
+    path = track(tmp_path / "lib", "A", "Song")
+    _with_webp_cover(path, _webp(tmp_path))
+    monkeypatch.setattr(ingest, "get_hd_cover", lambda artist, title: (JPEG, "jpg"))
+
+    added, missing = fix_covers.backfill(tmp_path / "lib", delay=0, sleep=lambda s: False)
+
+    assert (added, missing) == (1, 0)
+    assert bytes(MP4(path)["covr"][0]) == JPEG
+
+
+def test_a_webp_cover_nothing_better_for_is_converted_to_jpeg(tmp_path, monkeypatch):
+    path = track(tmp_path / "lib", "A", "Song")
+    _with_webp_cover(path, _webp(tmp_path))
+    before = _audio_md5(path)
+    monkeypatch.setattr(ingest, "get_hd_cover", lambda artist, title: (None, None))
+    monkeypatch.setattr(enrich, "lookup", lambda artist, title: None)
+
+    added, missing = fix_covers.backfill(tmp_path / "lib", delay=0, sleep=lambda s: False)
+
+    assert (added, missing) == (1, 0)
+    cover = bytes(MP4(path)["covr"][0])
+    assert ingest.image_format(cover) == "jpg"
+    assert _audio_md5(path) == before, "the audio itself is never touched"
