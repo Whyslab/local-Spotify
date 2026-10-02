@@ -97,3 +97,7 @@ def test_health_without_a_token_must_say_only_status(monkeypatch):
     leaky = b'{"status": "healthy", "library_path": "/home/x"}'
     monkeypatch.setattr(sc.urllib.request, "urlopen", answer(leaky))
     assert sc.check_health_without_token("http://svc").state == sc.FAIL
+
+
+def test_silent_tailscale_is_not_reported_as_fine():
+    assert sc.check_tailscale("", "").state == sc.MANUAL

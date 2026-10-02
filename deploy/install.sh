@@ -20,7 +20,8 @@ fi
 # service uses. A sed copy of its rules kept "export " and a trailing
 # "# comment", and LIBRARY_PATH reached the unit as "/srv/music  # the disk".
 env_value() {
-  "$REPO/.venv/bin/python" -c '
+  # -P: the current directory stays off sys.path, so no stray dotenv.py is imported.
+  "$REPO/.venv/bin/python" -P -c '
 import sys
 from dotenv import dotenv_values
 print(dotenv_values(sys.argv[1]).get(sys.argv[2]) or "", end="")
@@ -40,6 +41,13 @@ mkdir -p "$HOME/.config/systemd/user"
 # not in .env would open the unit's writable paths on a folder the service
 # never uses, and close them on the one it does.
 LIBRARY_PATH_VALUE="$(env_value LIBRARY_PATH)"
+# The path goes into unit files and, with sudo, into Navidrome's config: a quote,
+# a percent sign or a control character (dotenv turns "\n" into a newline) could
+# add lines to them.
+if [[ "$LIBRARY_PATH_VALUE" =~ [[:cntrl:]\"%] ]]; then
+  echo "ERROR: LIBRARY_PATH in adder/.env contains a quote, % or a control character." >&2
+  exit 1
+fi
 LIBRARY_PATH_VALUE="${LIBRARY_PATH_VALUE:-$HOME/Music/Normalized Library}"
 if [[ -n "${LIBRARY_PATH:-}" && "$LIBRARY_PATH" != "$LIBRARY_PATH_VALUE" ]]; then
   echo "ERROR: LIBRARY_PATH in this shell ($LIBRARY_PATH) differs from adder/.env ($LIBRARY_PATH_VALUE)." >&2

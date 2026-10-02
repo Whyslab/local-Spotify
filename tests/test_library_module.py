@@ -182,3 +182,11 @@ def test_a_change_during_a_rebuild_is_not_hidden_behind_the_cache(tmp_path, monk
     monkeypatch.setattr(library, "read_tags", real)
 
     assert library.library_index()[0]["title"] == "Changed"
+
+
+def test_a_picture_type_from_tags_is_only_passed_on_if_it_is_an_image():
+    """A tag saying text/html must not make /api/art answer as a web page."""
+    assert library._image_mime("image/png") == "image/png"
+    assert library._image_mime("IMAGE/JPEG ") == "image/jpeg"
+    assert library._image_mime("text/html") == "image/jpeg"
+    assert library._image_mime(None) == "image/jpeg"

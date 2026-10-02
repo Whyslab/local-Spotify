@@ -1002,3 +1002,13 @@ def test_play_keeps_time_it_was_heard(client, app_module, monkeypatch):
     assert local(before) <= played_at <= local(time.time())
     assert int(before) - 200 <= listened_at <= int(time.time()) - 200 + 1
     assert listenbrainz.pending_count() == 3
+
+
+def test_every_html_page_has_the_csp_and_every_answer_nosniff(client):
+    """/static/index.html is the same app as /, and went out without the policy."""
+    for path in ("/", "/static/index.html"):
+        response = client.get(path)
+        assert response.status_code == 200, path
+        assert "default-src 'self'" in response.headers.get("content-security-policy", ""), path
+    for path in ("/static/app.js", "/health", "/api/library"):
+        assert client.get(path).headers.get("x-content-type-options") == "nosniff", path

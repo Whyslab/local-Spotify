@@ -25,6 +25,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
+from starlette.datastructures import MutableHeaders
 
 from . import (
     artist_photos,
@@ -239,6 +240,36 @@ class UploadSizeLimit:
 
 
 app.add_middleware(UploadSizeLimit)
+
+
+class SecurityHeaders:
+    """nosniff on every answer, the Content-Security-Policy on every HTML one.
+
+    The policy used to be set by the "/" route alone, and /static/index.html -
+    the same app, working fully at that address - went out without it. Plain
+    ASGI for the same reason as UploadSizeLimit: only the start message is
+    touched, the audio streams pass through as they are.
+    """
+
+    def __init__(self, inner):
+        self.inner = inner
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.inner(scope, receive, send)
+
+        async def with_headers(message):
+            if message["type"] == "http.response.start":
+                headers = MutableHeaders(scope=message)
+                headers.setdefault("X-Content-Type-Options", "nosniff")
+                if headers.get("content-type", "").startswith("text/html"):
+                    headers.setdefault("Content-Security-Policy", CONTENT_SECURITY_POLICY)
+            await send(message)
+
+        await self.inner(scope, receive, with_headers)
+
+
+app.add_middleware(SecurityHeaders)
 
 
 class PublicStaticFiles(StaticFiles):
@@ -741,7 +772,7 @@ def _thumbnail(art: tuple[bytes, str], size: int) -> tuple[bytes, str]:
     try:
         done = subprocess.run(
             [
-                "ffmpeg", "-v", "error", "-i", "pipe:0",
+                "ffmpeg", "-v", "error", "-f", "image2pipe", "-i", "pipe:0",
                 "-vf", f"scale={size}:{size}:force_original_aspect_ratio=decrease",
                 "-frames:v", "1", "-q:v", "4", "-f", "mjpeg", "pipe:1",
             ],

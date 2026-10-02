@@ -69,12 +69,14 @@ if [ ${#PLAYLIST_STATE[@]} -gt 0 ]; then
     echo "✓ Playlist covers and history backed up: playlists_$TIMESTAMP.tar.gz"
 fi
 
-# Keep only last 10 backups (cleanup old ones). `|| true`: with pipefail an
-# ls that matches nothing (a first run, no .env) used to abort the script.
+# Keep only last 10 backups (cleanup old ones). With pipefail an `ls` that
+# matched nothing (a first run, no .env) used to abort the script.
 cd "$BACKUP_DIR"
-for pattern in 'adder_*.db' 'env_*' 'playlists_*.tar.gz'; do
-    # shellcheck disable=SC2086  # the pattern is meant to expand here
-    { ls -t $pattern 2>/dev/null || true; } | tail -n +11 | xargs -r rm --
+# Only regular files of this script's own naming, newest first by mtime, and
+# names passed NUL-separated: parsing ls split names on spaces and quotes.
+for pattern in 'adder_[0-9]*.db' 'env_[0-9]*' 'playlists_[0-9]*.tar.gz'; do
+    find . -maxdepth 1 -type f -name "$pattern" -printf '%T@\t%p\0' \
+        | sort -zrn | tail -zn +11 | cut -zf2- | xargs -0r rm --
 done
 # A snapshot opened in WAL mode leaves -wal/-shm beside it; they went on living
 # after their database was rotated away.

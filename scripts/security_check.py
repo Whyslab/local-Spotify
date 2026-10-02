@@ -83,7 +83,10 @@ def check_tailscale(serve: str, funnel: str) -> Finding:
     public = [line for line in text.splitlines() if "Funnel on" in line or "(Funnel" in line]
     if public:
         return Finding("tailscale", FAIL, "Funnel открывает в интернет: " + "; ".join(public))
-    if "tailnet only" in text or not text.strip():
+    if not text.strip():
+        # Пусто и без Tailscale, и при упавшем демоне, и без прав: не «ok».
+        return Finding("tailscale", MANUAL, "tailscale ничего не сказал: tailscale serve status")
+    if "tailnet only" in text:
         return Finding("tailscale", OK, "только внутри tailnet, Funnel выключен")
     return Finding("tailscale", MANUAL, "вывод tailscale не распознан: tailscale serve status")
 

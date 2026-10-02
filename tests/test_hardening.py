@@ -277,3 +277,40 @@ def test_install_env_value_matches_dotenv(tmp_path):
             check=True,
         ).stdout
         assert got == (expected.get(key) or ""), key
+
+
+def test_backup_rotation_ignores_foreign_and_odd_names(tmp_path):
+    """Rotation parsed ls: a name with a space could make it delete elsewhere."""
+    import shutil
+    import sqlite3
+    import subprocess
+
+    project = tmp_path / "project"
+    (project / "deploy").mkdir(parents=True)
+    (project / "adder").mkdir()
+    shutil.copy(Path(__file__).resolve().parent.parent / "deploy" / "backup.sh", project / "deploy")
+    con = sqlite3.connect(project / "adder" / "adder.db")
+    con.execute("CREATE TABLE tasks (id INTEGER PRIMARY KEY)")
+    con.commit()
+    con.close()
+    backups = tmp_path / "backups"
+    backups.mkdir()
+    victim = backups / "keep.txt"
+    victim.write_text("keep me")
+    for i in range(12):
+        (backups / f"env_2026090{i % 10}_0{i}0000").write_text("x")
+    # Old: ls | xargs split this into "env_x" and "keep.txt" and deleted the latter.
+    (backups / "env_x keep.txt").write_text("odd")
+    (backups / "env_notes").write_text("mine")
+
+    subprocess.run(
+        ["bash", str(project / "deploy" / "backup.sh")],
+        env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "BACKUP_DIR": str(backups)},
+        check=True,
+        capture_output=True,
+    )
+
+    assert victim.read_text() == "keep me"
+    assert (backups / "env_notes").exists()
+    assert (backups / "env_x keep.txt").exists()
+    assert len(list(backups.glob("env_[0-9]*"))) == 10

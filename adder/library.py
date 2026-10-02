@@ -293,6 +293,16 @@ def delete_track(rel_path: str) -> dict:
     return {"deleted": rel_path, "trash": str(destination)}
 
 
+# The media type of a picture comes from the file's own tags, which whoever
+# made the file wrote; only real image types go out as such.
+IMAGE_MIMES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
+
+
+def _image_mime(declared: str | None) -> str:
+    mime = (declared or "").strip().lower()
+    return mime if mime in IMAGE_MIMES else "image/jpeg"
+
+
 def embedded_cover(path: Path) -> tuple[bytes, str] | None:
     """The picture inside an audio file, if it has one.
 
@@ -322,7 +332,7 @@ def embedded_cover(path: Path) -> tuple[bytes, str] | None:
                 return None
             frames = tags.getall("APIC")
             if frames:
-                return frames[0].data, frames[0].mime or "image/jpeg"
+                return frames[0].data, _image_mime(frames[0].mime)
             return None
 
         if suffix == ".flac":
@@ -330,7 +340,7 @@ def embedded_cover(path: Path) -> tuple[bytes, str] | None:
 
             pictures = FLAC(path).pictures
             if pictures:
-                return pictures[0].data, pictures[0].mime or "image/jpeg"
+                return pictures[0].data, _image_mime(pictures[0].mime)
             return None
 
         if suffix in (".opus", ".ogg"):
@@ -344,7 +354,7 @@ def embedded_cover(path: Path) -> tuple[bytes, str] | None:
             blocks = audio.get("metadata_block_picture") or []
             if blocks:
                 picture = Picture(base64.b64decode(blocks[0]))
-                return picture.data, picture.mime or "image/jpeg"
+                return picture.data, _image_mime(picture.mime)
             return None
     except Exception as exc:  # noqa: BLE001 -- a broken tag is not a broken library
         logger.debug("No cover read from %s: %s", path, exc)

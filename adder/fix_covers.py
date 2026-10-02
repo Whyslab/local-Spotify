@@ -43,7 +43,22 @@ def as_jpeg(data: bytes) -> bytes | None:
     """The same picture as a real JPEG (ffmpeg), or None if it cannot be read."""
     try:
         result = subprocess.run(
-            ["ffmpeg", "-v", "error", "-i", "pipe:0", "-frames:v", "1", "-f", "mjpeg", "pipe:1"],
+            [
+                "ffmpeg",
+                "-v",
+                "error",
+                # Only image demuxers: the bytes come from a file's tags, and
+                # format probing could pick one that fetches URLs or reads files.
+                "-f",
+                "image2pipe",
+                "-i",
+                "pipe:0",
+                "-frames:v",
+                "1",
+                "-f",
+                "mjpeg",
+                "pipe:1",
+            ],
             input=data,
             capture_output=True,
             timeout=60,
