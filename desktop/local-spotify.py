@@ -19,6 +19,7 @@ import hashlib
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -48,6 +49,66 @@ GLib.set_prgname(APP_ID)
 from gi.repository import Gdk, Gio, Gtk, WebKit2  # noqa: E402
 
 SERVICE_URL = os.environ.get("LOCAL_SPOTIFY_URL", "http://127.0.0.1:8787")
+
+# Режим замера (scripts/measure_window.py): страница сообщает окну время своей
+# готовности и разрывы кадров при прокрутке, окно печатает их строкой «PERF {…}»
+# и, если попросили, закрывается. В обычном окне этого обработчика нет вовсе.
+PERF = os.environ.get("LOCAL_SPOTIFY_PERF") == "1"
+PERF_SCROLL = os.environ.get("LOCAL_SPOTIFY_PERF_SCROLL") == "1"
+PERF_EXIT = os.environ.get("LOCAL_SPOTIFY_PERF_EXIT") == "1"
+
+# Ставится в страницу только в режиме замера. Метку «app-ready» ставит app.js.
+PERF_SCRIPT = """
+(() => {
+  if (location.origin !== ORIGIN) return;
+  const post = (m) => window.webkit.messageHandlers.perf.postMessage(JSON.stringify(m));
+  addEventListener("error", (e) => post({ event: "error", message: String(e.message) }));
+  addEventListener("unhandledrejection", (e) =>
+    post({ event: "error", message: String(e.reason) }));
+  async function scrollWholeLibrary() {
+    switchView("viewLibrary");
+    while (!document.querySelector("#library .track")) await new Promise((r) => setTimeout(r, 50));
+    for (;;) {
+      const more = document.querySelector("#library .library-more");
+      if (!more) break;
+      if (!more.disabled) more.click();
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    let el = document.querySelector("#library");
+    while (el && el !== document.body) {
+      const s = getComputedStyle(el);
+      if (/(auto|scroll)/.test(s.overflowY) && el.scrollHeight > el.clientHeight) break;
+      el = el.parentElement;
+    }
+    if (!el || el === document.body) el = document.scrollingElement;
+    const gaps = [];
+    let prev = performance.now(), running = true;
+    const frame = (t) => {
+      gaps.push(t - prev);
+      prev = t;
+      if (running) requestAnimationFrame(frame);
+    };
+    requestAnimationFrame(frame);
+    el.scrollTop = 0;
+    while (el.scrollTop + el.clientHeight < el.scrollHeight - 2) {
+      el.scrollTop += 600;
+      await new Promise((r) => setTimeout(r, 16));
+    }
+    await new Promise((r) => setTimeout(r, 300));
+    running = false;
+    const long = gaps.filter((g) => g > 50);
+    post({ event: "scroll", frame_gaps_over_50ms: long.length, longest_gap_ms: Math.max(0, ...long),
+           rows: document.querySelectorAll("#library .track").length });
+  }
+  new PerformanceObserver((list) => {
+    for (const e of list.getEntries()) {
+      if (e.name !== "app-ready") continue;
+      post({ event: "ready", ready_ms: e.startTime });
+      if (SCROLL) setTimeout(scrollWholeLibrary, 200);
+    }
+  }).observe({ type: "mark", buffered: true });
+})();
+"""
 REPO = Path(__file__).resolve().parent.parent
 ENV_FILE = REPO / "adder" / ".env"
 
@@ -261,7 +322,9 @@ class PlayerWindow(Gtk.Window):
         # Порт шаблоны WebKit не различают (проверено: «http://127.0.0.1:8799/*»
         # не совпадает ни с чем), поэтому в списке — хост, а точное
         # совпадение с портом скрипт проверяет сам.
-        token = read_token()
+        # В режиме замера окно запускается из любой копии проекта, и своего
+        # adder/.env у неё может не быть: ключ передаёт scripts/measure_window.py.
+        token = (os.environ.get("LOCAL_SPOTIFY_TOKEN", "") if PERF else "") or read_token()
         if token:
             parts = urlsplit(SERVICE_URL)
             manager.add_script(
@@ -277,6 +340,22 @@ class PlayerWindow(Gtk.Window):
 
         manager.register_script_message_handler("mpris")
         manager.connect("script-message-received::mpris", self.on_mpris_message)
+
+        if PERF:
+            script = PERF_SCRIPT.replace("ORIGIN", json.dumps(SERVICE_ORIGIN)).replace(
+                "SCROLL", "true" if PERF_SCROLL else "false"
+            )
+            manager.add_script(
+                WebKit2.UserScript.new(
+                    script,
+                    WebKit2.UserContentInjectedFrames.TOP_FRAME,
+                    WebKit2.UserScriptInjectionTime.START,
+                    None,
+                    None,
+                )
+            )
+            manager.register_script_message_handler("perf")
+            manager.connect("script-message-received::perf", self.on_perf_message)
 
         data = WebKit2.WebsiteDataManager(
             base_data_directory=os.path.join(GLib.get_user_data_dir(), WEB_DATA_NAME),
@@ -311,6 +390,22 @@ class PlayerWindow(Gtk.Window):
             return
         if self.mpris is not None:
             self.mpris.update(payload)
+
+    def on_perf_message(self, _manager, message):
+        """Режим замера: строка «PERF {…}» с настенным временем получения.
+
+        Время — time.time(): scripts/measure_window.py засекает его до запуска
+        процесса, так что в цифру входит и старт Python, GTK и окна.
+        """
+        try:
+            payload = json.loads(message.get_js_value().to_string())
+        except Exception:
+            return
+        payload["wall_ms"] = time.time() * 1000
+        print("PERF " + json.dumps(payload), flush=True)
+        done = payload.get("event") == ("scroll" if PERF_SCROLL else "ready")
+        if PERF_EXIT and done:
+            GLib.timeout_add(300, Gtk.main_quit)
 
     def on_decide_policy(self, _webview, decision, decision_type):
         """Окно показывает только сервис.
@@ -365,6 +460,12 @@ def main() -> int:
     dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
 
     window = PlayerWindow()
+    if PERF:
+        # Замер запускает окна одно за другим — медиаклавиши у настоящего окна
+        # пользователя они отбирать не должны.
+        window.show_all()
+        Gtk.main()
+        return 0
     try:
         bus_name = dbus.service.BusName(
             "org.mpris.MediaPlayer2.local-Spotify", bus=dbus.SessionBus()

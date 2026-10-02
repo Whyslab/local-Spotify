@@ -68,3 +68,20 @@ def test_smoke_counts_a_missing_cover_as_fine_and_a_missing_page_as_not():
     assert measure_ui.bad_response(500, "/api/cover")
     assert measure_ui.bad_response(401, "/api/library")
     assert not measure_ui.bad_response(200, "/api/home")
+
+
+def test_window_perf_lines_are_parsed_and_other_output_ignored():
+    import sys
+
+    sys.path.insert(0, str(SCRIPT.parent))
+    import measure_window
+
+    lines = [
+        "MPRIS unavailable",
+        'PERF {"event": "ready", "ready_ms": 310.5, "wall_ms": 1000.0}',
+        "PERF {broken",
+        'PERF {"event": "error", "message": "boom"}',
+    ]
+    events = measure_window.parse_perf(lines)
+    assert [e["event"] for e in events] == ["ready", "error"]
+    assert measure_window.errors_of(events) == ["boom"]
