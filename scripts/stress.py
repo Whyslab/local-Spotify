@@ -1031,6 +1031,23 @@ async def signed_urls(client: httpx.AsyncClient, track_paths: list[str]) -> list
     return urls
 
 
+def range_offset(rng: random.Random, size: int | None, chunk: int = 65536) -> int:
+    """Начало Range-запроса, при котором весь кусок лежит внутри файла."""
+    if not size or size <= chunk:
+        return 0
+    return rng.randrange(0, size - chunk)
+
+
+async def file_size(client: httpx.AsyncClient, url: str) -> int | None:
+    """Размер файла из Content-Range ответа на bytes=0-0 (None — не сказал)."""
+    try:
+        response = await client.get(url, headers={"Range": "bytes=0-0"})
+    except httpx.HTTPError:
+        return None
+    total = response.headers.get("content-range", "").rpartition("/")[2]
+    return int(total) if total.isdigit() else None
+
+
 async def stream_loop(
     client: httpx.AsyncClient, urls: list[str], stop: asyncio.Event, rounds: int | None = None
 ) -> list[Sample]:
@@ -1038,8 +1055,11 @@ async def stream_loop(
     rng = random.Random(1)
     samples: list[Sample] = []
     done = 0
+    # Смещение — внутри файла: 50-секундный трек весит полтора мегабайта, и
+    # случайное «до 2 МБ» давало честный 416 сервера, а не ошибку службы.
+    sizes = await asyncio.gather(*(file_size(client, u) for u in urls)) if urls else []
     while urls and not stop.is_set() and (rounds is None or done < rounds):
-        offsets = [rng.randrange(0, 2_000_000) for _ in urls]
+        offsets = [range_offset(rng, size) for size in sizes]
         samples += await asyncio.gather(
             *(
                 first_byte(client, u, f"bytes={o}-{o + 65535}")

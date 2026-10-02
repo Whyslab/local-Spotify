@@ -568,3 +568,27 @@ def test_isolated_instance_starts_no_threads(tmp_path, monkeypatch):
     assert {name: read() for name, read in copies.items()} == before_copies
     assert library == config.LIBRARY
     assert {p: _mtime(p) for p in watched} == mtimes
+
+
+def test_range_offsets_stay_inside_the_file():
+    rng = stress.random.Random(0)
+    size = 1_489_054  # MAYOT/Singles/430.m4a: a 50-second track
+    for _ in range(2000):
+        offset = stress.range_offset(rng, size)
+        assert offset >= 0 and offset + 65535 < size
+    assert stress.range_offset(rng, 1000) == 0
+    assert stress.range_offset(rng, None) == 0
+
+
+def test_file_size_is_read_from_content_range():
+    def handler(request):
+        assert request.headers["range"] == "bytes=0-0"
+        return httpx.Response(206, headers={"Content-Range": "bytes 0-0/1489054"}, content=b"x")
+
+    async def go():
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler), base_url="http://t"
+        ) as c:
+            return await stress.file_size(c, "/api/stream?path=a")
+
+    assert asyncio.run(go()) == 1489054
