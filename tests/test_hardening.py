@@ -281,6 +281,7 @@ def test_install_env_value_matches_dotenv(tmp_path):
 
 def test_backup_rotation_ignores_foreign_and_odd_names(tmp_path):
     """Rotation parsed ls: a name with a space could make it delete elsewhere."""
+    import os
     import shutil
     import sqlite3
     import subprocess
@@ -302,14 +303,20 @@ def test_backup_rotation_ignores_foreign_and_odd_names(tmp_path):
     # Old: ls | xargs split this into "env_x" and "keep.txt" and deleted the latter.
     (backups / "env_x keep.txt").write_text("odd")
     (backups / "env_notes").write_text("mine")
+    # Oldest of all, so it is in the tail the rotation deletes.
+    for odd in ("env_x keep.txt", "env_notes"):
+        os.utime(backups / odd, (1, 1))
+    # The old script stopped early without any playlists_* under pipefail.
+    (backups / "playlists_20260901_000000.tar.gz").write_bytes(b"")
 
-    subprocess.run(
+    run = subprocess.run(
         ["bash", str(project / "deploy" / "backup.sh")],
         env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "BACKUP_DIR": str(backups)},
-        check=True,
         capture_output=True,
     )
 
+    assert victim.exists(), "a file that is not a backup was deleted"
+    assert run.returncode == 0, run.stderr
     assert victim.read_text() == "keep me"
     assert (backups / "env_notes").exists()
     assert (backups / "env_x keep.txt").exists()
