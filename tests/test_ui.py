@@ -538,6 +538,41 @@ def test_fast_scroll_requests_only_visible_covers(page):
     assert covers["asked"] <= 2 * len(on_screen) + 20, covers
 
 
+@pytest.mark.parametrize(("protocol", "places"), [("h2", 8), ("http/1.1", 4), ("", 4)])
+def test_covers_at_once_follow_the_protocol(page, protocol, places):
+    """Four at once is the HTTP/1.1 limit of six connections, two left for the
+    sound. The phone gets the page through Tailscale over HTTP/2, one
+    connection for everything: there the screen's covers go eight at a time.
+    A browser that does not say its protocol is treated as HTTP/1.1."""
+    page.context.add_init_script(
+        f"""Object.defineProperty(PerformanceNavigationTiming.prototype, 'nextHopProtocol',
+            {{get: () => {protocol!r}}});"""
+    )
+    page.set_viewport_size({"width": 1280, "height": 1400})  # more rows than places
+    page.reload()
+    page.wait_for_function("typeof switchView === 'function'")
+    page.evaluate(
+        """async (list) => {
+            const c = window.__covers = {inflight: 0, peak: 0};
+            const real = window.fetch;
+            const png = await (await real('/static/icon-180.png')).blob();
+            window.fetch = (url, options = {}) => {
+                const u = String(url);
+                if (u.startsWith('/api/library?')) {
+                    return Promise.resolve(new Response(list, {headers: {'Content-Type': 'application/json'}}));
+                }
+                if (!u.startsWith('/api/cover?')) return real(url, options);
+                c.inflight += 1; c.peak = Math.max(c.peak, c.inflight);
+                return new Promise((ok) => setTimeout(() => { c.inflight -= 1; ok(new Response(png)); }, 300));
+            };
+        }""",
+        _fake_rows(200),
+    )
+    page.evaluate("switchView('viewLibrary')")
+    page.wait_for_function("document.querySelectorAll('#library .track img').length >= 12")
+    assert page.evaluate("window.__covers.peak") == places
+
+
 def test_opened_list_asks_for_rows_on_screen_first(page):
     """The first four places went to the rows in the margin below the screen:
     the observer that marks rows on screen had not reported yet when the
