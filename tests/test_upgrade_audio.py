@@ -87,6 +87,13 @@ def test_a_crafted_link_in_a_tag_cannot_reach_a_file_pattern():
     assert upgrade.download(None, "../x/*") is None  # and search results are checked too
 
 
+def test_links_from_the_spotify_import_live_beside_the_database():
+    """The 11 links no tag or task holds are kept in adder/, out of git: the
+    rest of the old missing_youtube.csv was known elsewhere and went."""
+    assert upgrade.KNOWN_LINKS == upgrade.REPO / "adder" / "known-links.csv"
+    assert "adder/known-links.csv" in (upgrade.REPO / ".gitignore").read_text().splitlines()
+
+
 def test_known_links_come_first_and_are_not_repeated():
     tags = {"source": "https://youtu.be/one00000000", "artist": "A • B", "title": "Song"}
     links = {"A/Singles/Song.m4a": "https://www.youtube.com/watch?v=two00000000"}

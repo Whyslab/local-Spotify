@@ -77,6 +77,8 @@ DRY_STATE = DATA / "state-dry-run.json"
 LOCK = DATA / "lock"
 RESCAN_PENDING = DATA / "rescan-pending"
 WORK = DATA / "work"
+# Links from the Spotify import that no tag or finished task holds.
+KNOWN_LINKS = REPO / "adder" / "known-links.csv"
 
 RATE = 8000  # enough to tell recordings apart, cheap to hold for a 40-minute mix
 MIN_CORRELATION = 0.97
@@ -624,7 +626,7 @@ def main() -> int:
     if RESCAN_PENDING.exists() and not args.dry_run:
         rescan_navidrome()  # left over from a run that was stopped
     links, uploads = known_links(args.db)
-    by_name = csv_links(REPO / "missing_youtube.csv")
+    by_name = csv_links(KNOWN_LINKS)
     # A dry run keeps its own notes: its "not found" must not hide a track
     # from the real run.
     state_path = DRY_STATE if args.dry_run else STATE

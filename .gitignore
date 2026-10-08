@@ -62,10 +62,8 @@ scripts/tmp/
 # Deleted tracks land here instead of being unlinked
 trash/
 
-# Working files from the playlist backfill
-missing_tracks.csv
-missing_youtube.csv
-missing_links.db
+# Links from the Spotify import that no tag or task holds (scripts/upgrade_audio.py)
+adder/known-links.csv
 
 # graphify knowledge graph (regenerate with: graphify update .)
 graphify-out/
