@@ -1033,8 +1033,20 @@ async def cleanup(
                 errors.append(f"trash {entry['trash']}: {exc}")
             save()
 
-    errors += delete_probe_rows(paths.db, manifest, library_before)
+    errors += remove_probe_leftovers(paths, manifest, library_before)
 
+    manifest["cleanup_notes"] = notes
+    save()
+    return errors
+
+
+def remove_probe_leftovers(
+    paths: Paths, manifest: dict, library_before: set[str] | None
+) -> list[str]:
+    """Rows, thumbnails and lyrics of the probes. Safe to repeat: the service
+    keeps working on a new track in the background (lyrics, analysis) and can
+    write after the probe is gone."""
+    errors = delete_probe_rows(paths.db, manifest, library_before)
     for entry in manifest.get("probes", []):
         result = entry.get("result_path")
         if not result or library_before is None or result in library_before:
@@ -1047,9 +1059,6 @@ async def cleanup(
         for target in targets:
             with contextlib.suppress(FileNotFoundError):
                 target.unlink()
-
-    manifest["cleanup_notes"] = notes
-    save()
     return errors
 
 
@@ -1974,6 +1983,7 @@ async def finish_cleanup(
     snapshot: dict | None,
     wait: float = 60.0,
     step: float = 5.0,
+    settle: float = 20.0,
 ) -> tuple[list[str], list[str]]:
     """cleanup, then the Navidrome purge (7.4 steps 5-6); returns (errors, purged).
 
@@ -1981,7 +1991,12 @@ async def finish_cleanup(
     left over after ``wait`` passes only if Navidrome has no song for it at
     all (deleted before its scanner got there: ``navidrome_never_scanned``);
     one it still knows, or a failed lookup, is an error.
+
+    The probes' rows and files are removed once more ``settle`` seconds after
+    the cleanup: on the live run (08.10) the lyrics search wrote a probe's
+    file half a second after the probe was deleted.
     """
+    cleaned = time.monotonic()
     errors = await cleanup(client, paths, manifest, snapshot)
     pending = deleted_probe_paths(manifest, snapshot)
     purged: list[str] = []
@@ -2012,6 +2027,9 @@ async def finish_cleanup(
                 entry["navidrome_purged"] = True
             elif entry.get("result_path") in never:
                 entry["navidrome_never_scanned"] = True
+    await asyncio.sleep(max(0.0, settle - (time.monotonic() - cleaned)))
+    library_before = set(snapshot["library_paths"]) if snapshot else None
+    errors += remove_probe_leftovers(paths, manifest, library_before)
     if not errors:
         manifest["cleaned_at"] = now_iso()
     write_json(paths.manifest, manifest)

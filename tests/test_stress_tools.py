@@ -973,7 +973,7 @@ def test_cleanup_is_marked_clean_only_after_navidrome_forgot_the_probes(paths):
             httpx.AsyncClient(transport=httpx.MockTransport(navidrome)) as nd_client,
         ):
             return await stress.finish_cleanup(
-                client, nd_client, nd_, paths, manifest, snapshot, wait=0, step=0
+                client, nd_client, nd_, paths, manifest, snapshot, wait=0, step=0, settle=0
             )
 
     def saved():
@@ -1055,7 +1055,15 @@ def run_finish(paths, manifest, handler):
             httpx.AsyncClient(transport=httpx.MockTransport(handler)) as nd_client,
         ):
             return await stress.finish_cleanup(
-                client, nd_client, nd, paths, manifest, {"library_paths": []}, wait=0, step=0
+                client,
+                nd_client,
+                nd,
+                paths,
+                manifest,
+                {"library_paths": []},
+                wait=0,
+                step=0,
+                settle=0,
             )
 
     errors, purged = asyncio.run(go())
@@ -1108,3 +1116,25 @@ def test_a_failed_navidrome_lookup_stays_an_error(paths):
     assert not any("still knows" in e for e in errors), "a failed lookup proves nothing"
     assert saved["cleaned_at"] is None
     assert "navidrome_never_scanned" not in saved["probes"][0]
+
+
+def test_what_the_service_writes_after_the_cleanup_is_cleaned_too(paths, monkeypatch):
+    """The service looks for a new track's lyrics in the background: on the
+    live run (08.10) it wrote a probe's lyrics half a second after the
+    cleanup had deleted the probe, and residue found the file. The files are
+    removed again once the cleanup has settled."""
+    manifest = deleted_probes("Probe/Singles/Late.m4a")
+    paths.lyrics.mkdir(parents=True)
+    late = paths.lyrics / f"{stress.lyrics_key('Probe/Singles/Late.m4a')}.json"
+    real = stress.cleanup
+
+    async def cleanup_then_late_write(*args, **kwargs):
+        errors = await real(*args, **kwargs)
+        late.write_text("{}")  # the lyrics search finishing after the cleanup
+        return errors
+
+    monkeypatch.setattr(stress, "cleanup", cleanup_then_late_write)
+    songs: list[dict] = []
+    errors, _, saved = run_finish(paths, manifest, navidrome_songs_handler([], songs, []))
+    assert not late.exists()
+    assert errors == [] and saved["cleaned_at"]
