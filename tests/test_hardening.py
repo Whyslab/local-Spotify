@@ -416,6 +416,7 @@ def test_every_upload_route_has_its_own_body_limit():
 
     from adder import app as app_module
 
+    found = []
     for route in app_module.app.routes:
         if not isinstance(route, APIRoute):
             continue
@@ -424,7 +425,11 @@ def test_every_upload_route_has_its_own_body_limit():
             UploadFile in (p.annotation, *getattr(p.annotation, "__args__", ())) for p in hints
         ):
             continue
+        found.append(route.path)
         path = route.path.replace("{name}", "x").replace("{playlist}", "x")
         for method in route.methods:
             limit = app_module.upload_limit(method, path)
             assert limit is not None and limit > app_module.DEFAULT_BODY_LIMIT, (method, route.path)
+    # import, replace-file, a playlist's cover, an artist's photo: a check that
+    # found none (string annotations, say) would pass for nothing.
+    assert len(found) >= 4, found
