@@ -231,9 +231,10 @@ def test_quiet_window_is_refused():
 
 
 def test_cache_names_match_the_service():
-    from adder import app, lyrics
+    from adder import lyrics, thumbs
 
-    assert stress.THUMB_SIZES == app.THUMB_SIZES
+    assert stress.THUMB_SIZES == thumbs.SIZES
+    assert stress.thumb_keys(b"art") == [thumbs._key(b"art", size) for size in thumbs.SIZES]
     assert stress.lyrics_key("A/Singles/B.m4a") == lyrics._key("A/Singles/B.m4a").stem
 
 

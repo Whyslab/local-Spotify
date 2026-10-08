@@ -10,7 +10,6 @@ import logging
 import math
 import os
 import secrets
-import subprocess
 import threading
 import time
 from contextlib import asynccontextmanager, suppress
@@ -54,6 +53,7 @@ from . import (
     similar,
     sources,
     sync,
+    thumbs,
     webcovers,
 )
 from . import queue as task_queue
@@ -850,45 +850,6 @@ def lyrics_custom(req: LyricsTextRequest, authenticated: bool = Depends(verify_t
         raise HTTPException(status_code=400, detail="В тексте нет слов") from exc
 
 
-THUMB_SIZES = (96, 300, 600)
-
-
-def _thumbnail(art: tuple[bytes, str], size: int) -> tuple[bytes, str]:
-    """Обложка, уменьшенная до ``size`` по большей стороне, в JPEG.
-
-    ffmpeg — не новая зависимость: без него служба не принимает ни одного
-    файла. Уменьшенное лежит в кэше по хешу самой обложки и размеру; не
-    вышло уменьшить — отдаём как есть.
-    """
-    # По обложке, а не по пути и времени изменения файла: edit_track
-    # возвращает mtime на место, и заново найденная обложка иначе навсегда
-    # показывалась старой миниатюрой. Заодно треки одного альбома делят одну.
-    digest = hashlib.sha1(art[0])
-    digest.update(f"|{size}".encode())
-    key = digest.hexdigest()
-    cached = runtime.THUMB_DIR / f"{key}.jpg"
-    if cached.is_file():
-        return cached.read_bytes(), "image/jpeg"
-    try:
-        done = subprocess.run(
-            [
-                "ffmpeg", "-v", "error", "-f", "image2pipe", "-i", "pipe:0",
-                "-vf", f"scale={size}:{size}:force_original_aspect_ratio=decrease",
-                "-frames:v", "1", "-q:v", "4", "-f", "mjpeg", "pipe:1",
-            ],
-            input=art[0],
-            capture_output=True,
-            timeout=15,
-        )  # fmt: skip
-    except (OSError, subprocess.TimeoutExpired):
-        return art
-    if done.returncode != 0 or not done.stdout:
-        return art
-    runtime.THUMB_DIR.mkdir(parents=True, exist_ok=True)
-    ingest.write_atomic(cached, done.stdout)
-    return done.stdout, "image/jpeg"
-
-
 @app.get("/api/cover")
 def track_cover(path: str, size: int = 0, authenticated: bool = Depends(verify_token)):
     """The artwork inside a track, for the panel beside the list.
@@ -900,13 +861,10 @@ def track_cover(path: str, size: int = 0, authenticated: bool = Depends(verify_t
     re-rendered anyway.
     """
     absolute = _audio_file(path)
-    art = library.embedded_cover(absolute)
+    # Тёплый запрос тегов не читает: thumbs помнит, какая миниатюра у файла.
+    art = thumbs.cover(absolute, size)
     if art is None:
         raise HTTPException(status_code=404, detail="This track has no artwork")
-    if size > 0:
-        # Ближайший из трёх размеров: иначе кэш рос бы на каждый пиксель.
-        wanted = next((s for s in THUMB_SIZES if s >= size), THUMB_SIZES[-1])
-        art = _thumbnail(art, wanted)
     return Response(
         content=art[0],
         media_type=art[1],
@@ -1728,8 +1686,7 @@ def discover_external(limit: int = 12, authenticated: bool = Depends(verify_toke
 
 def _picture_response(art: tuple[bytes, str], size: int, cache: str) -> Response:
     if size > 0:
-        wanted = next((s for s in THUMB_SIZES if s >= size), THUMB_SIZES[-1])
-        art = _thumbnail(art, wanted)
+        art = thumbs.shrink(art, thumbs.nearest(size))
     return Response(content=art[0], media_type=art[1], headers={"Cache-Control": cache})
 
 

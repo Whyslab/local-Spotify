@@ -1,4 +1,13 @@
-"""Playlist covers: what counts as an image, and where the original lives."""
+"""Playlist covers: what counts as an image, and where the original lives.
+Track covers: thumbnails, their cache and how many are made at once."""
+
+import hashlib
+import shutil
+import subprocess
+import threading
+import time
+from contextlib import suppress
+from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
@@ -170,7 +179,7 @@ def test_a_track_cover_can_be_asked_for_small(tmp_path, monkeypatch):
     """Списку нужна миниатюра, а не полноразмерная обложка в мегабайты."""
     import subprocess
 
-    from adder import app as app_module
+    from adder import thumbs
 
     big = tmp_path / "big.jpg"
     subprocess.run(
@@ -179,13 +188,13 @@ def test_a_track_cover_can_be_asked_for_small(tmp_path, monkeypatch):
     )  # fmt: skip
     art = (big.read_bytes(), "image/jpeg")
 
-    small, kind = app_module._thumbnail(art, 96)
+    small, kind = thumbs.shrink(art, 96)
     assert kind == "image/jpeg"
     assert len(small) < len(art[0]) / 5
     # Второй раз — из кэша, тот же результат.
-    assert app_module._thumbnail(art, 96)[0] == small
+    assert thumbs.shrink(art, 96)[0] == small
     # Не картинка — отдаётся как есть, без ошибки.
-    assert app_module._thumbnail((b"not an image", "image/png"), 96) == (
+    assert thumbs.shrink((b"not an image", "image/png"), 96) == (
         b"not an image",
         "image/png",
     )
@@ -208,25 +217,27 @@ def test_the_same_thumbnail_asked_for_at_once_is_not_an_error(tmp_path, monkeypa
     import subprocess
     import threading
 
-    from adder import app as app_module
+    from adder import thumbs
 
     art = (_jpeg("red"), "image/jpeg")
     errors = []
     for _ in range(10):
         shutil.rmtree(runtime.THUMB_DIR, ignore_errors=True)
-        ffmpeg_done = threading.Barrier(4)
+        ffmpeg_done = threading.Barrier(2)
 
-        # Все четыре выходят из ffmpeg разом и с большим ответом: запись
-        # «.part» длится, и окно гонки открыто каждый раз, а не изредка.
+        # Двое (столько пускает ограничение) выходят из ffmpeg разом и с
+        # большим ответом: запись «.part» длится, и окно гонки открыто каждый
+        # раз. Остальные находят готовую миниатюру — или встают парой следом.
         def ffmpeg(*_a, _done=ffmpeg_done, **_k):
-            _done.wait()
+            with suppress(threading.BrokenBarrierError):
+                _done.wait(timeout=1)
             return subprocess.CompletedProcess([], 0, stdout=b"\xff" * 4_000_000)
 
-        monkeypatch.setattr(app_module.subprocess, "run", ffmpeg)
+        monkeypatch.setattr(thumbs.subprocess, "run", ffmpeg)
 
         def one():
             try:
-                app_module._thumbnail(art, 96)
+                thumbs.shrink(art, 96)
             except Exception as exc:  # noqa: BLE001
                 errors.append(repr(exc))
 
@@ -238,3 +249,110 @@ def test_the_same_thumbnail_asked_for_at_once_is_not_an_error(tmp_path, monkeypa
 
     assert not errors, errors[:3]
     assert not list(runtime.THUMB_DIR.glob("*.part*"))
+
+
+def _track_with_cover(path: Path, art: bytes) -> Path:
+    from mutagen.mp4 import MP4, MP4Cover
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(Path(__file__).parent / "fixtures" / "tone.m4a", path)
+    audio = MP4(path)
+    audio["covr"] = [MP4Cover(art, imageformat=MP4Cover.FORMAT_JPEG)]
+    audio.save()
+    return path
+
+
+def test_thumbnail_generation_is_bounded(tmp_path, monkeypatch):
+    """A cold list asked for forty thumbnails and started forty ffmpeg at once."""
+    from adder import thumbs
+
+    running, peak, lock = [0], [0], threading.Lock()
+
+    def ffmpeg(*_a, **_k):
+        with lock:
+            running[0] += 1
+            peak[0] = max(peak[0], running[0])
+        time.sleep(0.1)
+        with lock:
+            running[0] -= 1
+        return subprocess.CompletedProcess([], 0, stdout=b"\xff\xd8small")
+
+    monkeypatch.setattr(thumbs.subprocess, "run", ffmpeg)
+    threads = [
+        threading.Thread(target=thumbs.shrink, args=((f"art {i}".encode(), "image/jpeg"), 96))
+        for i in range(8)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert peak[0] == 2
+
+
+def test_cached_thumbnail_skips_tag_parse(tmp_path, monkeypatch):
+    """The second time the same file is asked for, its tags are not read:
+    the file's stamp says it is the same, the thumbnail is on disk."""
+    from adder import thumbs
+
+    track = _track_with_cover(tmp_path / "A" / "Singles" / "B.m4a", _jpeg("red"))
+    first = thumbs.cover(track, 96)
+    assert first and first[1] == "image/jpeg"
+
+    def parse(_path):
+        raise AssertionError("tags read again")
+
+    monkeypatch.setattr(library, "embedded_cover", parse)
+    assert thumbs.cover(track, 96) == first
+    assert thumbs.cover(track, 90) == first  # the nearest size, the same file
+
+
+def test_retagged_cover_gets_new_thumbnail(tmp_path):
+    """A new cover keeps the file's mtime (it is the "added" date), but not
+    its ctime: the stamp changes and the new picture is shrunk."""
+    import os
+
+    from mutagen.mp4 import MP4, MP4Cover
+
+    from adder import thumbs
+
+    track = _track_with_cover(tmp_path / "A" / "Singles" / "B.m4a", _jpeg("red"))
+    before = thumbs.cover(track, 96)
+    stat = track.stat()
+    audio = MP4(track)
+    audio["covr"] = [MP4Cover(_jpeg("blue"), imageformat=MP4Cover.FORMAT_JPEG)]
+    audio.save()
+    os.utime(track, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    assert thumbs.cover(track, 96) != before
+
+
+def test_album_tracks_share_thumbnail(tmp_path, monkeypatch):
+    """Twelve tracks of one album carry one picture: one thumbnail on disk."""
+    from adder import thumbs
+
+    art = _jpeg("green")
+    calls = []
+    real = subprocess.run
+    monkeypatch.setattr(thumbs.subprocess, "run", lambda *a, **k: calls.append(1) or real(*a, **k))
+    for n in range(3):
+        thumbs.cover(_track_with_cover(tmp_path / "A" / "Album" / f"{n}.m4a", art), 96)
+    assert len(calls) == 1
+    assert len(list(runtime.THUMB_DIR.glob("*.jpg"))) == 1
+    key = hashlib.sha1(art + b"|96").hexdigest()  # the name scripts/stress.py looks for
+    assert (runtime.THUMB_DIR / f"{key}.jpg").is_file()
+
+
+def test_the_nightly_run_prepares_every_track(tmp_path):
+    """scripts/export_shelves.py runs this each night: tracks added past the
+    service, or a cleared cache, get their thumbnails before anyone scrolls."""
+    from adder import thumbs
+
+    root = tmp_path / "library"
+    arts = [_jpeg("red"), _jpeg("blue")]
+    for n, art in enumerate(arts):
+        _track_with_cover(root / f"A{n}" / "Singles" / "B.m4a", art)
+    (root / "notes.txt").write_text("not a track")
+
+    assert thumbs.prepare_library(root) == 2
+    for art in arts:
+        for size in thumbs.PREPARED:
+            assert (runtime.THUMB_DIR / f"{thumbs._key(art, size)}.jpg").is_file()

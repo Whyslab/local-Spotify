@@ -797,3 +797,27 @@ def test_a_cover_looked_up_again_gets_a_new_thumbnail(app, monkeypatch):
         after = client.get("/api/cover", params=query, headers=AUTH).content
 
     assert after != before
+
+
+def test_thumbnails_pregenerated_on_ingest(app, monkeypatch):
+    """The list's 96 and the tile's 300 are made when the track is added, not
+    on its first scroll past."""
+    import hashlib
+    import subprocess
+
+    red = subprocess.run(
+        ["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=red:s=400x400",
+         "-frames:v", "1", "-f", "mjpeg", "pipe:1"],
+        capture_output=True,
+        check=True,
+    ).stdout  # fmt: skip
+    youtube(app, monkeypatch, {"title": "A - B", "uploader": "x"})
+    deezer(app, monkeypatch, None)
+    monkeypatch.setattr(ingest, "fetch_cover_url", lambda url: (None, None))
+    monkeypatch.setattr(ingest, "fetch_cover", lambda a, t, th: (red, "jpg"))
+    assert run(app)["status"] == "done"
+
+    art = MP4(config.LIBRARY / "A/Singles/B.m4a").tags["covr"][0]
+    for size in (96, 300):
+        key = hashlib.sha1(bytes(art) + f"|{size}".encode()).hexdigest()
+        assert (runtime.THUMB_DIR / f"{key}.jpg").is_file(), size

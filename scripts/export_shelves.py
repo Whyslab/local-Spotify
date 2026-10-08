@@ -30,7 +30,7 @@ def main() -> int:
     # ничего не слушается, поэтому значение любое.
     os.environ.setdefault("API_TOKEN", "shelves")
     try:
-        from adder import shelves
+        from adder import config, shelves, thumbs
     except ModuleNotFoundError as exc:
         # Всё нужное стоит в виртуальном окружении проекта, а в системном
         # python этого нет. Трассировка про fastapi об этом не скажет —
@@ -59,6 +59,9 @@ def main() -> int:
         written += 1 if item["written"] else 0
 
     print(f"Итог: записано подборок {written}, пропущено {len(report) - written}", flush=True)
+    # Миниатюры строк и плиток — для всего, что ещё без них (добавленное мимо
+    # службы, кэш, который почистили): первый показ их уже не ждёт.
+    print(f"Миниатюры: просмотрено треков {thumbs.prepare_library(config.LIBRARY)}", flush=True)
     # Ни одной записанной полки — это уже неисправность, а не «просто нечего
     # показывать»: таймер должен пожаловаться в журнал, иначе подборки будут
     # молча стареть.

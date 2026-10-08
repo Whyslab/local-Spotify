@@ -45,6 +45,8 @@ check has passed.
 - `adder/shuffle.py`, `outside.py`, `similar.py`, `moods.py`, `shelves.py`, `analysis.py` —
   shuffles, home shelves, tracks from outside the library, audio analysis scheduling
 - `adder/lyrics.py`, `signing.py` (signed stream URLs), `sources.py` (search, playlist import)
+- `adder/thumbs.py` — track cover thumbnails: ffmpeg (two at a time), disk cache by cover hash,
+  in-memory file-stamp map so a warm request skips the tag parse; made on ingest and nightly
 - `scripts/`, `adder/fix_covers.py` — offline tools; `scripts/README.md` describes them
 - `tests/` — offline pytest suite; `tests/fixtures/tone.m4a` is a real 1-second AAC file
 - `AUDIT.md` — known problems by priority and their status

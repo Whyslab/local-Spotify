@@ -57,7 +57,7 @@ DEFAULT_BASE_URL = "http://127.0.0.1:8787"
 PROBE_PLAYLIST = "zz-stress-probe"
 # 429 от YouTube останавливает все скачивания разом (queue.py), поэтому проб мало.
 MAX_PROBES = 5
-# Те же размеры, что app.THUMB_SIZES: по ним уборка находит миниатюры проб.
+# Те же размеры, что thumbs.SIZES: по ним уборка находит миниатюры проб.
 THUMB_SIZES = (96, 300, 600)
 ACTIVE_STATUSES = frozenset({"queued", "downloading", "tagging"})
 COUNTED_TABLES = ("tasks", "plays", "audio_features", "navidrome_ops")
@@ -406,7 +406,7 @@ def make_substrings(titles: list[str], count: int = 200, seed: int = 0) -> list[
 
 
 def thumb_keys(cover: bytes) -> list[str]:
-    """Names under thumb-cache that the service gives this cover (app._thumbnail)."""
+    """Names under thumb-cache that the service gives this cover (thumbs.shrink)."""
     keys = []
     for size in THUMB_SIZES:
         digest = hashlib.sha1(cover)

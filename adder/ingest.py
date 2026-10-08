@@ -1661,6 +1661,11 @@ def ingest_temp_file(tid: int, temp_path: Path, names: TrackNames, thumbnail: st
 
     best_effort("the analysis", lambda: analysis.analyse_track(str(final_target)))
 
+    # Миниатюры строки и плитки — сразу: первый показ трека их не ждёт.
+    from . import thumbs
+
+    best_effort("the thumbnails", lambda: thumbs.prepare(final_target))
+
     # Куда лёг файл — нужно для замены трека: подмену нельзя искать по артисту
     # и названию, иначе в корзину уедет не тот. От того же config.LIBRARY, из
     # которого путь собран: против resolve() одной стороны это падало, когда
