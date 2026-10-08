@@ -1817,7 +1817,7 @@ def test_search_debounce_within_budget(page):
     page.evaluate(typed, "#searchEverywhere")
     page.wait_for_function("window.__asked.everywhere")
     everywhere_wait = page.evaluate("window.__asked.everywhere - window.__typed")
-    assert library_wait < 20 and everywhere_wait < 100, (library_wait, everywhere_wait)
+    assert library_wait < 15 and everywhere_wait < 100, (library_wait, everywhere_wait)
 
 
 def test_search_after_idle_uses_stale_index(page):
