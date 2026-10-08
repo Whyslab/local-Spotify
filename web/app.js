@@ -1370,6 +1370,10 @@ function sendCoverBatch(hosts) {
         });
 }
 
+/* Тип картинки из заголовка — только один из этих: Blob с text/html или SVG,
+ * открытый когда-нибудь ссылкой, выполнился бы как страница этого сайта. */
+const COVER_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
+
 /* Ответ /api/covers: 4 байта длины заголовка, заголовок JSON, картинки подряд.
  * Картинка — срез того же Blob, без копирования. */
 async function unpackCovers(blob) {
@@ -1379,7 +1383,8 @@ async function unpackCovers(blob) {
     return items.map((item) => {
         if (item.later) return "later";
         if (!item.length) return "missing";
-        const picture = blob.slice(at, at + item.length, item.type);
+        const type = COVER_TYPES.has(item.type) ? item.type : "image/jpeg";
+        const picture = blob.slice(at, at + item.length, type);
         at += item.length;
         return picture;
     });

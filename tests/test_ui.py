@@ -635,6 +635,25 @@ def test_the_same_track_twice_is_asked_once(page):
     assert asked.count("Song 0") == 1, asked
 
 
+def test_a_batch_picture_is_always_an_image(page):
+    """The batch header names each picture's type, and the page made it the
+    Blob's type. A picture typed text/html or SVG, opened by a link some day,
+    would run as a page of this origin. Only the four image types pass;
+    anything else is taken as JPEG."""
+    types = page.evaluate(
+        """async () => {
+            const head = new TextEncoder().encode(JSON.stringify({items: [
+                {type: 'text/html', length: 3}, {type: 'image/svg+xml', length: 3},
+                {type: 'image/png', length: 3}, {missing: true}]}));
+            const size = new Uint8Array(4);
+            new DataView(size.buffer).setUint32(0, head.length);
+            const got = await unpackCovers(new Blob([size, head, 'abcdefghi']));
+            return got.map((g) => g instanceof Blob ? g.type : g);
+        }"""
+    )
+    assert types == ["image/jpeg", "image/jpeg", "image/png", "missing"]
+
+
 def test_covers_fall_back_to_one_by_one(page):
     """No batch (no network, the laptop asleep behind Tailscale, an error):
     the covers go the old way, one by one, through the service worker's copy,
