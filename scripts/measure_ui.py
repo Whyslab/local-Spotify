@@ -31,10 +31,12 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import random
 import statistics
 import sys
+import threading
 import time
 from collections.abc import Sequence
 from pathlib import Path
@@ -266,16 +268,111 @@ def wait_until(page, expression: str, timeout_ms: int = 20000):
         page.wait_for_timeout(10)
 
 
+PHONE_RTT_MS = 60
+
+
+class DelayProxy:
+    """TCP-прокси на 127.0.0.1: каждый кусок данных в обе стороны ждёт
+    one_way_ms, так что запрос с ответом получает 2 × one_way_ms сверху.
+
+    Задержка CDP (Network.emulateNetworkConditions) действует только на
+    запросы самой страницы. Запросы, которые перехватывает service worker
+    (обложки, фонотека, главная), он делает сам — и они шли вовсе без
+    задержки: 7 мс вместо 66 (замер 08.10.2026). Через прокси идёт всё, что
+    уходит к службе, как через настоящую сеть.
+    """
+
+    def __init__(self, host: str, port: int, one_way_ms: float):
+        self.host, self.port, self.delay = host, port, one_way_ms / 1000
+        self.loop = asyncio.new_event_loop()
+        started = threading.Event()
+        self.thread = threading.Thread(target=self._run, args=(started,), daemon=True)
+        self.thread.start()
+        if not started.wait(10):
+            raise RuntimeError("прокси с задержкой не запустился")
+        self.url = f"http://127.0.0.1:{self.local_port}"
+
+    def _run(self, started: threading.Event) -> None:
+        asyncio.set_event_loop(self.loop)
+        self.server = self.loop.run_until_complete(
+            asyncio.start_server(self._client, "127.0.0.1", 0)
+        )
+        self.local_port = self.server.sockets[0].getsockname()[1]
+        started.set()
+        self.loop.run_forever()
+
+    async def _client(self, reader, writer) -> None:
+        try:
+            up_reader, up_writer = await asyncio.open_connection(self.host, self.port)
+        except OSError:
+            writer.close()
+            return
+        await asyncio.gather(
+            self._pipe(reader, up_writer), self._pipe(up_reader, writer), return_exceptions=True
+        )
+        for w in (writer, up_writer):
+            w.close()
+
+    async def _pipe(self, reader, writer) -> None:
+        """Куски уходят в том же порядке, каждый — через delay после прихода."""
+        queue: asyncio.Queue = asyncio.Queue()
+
+        async def send() -> None:
+            while True:
+                due, data = await queue.get()
+                wait = due - self.loop.time()
+                if wait > 0:
+                    await asyncio.sleep(wait)
+                if not data:
+                    if writer.can_write_eof():
+                        writer.write_eof()
+                    return
+                writer.write(data)
+                await writer.drain()
+
+        sender = asyncio.ensure_future(send())
+        try:
+            while data := await reader.read(65536):
+                queue.put_nowait((self.loop.time() + self.delay, data))
+        except OSError:
+            pass
+        queue.put_nowait((self.loop.time() + self.delay, b""))
+        await sender
+
+    def close(self) -> None:
+        async def stop() -> None:
+            self.server.close()
+            for task in asyncio.all_tasks():
+                if task is not asyncio.current_task():
+                    task.cancel()
+
+        asyncio.run_coroutine_threadsafe(stop(), self.loop).result(5)
+        self.loop.call_soon_threadsafe(self.loop.stop)
+        self.thread.join(5)
+
+
 class Session:
     def __init__(self, pw, url: str, token: str, profile: str):
         self.pw = pw
         self.url = url.rstrip("/")
         self.token = token
         self.profile = profile
+        # Телефону — задержка сети на всём пути к службе (см. DelayProxy). По
+        # https прокси не встать (сертификат не на 127.0.0.1) — там остаётся
+        # задержка CDP, только для запросов страницы.
+        self.proxy = None
+        parts = urlsplit(self.url)
+        if profile == "phone" and parts.scheme == "http":
+            self.proxy = DelayProxy(
+                parts.hostname or "127.0.0.1", parts.port or 80, PHONE_RTT_MS / 2
+            )
+            self.url = self.proxy.url
         self.browser = pw.chromium.launch()
 
     def close(self) -> None:
         self.browser.close()
+        if self.proxy is not None:
+            self.proxy.close()
 
     def context(self, service_workers: str = "allow"):
         options: dict = {"service_workers": service_workers}
@@ -294,11 +391,17 @@ class Session:
         if self.profile == "phone":
             cdp = ctx.new_cdp_session(page)
             cdp.send("Emulation.setCPUThrottlingRate", {"rate": 4})
-            cdp.send("Network.enable")
-            cdp.send(
-                "Network.emulateNetworkConditions",
-                {"offline": False, "latency": 60, "downloadThroughput": -1, "uploadThroughput": -1},
-            )
+            if self.proxy is None:
+                cdp.send("Network.enable")
+                cdp.send(
+                    "Network.emulateNetworkConditions",
+                    {
+                        "offline": False,
+                        "latency": PHONE_RTT_MS,
+                        "downloadThroughput": -1,
+                        "uploadThroughput": -1,
+                    },
+                )
         return page
 
     def ready_at(self, page) -> float:

@@ -127,3 +127,46 @@ def test_window_ready_counts_from_page_start():
         }
     }
     assert measure_ui.misses(results) == []
+
+
+def test_phone_latency_reaches_what_the_service_worker_fetches():
+    """CDP's latency covers only the page's own requests; the covers the
+    service worker fetched for the page came in 7 ms instead of 66 (measured
+    08.10.2026). The phone profile now reaches the service through a delay
+    proxy, which every request crosses, the worker's too."""
+    import socket
+    import sys
+    import threading
+    import time
+
+    sys.path.insert(0, str(SCRIPT.parent))
+    import measure_ui
+
+    server = socket.create_server(("127.0.0.1", 0))
+    port = server.getsockname()[1]
+
+    def echo():
+        conn, _ = server.accept()
+        with conn:
+            while data := conn.recv(1024):
+                conn.sendall(data.upper())
+
+    threading.Thread(target=echo, daemon=True).start()
+    proxy = measure_ui.DelayProxy("127.0.0.1", port, one_way_ms=40)
+    try:
+        assert urlsplit_port(proxy.url) != port
+        with socket.create_connection(("127.0.0.1", urlsplit_port(proxy.url))) as conn:
+            for word in (b"ping", b"pong"):
+                started = time.monotonic()
+                conn.sendall(word)
+                assert conn.recv(1024) == word.upper()
+                assert time.monotonic() - started >= 0.08
+    finally:
+        proxy.close()
+        server.close()
+
+
+def urlsplit_port(url):
+    from urllib.parse import urlsplit
+
+    return urlsplit(url).port
