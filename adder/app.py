@@ -1533,7 +1533,7 @@ def _shuffle_tracks() -> list[shuffle.Track]:
     features = db.db_query("SELECT path, tempo, energy, brightness, music_key FROM audio_features")
     plays = db.db_query(
         "SELECT path, CAST(strftime('%H', played_at) AS INTEGER) AS hour "
-        "FROM plays ORDER BY id DESC LIMIT 2000"
+        "FROM plays ORDER BY played_at DESC, id DESC LIMIT 2000"
     )
     return shuffle.tracks_from_rows(
         library.library_index(), features, plays, int(time.strftime("%H"))

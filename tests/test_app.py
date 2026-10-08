@@ -1004,6 +1004,32 @@ def test_play_keeps_time_it_was_heard(client, app_module, monkeypatch):
     assert listenbrainz.pending_count() == 3
 
 
+def test_shuffle_recency_follows_when_heard_not_when_sent(client, app_module, monkeypatch):
+    """Прослушивание трёхдневной давности, дошедшее последним (телефон был без
+    сети), не делает трек «только что звучавшим» для умного перемешивания."""
+    from adder import library
+
+    monkeypatch.setattr(
+        library,
+        "library_index",
+        lambda: [
+            {"path": "A/Singles/Today.m4a", "artist": "A"},
+            {"path": "B/Singles/Old.m4a", "artist": "B"},
+        ],
+    )
+    for path, played_at in (
+        ("A/Singles/Today.m4a", "datetime('now', 'localtime', '-1 hour')"),
+        ("B/Singles/Old.m4a", "datetime('now', 'localtime', '-3 days')"),  # дошло позже
+    ):
+        db.db_exec(
+            "INSERT INTO plays(path, played_at, played_seconds, duration, skipped, mode) "
+            f"VALUES(?, {played_at}, 200, 248, 0, 'manual')",
+            (path,),
+        )
+    rank = {t.path: t.last_play_rank for t in app_module._shuffle_tracks()}
+    assert rank == {"A/Singles/Today.m4a": 0, "B/Singles/Old.m4a": 1}
+
+
 def test_every_html_page_has_the_csp_and_every_answer_nosniff(client):
     """/static/index.html is the same app as /, and went out without the policy."""
     for path in ("/", "/static/index.html"):
