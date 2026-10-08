@@ -40,7 +40,7 @@ It is not built to be a public SaaS or to work around YouTube's restrictions —
 * **Sleep timer and fades** — the player stops after 15, 30 or 60 minutes or at the end of the track, lowering the volume over the last ten seconds; track changes can fade out and in over 3 or 6 seconds (a fade, not an overlapping crossfade; not on an iPhone, where a page cannot set volume).
 * **Even loudness (ReplayGain)** — every track is measured with ffmpeg (EBU R 128) and tagged; Navidrome, Subsonic clients that honour ReplayGain and the built-in desktop player play everything at the same level. On an iPhone the browser does not let a page change volume, so there it is up to the Subsonic client.
 * **Real album data** — album, track number, release date and every credited artist come from Deezer, and from MusicBrainz (with the Cover Art Archive) when Deezer does not know the track; only when both miss is a track filed as its own single.
-* **HD cover art** — iTunes Search API with a fallback to the YouTube thumbnail; a separate script (`fix_covers.py`) backfills missing artwork afterwards via iTunes → Deezer.
+* **HD cover art** — iTunes Search API with a fallback to the YouTube thumbnail; a separate script (`fix_covers.py`) backfills missing artwork afterwards via iTunes → Deezer, and replaces a cover that is not a real JPEG or PNG (or re-encodes it when nothing is found).
 * **Content-based deduplication** — each track is hashed (SHA-256) and compared against what is already in the library, rather than matched on filename.
 * **Retry with exponential backoff** — transient network and download failures are retried automatically; permanent ones are not.
 * **Graceful shutdown and recovery** — `SIGTERM` stops workers cleanly, including child `yt-dlp`/`ffmpeg` processes, and unfinished tasks survive a service restart.
@@ -467,7 +467,7 @@ local-Spotify/
 │   ├── app.py              # FastAPI app, workers, business logic
 │   ├── config.py           # Loads and validates configuration from .env
 │   ├── server.py           # Entry point (uvicorn)
-│   ├── fix_covers.py       # Offline backfill for missing cover art
+│   ├── fix_covers.py       # Offline backfill for missing or broken cover art
 │   └── requirements.txt
 ├── web/                    # Static web interface (vanilla JS)
 ├── scripts/                # Offline tools: library audit, duplicate finder, playlist migration
