@@ -307,11 +307,13 @@ class DelayProxy:
         except OSError:
             writer.close()
             return
-        await asyncio.gather(
-            self._pipe(reader, up_writer), self._pipe(up_reader, writer), return_exceptions=True
-        )
-        for w in (writer, up_writer):
-            w.close()
+        try:
+            await asyncio.gather(
+                self._pipe(reader, up_writer), self._pipe(up_reader, writer), return_exceptions=True
+            )
+        finally:
+            for w in (writer, up_writer):
+                w.close()
 
     async def _pipe(self, reader, writer) -> None:
         """Куски уходят в том же порядке, каждый — через delay после прихода."""
@@ -342,13 +344,16 @@ class DelayProxy:
     def close(self) -> None:
         async def stop() -> None:
             self.server.close()
-            for task in asyncio.all_tasks():
-                if task is not asyncio.current_task():
-                    task.cancel()
+            tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)  # their finally closes sockets
+            await self.server.wait_closed()
 
         asyncio.run_coroutine_threadsafe(stop(), self.loop).result(5)
         self.loop.call_soon_threadsafe(self.loop.stop)
         self.thread.join(5)
+        self.loop.close()
 
 
 class Session:
@@ -367,7 +372,12 @@ class Session:
                 parts.hostname or "127.0.0.1", parts.port or 80, PHONE_RTT_MS / 2
             )
             self.url = self.proxy.url
-        self.browser = pw.chromium.launch()
+        try:
+            self.browser = pw.chromium.launch()
+        except Exception:
+            if self.proxy is not None:
+                self.proxy.close()
+            raise
 
     def close(self) -> None:
         self.browser.close()
