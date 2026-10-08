@@ -741,6 +741,32 @@ def test_a_row_back_on_screen_does_not_hold_a_place_waiting(page):
     assert busy == inflight, (busy, inflight)
 
 
+def test_only_a_wait_for_a_batch_gives_the_place_up(page):
+    """Waiting for a batch frees the place: after it a track cover asks for
+    nothing. Waiting for another copy's artist photo does not: a 404 sends
+    that job on to the track cover, and the place is what limits it."""
+    busy = page.evaluate(
+        """async () => {
+            const seen = [];
+            for (const batched of [true, false]) {
+                const key = 'test:' + batched;
+                const pending = new Promise(() => {});
+                if (batched) pending.batched = true;
+                coverUrls.set(key, pending);
+                const signal = new AbortController().signal;
+                const before = coverBusy;
+                const free = takeCoverSlot(signal);
+                coverUrl(key, '/nowhere', signal);
+                seen.push(coverBusy - before);
+                free();
+                coverUrls.delete(key);
+            }
+            return seen;
+        }"""
+    )
+    assert busy == [0, 1]
+
+
 def test_the_page_and_the_service_agree_on_the_batch_size(page):
     from adder import app as app_module
 

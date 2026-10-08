@@ -1062,9 +1062,11 @@ function coverUrl(key, url, signal) {
         // Недавно нужная — в конец очереди на выселение.
         coverUrls.delete(key);
         coverUrls.set(key, have);
-        /* Ждать чужой запрос (пачку, где эта обложка уже есть) — не повод
-         * держать место: такие строки занимали все, и остальные ждали. */
-        coverSlotFree(signal);
+        /* Ждать пачку, где эта обложка уже есть, — не повод держать место:
+         * такие строки занимали все, и остальные ждали. После пачки обложка
+         * трека ничего не спрашивает. Чужое фото артиста — повод: при 404
+         * задача пойдёт за обложкой трека, и место её ограничивает. */
+        if (have.batched) coverSlotFree(signal);
         return Promise.resolve(have);
     }
     const pending = fetch(url, { headers: headers(), signal })
@@ -1364,6 +1366,7 @@ function sendCoverBatch(hosts) {
                 member.fail = reject;
             });
             member.pending.catch(() => {});  // ждут его не всегда
+            member.pending.batched = true;  // см. coverUrl
             coverUrls.set(member.key, member.pending);
         }
         controller.signal.addEventListener("abort", () => {
