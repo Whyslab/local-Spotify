@@ -1670,7 +1670,9 @@ def test_search_finds_artists_and_tracks_in_the_library(page):
 
 def test_search_debounce_within_budget(page):
     """Typing waited 300 ms (library) and 120 ms (search page) before
-    searching at all: the whole 150 ms budget went before any work began."""
+    searching at all: the whole 150 ms budget went before any work began.
+    The library asks the server at once: with the phone's 60 ms network a
+    30 ms pause left it at 144-152 ms (honest latency, 08.10.2026)."""
     page.evaluate(
         """() => {
             window.__asked = {};
@@ -1703,7 +1705,7 @@ def test_search_debounce_within_budget(page):
     page.evaluate(typed, "#searchEverywhere")
     page.wait_for_function("window.__asked.everywhere")
     everywhere_wait = page.evaluate("window.__asked.everywhere - window.__typed")
-    assert library_wait < 100 and everywhere_wait < 100, (library_wait, everywhere_wait)
+    assert library_wait < 15 and everywhere_wait < 100, (library_wait, everywhere_wait)
 
 
 def test_search_after_idle_uses_stale_index(page):
