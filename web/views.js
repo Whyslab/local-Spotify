@@ -190,7 +190,20 @@ function groupArtists(rows) {
         if (!a) map.set(name, (a = { name, tracks: [], cover: t.path }));
         a.tracks.push(t);
     }
-    return [...map.values()].sort((x, y) => x.name.localeCompare(y.name, "ru", { sensitivity: "base" }));
+    return [...map.values()].sort((x, y) => RU_ORDER_BASE.compare(x.name, y.name));
+}
+
+/* Артисты и альбомы выборки — один раз на выборку: поиск пересобирал их на
+ * каждую букву, с сортировкой всей фонотеки (B5). Только для чтения. */
+const labGroupsOf = new WeakMap();
+
+function labGroups(rows) {
+    let groups = labGroupsOf.get(rows);
+    if (!groups) {
+        groups = { artists: groupArtists(rows), albums: groupIntoAlbums(rows) };
+        labGroupsOf.set(rows, groups);
+    }
+    return groups;
 }
 
 function libraryTotalNote() {
@@ -643,7 +656,7 @@ function renderAlbumGrid(box, groups) {
 function playWholeLibrary() {
     labIndex().then((rows) => {
         const list = librarySort === "name"
-            ? [...rows].sort((a, b) => (a.artist || "").localeCompare(b.artist || "", "ru") || (a.title || "").localeCompare(b.title || "", "ru"))
+            ? [...rows].sort((a, b) => RU_ORDER.compare(a.artist || "", b.artist || "") || RU_ORDER.compare(a.title || "", b.title || ""))
             : rows;
         if (list.length) playQueue(list, 0, "manual", { kind: "library" });
     });
@@ -973,8 +986,9 @@ async function fillSearch() {
     }
     const hit = (s) => (s || "").toLowerCase().includes(q);
     const tracks = rows.filter((t) => hit(t.title) || hit(t.artist) || hit(t.album)).slice(0, 60);
-    const artists = groupArtists(rows).filter((a) => hit(a.name)).slice(0, 12);
-    const albums = groupIntoAlbums(rows).filter((g) => g.tracks.length > 1 && (hit(g.album) || hit(g.artist))).slice(0, 12);
+    const groups = labGroups(rows);
+    const artists = groups.artists.filter((a) => hit(a.name)).slice(0, 12);
+    const albums = groups.albums.filter((g) => g.tracks.length > 1 && (hit(g.album) || hit(g.artist))).slice(0, 12);
     const youtube = button("o-yt-ask", () => {
         switchView("viewAdd");
         const field = document.getElementById("searchQuery");

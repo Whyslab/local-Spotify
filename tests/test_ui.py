@@ -1506,6 +1506,34 @@ def test_search_after_idle_uses_stale_index(page):
     assert page.evaluate("window.__refreshed") == 1
 
 
+def test_search_groups_computed_once(page):
+    """Each letter grouped the whole library into artists and albums again,
+    with a Russian collation sort: on a phone that was most of the budget.
+    One index, one grouping."""
+    page.evaluate("labIndex().then(() => true)")  # the page's own load is over
+    page.evaluate(
+        """(rows) => {
+            labTracks = JSON.parse(rows);
+            labTracksAt = Date.now();
+            window.__grouped = {artists: 0, albums: 0};
+            const artists = window.groupArtists, albums = window.groupIntoAlbums;
+            window.groupArtists = (r) => { window.__grouped.artists += 1; return artists(r); };
+            window.groupIntoAlbums = (r) => { window.__grouped.albums += 1; return albums(r); };
+        }""",
+        _fake_rows(30),
+    )
+    page.evaluate("switchView('viewSearch')")
+    for q, first in (("Fake 1", "Song 1"), ("Fake 2", "Song 2"), ("Song 3", "Song 3")):
+        page.locator("#searchEverywhere").fill(q)
+        page.wait_for_function(
+            "([q, first]) => searchQueryText === q"
+            " && document.querySelector('#searchBody .track-title')?.textContent === first",
+            arg=[q, first],
+        )
+    grouped = page.evaluate("window.__grouped")
+    assert grouped == {"artists": 1, "albums": 1}, grouped
+
+
 def test_shuffle_offers_plain_and_smart(page):
     open_library(page)
     page.locator("#libraryShuffle").click()

@@ -17,6 +17,10 @@ const POLL_SLOW_MS = 30000;
  * ответа в 150 мс уходил на ожидание, ещё до работы. С 60 запрос уходит
  * почти на каждую букву; рисуется только ответ на последний (libraryTicket). */
 const SEARCH_DEBOUNCE_MS = 60;
+/* Сравнение по-русски — один раз собранное: localeCompare(…, "ru") собирает
+ * правила заново на каждое сравнение, а сортировка фонотеки — это тысячи их. */
+const RU_ORDER = new Intl.Collator("ru");
+const RU_ORDER_BASE = new Intl.Collator("ru", { sensitivity: "base" });
 
 let activeView = "viewHome";
 let librarySearchTimer = null;
@@ -1010,10 +1014,10 @@ function groupIntoAlbums(rows) {
     for (const group of albums.values()) {
         /* По номеру трека, а не по названию: альбом — это порядок. */
         group.tracks.sort((a, b) => (a.track || 0) - (b.track || 0)
-            || (a.title || "").localeCompare(b.title || "", "ru"));
+            || RU_ORDER.compare(a.title || "", b.title || ""));
     }
     return [...albums.values()].sort((a, b) =>
-        a.artist.localeCompare(b.artist, "ru") || a.album.localeCompare(b.album, "ru"));
+        RU_ORDER.compare(a.artist, b.artist) || RU_ORDER.compare(a.album, b.album));
 }
 
 /* ---------------- Обложки ----------------
