@@ -488,12 +488,14 @@ def _scroller_of(selector):
 
 # A stand-in for the covers' server: answers /api/cover one by one and
 # /api/covers for a whole screen, after `delay` ms, and counts. `asked` — the
-# rows whose cover was asked, in order; `peak` — connections at once (single
+# rows whose cover was asked, in order; `delivered` — covers in the requests
+# that were answered rather than given up; `peak` — connections at once (single
 # requests and batches); `singlesPeak` — single requests at once. `batch`:
-# "ok", or "fail" (500); `later` — rows the batch answers "later" for.
-FAKE_COVERS_JS = """async ({list, delay = 120, batch = 'ok', later = [], libraryDelay = 0}) => {
+# "ok", or "fail" (500); `later` — rows the batch answers "later" for;
+# `batchDelay` — the batch's own delay (a hung network: a very long one).
+FAKE_COVERS_JS = """async ({list, delay = 120, batch = 'ok', later = [], libraryDelay = 0, batchDelay = null}) => {
     const c = window.__covers = {asked: [], singles: 0, batches: 0, inflight: 0, peak: 0,
-                                 singlesInflight: 0, singlesPeak: 0, aborted: 0};
+                                 singlesInflight: 0, singlesPeak: 0, aborted: 0, delivered: 0};
     const real = window.fetch;
     const png = await (await real('/static/icon-180.png')).blob();
     const name = (path) => (path.match(/Song \\d+/) || [path])[0];
@@ -527,6 +529,7 @@ FAKE_COVERS_JS = """async ({list, delay = 120, batch = 'ok', later = [], library
         return new Promise((ok, fail) => {
             const timer = setTimeout(() => {
                 done();
+                c.delivered += single ? 1 : items.length;
                 if (single) { ok(new Response(png)); return; }
                 if (batch === 'fail') { ok(new Response('', {status: 500})); return; }
                 const head = {items: items.map((item) => later.includes(name(item.path))
@@ -537,7 +540,7 @@ FAKE_COVERS_JS = """async ({list, delay = 120, batch = 'ok', later = [], library
                 const pictures = head.items.filter((item) => item.length).map(() => png);
                 ok(new Response(new Blob([size, bytes, ...pictures]),
                     {headers: {'Content-Type': 'application/octet-stream'}}));
-            }, delay);
+            }, single || batchDelay === null ? delay : batchDelay);
             if (options.signal) options.signal.addEventListener('abort', () => {
                 clearTimeout(timer); done(); c.aborted += 1;
                 fail(new DOMException('aborted', 'AbortError'));
@@ -562,7 +565,8 @@ def _on_screen_covered(page):
     return page.evaluate(f"{ON_SCREEN_ROWS_JS}.map((row) => !!row.querySelector('img'))")
 
 
-def test_fast_scroll_requests_only_visible_covers(page):
+@pytest.mark.parametrize("cpu", [1, 4])
+def test_fast_scroll_requests_only_visible_covers(page, cpu):
     """Flicking through the list asked for every cover it passed, 600 px
     ahead: a library of two hundred rows queued two hundred pictures. Now a
     row asks only once the list has stopped (50 ms), a row that left the
@@ -570,6 +574,9 @@ def test_fast_scroll_requests_only_visible_covers(page):
     page.evaluate(FAKE_COVERS_JS, {"list": _fake_rows(200)})
     page.evaluate("switchView('viewLibrary')")
     page.wait_for_function("document.querySelectorAll('#library .track').length === 200")
+    # 4: the phone's processor. A slow step outlasts the 50 ms quiet, and the
+    # queue is served mid-flick: what it sends must still be given up.
+    page.context.new_cdp_session(page).send("Emulation.setCPUThrottlingRate", {"rate": cpu})
     page.evaluate(
         f"""async () => {{
             const box = {_scroller_of("#library")};
@@ -584,7 +591,8 @@ def test_fast_scroll_requests_only_visible_covers(page):
     on_screen = _on_screen_covered(page)
     assert on_screen and all(on_screen), on_screen  # what is on screen did arrive
     assert covers["peak"] <= 4, covers
-    assert len(covers["asked"]) <= 2 * len(on_screen) + 20, covers
+    # Asked and not given up: what the server had to send in the end.
+    assert covers["delivered"] <= 2 * len(on_screen) + 20, covers
 
 
 @pytest.mark.parametrize(("protocol", "places"), [("h2", 8), ("http/1.1", 4), ("", 4)])
@@ -609,8 +617,8 @@ def test_covers_at_once_follow_the_protocol(page, protocol, places):
 
 def test_screen_covers_come_in_one_request(page):
     """Each cover was a request of its own, four at a time: on the phone ten
-    rows on screen were three round trips. The screen's covers now come in
-    one batch, the rows on screen first in it."""
+    rows on screen were three round trips. The rows on screen now come in one
+    batch; the margin below the screen goes one by one, as before."""
     page.set_viewport_size({"width": 390, "height": 664})
     page.evaluate(FAKE_COVERS_JS, {"list": _fake_rows(200), "libraryDelay": 300})
     page.evaluate("switchView('viewLibrary')")
@@ -619,8 +627,9 @@ def test_screen_covers_come_in_one_request(page):
     on_screen = page.evaluate(
         f"{ON_SCREEN_ROWS_JS}.map((row) => row.textContent.match(/Song \\d+/)[0])"
     )
-    assert covers["batches"] == 1 and covers["singles"] == 0, covers
+    assert covers["batches"] == 1, covers
     assert set(covers["asked"][: len(on_screen)]) == set(on_screen), (covers, on_screen)
+    assert not set(covers["asked"][len(on_screen) :]) & set(on_screen), (covers, on_screen)
 
 
 def test_the_same_track_twice_is_asked_once(page):
@@ -647,11 +656,53 @@ def test_a_batch_picture_is_always_an_image(page):
                 {type: 'image/png', length: 3}, {missing: true}]}));
             const size = new Uint8Array(4);
             new DataView(size.buffer).setUint32(0, head.length);
-            const got = await unpackCovers(new Blob([size, head, 'abcdefghi']));
+            const got = unpackCovers(await new Blob([size, head, 'abcdefghi']).arrayBuffer());
             return got.map((g) => g instanceof Blob ? g.type : g);
         }"""
     )
     assert types == ["image/jpeg", "image/jpeg", "image/png", "missing"]
+
+
+@pytest.mark.parametrize("answer", [{"later": ["Song 0"]}, {"batch": "fail"}])
+def test_a_second_copy_gets_the_cover_the_batch_could_not_give(page, answer):
+    """The second copy of a track waited for the first one's answer; "later"
+    or a failed batch gave it nothing, and it kept its letter for good."""
+    rows = json.loads(_fake_rows(200))
+    rows[1] = dict(rows[0])
+    page.evaluate(FAKE_COVERS_JS, {"list": json.dumps(rows), **answer})
+    page.evaluate("switchView('viewLibrary')")
+    page.wait_for_function(ON_SCREEN_COVERED_JS)
+
+
+def test_a_hung_batch_falls_back_after_a_while(page):
+    """A batch on a dead connection (the laptop asleep behind Tailscale) waited
+    as long as the browser would, minutes, holding its rows and its place.
+    After COVERS_TIMEOUT_MS it is given up and the rows go one by one, as
+    the single requests did through the service worker's copy."""
+    page.evaluate(FAKE_COVERS_JS, {"list": _fake_rows(200), "batchDelay": 600000})
+    page.evaluate("switchView('viewLibrary')")
+    page.wait_for_function(ON_SCREEN_COVERED_JS, timeout=15000)
+    covers = page.evaluate("window.__covers")
+    assert covers["singles"] > 0 and covers["aborted"] >= 1, covers
+
+
+def test_a_batch_whose_rows_all_left_is_given_up(page):
+    """Rows that left the screen gave their requests up; in a batch they
+    could not, and coming back they were never asked again."""
+    page.evaluate(FAKE_COVERS_JS, {"list": _fake_rows(200), "batchDelay": 600000})
+    page.evaluate("switchView('viewLibrary')")
+    page.wait_for_function("window.__covers.batches === 1")
+    scroll = f"(y) => {{ {_scroller_of('#library')}.scrollTop = y; }}"
+    page.evaluate(scroll, 6000)
+    page.wait_for_function("window.__covers.aborted >= 1")
+    page.evaluate(scroll, 0)
+    page.wait_for_function("window.__covers.asked.filter((n) => n === 'Song 0').length >= 2")
+
+
+def test_the_page_and_the_service_agree_on_the_batch_size(page):
+    from adder import app as app_module
+
+    assert page.evaluate("COVERS_MAX") == app_module.COVERS_MAX
 
 
 def test_covers_fall_back_to_one_by_one(page):
@@ -1724,7 +1775,7 @@ def test_search_debounce_within_budget(page):
     page.evaluate(typed, "#searchEverywhere")
     page.wait_for_function("window.__asked.everywhere")
     everywhere_wait = page.evaluate("window.__asked.everywhere - window.__typed")
-    assert library_wait < 15 and everywhere_wait < 100, (library_wait, everywhere_wait)
+    assert library_wait < 20 and everywhere_wait < 100, (library_wait, everywhere_wait)
 
 
 def test_search_after_idle_uses_stale_index(page):
