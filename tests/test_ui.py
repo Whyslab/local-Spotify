@@ -1477,6 +1477,35 @@ def test_search_debounce_within_budget(page):
     assert library_wait < 100 and everywhere_wait < 100, (library_wait, everywhere_wait)
 
 
+def test_search_after_idle_uses_stale_index(page):
+    """After a minute away the first letter waited for the whole library
+    (384 KB) to come again. The index a minute old answers at once; the
+    fresh one comes in the background."""
+    page.evaluate("labIndex().then(() => true)")  # the page's own load is over
+    page.evaluate(
+        """(rows) => {
+            labTracks = JSON.parse(rows);
+            labTracksAt = Date.now() - 120000;
+            window.__refreshed = 0;
+            const real = window.fetch;
+            window.fetch = (url, options) => {
+                if (String(url).startsWith('/api/library?limit=100000')) {
+                    window.__refreshed += 1;
+                    return new Promise((ok) => setTimeout(() => ok(new Response(rows,
+                        {headers: {'Content-Type': 'application/json'}})), 3000));
+                }
+                return real(url, options);
+            };
+        }""",
+        _fake_rows(30),
+    )
+    page.evaluate("switchView('viewSearch')")
+    page.locator("#searchEverywhere").fill("Song 17")
+    page.wait_for_selector("#searchBody .track-title", timeout=1500)
+    assert "Song 17" in page.locator("#searchBody .track-title").all_inner_texts()
+    assert page.evaluate("window.__refreshed") == 1
+
+
 def test_shuffle_offers_plain_and_smart(page):
     open_library(page)
     page.locator("#libraryShuffle").click()

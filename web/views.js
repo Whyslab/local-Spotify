@@ -163,9 +163,13 @@ let labTracks = null;
 let labTracksAt = 0;
 let labTracksPromise = null;
 
-function labIndex() {
+/* stale: индекс старше минуты отдать сразу, а свежий качать в фоне. Так —
+ * только поиску: после минуты простоя первая буква ждала всю фонотеку
+ * (384 КБ). Остальным — свежий: страница артиста сразу после скачивания
+ * иначе показала бы его без нового трека. */
+function labIndex(stale = false) {
     if (labTracks && Date.now() - labTracksAt < 60000) return Promise.resolve(labTracks);
-    if (labTracksPromise) return labTracksPromise;
+    if (labTracksPromise) return stale && labTracks ? Promise.resolve(labTracks) : labTracksPromise;
     labTracksPromise = fetch("/api/library?limit=100000&sort=new", { headers: headers() })
         .then((r) => (r.ok ? r.json() : labTracks || []))
         .then((rows) => {
@@ -175,7 +179,7 @@ function labIndex() {
         })
         .catch(() => labTracks || [])
         .finally(() => { labTracksPromise = null; });
-    return labTracksPromise;
+    return stale && labTracks ? Promise.resolve(labTracks) : labTracksPromise;
 }
 
 function groupArtists(rows) {
@@ -959,8 +963,14 @@ async function fillSearch() {
                 button("o-browse", () => openMoodPage(m.key), labCover(m.tracks[0].path, THUMB_LARGE, m.name), el("span", "", m.name))))) : null);
         return;
     }
-    const rows = await labIndex();
+    const rows = await labIndex(true);
     if (searchQueryText.trim().toLowerCase() !== q) return;  // набрали дальше
+    /* Ответили старым индексом — когда придёт свежий, выдача перерисуется. */
+    if (labTracksPromise) {
+        labTracksPromise.then((fresh) => {
+            if (fresh !== rows && searchQueryText.trim().toLowerCase() === q) fillSearch();
+        });
+    }
     const hit = (s) => (s || "").toLowerCase().includes(q);
     const tracks = rows.filter((t) => hit(t.title) || hit(t.artist) || hit(t.album)).slice(0, 60);
     const artists = groupArtists(rows).filter((a) => hit(a.name)).slice(0, 12);
