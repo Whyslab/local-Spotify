@@ -962,12 +962,6 @@ function shuffleTracks(tracks, noteId) {
     if (paths.length) loadShuffle("smart", "", noteId, paths);
 }
 
-/* Перемешать подборку, не запирая очередь внутри неё. */
-function shufflePlaylist() {
-    if (!player.playlist || !player.playlist.entries.length) return;
-    loadShuffle("smart", player.playlist.name, "playlistNote");
-}
-
 function togglePlay() {
     if (!player.queue.length) return;
     if (player.audio.paused && !player.audio.getAttribute("src") && player.index >= 0) {

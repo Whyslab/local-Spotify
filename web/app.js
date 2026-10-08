@@ -1004,11 +1004,6 @@ function groupIntoAlbums(rows) {
         a.artist.localeCompare(b.artist, "ru") || a.album.localeCompare(b.album, "ru"));
 }
 
-/* Альбом открывается своей страницей (views.js), а не поверх сетки. */
-function openAlbum(group) {
-    openAlbumPage(group);
-}
-
 /* ---------------- Обложки ----------------
  *
  * Обложка никогда не <img src>: /api/cover требует токен, а атрибут src

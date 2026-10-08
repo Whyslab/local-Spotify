@@ -1009,8 +1009,7 @@ async function fillSearch() {
     }
 })();
 
-/* Перемешать подборку — тоже с выбором. Кнопка в разметке звала
- * shufflePlaylist() (умное); теперь — меню. */
+/* Перемешать подборку — тоже с выбором (умное или простое). */
 function openPlaylistShuffle(anchor) {
     const name = player.playlist && player.playlist.name;
     if (!name) return;
