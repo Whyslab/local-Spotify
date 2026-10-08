@@ -523,8 +523,11 @@ async def post_probe(client: httpx.AsyncClient, manifest_path: Path, entry: dict
 # ---------------------------------------------------------------------------
 
 
-def db_readonly(path: Path) -> sqlite3.Connection:
-    con = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=30)
+def db_readonly(path: Path, *, immutable: bool = False) -> sqlite3.Connection:
+    # A finished copy (a nightly snapshot) is opened immutable: in WAL mode even
+    # mode=ro leaves -shm/-wal files next to it. The live database is never immutable.
+    flags = "immutable=1" if immutable else "mode=ro"
+    con = sqlite3.connect(f"{path.resolve().as_uri()}?{flags}", uri=True, timeout=30)
     con.row_factory = sqlite3.Row
     return con
 
@@ -540,10 +543,12 @@ def table_counts(db_path: Path) -> dict[str, int | None]:
     return counts
 
 
-def task_rows(db_path: Path, ids: list[int] | None = None) -> list[dict]:
+def task_rows(
+    db_path: Path, ids: list[int] | None = None, *, immutable: bool = False
+) -> list[dict]:
     if not db_path.is_file():
         return []
-    with contextlib.closing(db_readonly(db_path)) as con:
+    with contextlib.closing(db_readonly(db_path, immutable=immutable)) as con:
         if ids is None:
             rows = con.execute("SELECT id, url, status, result_path FROM tasks").fetchall()
         else:
@@ -552,7 +557,9 @@ def task_rows(db_path: Path, ids: list[int] | None = None) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def probe_rows(db_path: Path, manifest: dict | None, library_before: set[str]) -> dict[str, int]:
+def probe_rows(
+    db_path: Path, manifest: dict | None, library_before: set[str], *, immutable: bool = False
+) -> dict[str, int]:
     """Rows that belong to the probes: tasks by id or video, plays/features by path."""
     out = {"tasks": 0, "plays": 0, "audio_features": 0}
     if manifest is None or not db_path.is_file():
@@ -561,9 +568,11 @@ def probe_rows(db_path: Path, manifest: dict | None, library_before: set[str]) -
     videos = {video_id(e["link"]) for e in manifest.get("probes", [])} - {None}
     probe_paths = [p for p in manifest_result_paths(manifest) if p not in library_before]
     out["tasks"] = sum(
-        1 for r in task_rows(db_path) if r["id"] in ids or video_id(r["url"] or "") in videos
+        1
+        for r in task_rows(db_path, immutable=immutable)
+        if r["id"] in ids or video_id(r["url"] or "") in videos
     )
-    with contextlib.closing(db_readonly(db_path)) as con:
+    with contextlib.closing(db_readonly(db_path, immutable=immutable)) as con:
         for table in ("plays", "audio_features"):
             for path in probe_paths:
                 out[table] += con.execute(
@@ -802,7 +811,7 @@ def db_snapshot_check(paths: Paths, manifest: dict, library_before: set[str]) ->
     return {
         "checked": True,
         "file": newest.name,
-        "rows": probe_rows(newest, manifest, library_before),
+        "rows": probe_rows(newest, manifest, library_before, immutable=True),
     }
 
 

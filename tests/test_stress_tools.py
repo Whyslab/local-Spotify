@@ -569,6 +569,30 @@ def test_residue_is_red_when_navidrome_count_is_unknown(paths):
     assert "check by hand" in problems[0]
 
 
+def test_nightly_snapshot_check_finds_probe_and_leaves_no_files(paths):
+    """backup.sh copies adder.db in WAL mode; reading the copy must not write next to it."""
+    manifest = stress.new_manifest([PROBE_1], None)
+    manifest["probes"][0].update(task_ids=[11], result_path="Probe/Singles/One.m4a")
+    manifest["cleaned_at"] = (datetime.now().astimezone() - timedelta(hours=1)).isoformat()
+    sql(paths.db, "INSERT INTO tasks(id, url, status) VALUES(11, ?, 'done')", (PROBE_1,))
+    paths.db_snapshots.mkdir()
+    nightly = paths.db_snapshots / "adder_20261003_030600.db"
+    source, copy = sqlite3.connect(paths.db), sqlite3.connect(nightly)
+    try:
+        source.backup(copy)
+        assert copy.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+    finally:
+        source.close()
+        copy.close()
+    nightly.with_name(nightly.name + "-shm").unlink(missing_ok=True)
+    nightly.with_name(nightly.name + "-wal").unlink(missing_ok=True)
+
+    check = stress.db_snapshot_check(paths, manifest, set())
+    assert check["checked"] is True
+    assert check["rows"]["tasks"] == 1
+    assert sorted(p.name for p in paths.db_snapshots.iterdir()) == [nightly.name]
+
+
 # ---------------------------------------------------------------------------
 # The isolated instance for cold covers
 # ---------------------------------------------------------------------------
