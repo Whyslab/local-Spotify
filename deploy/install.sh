@@ -40,12 +40,14 @@ mkdir -p "$HOME/.config/systemd/user"
 # service reads adder/.env, not this shell: a LIBRARY_PATH exported here but
 # not in .env would open the unit's writable paths on a folder the service
 # never uses, and close them on the one it does.
-LIBRARY_PATH_VALUE="$(env_value LIBRARY_PATH)"
+# The trailing "x" keeps a trailing newline, which $(...) would drop unseen.
+LIBRARY_PATH_VALUE="$(env_value LIBRARY_PATH; printf x)"
+LIBRARY_PATH_VALUE="${LIBRARY_PATH_VALUE%x}"
 # The path goes into unit files and, with sudo, into Navidrome's config: a quote,
 # a percent sign or a control character (dotenv turns "\n" into a newline) could
-# add lines to them.
-if [[ "$LIBRARY_PATH_VALUE" =~ [[:cntrl:]\"%] ]]; then
-  echo "ERROR: LIBRARY_PATH in adder/.env contains a quote, % or a control character." >&2
+# add lines to them, and a backslash is an escape in both.
+if [[ "$LIBRARY_PATH_VALUE" =~ [[:cntrl:]\"%\\] ]]; then
+  echo "ERROR: LIBRARY_PATH in adder/.env contains a quote, %, a backslash or a control character." >&2
   exit 1
 fi
 LIBRARY_PATH_VALUE="${LIBRARY_PATH_VALUE:-$HOME/Music/Normalized Library}"

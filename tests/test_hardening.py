@@ -279,6 +279,38 @@ def test_install_env_value_matches_dotenv(tmp_path):
         assert got == (expected.get(key) or ""), key
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        r'"/srv/a\\b"',  # a backslash: an escape in Navidrome's TOML and the unit
+        r'"/srv/a\"b"',
+        "/srv/100%",
+        r'"/srv/music\n"',  # dotenv turns it into a newline; $(...) would eat it
+        r'"/srv/a\nb"',
+    ],
+)
+def test_install_refuses_a_library_path_that_breaks_the_configs(tmp_path, value):
+    import subprocess
+    import sys
+
+    install = (Path(__file__).resolve().parent.parent / "deploy" / "install.sh").read_text()
+    start = install.index("env_value() {")
+    function = install[start : install.index("\n}\n", start) + 3]
+    check_from = install.index('LIBRARY_PATH_VALUE="$(env_value LIBRARY_PATH')
+    check = install[check_from : install.index("\nfi\n", check_from) + 4]
+    repo = tmp_path / "repo"
+    (repo / "adder").mkdir(parents=True)
+    (repo / ".venv" / "bin").mkdir(parents=True)
+    (repo / ".venv" / "bin" / "python").symlink_to(sys.executable)
+    (repo / "adder" / ".env").write_text(f"LIBRARY_PATH={value}\n", encoding="utf-8")
+    script = f'REPO="$1"\n{function}\n{check}\necho "accepted: [$LIBRARY_PATH_VALUE]"'
+
+    run = subprocess.run(["bash", "-c", script, "_", str(repo)], capture_output=True, text=True)
+
+    assert run.returncode == 1, run.stdout
+    assert "LIBRARY_PATH in adder/.env contains" in run.stderr
+
+
 def test_backup_rotation_ignores_foreign_and_odd_names(tmp_path):
     """Rotation parsed ls: a name with a space could make it delete elsewhere."""
     import os
