@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Как быстро открывается и листается окно плеера на ноутбуке (WebKitGTK).
 
-Окно — это desktop/local-spotify.py, и меряется оно целиком: от запуска
-процесса (Python, GTK, WebKit) до метки «app-ready» на странице. Окно
-запускается в режиме замера (LOCAL_SPOTIFY_PERF=1), печатает строку
+Окно — это desktop/local-spotify.py. Цель считается от начала загрузки
+страницы до метки «app-ready» (по часам самой страницы); запуск процесса до
+неё (Python, GTK, WebKit) — отдельной строкой start_*, без цели: голые GTK и
+WebKit с пустой страницей уже занимают ~0.6 с (замер и решение 08.10.2026).
+Окно запускается в режиме замера (LOCAL_SPOTIFY_PERF=1), печатает строку
 «PERF {…}» и закрывается само.
 
 * **с нуля** — каждый запуск с новым пустым профилем WebKit (временные
@@ -111,6 +113,14 @@ def launch(
     return ready["wall_ms"] - started, events
 
 
+def split_start(total_ms: float, events: list[dict]) -> tuple[float, float]:
+    """(страница, запуск процесса) в мс: страница — от начала её загрузки до
+    «app-ready», запуск — всё, что было до неё."""
+    ready = next(e for e in events if e.get("event") == "ready")
+    page = float(ready["ready_ms"])
+    return page, total_ms - page
+
+
 def errors_of(events: list[dict]) -> list[str]:
     return [e.get("message", "?") for e in events if e.get("event") == "error"]
 
@@ -157,18 +167,24 @@ def measure(args, token: str, display: str) -> int:
                 print(f"запуск не удался: {exc}", file=sys.stderr)
                 return None, []
 
-        cold = [attempt(root / f"cold-{i}")[0] for i in range(args.runs)]
+        def page_and_start(profile: Path) -> tuple[float | None, float | None]:
+            total, events = attempt(profile)
+            return (None, None) if total is None else split_start(total, events)
+
+        cold = [page_and_start(root / f"cold-{i}") for i in range(args.runs)]
         warm_profile = root / "warm"
         attempt(warm_profile)  # прогрев: кэш, service worker, localStorage
-        warm = [attempt(warm_profile)[0] for _ in range(args.runs)]
+        warm = [page_and_start(warm_profile) for _ in range(args.runs)]
         _, events = attempt(warm_profile, scroll=True, timeout=180)
 
     scroll = next((e for e in events if e.get("event") == "scroll"), {})
     gaps = scroll.get("frame_gaps_over_50ms")
     results = {
         "window": {
-            "ready_cold": stats(cold),
-            "ready_warm": stats(warm),
+            "ready_cold": stats([page for page, _ in cold]),
+            "ready_warm": stats([page for page, _ in warm]),
+            "start_cold": stats([start for _, start in cold]),
+            "start_warm": stats([start for _, start in warm]),
             "long_tasks": stats([] if gaps is None else [float(gaps)]),
         }
     }

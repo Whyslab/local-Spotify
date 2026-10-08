@@ -105,3 +105,25 @@ def test_window_perf_lines_are_parsed_and_other_output_ignored():
     events = measure_window.parse_perf(lines)
     assert [e["event"] for e in events] == ["ready", "error"]
     assert measure_window.errors_of(events) == ["boom"]
+
+
+def test_window_ready_counts_from_page_start():
+    """The window's start was measured from the process start, and bare GTK
+    with WebKit and an empty page already took 0.6 s of the 0.5 s goal. The
+    goal now counts from the page's own start (decision 08.10.2026); the
+    process start is reported beside it, without a goal."""
+    import sys
+
+    sys.path.insert(0, str(SCRIPT.parent))
+    import measure_ui
+    import measure_window
+
+    events = [{"event": "ready", "ready_ms": 371.0, "wall_ms": 5000.0}]
+    assert measure_window.split_start(994.0, events) == (371.0, 623.0)
+    results = {
+        "window": {
+            "ready_warm": measure_ui.stats([371.0]),
+            "start_warm": measure_ui.stats([623.0]),
+        }
+    }
+    assert measure_ui.misses(results) == []
