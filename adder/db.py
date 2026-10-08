@@ -118,6 +118,13 @@ def db_init():
     # needing a migration step anyone has to remember to run.
     with suppress(sqlite3.OperationalError):
         db_exec("ALTER TABLE plays ADD COLUMN mode TEXT DEFAULT 'manual'")
+    # When the device says listening started; a resend of the same play repeats it.
+    with suppress(sqlite3.OperationalError):
+        db_exec("ALTER TABLE plays ADD COLUMN heard_at REAL")
+    db_exec(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_plays_heard "
+        "ON plays(path, heard_at, played_seconds) WHERE heard_at IS NOT NULL"
+    )
     db_exec("CREATE INDEX IF NOT EXISTS idx_plays_played_at ON plays(played_at)")
 
     # Measured by scripts/analyze_audio.py. Kept in the same database as the

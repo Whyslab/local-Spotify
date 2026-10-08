@@ -135,6 +135,14 @@ def test_a_play_sent_twice_is_recorded_once(client, monkeypatch):
     assert client.post("/api/plays", json=plain).status_code == 200
     assert len(db.db_query("SELECT id FROM plays WHERE path = 'A.m4a'")) == 4
 
+    # A clock a little ahead: the journal time is the arrival's, which differs
+    # between the send and the resend -- the play is still the same one.
+    ahead = {"path": "C.m4a", "played_seconds": 10.0, "heard_at": int(time.time()) + 2}
+    assert client.post("/api/plays", json=ahead).status_code == 200
+    time.sleep(1.1)
+    assert client.post("/api/plays", json=ahead).status_code == 200
+    assert len(db.db_query("SELECT id FROM plays WHERE path = 'C.m4a'")) == 1
+
 
 def test_play_journal_is_rate_limited(client, monkeypatch):
     """The endpoint is open on the LAN and a played track cannot arrive 60x a minute."""
