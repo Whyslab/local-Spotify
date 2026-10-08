@@ -163,6 +163,7 @@ def test_phone_latency_reaches_what_the_service_worker_fetches():
                 assert time.monotonic() - started >= 0.08
     finally:
         proxy.close()
+        proxy.close()  # twice is harmless (a failed run may close it again)
         server.close()
 
 

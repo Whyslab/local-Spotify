@@ -342,6 +342,9 @@ class DelayProxy:
         await sender
 
     def close(self) -> None:
+        if self.loop.is_closed():  # closed already
+            return
+
         async def stop() -> None:
             self.server.close()
             tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
@@ -380,9 +383,11 @@ class Session:
             raise
 
     def close(self) -> None:
-        self.browser.close()
-        if self.proxy is not None:
-            self.proxy.close()
+        try:
+            self.browser.close()
+        finally:
+            if self.proxy is not None:
+                self.proxy.close()
 
     def context(self, service_workers: str = "allow"):
         options: dict = {"service_workers": service_workers}
