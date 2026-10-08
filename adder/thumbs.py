@@ -86,7 +86,10 @@ def cover(path: Path, size: int) -> tuple[bytes, str] | None:
     if size <= 0:
         return library.embedded_cover(path)
     size = nearest(size)
-    stamp = _stamp(path)
+    try:
+        stamp = _stamp(path)
+    except OSError:
+        return None  # удалён, пока шёл запрос: обложки нет, как и было до отпечатка
     with _LOCK:
         known = _KNOWN.get(str(path))
     if known and known[0] == stamp:

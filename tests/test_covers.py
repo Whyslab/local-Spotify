@@ -306,6 +306,14 @@ def test_cached_thumbnail_skips_tag_parse(tmp_path, monkeypatch):
     assert thumbs.cover(track, 90) == first  # the nearest size, the same file
 
 
+def test_a_track_gone_mid_request_has_no_cover(tmp_path):
+    """Deleted between the library lookup and the stamp: "no cover" (404),
+    as before the stamp, not an error (500)."""
+    from adder import thumbs
+
+    assert thumbs.cover(tmp_path / "A" / "Singles" / "Gone.m4a", 96) is None
+
+
 def test_retagged_cover_gets_new_thumbnail(tmp_path):
     """A new cover keeps the file's mtime (it is the "added" date), but not
     its ctime: the stamp changes and the new picture is shrunk."""
