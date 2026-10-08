@@ -109,6 +109,33 @@ def test_play_journal_records_and_summarises(client):
     assert stats["distinct_tracks"] == 2
 
 
+def test_a_play_sent_twice_is_recorded_once(client, monkeypatch):
+    """The answer can be lost after the row is written (or two windows send one
+    queue): the same play, by its heard_at, is not a second play."""
+    import time
+
+    from adder import app as app_module
+    from adder import db, listenbrainz
+
+    app_module._PLAYS_WINDOW.clear()
+    monkeypatch.setattr(app_module.config, "LISTENBRAINZ_TOKEN", "lb-token")
+    monkeypatch.setattr(
+        library, "library_index", lambda: [{"path": "A.m4a", "artist": "A", "title": "B"}]
+    )
+    heard = int(time.time()) - 600
+    body = {"path": "A.m4a", "played_seconds": 200.0, "duration": 248, "heard_at": heard}
+    assert client.post("/api/plays", json=body).status_code == 200
+    assert client.post("/api/plays", json=body).status_code == 200
+    assert len(db.db_query("SELECT id FROM plays WHERE path = 'A.m4a'")) == 1
+    assert listenbrainz.pending_count() == 1
+    # Heard again later is a new play; and one without heard_at cannot be told apart.
+    assert client.post("/api/plays", json={**body, "heard_at": heard + 300}).status_code == 200
+    plain = {"path": "A.m4a", "played_seconds": 1.0}
+    assert client.post("/api/plays", json=plain).status_code == 200
+    assert client.post("/api/plays", json=plain).status_code == 200
+    assert len(db.db_query("SELECT id FROM plays WHERE path = 'A.m4a'")) == 4
+
+
 def test_play_journal_is_rate_limited(client, monkeypatch):
     """The endpoint is open on the LAN and a played track cannot arrive 60x a minute."""
     from adder import app as app_module

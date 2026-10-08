@@ -1945,6 +1945,7 @@ def blind_results(authenticated: bool = Depends(verify_token)):
 _PLAYS_WINDOW: dict[str, list[float]] = {}
 _PLAYS_LOCK = threading.Lock()
 PLAYS_PER_MINUTE = 60
+_PLAYS_RECORD_LOCK = threading.Lock()
 
 
 _EVENTS_WINDOW: list[float] = []
@@ -1986,6 +1987,8 @@ def record_play(req: PlayRequest, authenticated: bool = Depends(verify_token)):
     """
     wall = time.time()
     started = wall - req.played_seconds
+    # Set only when the device's own time is used: then a resend is recognisable.
+    heard = False
     if req.heard_at is not None:
         if req.heard_at < wall - config.PLAY_HISTORY_DAYS * 86400:
             raise HTTPException(status_code=422, detail="heard_at is older than the journal keeps")
@@ -1999,8 +2002,11 @@ def record_play(req: PlayRequest, authenticated: bool = Depends(verify_token)):
                 extra={"task_id": "player"},
             )
         else:
-            # A clock slightly ahead would put the end of the play in the future.
+            # A clock slightly ahead would put the end of the play in the future;
+            # then the time is the arrival's again, and says nothing about identity.
+            heard = req.heard_at <= started
             started = min(req.heard_at, started)
+    ended = int(started + req.played_seconds)
 
     now = time.monotonic()
     with _PLAYS_LOCK:
@@ -2016,20 +2022,30 @@ def record_play(req: PlayRequest, authenticated: bool = Depends(verify_token)):
         window.append(now)
         _PLAYS_WINDOW["all"] = window
 
-    db.db_exec(
-        "INSERT INTO plays(path, played_at, played_seconds, duration, skipped, source, mode) "
-        "VALUES(?, datetime(?, 'unixepoch', 'localtime'), ?, ?, ?, ?, ?)",
-        (
-            req.path,
-            # played_at has always been when the play ended: kept so.
-            int(started + req.played_seconds),
-            req.played_seconds,
-            req.duration,
-            1 if req.skipped else 0,
-            req.source,
-            req.mode,
-        ),
-    )
+    with _PLAYS_RECORD_LOCK:
+        # The answer can be lost after the row is written, or two windows send
+        # one queue: the same path, end and length heard by the device is the
+        # same play. Without heard_at two plays cannot be told apart.
+        if heard and db.db_query(
+            "SELECT 1 FROM plays WHERE path = ? AND played_seconds = ? "
+            "AND played_at = datetime(?, 'unixepoch', 'localtime') LIMIT 1",
+            (req.path, req.played_seconds, ended),
+        ):
+            return {"recorded": req.path, "duplicate": True}
+        db.db_exec(
+            "INSERT INTO plays(path, played_at, played_seconds, duration, skipped, source, mode) "
+            "VALUES(?, datetime(?, 'unixepoch', 'localtime'), ?, ?, ?, ?, ?)",
+            (
+                req.path,
+                # played_at has always been when the play ended: kept so.
+                ended,
+                req.played_seconds,
+                req.duration,
+                1 if req.skipped else 0,
+                req.source,
+                req.mode,
+            ),
+        )
     # A listen by ListenBrainz's rule is queued for sending; never fails the journal.
     with suppress(Exception):
         listenbrainz.queue_listen(req.path, req.played_seconds, req.duration, started)
