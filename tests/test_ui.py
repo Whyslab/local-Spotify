@@ -437,7 +437,7 @@ def _scroller_of(selector):
 def test_fast_scroll_requests_only_visible_covers(page):
     """Flicking through the list asked for every cover it passed, 600 px
     ahead: a library of two hundred rows queued two hundred pictures. Now a
-    row asks only once the list has stopped (80 ms), a row that left the
+    row asks only once the list has stopped (50 ms), a row that left the
     screen gives its request up, and no more than four go at once."""
     page.evaluate(
         """async (list) => {

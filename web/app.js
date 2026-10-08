@@ -1047,6 +1047,7 @@ function coverUrl(key, url, signal) {
     }
     const pending = fetch(url, { headers: headers(), signal })
         .then(r => {
+            coverSlotFree(signal);
             if (r.ok) return r.blob();
             if (r.status === 404) return Date.now() + COVER_MISS_MS;
             return null;
@@ -1101,19 +1102,30 @@ function forgetCover(key) {
  * по «играть» ждала в очереди за картинками (замер 30.09.2026).
  *
  * И только когда прокрутка стоит (COVER_QUIET_MS): пролистанный список
- * просил обложку каждой строки, мимо которой проехал. Последние в очереди —
- * первыми: это то, что на экране сейчас. Не больше COVER_PARALLEL сразу —
+ * просил обложку каждой строки, мимо которой проехал. Первыми — строки,
+ * которые видны сейчас, за ними запас чуть ниже и выше экрана; среди равных —
+ * последние в очереди. Не больше COVER_PARALLEL сразу —
  * браузер держит к службе шесть соединений, и двум надо остаться звуку.
  * Строка, ушедшая с экрана, свой запрос отменяет.
+ *
+ * Место в очереди освобождают заголовки ответа, а не готовая картинка: тело
+ * миниатюры уже пришло, а чтение его и вставка ждали основной поток ещё
+ * 20–35 мс на каждый запрос (замер 08.10.2026).
  *
  * whenCoverVisible(host, job): job(signal) — обещание; false из него значит
  * «не сделано» (отменили), и строка попросит снова, вернувшись на экран. */
 const COVER_PARALLEL = 4;
-const COVER_QUIET_MS = 80;
+const COVER_QUIET_MS = 50;
 const coverWaiting = [];
 let coverBusy = 0;
 let coverTimer = 0;
 let lastScrollAt = 0;
+const coverSlots = new WeakMap();  // signal запроса → освободить его место
+
+function coverSlotFree(signal) {
+    const free = signal && coverSlots.get(signal);
+    if (free) free();
+}
 
 document.addEventListener("scroll", () => {
     lastScrollAt = performance.now();
@@ -1140,10 +1152,34 @@ const coverObserver = "IntersectionObserver" in window
     }, { rootMargin: "200px 0px" })
     : null;
 
+/* Видна ли строка сейчас, без запаса, — его отмечает второй наблюдатель.
+ * Спрашивать положение у самой строки нельзя: после каждой вставленной
+ * картинки это пересчитывало раскладку страницы (на телефоне — десятки мс). */
+const coverOnScreen = coverObserver
+    ? new IntersectionObserver((entries) => {
+        for (const entry of entries) entry.target._coverOnScreen = entry.isIntersecting;
+    })
+    : null;
+
 function whenCoverVisible(host, job) {
     if (!coverObserver) { job(); return; }
     host._coverJob = job;
     coverObserver.observe(host);
+    coverOnScreen.observe(host);
+}
+
+/* Занять место; вернуть «освободить» — его зовут заголовки ответа или конец. */
+function takeCoverSlot(signal) {
+    coverBusy += 1;
+    let held = true;
+    const free = () => {
+        if (!held) return;
+        held = false;
+        coverBusy -= 1;
+        pumpCovers();
+    };
+    coverSlots.set(signal, free);
+    return free;
 }
 
 function pumpCovers() {
@@ -1154,30 +1190,38 @@ function pumpCovers() {
         return;
     }
     while (coverBusy < COVER_PARALLEL && coverWaiting.length) {
-        const host = coverWaiting.pop();
+        const host = coverWaiting.splice(nextCoverIndex(), 1)[0];
         host._coverQueued = false;
         const job = host._coverJob;
         if (!job || !host.isConnected) continue;
         const controller = new AbortController();
         host._coverAbort = controller;
-        coverBusy += 1;
+        const free = takeCoverSlot(controller.signal);
         Promise.resolve()
             .then(() => job(controller.signal))
             .catch(() => !controller.signal.aborted)
             .then((done) => {
-                coverBusy -= 1;
                 host._coverAbort = null;
                 if (done !== false && !controller.signal.aborted) {
                     delete host._coverJob;
                     coverObserver.unobserve(host);
+                    coverOnScreen.unobserve(host);
                 } else if (host.isConnected) {
                     /* Снова наблюдать — наблюдатель сам скажет, на экране ли она. */
                     coverObserver.unobserve(host);
                     coverObserver.observe(host);
                 }
-                pumpCovers();
+                free();
             });
     }
+}
+
+/* Индекс той, что видна на экране, — с конца очереди; видимых нет — последняя. */
+function nextCoverIndex() {
+    for (let i = coverWaiting.length - 1; i >= 0; i--) {
+        if (coverWaiting[i]._coverOnScreen) return i;
+    }
+    return coverWaiting.length - 1;
 }
 
 function loadTrackCover(host, path, size = THUMB_SMALL) {
