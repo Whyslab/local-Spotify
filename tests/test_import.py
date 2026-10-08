@@ -175,12 +175,14 @@ def test_names_come_from_the_tags_when_there_are_tags(env):
     assert result.names.full_artist == "Артист"
 
 
-def test_names_fall_back_to_the_filename(env):
+@pytest.mark.parametrize("dash", ["-", "–", "—"])
+def test_names_fall_back_to_the_filename(env, dash):
     from adder import db
 
     db.db_init()
     db.db_exec("INSERT INTO tasks(id, url, status) VALUES(1, 'file:y', 'queued')")
-    path = make_audio(env / "Кино - Группа крови.mp3")
+    # A hyphen, an en dash or an em dash: the same convention as YouTube titles.
+    path = make_audio(env / f"Кино {dash} Группа крови.mp3")
 
     result = ingest.import_local_file(1, path, path.name)
 

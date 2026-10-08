@@ -124,13 +124,17 @@ def channel_artist(uploader: str) -> str:
     return name.strip()
 
 
+# "Artist - Title", and the same with an en or em dash: YouTube titles and
+# file names use all three. Only a dash with spaces round it; the one in
+# "T-Fest" is part of the name.
+ARTIST_TITLE_DASH = re.compile(r"\s[-–—]\s")
+
+
 def split_artist_title(meta: dict):
     artist = meta.get("artist") or meta.get("creator") or ""
     title = meta.get("track") or meta.get("title") or "Unknown"
-    # "Artist - Title", and the same with an en or em dash: YouTube titles use
-    # all three, and a missed split left the channel as the artist. Only a dash
-    # with spaces round it; the one in "T-Fest" is part of the name.
-    split = re.search(r"\s[-–—]\s", title) if not artist else None
+    # A missed split left the channel as the artist.
+    split = ARTIST_TITLE_DASH.search(title) if not artist else None
     if split:
         artist, title = title[: split.start()].strip(), title[split.end() :].strip()
     elif artist and not meta.get("track"):
@@ -1468,8 +1472,8 @@ def import_local_file(tid: int, source: Path, original_name: str) -> Downloaded:
     if not artist or not title:
         # "Artist - Title.mp3" is the one filename convention worth reading.
         stem = Path(original_name).stem
-        if " - " in stem:
-            guessed_artist, guessed_title = stem.split(" - ", 1)
+        if dash := ARTIST_TITLE_DASH.search(stem):
+            guessed_artist, guessed_title = stem[: dash.start()], stem[dash.end() :]
         else:
             guessed_artist, guessed_title = artist or "Unknown Artist", stem
         artist = artist or guessed_artist.strip()
