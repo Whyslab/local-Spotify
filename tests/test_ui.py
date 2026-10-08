@@ -515,6 +515,51 @@ def test_audio_not_starved_by_covers(page, monkeypatch):
     assert took < 700, took
 
 
+def test_finds_covers_share_the_cover_limit(page):
+    """Home asked for twelve finds' pictures and the next twelve at once, each
+    a trip to Deezer through the service: all six connections were held for a
+    second, and the library's covers (and the track's link) waited behind.
+    Now they go through the covers' queue, two at a time at most."""
+    finds = json.dumps(
+        {
+            "tracks": [
+                {"title": f"Song {i}", "artist": f"Band {i}",
+                 "cover": f"https://cdn-images.dzcdn.net/images/cover/{i:032x}/500x500.jpg"}
+                for i in range(12)
+            ]
+        }
+    )  # fmt: skip
+    page.evaluate(
+        """async (finds) => {
+            const c = window.__finds = {inflight: 0, peak: 0, finds: 0, findsPeak: 0};
+            const real = window.fetch;
+            const png = await (await real('/static/icon-180.png')).blob();
+            window.fetch = (url, options = {}) => {
+                const u = String(url);
+                if (u.startsWith('/api/discover-external?')) {
+                    return Promise.resolve(new Response(finds, {headers: {'Content-Type': 'application/json'}}));
+                }
+                const find = u.startsWith('/api/web-cover?');
+                if (!find && !u.startsWith('/api/cover?')) return real(url, options);
+                c.inflight += 1; c.peak = Math.max(c.peak, c.inflight);
+                if (find) { c.finds += 1; c.findsPeak = Math.max(c.findsPeak, c.finds); }
+                return new Promise((ok) => setTimeout(() => {
+                    c.inflight -= 1;
+                    if (find) c.finds -= 1;
+                    ok(new Response(png));
+                }, 150));
+            };
+            findsNext = null;
+        }""",
+        finds,
+    )
+    page.evaluate("switchView('viewHome')")
+    page.wait_for_function("document.querySelectorAll('.is-find img').length === 12")
+    page.wait_for_function("window.__finds.inflight === 0")
+    finds_seen = page.evaluate("window.__finds")
+    assert finds_seen["findsPeak"] <= 2 and finds_seen["peak"] <= 4, finds_seen
+
+
 def test_a_downloaded_track_plays_and_seeks_without_a_network(page):
     open_library(page)
     assert page.evaluate("offline.supported") is True

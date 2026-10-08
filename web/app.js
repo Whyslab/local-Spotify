@@ -847,8 +847,15 @@ function filterOpenPlaylist() {
  */
 let findsNext = null;
 
+/* Картинка находки — служба за ней ходит в Deezer, до секунды. Двенадцать
+ * находок и заготовка следующих просили двадцать четыре разом и держали все
+ * соединения к службе: обложки и ссылка на звук ждали за ними. Теперь — в
+ * общей очереди обложек, после видимых строк. */
 function findCover(url) {
-    return coverUrl("find:" + url, "/api/web-cover?url=" + encodeURIComponent(url) + "&size=" + THUMB_LARGE);
+    const key = "find:" + url;
+    const address = "/api/web-cover?url=" + encodeURIComponent(url) + "&size=" + THUMB_LARGE;
+    if (coverUrls.has(key)) return coverUrl(key, address);
+    return whenCoverIdle((signal) => coverUrl(key, address, signal));
 }
 
 function fetchFinds() {
@@ -1113,10 +1120,16 @@ function forgetCover(key) {
  * 20–35 мс на каждый запрос (замер 08.10.2026).
  *
  * whenCoverVisible(host, job): job(signal) — обещание; false из него значит
- * «не сделано» (отменили), и строка попросит снова, вернувшись на экран. */
+ * «не сделано» (отменили), и строка попросит снова, вернувшись на экран.
+ * whenCoverIdle(job) — картинка без строки (заготовка): в те же места, но
+ * после всех видимых и не больше двух сразу — каждая идёт до секунды, и
+ * строкам, пришедшим позже, должно остаться где пройти. Обещание с ответом job. */
 const COVER_PARALLEL = 4;
 const COVER_QUIET_MS = 50;
+const COVER_IDLE_PARALLEL = 2;
 const coverWaiting = [];
+const coverIdle = [];
+let coverIdleBusy = 0;
 let coverBusy = 0;
 let coverTimer = 0;
 let lastScrollAt = 0;
@@ -1168,6 +1181,13 @@ function whenCoverVisible(host, job) {
     coverOnScreen.observe(host);
 }
 
+function whenCoverIdle(job) {
+    return new Promise((resolve) => {
+        coverIdle.push({ job, resolve });
+        pumpCovers();
+    });
+}
+
 /* Занять место; вернуть «освободить» — его зовут заголовки ответа или конец. */
 function takeCoverSlot(signal) {
     coverBusy += 1;
@@ -1213,6 +1233,21 @@ function pumpCovers() {
                 }
                 free();
             });
+    }
+    while (coverBusy < COVER_PARALLEL && coverIdleBusy < COVER_IDLE_PARALLEL && coverIdle.length) {
+        const { job, resolve } = coverIdle.shift();
+        const signal = new AbortController().signal;
+        coverIdleBusy += 1;
+        const slot = takeCoverSlot(signal);
+        let held = true;
+        const free = () => {
+            if (held) { held = false; coverIdleBusy -= 1; }
+            slot();
+        };
+        coverSlots.set(signal, free);
+        const done = Promise.resolve().then(() => job(signal));
+        done.then(free, free);
+        resolve(done);
     }
 }
 
