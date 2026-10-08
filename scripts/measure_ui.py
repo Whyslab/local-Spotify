@@ -466,7 +466,7 @@ def measure_search(s: Session, runs: int, idle: bool) -> dict:
     return out
 
 
-def bad_response(status: int, path: str) -> bool:
+def bad_response(status: int, path: str, method: str = "GET") -> bool:
     """Ответ, который в смоуке считается ошибкой.
 
     404 на обложку — не ошибка: так сервис говорит «картинки нет» (у трека её
@@ -474,15 +474,13 @@ def bad_response(status: int, path: str) -> bool:
     Браузер всё равно пишет об этом в консоль — поэтому ответы судятся здесь,
     по адресу, а сообщения консоли «Failed to load resource» не считаются.
     """
-    if status >= 500:
-        return True
-    if status in (401, 403):
-        return True
+    if status < 400:
+        return False
     # «Картинки нет» по замыслу: обложка трека или подборки, фото артиста.
     picture = (
         path.startswith("/api/cover") or path.endswith("/cover") or path == "/api/artist-photo"
     )
-    return status == 404 and not picture
+    return not (status == 404 and picture and method == "GET")
 
 
 def smoke(pw, url: str, token: str) -> list[str]:
@@ -496,7 +494,7 @@ def smoke(pw, url: str, token: str) -> list[str]:
 
     def on_response(r) -> None:
         path = urlsplit(r.url).path
-        if bad_response(r.status, path):
+        if bad_response(r.status, path, r.request.method):
             problems.append(f"{r.status} {path}")
 
     try:

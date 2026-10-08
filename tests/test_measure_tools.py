@@ -80,6 +80,14 @@ def test_smoke_counts_a_missing_cover_as_fine_and_a_missing_page_as_not():
     assert measure_ui.bad_response(500, "/api/cover")
     assert measure_ui.bad_response(401, "/api/library")
     assert not measure_ui.bad_response(200, "/api/home")
+    # Any other refusal is a broken click: a malformed body, a wrong method, a
+    # conflict, the rate limit -- the sweep of every control relies on this.
+    for status in (400, 405, 409, 422, 429):
+        assert measure_ui.bad_response(status, "/api/plays"), status
+    assert measure_ui.bad_response(400, "/api/cover")
+    # Only reading a picture may find none; uploading or removing one may not.
+    assert measure_ui.bad_response(404, "/api/artist-photo", "DELETE")
+    assert measure_ui.bad_response(404, "/api/playlists/X/cover", "POST")
 
 
 def test_window_perf_lines_are_parsed_and_other_output_ignored():

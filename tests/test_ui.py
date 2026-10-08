@@ -1747,12 +1747,7 @@ def test_every_control_on_every_screen_has_no_console_errors(page, server, size)
         if not response.url.startswith(server["url"]):
             return
         path = response.url.split(server["url"], 1)[-1].split("?")[0]
-        # 404 на фото артиста — тоже «картинки нет» (страница берёт обложку
-        # трека, см. app.artist_photo); правило measure_ui знает только обложки.
-        photo = path == "/api/artist-photo" and response.request.method == "GET"
-        if measure_ui.bad_response(response.status, path) and not (
-            photo and response.status == 404
-        ):
+        if measure_ui.bad_response(response.status, path, response.request.method):
             problems.append(f"{where[0]}: {response.status} {path}")
 
     page.on("console", on_console)
