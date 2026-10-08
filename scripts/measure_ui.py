@@ -167,7 +167,8 @@ COVER_PROBE = """
     const cover = url.includes("/api/cover");
     if (cover) window.__coverInflight++;
     const p = real.apply(this, arguments);
-    if (cover) p.finally(() => { window.__coverInflight--; });
+    // Отменённый (строка ушла с экрана) — тоже конец; отказ здесь не нужен.
+    if (cover) p.finally(() => { window.__coverInflight--; }).catch(() => {});
     return p;
   };
   // Обложка «в пути» — от вызова fetchTrackCover до вставки картинки или отказа:
@@ -175,12 +176,14 @@ COVER_PROBE = """
   addEventListener("DOMContentLoaded", () => {
     const orig = window.fetchTrackCover;
     if (typeof orig !== "function") return;
+    // Ответ обёрнутой отдаётся дальше: по нему очередь обложек (app.js)
+    // считает, сколько запросов в пути и сделан ли этот.
     window.fetchTrackCover = function (host, path, size) {
       host.__coverPending = true;
-      orig.apply(this, arguments);
-      const key = `track:${size}:${path}`;
-      const pending = typeof coverUrls !== "undefined" ? coverUrls.get(key) : null;
-      Promise.resolve(pending).finally(() => setTimeout(() => { host.__coverPending = false; }, 0));
+      const result = orig.apply(this, arguments);
+      Promise.resolve(result).catch(() => {})
+        .finally(() => setTimeout(() => { host.__coverPending = false; }, 0));
+      return result;
     };
   });
   window.__longTasks = [];
