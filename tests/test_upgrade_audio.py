@@ -94,6 +94,23 @@ def test_links_from_the_spotify_import_live_beside_the_database():
     assert "adder/known-links.csv" in (upgrade.REPO / ".gitignore").read_text().splitlines()
 
 
+def test_a_link_from_known_links_reaches_the_candidates(tmp_path):
+    """The file keeps the import's columns; its link is tried before a search."""
+    known = tmp_path / "known-links.csv"
+    known.write_text(
+        "position,name,artists,youtube_url\n"
+        '7,Бентли (prod. by FrozenGangBeatz),"PHARAOH, Other",'
+        "https://www.youtube.com/watch?v=UmNtLPJVQlk\n",
+        encoding="utf-8",
+    )
+    by_name = upgrade.csv_links(known)
+    tags = {"source": "", "artist": "PHARAOH • Other", "title": "Бентли (prod. by FrozenGangBeatz)"}
+    assert upgrade.candidates_for("PHARAOH/Singles/Бентли.m4a", tags, {}, by_name) == [
+        "https://www.youtube.com/watch?v=UmNtLPJVQlk"
+    ]
+    assert upgrade.csv_links(tmp_path / "missing.csv") == {}
+
+
 def test_known_links_come_first_and_are_not_repeated():
     tags = {"source": "https://youtu.be/one00000000", "artist": "A • B", "title": "Song"}
     links = {"A/Singles/Song.m4a": "https://www.youtube.com/watch?v=two00000000"}

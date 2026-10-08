@@ -626,6 +626,8 @@ def main() -> int:
     if RESCAN_PENDING.exists() and not args.dry_run:
         rescan_navidrome()  # left over from a run that was stopped
     links, uploads = known_links(args.db)
+    if not KNOWN_LINKS.exists():
+        logger.warning("No %s: those tracks are looked for by name.", KNOWN_LINKS)
     by_name = csv_links(KNOWN_LINKS)
     # A dry run keeps its own notes: its "not found" must not hide a track
     # from the real run.
