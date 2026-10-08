@@ -1986,12 +1986,20 @@ def record_play(req: PlayRequest, authenticated: bool = Depends(verify_token)):
     wall = time.time()
     started = wall - req.played_seconds
     if req.heard_at is not None:
-        if req.heard_at > wall + HEARD_AT_SKEW_SECONDS:
-            raise HTTPException(status_code=422, detail="heard_at is in the future")
         if req.heard_at < wall - config.PLAY_HISTORY_DAYS * 86400:
             raise HTTPException(status_code=422, detail="heard_at is older than the journal keeps")
-        # A clock slightly ahead would put the end of the play in the future.
-        started = min(req.heard_at, started)
+        if req.heard_at > wall + HEARD_AT_SKEW_SECONDS:
+            # A device clock set wrong: the time it sent means nothing, but the
+            # play is real -- it counts as of its arrival, as before heard_at.
+            logger.warning(
+                "Play of %s: heard_at %.0f s ahead of this clock, counted as of now",
+                req.path,
+                req.heard_at - wall,
+                extra={"task_id": "player"},
+            )
+        else:
+            # A clock slightly ahead would put the end of the play in the future.
+            started = min(req.heard_at, started)
 
     now = time.monotonic()
     with _PLAYS_LOCK:

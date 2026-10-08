@@ -981,9 +981,16 @@ def test_play_keeps_time_it_was_heard(client, app_module, monkeypatch):
     assert listened_at == int(heard)  # ListenBrainz: when listening started
     assert played_at == local(heard + 200)  # journal: when the play ended, as before
 
-    # Too far in the future (a broken clock) and older than the journal keeps.
+    # A clock far ahead (a phone set wrong) loses nothing: the play counts as
+    # of its arrival, as it did before the field existed.
+    before = time.time()
+    assert play(heard_at=before + 3600).status_code == 200
+    played_at, listened_at = last()
+    assert local(before) <= played_at <= local(time.time())
+    assert int(before) - 200 <= listened_at <= int(time.time()) - 200 + 1
+
+    # Older than the journal keeps, or not a time at all.
     count = len(db.db_query("SELECT id FROM plays"))
-    assert play(heard_at=time.time() + 3600).status_code == 422
     assert play(heard_at=time.time() - 31 * 86400).status_code == 422
     assert play(heard_at="yesterday").status_code == 422
     assert len(db.db_query("SELECT id FROM plays")) == count
@@ -1001,7 +1008,7 @@ def test_play_keeps_time_it_was_heard(client, app_module, monkeypatch):
     played_at, listened_at = last()
     assert local(before) <= played_at <= local(time.time())
     assert int(before) - 200 <= listened_at <= int(time.time()) - 200 + 1
-    assert listenbrainz.pending_count() == 3
+    assert listenbrainz.pending_count() == 4
 
 
 def test_shuffle_recency_follows_when_heard_not_when_sent(client, app_module, monkeypatch):
