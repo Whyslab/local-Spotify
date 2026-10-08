@@ -51,11 +51,16 @@ htmlcov/
 adder/adder.db
 
 # Runtime / migration state
-links_state.db
 *.db-shm
 *.db-wal
+# Personal data of the finished Spotify import (the files are gone, the
+# scripts too): ignored still, so a copy restored from a backup is not committed.
+links_state.db
 spotify_tracks_youtube.csv
 Monday.txt
+missing_tracks.csv
+missing_youtube.csv
+missing_links.db
 adder/tmp/
 scripts/tmp/
 
