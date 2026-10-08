@@ -216,30 +216,62 @@ BODY_LIMITS = {
     "/api/replace-file": 210 * 1024 * 1024,
 }
 COVER_BODY_LIMIT = 12 * 1024 * 1024
+# Every other body: JSON. FastAPI reads and parses it before verify_token runs,
+# so without a cap anyone on the network could make the service hold and parse
+# hundreds of megabytes without a token. The largest real one — a playlist's
+# whole order — is ~150 KB.
+DEFAULT_BODY_LIMIT = 2 * 1024 * 1024
+BODY_METHODS = ("POST", "PUT", "PATCH", "DELETE")
+
+
+class _BodyTooLarge(HTTPException):
+    """HTTPException: FastAPI turns any other error while reading a body into
+    400, and this one must stay 413."""
+
+    def __init__(self):
+        super().__init__(status_code=413, detail="Upload is too large")
 
 
 class UploadSizeLimit:
     """Plain ASGI, not @app.middleware: that one wraps every response, the
-    audio streams included, and only the request headers matter here."""
+    audio streams included, and only the request matters here."""
 
     def __init__(self, inner):
         self.inner = inner
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] == "http" and scope["method"] == "POST":
-            path = scope["path"]
-            limit = BODY_LIMITS.get(path)
-            if limit is None and path.startswith("/api/playlists/") and path.endswith("/cover"):
-                limit = COVER_BODY_LIMIT
-            if limit is not None:
-                length = dict(scope["headers"]).get(b"content-length", b"")
-                if not length.isdigit():
-                    answer = JSONResponse({"detail": "Content-Length is required"}, status_code=411)
-                    return await answer(scope, receive, send)
-                if int(length) > limit:
-                    answer = JSONResponse({"detail": "Upload is too large"}, status_code=413)
-                    return await answer(scope, receive, send)
-        await self.inner(scope, receive, send)
+        if scope["type"] != "http" or scope["method"] not in BODY_METHODS:
+            return await self.inner(scope, receive, send)
+        path = scope["path"]
+        limit = BODY_LIMITS.get(path) if scope["method"] == "POST" else None
+        if limit is None and scope["method"] == "POST" and path.startswith("/api/playlists/"):
+            limit = COVER_BODY_LIMIT if path.endswith("/cover") else None
+        length = dict(scope["headers"]).get(b"content-length", b"")
+        if limit is not None and not length.isdigit():
+            # Uploads say their size up front: refused before a byte is read.
+            answer = JSONResponse({"detail": "Content-Length is required"}, status_code=411)
+            return await answer(scope, receive, send)
+        limit = limit if limit is not None else DEFAULT_BODY_LIMIT
+        too_large = JSONResponse({"detail": "Upload is too large"}, status_code=413)
+        if length.isdigit() and int(length) > limit:
+            return await too_large(scope, receive, send)
+
+        # A body sent in chunks has no Content-Length: counted as it comes.
+        seen = 0
+
+        async def counted():
+            nonlocal seen
+            message = await receive()
+            if message["type"] == "http.request":
+                seen += len(message.get("body", b""))
+                if seen > limit:
+                    raise _BodyTooLarge
+            return message
+
+        try:
+            await self.inner(scope, counted, send)
+        except _BodyTooLarge:
+            await too_large(scope, receive, send)
 
 
 app.add_middleware(UploadSizeLimit)

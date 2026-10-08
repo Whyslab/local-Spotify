@@ -364,3 +364,27 @@ def test_backup_rotation_ignores_foreign_and_odd_names(tmp_path):
     assert (backups / "env_notes").exists()
     assert (backups / "env_x keep.txt").exists()
     assert len(list(backups.glob("env_[0-9]*"))) == 10
+
+
+def test_a_json_body_is_capped_before_it_is_read(client, monkeypatch):
+    """FastAPI reads and parses a JSON body before verify_token runs: without
+    a token, a 500 MB body to any POST was held in memory and parsed (security
+    review, 08.10.2026). Every body now has a cap: by Content-Length at once,
+    and by the bytes as they come for a body sent in chunks."""
+    from fastapi.testclient import TestClient
+
+    from adder import app as app_module
+
+    monkeypatch.setattr(app_module, "DEFAULT_BODY_LIMIT", 1000)
+    stranger = TestClient(client.app)
+    big = b'{"items": [' + b"0," * 1000 + b"0]}"
+
+    def chunks():
+        for start in range(0, len(big), 100):
+            yield big[start : start + 100]
+
+    assert stranger.post("/api/covers", content=big).status_code == 413
+    assert stranger.post("/api/covers", content=chunks()).status_code == 413
+    assert client.put("/api/playlists/x/tracks", content=big).status_code == 413
+    # Under the cap nothing changes: no token — 401.
+    assert stranger.post("/api/covers", json={"items": []}).status_code == 401
