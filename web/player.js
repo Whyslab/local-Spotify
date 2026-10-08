@@ -1822,17 +1822,10 @@ function loadPlaylistCover(host, name) {
      * буква. */
     /* Список подборки берём, только когда её обложка на экране: в рельсе на
      * телефоне её не видно вовсе, а «Monday» — это 150 КБ. */
-    const fallback = () => {
-        if (typeof coverObserver !== "undefined" && coverObserver) {
-            host._coverJob = fallbackNow;
-            coverObserver.observe(host);
-        } else {
-            fallbackNow();
-        }
-    };
-    const fallbackNow = () => playlistFirstTrack(name).then(path => {
+    const fallback = () => whenCoverVisible(host, fallbackNow);
+    const fallbackNow = (signal) => playlistFirstTrack(name).then(path => {
         if (!path) { letter(); return; }
-        coverUrl(`track:${THUMB_LARGE}:${path}`, "/api/cover?path=" + encodeURIComponent(path) + "&size=" + THUMB_LARGE)
+        return coverUrl(`track:${THUMB_LARGE}:${path}`, "/api/cover?path=" + encodeURIComponent(path) + "&size=" + THUMB_LARGE, signal)
             .then(url => {
                 if (!url) { letter(); return; }
                 const img = document.createElement("img");
@@ -1841,7 +1834,11 @@ function loadPlaylistCover(host, name) {
                 img.src = url;
                 host.replaceChildren(img);
             })
-            .catch(letter);
+            .catch((error) => {
+                if (error && error.name === "AbortError") return false;  // ушла с экрана
+                letter();
+                return true;
+            });
     });
     letter();
     /* Через общий кэш обложек: рельс перерисовывается каждым опросом, и без

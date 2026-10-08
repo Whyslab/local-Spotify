@@ -86,23 +86,19 @@ function labPlaylistCover(name) {
 function labArtistCover(name, fallbackPath, size, round) {
     const box = el("div", "o-cover" + (round ? " is-round" : ""));
     box.style.setProperty("--ph-hue", String(hueOf(name || fallbackPath || "?")));
-    const job = () => artistPhotoQueue(box, () => artistPhotoUrl(name, size)).then((url) => {
-        if (!box.isConnected) return;
+    const job = (signal) => artistPhotoQueue(box, () => artistPhotoUrl(name, size)).then((url) => {
+        if (!box.isConnected) return true;
         if (url) {
             const img = document.createElement("img");
             img.alt = "";
             img.src = url;
             box.replaceChildren(img);
         } else if (fallbackPath) {
-            fetchTrackCover(box, fallbackPath, size || THUMB_LARGE);
+            return fetchTrackCover(box, fallbackPath, size || THUMB_LARGE, signal);
         }
+        return true;
     });
-    if (typeof coverObserver !== "undefined" && coverObserver) {
-        box._coverJob = job;
-        coverObserver.observe(box);
-    } else {
-        job();
-    }
+    whenCoverVisible(box, job);
     return box;
 }
 

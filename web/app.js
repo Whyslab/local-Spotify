@@ -1034,7 +1034,7 @@ const COVER_MISS_MS = 10 * 60 * 1000;
 const THUMB_SMALL = 96;
 const THUMB_LARGE = 300;
 
-function coverUrl(key, url) {
+function coverUrl(key, url, signal) {
     const have = coverUrls.get(key);
     if (typeof have === "number") {
         if (Date.now() < have) return Promise.resolve(null);
@@ -1045,7 +1045,7 @@ function coverUrl(key, url) {
         coverUrls.set(key, have);
         return Promise.resolve(have);
     }
-    const pending = fetch(url, { headers: headers() })
+    const pending = fetch(url, { headers: headers(), signal })
         .then(r => {
             if (r.ok) return r.blob();
             if (r.status === 404) return Date.now() + COVER_MISS_MS;
@@ -1065,8 +1065,11 @@ function coverUrl(key, url) {
             trimCovers();
             return made;
         })
-        .catch(() => {
+        .catch((error) => {
             if (coverUrls.get(key) === pending) coverUrls.delete(key);
+            /* Отменённый — не «обложки нет»: строка ушла с экрана и попросит
+             * снова, когда вернётся. */
+            if (error && error.name === "AbortError") throw error;
             return null;
         });
     // Запрос кладём в кэш сразу, а не по возвращении: сетка рисует сто
@@ -1092,39 +1095,107 @@ function forgetCover(key) {
     coverUrls.delete(key);
 }
 
-/* Обложку строки просим, только когда строка подъезжает к экрану.
+/* Обложку строки просим, только когда строка на экране.
  * Раньше подборка Monday на 1124 трека запрашивала 1124 обложки разом:
  * открытие шло 4–9 с на ноутбуке и ~17 с на телефоне, а ссылка на трек
- * по «играть» ждала в очереди за картинками (замер 30.09.2026). */
+ * по «играть» ждала в очереди за картинками (замер 30.09.2026).
+ *
+ * И только когда прокрутка стоит (COVER_QUIET_MS): пролистанный список
+ * просил обложку каждой строки, мимо которой проехал. Последние в очереди —
+ * первыми: это то, что на экране сейчас. Не больше COVER_PARALLEL сразу —
+ * браузер держит к службе шесть соединений, и двум надо остаться звуку.
+ * Строка, ушедшая с экрана, свой запрос отменяет.
+ *
+ * whenCoverVisible(host, job): job(signal) — обещание; false из него значит
+ * «не сделано» (отменили), и строка попросит снова, вернувшись на экран. */
+const COVER_PARALLEL = 4;
+const COVER_QUIET_MS = 80;
+const coverWaiting = [];
+let coverBusy = 0;
+let coverTimer = 0;
+let lastScrollAt = 0;
+
+document.addEventListener("scroll", () => {
+    lastScrollAt = performance.now();
+}, { capture: true, passive: true });
+
 const coverObserver = "IntersectionObserver" in window
     ? new IntersectionObserver((entries) => {
         for (const entry of entries) {
-            if (!entry.isIntersecting) continue;
-            coverObserver.unobserve(entry.target);
-            const job = entry.target._coverJob;
-            delete entry.target._coverJob;
-            if (job) job();
+            const host = entry.target;
+            if (entry.isIntersecting) {
+                if (host._coverJob && !host._coverQueued && !host._coverAbort) {
+                    host._coverQueued = true;
+                    coverWaiting.push(host);
+                }
+                continue;
+            }
+            if (host._coverQueued) {
+                host._coverQueued = false;
+                coverWaiting.splice(coverWaiting.indexOf(host), 1);
+            }
+            if (host._coverAbort) host._coverAbort.abort();
         }
-    }, { rootMargin: "600px 0px" })
+        pumpCovers();
+    }, { rootMargin: "200px 0px" })
     : null;
 
-function loadTrackCover(host, path, size = THUMB_SMALL) {
-    const job = () => fetchTrackCover(host, path, size);
+function whenCoverVisible(host, job) {
     if (!coverObserver) { job(); return; }
     host._coverJob = job;
     coverObserver.observe(host);
 }
 
-function fetchTrackCover(host, path, size) {
-    coverUrl(`track:${size}:${path}`, "/api/cover?path=" + encodeURIComponent(path) + "&size=" + size)
+function pumpCovers() {
+    clearTimeout(coverTimer);
+    const quiet = performance.now() - lastScrollAt;
+    if (quiet < COVER_QUIET_MS) {
+        coverTimer = setTimeout(pumpCovers, COVER_QUIET_MS - quiet);
+        return;
+    }
+    while (coverBusy < COVER_PARALLEL && coverWaiting.length) {
+        const host = coverWaiting.pop();
+        host._coverQueued = false;
+        const job = host._coverJob;
+        if (!job || !host.isConnected) continue;
+        const controller = new AbortController();
+        host._coverAbort = controller;
+        coverBusy += 1;
+        Promise.resolve()
+            .then(() => job(controller.signal))
+            .catch(() => !controller.signal.aborted)
+            .then((done) => {
+                coverBusy -= 1;
+                host._coverAbort = null;
+                if (done !== false && !controller.signal.aborted) {
+                    delete host._coverJob;
+                    coverObserver.unobserve(host);
+                } else if (host.isConnected) {
+                    /* Снова наблюдать — наблюдатель сам скажет, на экране ли она. */
+                    coverObserver.unobserve(host);
+                    coverObserver.observe(host);
+                }
+                pumpCovers();
+            });
+    }
+}
+
+function loadTrackCover(host, path, size = THUMB_SMALL) {
+    whenCoverVisible(host, (signal) => fetchTrackCover(host, path, size, signal));
+}
+
+function fetchTrackCover(host, path, size, signal) {
+    return coverUrl(`track:${size}:${path}`, "/api/cover?path=" + encodeURIComponent(path) + "&size=" + size, signal)
         .then(url => {
-            if (!url) return;
+            if (!url) return true;
             const img = document.createElement("img");
             img.alt = "";
+            img.decoding = "async";
             img.src = url;
             host.replaceChildren(img);
+            return true;
         })
-        .catch(() => { /* остаётся буква */ });
+        .catch((error) => !(error && error.name === "AbortError"));  /* сбой — остаётся буква */
 }
 
 /* Фоновый опрос не должен стирать то, что человек только что открыл.

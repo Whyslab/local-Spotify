@@ -12,6 +12,7 @@ Needs the browser: `python -m playwright install chromium` (CI does this).
 from __future__ import annotations
 
 import importlib.util
+import json
 import socket
 import subprocess
 import threading
@@ -410,6 +411,108 @@ def test_where_volume_is_fixed_the_stream_is_asked_to_carry_the_gain(page):
         "streamUrlFor('Loud Band/Singles/Loud.opus').then(s => s.url)"
     )
     assert "norm" not in url  # the slider does it here
+
+
+def _fake_rows(n):
+    """A library of n rows as /api/library lists it, with no files behind it."""
+    return json.dumps(
+        [
+            {"path": f"Fake {i}/Singles/Song {i}.m4a", "title": f"Song {i}", "artist": f"Fake {i}",
+             "album": f"Song {i}", "albumartist": f"Fake {i}", "duration": 180, "track": 0,
+             "year": ""}
+            for i in range(n)
+        ]
+    )  # fmt: skip
+
+
+def _scroller_of(selector):
+    return f"""(() => {{
+        let node = document.querySelector({selector!r});
+        while (node && !(node.scrollHeight > node.clientHeight
+               && /auto|scroll/.test(getComputedStyle(node).overflowY))) node = node.parentElement;
+        return node || document.scrollingElement;
+    }})()"""
+
+
+def test_fast_scroll_requests_only_visible_covers(page):
+    """Flicking through the list asked for every cover it passed, 600 px
+    ahead: a library of two hundred rows queued two hundred pictures. Now a
+    row asks only once the list has stopped (80 ms), a row that left the
+    screen gives its request up, and no more than four go at once."""
+    page.evaluate(
+        """async (list) => {
+            const c = window.__covers = {asked: 0, inflight: 0, peak: 0, aborted: 0};
+            const real = window.fetch;
+            const png = await (await real('/static/icon-180.png')).blob();
+            window.fetch = (url, options = {}) => {
+                const u = String(url);
+                if (u.startsWith('/api/library?')) {
+                    return Promise.resolve(new Response(list, {headers: {'Content-Type': 'application/json'}}));
+                }
+                if (!u.startsWith('/api/cover?')) return real(url, options);
+                c.asked += 1; c.inflight += 1; c.peak = Math.max(c.peak, c.inflight);
+                return new Promise((ok, fail) => {
+                    const timer = setTimeout(() => { c.inflight -= 1; ok(new Response(png)); }, 120);
+                    if (options.signal) options.signal.addEventListener('abort', () => {
+                        clearTimeout(timer); c.inflight -= 1; c.aborted += 1;
+                        fail(new DOMException('aborted', 'AbortError'));
+                    });
+                });
+            };
+        }""",
+        _fake_rows(200),
+    )
+    page.evaluate("switchView('viewLibrary')")
+    page.wait_for_function("document.querySelectorAll('#library .track').length === 200")
+    page.evaluate(
+        f"""async () => {{
+            const box = {_scroller_of("#library")};
+            for (let i = 0; i < 40; i++) {{
+                box.scrollTop += 600;
+                await new Promise((r) => setTimeout(r, 16));
+            }}
+        }}"""
+    )
+    page.wait_for_timeout(1500)
+    covers = page.evaluate("window.__covers")
+    on_screen = page.evaluate(
+        """[...document.querySelectorAll('#library .track')].filter((row) => {
+            const r = row.getBoundingClientRect();
+            return r.bottom > 0 && r.top < innerHeight;
+        }).map((row) => !!row.querySelector('img'))"""
+    )
+    assert on_screen and all(on_screen), on_screen  # what is on screen did arrive
+    assert covers["peak"] <= 4, covers
+    assert covers["asked"] <= 2 * len(on_screen) + 20, covers
+
+
+def test_audio_not_starved_by_covers(page, monkeypatch):
+    """The browser keeps six connections to the service. Covers that take a
+    second each (a cold thumbnail) held all six, and the track's link waited
+    behind them; four at most leave room for the sound."""
+    monkeypatch.setattr(library, "embedded_cover", lambda path: time.sleep(1.5))
+    page.evaluate(
+        """(list) => {
+            const real = window.fetch;
+            window.fetch = (url, options) => String(url).startsWith('/api/library?')
+                ? Promise.resolve(new Response(list, {headers: {'Content-Type': 'application/json'}}))
+                : real(url, options);
+        }""",
+        _fake_rows(30),
+    )
+    page.evaluate("switchView('viewLibrary')")
+    page.wait_for_function("document.querySelectorAll('#library .track').length === 30")
+    page.wait_for_timeout(300)  # the covers are on their way
+    took = page.evaluate(
+        """(async () => {
+            const started = performance.now();
+            const r = await fetch('/api/stream-url?path=' + encodeURIComponent('Loud Band/Singles/Loud.opus'),
+                                  {headers: headers()});
+            await r.json();
+            return performance.now() - started;
+        })()"""
+    )
+    assert took < 700, took
 
 
 def test_a_downloaded_track_plays_and_seeks_without_a_network(page):
