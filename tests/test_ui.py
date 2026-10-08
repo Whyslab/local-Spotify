@@ -413,6 +413,58 @@ def test_where_volume_is_fixed_the_stream_is_asked_to_carry_the_gain(page):
     assert "norm" not in url  # the slider does it here
 
 
+def _controlled_by_worker(page):
+    page.evaluate("navigator.serviceWorker.ready.then(() => true)")
+    if not page.evaluate("!!navigator.serviceWorker.controller"):
+        page.reload()
+        page.wait_for_function(
+            "typeof switchView === 'function' && !!navigator.serviceWorker.controller"
+        )
+    return page.context.service_workers[0]
+
+
+def test_sw_answers_before_caching(page):
+    """The worker hands the answer over first and writes its copy after: the
+    page waited for the cache write (and the old-copy sweep) on every list.
+    A ?v= file never changes, so it comes from the cache without the network."""
+    worker = _controlled_by_worker(page)
+    worker.evaluate(
+        """() => {
+            const put = Cache.prototype.put;
+            Cache.prototype.put = function (...args) {
+                return new Promise((done) => setTimeout(() => done(put.apply(this, args)), 3000));
+            };
+            self.__fetched = [];
+            const real = self.fetch;
+            self.fetch = (request, options) => {
+                self.__fetched.push(String(request.url || request));
+                return real(request, options);
+            };
+        }"""
+    )
+    took = page.evaluate(
+        """(async () => {
+            const started = performance.now();
+            const response = await fetch('/api/playlists', {headers: headers()});
+            await response.json();
+            return performance.now() - started;
+        })()"""
+    )
+    assert took < 1500
+    page.wait_for_function(
+        "caches.open('api-v1').then(c => c.match('/api/playlists')).then(Boolean)"
+    )
+
+    stamped = page.evaluate(
+        "[...document.querySelectorAll('script[src*=\"?v=\"]')].map(s => s.getAttribute('src'))"
+    )
+    assert stamped
+    worker.evaluate("() => { self.__fetched = []; }")
+    for src in stamped:
+        assert page.evaluate(f"fetch({src!r}).then(r => r.status)") == 200
+    assert not [u for u in worker.evaluate("() => self.__fetched") if "?v=" in u]
+
+
 def _fake_rows(n):
     """A library of n rows as /api/library lists it, with no files behind it."""
     return json.dumps(

@@ -4,6 +4,8 @@
  *
  * 1. Сама страница (/, /static/*) — сначала сеть, без сети — последняя
  *    сохранённая копия. Сначала сеть, чтобы новая версия приходила сразу.
+ *    Файл с отпечатком (/static/app.js?v=…) не меняется никогда — его
+ *    сначала из хранилища, сеть только когда копии нет.
  * 2. Скачанные треки (/api/stream, /api/stream-url) — всегда с устройства:
  *    и без сети, и с ней (зачем качать второй раз). <audio> просит файл
  *    кусками (Range), и айфон без честного ответа 206 на кусок не играет
@@ -23,6 +25,8 @@ const COVERS = "offline-covers-v1";   // обложки скачанных тр�
 const KNOWN = [SHELL, API, AUDIO, META, COVERS];
 const NETWORK_TIMEOUT_MS = 6000;
 const API_MAX = 1500;                 // записей в API: старые вытесняются
+const TRIM_EVERY = 50;                // обрезка API — раз на столько записей
+let apiPuts = 0;
 const SERVER_DOWN = new Set([502, 503, 504]);
 
 // Списки, которые стоит помнить на случай без сети. Только GET.
@@ -90,12 +94,14 @@ self.addEventListener("fetch", (event) => {
         event.respondWith(serveStream(request, url));
     } else if (url.pathname === "/api/stream-url") {
         event.respondWith(serveStreamUrl(request, url));
+    } else if (url.pathname.startsWith("/static/") && url.searchParams.has("v")) {
+        event.respondWith(cacheFirst(event, request));
     } else if (url.pathname === "/" || url.pathname.startsWith("/static/")) {
-        event.respondWith(networkFirst(request, SHELL, true));
+        event.respondWith(networkFirst(event, request, SHELL, true));
     } else if (REMEMBERED.some((re) => re.test(url.pathname))) {
         // Поиск по фонотеке не помнится: каждое нажатие клавиши — своя запись.
         const search = url.pathname === "/api/library" && (url.searchParams.get("q") || "") !== "";
-        event.respondWith(search ? fetch(request) : networkFirst(request, API, false));
+        event.respondWith(search ? fetch(request) : networkFirst(event, request, API, false));
     }
 });
 
@@ -176,18 +182,22 @@ function withTimeout(promise, ms) {
  * и обрыв на 6-й превращал медленный ответ в ошибку. Ответ с ошибкой (401
  * после смены токена, 500) не сохраняется и не подменяется старой копией:
  * страница должна увидеть, что что-то не так. */
-async function networkFirst(request, cacheName, dropOldVersions) {
-    const cache = await caches.open(cacheName);
-    const network = fetch(request).then(async (response) => {
+async function networkFirst(event, request, cacheName, dropOldVersions) {
+    const network = fetch(request);
+    /* Копия пишется после ответа, а не до него: страница ждала запись в
+     * хранилище (и обход старых версий) на каждом списке. waitUntil держит
+     * worker живым, пока запись не кончится. Копия снимается раньше, чем
+     * страница начнёт читать ответ: этот обработчик стоит в очереди первым. */
+    const saved = network.then((response) => {
         if (response.ok && response.status === 200) {
-            const copy = response.clone();
-            if (dropOldVersions) await dropOtherVersions(cache, request.url);
-            await cache.put(request, copy);
-            if (cacheName === API) trimCache(cache, API_MAX);
+            return remember(cacheName, request, response.clone(), dropOldVersions);
         }
-        return response;
-    });
-    network.catch(() => { /* ответ уже отдан из копии — поздняя ошибка не нужна */ });
+        return undefined;
+    }).catch(() => { /* без копии — сохранится в следующий раз */ });
+    /* Из cacheFirst сюда приходят после await: спецификация это позволяет,
+     * пока ответ странице не отдан, но если браузер строже — запись всё равно
+     * идёт, а ответ странице не должен из-за этого сорваться. */
+    try { event.waitUntil(saved); } catch (e) { /* см. выше */ }
     // Копия ищется во всех хранилищах: обложка скачанного трека лежит в COVERS.
     const cached = await caches.match(request);
     if (!cached) return network;
@@ -197,6 +207,22 @@ async function networkFirst(request, cacheName, dropOldVersions) {
     } catch (error) {
         return cached;
     }
+}
+
+async function remember(cacheName, request, copy, dropOldVersions) {
+    const cache = await caches.open(cacheName);
+    if (dropOldVersions) await dropOtherVersions(cache, request.url);
+    await cache.put(request, copy);
+    /* Обход всех ключей — дорогой: не на каждую запись. Первая запись после
+     * запуска worker'а обрезает всегда — айфон усыпляет его быстро, и счётчик
+     * мог бы не дойти до TRIM_EVERY ни разу. */
+    if (cacheName === API && apiPuts++ % TRIM_EVERY === 0) await trimCache(cache, API_MAX);
+}
+
+/* Файл с отпечатком: копия есть — она и есть ответ, сеть не нужна. */
+async function cacheFirst(event, request) {
+    const cached = await caches.match(request);
+    return cached || networkFirst(event, request, SHELL, true);
 }
 
 /* Старые записи — первыми: Cache API хранит их в порядке добавления. */
