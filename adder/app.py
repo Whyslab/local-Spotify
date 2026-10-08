@@ -880,7 +880,7 @@ COVERS_MAX = 64
 
 
 class CoverItem(BaseModel):
-    path: str
+    path: str = Field(max_length=4096)
     size: int = Field(gt=0, le=thumbs.SIZES[-1])
 
 
@@ -904,12 +904,14 @@ def track_covers(req: CoversRequest, authenticated: bool = Depends(verify_token)
     items: list[dict] = []
     pictures: list[bytes] = []
     for item in req.items:
+        # Один негодный путь (NUL — ValueError из resolve()) — одна обложка
+        # «нет», а не 500 на весь экран.
         try:
             absolute = _audio_file(item.path)
-        except HTTPException:
+            art = thumbs.cover(absolute, item.size, make=False)
+        except (HTTPException, ValueError, OSError):
             items.append({"missing": True})
             continue
-        art = thumbs.cover(absolute, item.size, make=False)
         if art is None:
             items.append({"missing": True})
         elif isinstance(art, str):

@@ -456,3 +456,19 @@ def test_the_batch_is_guarded(client):
         {"items": [{"path": one, "size": 96}] * (app_module.COVERS_MAX + 1)},
     ):
         assert client.post("/api/covers", json=bad).status_code == 422
+
+
+def test_one_bad_path_does_not_fail_the_batch(client):
+    """A NUL byte made Path.resolve() raise ValueError, and the whole screen's
+    batch answered 500. It is one missing cover, like any path not found."""
+    one, _two, _bare = _library_tracks()
+    client.get("/api/cover", params={"path": one, "size": 96})
+    response = client.post(
+        "/api/covers",
+        json={"items": [{"path": "a\u0000b.m4a", "size": 96}, {"path": one, "size": 96}]},
+    )
+    assert response.status_code == 200
+    answers = _unpack(response.content)
+    assert answers[0] == "missing" and answers[1][0] == "image/jpeg"
+    long_path = {"items": [{"path": "a" * 5000, "size": 96}]}
+    assert client.post("/api/covers", json=long_path).status_code == 422
