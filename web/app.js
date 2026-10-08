@@ -1056,8 +1056,12 @@ function coverUrl(key, url, signal) {
     }
     const pending = fetch(url, { headers: headers(), signal })
         .then(r => {
-            coverSlotFree(signal);
-            if (r.ok) return r.blob();
+            /* Только картинка: после «нет» задача может спросить другую
+             * (фото артиста → обложка трека), и та шла бы без места. */
+            if (r.ok) {
+                coverSlotFree(signal);
+                return r.blob();
+            }
             if (r.status === 404) return Date.now() + COVER_MISS_MS;
             return null;
         })

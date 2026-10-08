@@ -86,7 +86,8 @@ function labPlaylistCover(name) {
 function labArtistCover(name, fallbackPath, size, round) {
     const box = el("div", "o-cover" + (round ? " is-round" : ""));
     box.style.setProperty("--ph-hue", String(hueOf(name || fallbackPath || "?")));
-    const job = (signal) => artistPhotoQueue(box, () => artistPhotoUrl(name, size)).then((url) => {
+    const job = (signal) => artistPhotoQueue(box, () => artistPhotoUrl(name, size, signal), signal).then((url) => {
+        if (signal && signal.aborted) return false;  // ушла с экрана — попросит, вернувшись
         if (!box.isConnected) return true;
         if (url) {
             const img = document.createElement("img");
@@ -105,21 +106,28 @@ function labArtistCover(name, fallbackPath, size, round) {
 /* Не больше двух фото за раз. Браузер держит к службе шесть соединений, а
  * первый показ фото — это вопрос к Deezer (не чаще раза в 0,15 с): быстро
  * пролистанный список из трёх сотен артистов занял бы все шесть, и звук
- * ждал бы в очереди за картинками. Ушедшую со страницы картинку не просим. */
+ * ждал бы в очереди за картинками. Ушедшую со страницы картинку не просим,
+ * а ушедшую с экрана (signal) — отменяем, и в очереди, и в пути: иначе она
+ * держала место до ответа Deezer, а видимые строки ждали за ней. */
 const artistPhotoWaiting = [];
 let artistPhotoBusy = 0;
 
-function artistPhotoQueue(box, ask) {
+function artistPhotoQueue(box, ask, signal) {
     return new Promise((resolve) => {
-        artistPhotoWaiting.push({ box, ask, resolve });
+        const entry = { box, ask, resolve, signal };
+        artistPhotoWaiting.push(entry);
+        if (signal) signal.addEventListener("abort", () => {
+            const at = artistPhotoWaiting.indexOf(entry);
+            if (at >= 0) { artistPhotoWaiting.splice(at, 1); resolve(null); }
+        }, { once: true });
         nextArtistPhoto();
     });
 }
 
 function nextArtistPhoto() {
     while (artistPhotoBusy < 2 && artistPhotoWaiting.length) {
-        const { box, ask, resolve } = artistPhotoWaiting.shift();
-        if (!box.isConnected) { resolve(null); continue; }
+        const { box, ask, resolve, signal } = artistPhotoWaiting.shift();
+        if (!box.isConnected || (signal && signal.aborted)) { resolve(null); continue; }
         artistPhotoBusy += 1;
         ask().catch(() => null).then((url) => {
             artistPhotoBusy -= 1;
@@ -129,9 +137,9 @@ function nextArtistPhoto() {
     }
 }
 
-function artistPhotoUrl(name, size) {
+function artistPhotoUrl(name, size, signal) {
     return coverUrl(`artist:${name}:${size || 0}`,
-        "/api/artist-photo?name=" + encodeURIComponent(name) + "&size=" + (size || 0));
+        "/api/artist-photo?name=" + encodeURIComponent(name) + "&size=" + (size || 0), signal);
 }
 
 /* Шапку поменяли — все размеры её фото в памяти страницы устарели. */

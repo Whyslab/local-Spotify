@@ -560,6 +560,56 @@ def test_playlist_header_shows_the_playlist_opened_last(page):
     assert shown == "B", shown
 
 
+def test_artist_photos_gone_from_screen_give_up_their_places(page):
+    """An artist's photo is a trip to Deezer, up to a second. Rows scrolled
+    away kept their places in the covers' queue until it came back, and the
+    rows now on screen waited behind them."""
+    page.evaluate("switchView('viewAdd')")  # no artists of the home page in the way
+    page.wait_for_timeout(300)
+    page.evaluate(
+        """async () => {
+            const started = window.__started = [];
+            const real = window.fetch;
+            window.fetch = (url, options = {}) => {
+                const u = String(url);
+                if (!u.startsWith('/api/artist-photo?')) return real(url, options);
+                started.push(new URLSearchParams(u.split('?')[1]).get('name'));
+                return new Promise((ok, fail) => {
+                    const timer = setTimeout(() => ok(new Response('', {status: 404})), 1500);
+                    if (options.signal) options.signal.addEventListener('abort', () => {
+                        clearTimeout(timer);
+                        fail(new DOMException('aborted', 'AbortError'));
+                    });
+                });
+            };
+            const box = document.createElement('div');
+            box.id = 'testArtists';
+            box.style.cssText = 'position:fixed;top:0;left:0;width:300px;z-index:99';
+            document.body.appendChild(box);
+            for (const name of ['Old 1', 'Old 2', 'Old 3', 'Old 4']) {
+                const cover = labArtistCover(name, '', 96, false);
+                cover.style.cssText = 'width:40px;height:40px';
+                box.appendChild(cover);
+            }
+        }"""
+    )
+    page.wait_for_function("window.__started.length >= 2")
+    page.evaluate(
+        """() => {
+            const box = document.getElementById('testArtists');
+            box.replaceChildren();
+            for (const name of ['New 1', 'New 2']) {
+                const cover = labArtistCover(name, '', 96, false);
+                cover.style.cssText = 'width:40px;height:40px';
+                box.appendChild(cover);
+            }
+        }"""
+    )
+    page.wait_for_timeout(500)
+    started = page.evaluate("window.__started")
+    assert "New 1" in started and "New 2" in started, started
+
+
 def test_audio_not_starved_by_covers(page, monkeypatch):
     """The browser keeps six connections to the service. Covers that take a
     second each (a cold thumbnail) held all six, and the track's link waited
