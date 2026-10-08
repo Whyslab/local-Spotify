@@ -663,23 +663,23 @@ def test_a_batch_picture_is_always_an_image(page):
     assert types == ["image/jpeg", "image/jpeg", "image/png", "missing"]
 
 
-@pytest.mark.parametrize("tail", [-2, 5])
-def test_a_batch_whose_pictures_do_not_add_up_is_not_believed(page, tail):
+@pytest.mark.parametrize(("tail", "length"), [(-2, 3), (5, 3), (0, -3), (0, "3")])
+def test_a_batch_whose_pictures_do_not_add_up_is_not_believed(page, tail, length):
     """The header's lengths are checked against what came: a cut-off answer
     (a dropped connection) gave cut-off pictures, kept for the session as
     covers that never show. Too few or too many bytes — the batch is "later",
     and the rows ask one by one."""
     got = page.evaluate(
-        """async (tail) => {
+        """async ([tail, length]) => {
             const head = new TextEncoder().encode(JSON.stringify({items: [
-                {type: 'image/png', length: 3}, {type: 'image/png', length: 3}]}));
+                {type: 'image/png', length}, {type: 'image/png', length: 3}]}));
             const size = new Uint8Array(4);
             new DataView(size.buffer).setUint32(0, head.length);
             const body = 'abcdef' + 'xxxxx'.slice(0, Math.max(0, tail));
             const bytes = await new Blob([size, head, body.slice(0, 6 + tail)]).arrayBuffer();
             try { unpackCovers(bytes); return 'believed'; } catch (e) { return 'refused'; }
         }""",
-        tail,
+        [tail, length],
     )
     assert got == "refused"
 
