@@ -6,6 +6,7 @@ in :mod:`adder.ingest`, the queue and its retry policy in :mod:`adder.queue`.
 """
 
 import hashlib
+import json
 import logging
 import math
 import os
@@ -338,7 +339,8 @@ class StaticCaching:
 app.add_middleware(StaticCaching)
 
 # Аудио и так сжато, и ответ на Range должен быть байтами самого файла.
-UNCOMPRESSED = ("/api/stream",)
+# Пачка обложек — это JPEG: сжимать его второй раз — только тратить процессор.
+UNCOMPRESSED = ("/api/stream", "/api/covers")
 
 
 class TextCompression:
@@ -869,6 +871,57 @@ def track_cover(path: str, size: int = 0, authenticated: bool = Depends(verify_t
         content=art[0],
         media_type=art[1],
         headers={"Cache-Control": "private, max-age=86400"},
+    )
+
+
+# Обложек в одном ответе: экран телефона — десяток строк, сетка альбомов на
+# большом экране — несколько десятков плиток с запасом.
+COVERS_MAX = 64
+
+
+class CoverItem(BaseModel):
+    path: str
+    size: int = Field(gt=0, le=thumbs.SIZES[-1])
+
+
+class CoversRequest(BaseModel):
+    items: list[CoverItem] = Field(max_length=COVERS_MAX)
+
+
+@app.post("/api/covers")
+def track_covers(req: CoversRequest, authenticated: bool = Depends(verify_token)):
+    """Обложки целого экрана одним ответом.
+
+    По одной каждая обложка — своя поездка по сети, не больше четырёх разом:
+    на телефоне десять строк на экране шли тремя кругами по 60 мс и больше.
+
+    Ответ — 4 байта длины заголовка, заголовок JSON {"items": [...]} в
+    порядке запроса и следом сами картинки: {"type", "length"} — картинка,
+    {"missing": true} — обложки нет, {"later": true} — миниатюру ещё делать
+    ffmpeg, её страница спросит у /api/cover сама. POST — потому что список
+    путей длинный; service worker его не трогает.
+    """
+    items: list[dict] = []
+    pictures: list[bytes] = []
+    for item in req.items:
+        try:
+            absolute = _audio_file(item.path)
+        except HTTPException:
+            items.append({"missing": True})
+            continue
+        art = thumbs.cover(absolute, item.size, make=False)
+        if art is None:
+            items.append({"missing": True})
+        elif isinstance(art, str):
+            items.append({"later": True})
+        else:
+            items.append({"type": art[1], "length": len(art[0])})
+            pictures.append(art[0])
+    head = json.dumps({"items": items}).encode()
+    return Response(
+        content=len(head).to_bytes(4, "big") + head + b"".join(pictures),
+        media_type="application/octet-stream",
+        headers={"Cache-Control": "no-store"},
     )
 
 

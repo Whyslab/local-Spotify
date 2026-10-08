@@ -16,6 +16,7 @@ import subprocess
 import threading
 from contextlib import suppress
 from pathlib import Path
+from typing import Literal, overload
 
 from . import ingest, library, runtime
 
@@ -30,6 +31,8 @@ _FFMPEG = threading.BoundedSemaphore(2)
 _KNOWN: dict[str, tuple[tuple[int, int, int], dict[int, str] | None]] = {}
 _KNOWN_MAX = 50_000
 _LOCK = threading.Lock()
+# «Миниатюры ещё нет, её делать ffmpeg»: ответ cover(..., make=False).
+LATER = "later"
 
 
 def nearest(size: int) -> int:
@@ -81,8 +84,16 @@ def _stamp(path: Path) -> tuple[int, int, int]:
     return st.st_mtime_ns, st.st_size, st.st_ctime_ns
 
 
-def cover(path: Path, size: int) -> tuple[bytes, str] | None:
-    """Обложка трека: ``size`` > 0 — миниатюра, 0 — как в файле; None — её нет."""
+@overload
+def cover(path: Path, size: int, make: Literal[True] = True) -> tuple[bytes, str] | None: ...
+@overload
+def cover(path: Path, size: int, make: Literal[False]) -> tuple[bytes, str] | str | None: ...
+def cover(path: Path, size: int, make: bool = True) -> tuple[bytes, str] | str | None:
+    """Обложка трека: ``size`` > 0 — миниатюра, 0 — как в файле; None — её нет.
+
+    ``make=False`` — только готовая миниатюра: если её надо делать, ответ
+    LATER, а не ожидание ffmpeg (пачка обложек экрана не ждёт одну холодную).
+    """
     if size <= 0:
         return library.embedded_cover(path)
     size = nearest(size)
@@ -107,6 +118,12 @@ def cover(path: Path, size: int) -> tuple[bytes, str] | None:
         _KNOWN[str(path)] = (stamp, names)
     if art is None:
         return None
+    if not make:
+        cached = runtime.THUMB_DIR / f"{_key(art[0], size)}.jpg"
+        try:
+            return cached.read_bytes(), "image/jpeg"
+        except OSError:
+            return LATER
     return shrink(art, size)
 
 

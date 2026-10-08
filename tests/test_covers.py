@@ -364,3 +364,95 @@ def test_the_nightly_run_prepares_every_track(tmp_path):
     for art in arts:
         for size in thumbs.PREPARED:
             assert (runtime.THUMB_DIR / f"{thumbs._key(art, size)}.jpg").is_file()
+
+
+# ---------------------------------------------------------------------------
+# A screen's covers in one answer
+# ---------------------------------------------------------------------------
+
+
+def _unpack(body: bytes) -> list:
+    """/api/covers: 4 bytes of header length, the JSON header, the pictures."""
+    import json
+
+    size = int.from_bytes(body[:4], "big")
+    at = 4 + size
+    out: list = []
+    for item in json.loads(body[4:at])["items"]:
+        if "length" in item:
+            out.append((item["type"], body[at : at + item["length"]]))
+            at += item["length"]
+        else:
+            out.append("later" if item.get("later") else "missing")
+    assert at == len(body)
+    return out
+
+
+def _library_tracks():
+    one = _track_with_cover(config.LIBRARY / "A" / "Singles" / "One.m4a", _jpeg("red"))
+    two = _track_with_cover(config.LIBRARY / "A" / "Singles" / "Two.m4a", _jpeg("blue"))
+    bare = config.LIBRARY / "A" / "Singles" / "Bare.m4a"
+    shutil.copy(Path(__file__).parent / "fixtures" / "tone.m4a", bare)
+    return [str(p.relative_to(config.LIBRARY)) for p in (one, two, bare)]
+
+
+def test_screen_covers_come_in_one_answer(client):
+    """On the phone each cover was a trip of its own, four at a time: ten rows
+    on screen were three round trips. Now the screen's covers come in one
+    answer, the same pictures /api/cover gives one by one."""
+    one, two, bare = _library_tracks()
+    singles = [client.get("/api/cover", params={"path": p, "size": 96}).content for p in (one, two)]
+    asked = [one, "../outside.m4a", two, bare, "A/Singles/Gone.m4a"]
+
+    response = client.post(
+        "/api/covers",
+        json={"items": [{"path": p, "size": 90 if p == two else 96} for p in asked]},
+        headers={"Accept-Encoding": "gzip"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "application/octet-stream"
+    assert "content-encoding" not in response.headers  # pictures are compressed already
+    assert _unpack(response.content) == [
+        ("image/jpeg", singles[0]),
+        "missing",
+        ("image/jpeg", singles[1]),
+        "missing",
+        "missing",
+    ]
+
+
+def test_the_batch_leaves_ffmpeg_to_single_requests(client, monkeypatch):
+    """A thumbnail still to be made holds the whole answer behind ffmpeg; the
+    batch says "later" for it, and that cover goes the old way, alone."""
+    from adder import thumbs
+
+    one, _two, _bare = _library_tracks()
+    real = thumbs.subprocess.run
+    made = []
+
+    def ffmpeg(*args, **kwargs):
+        made.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(thumbs.subprocess, "run", ffmpeg)
+    ask = {"items": [{"path": one, "size": 96}]}
+
+    assert _unpack(client.post("/api/covers", json=ask).content) == ["later"]
+    assert made == []
+    single = client.get("/api/cover", params={"path": one, "size": 96}).content
+    assert made == [1]
+    assert _unpack(client.post("/api/covers", json=ask).content) == [("image/jpeg", single)]
+
+
+def test_the_batch_is_guarded(client):
+    from adder import app as app_module
+
+    one, _two, _bare = _library_tracks()
+    fresh = TestClient(client.app)
+    assert fresh.post("/api/covers", json={"items": []}).status_code == 401
+    for bad in (
+        {"items": [{"path": one, "size": 0}]},
+        {"items": [{"path": one, "size": 96}] * (app_module.COVERS_MAX + 1)},
+    ):
+        assert client.post("/api/covers", json=bad).status_code == 422
