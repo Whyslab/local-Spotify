@@ -486,34 +486,88 @@ def _scroller_of(selector):
     }})()"""
 
 
+# A stand-in for the covers' server: answers /api/cover one by one and
+# /api/covers for a whole screen, after `delay` ms, and counts. `asked` — the
+# rows whose cover was asked, in order; `peak` — connections at once (single
+# requests and batches); `singlesPeak` — single requests at once. `batch`:
+# "ok", or "fail" (500); `later` — rows the batch answers "later" for.
+FAKE_COVERS_JS = """async ({list, delay = 120, batch = 'ok', later = [], libraryDelay = 0}) => {
+    const c = window.__covers = {asked: [], singles: 0, batches: 0, inflight: 0, peak: 0,
+                                 singlesInflight: 0, singlesPeak: 0, aborted: 0};
+    const real = window.fetch;
+    const png = await (await real('/static/icon-180.png')).blob();
+    const name = (path) => (path.match(/Song \\d+/) || [path])[0];
+    window.fetch = (url, options = {}) => {
+        const u = String(url);
+        if (list && u.startsWith('/api/library?')) {
+            const answer = () => new Response(list, {headers: {'Content-Type': 'application/json'}});
+            return new Promise((ok) => setTimeout(() => ok(answer()), libraryDelay));
+        }
+        const single = u.startsWith('/api/cover?');
+        if (!single && u !== '/api/covers') return real(url, options);
+        // Only the made-up rows: the player's and home's covers go to the server.
+        const fake = (path) => /Song \\d+/.test(path);
+        if (single ? !fake(decodeURIComponent(u)) : !JSON.parse(options.body).items.some((i) => fake(i.path))) {
+            return real(url, options);
+        }
+        let items = null;
+        if (single) {
+            c.singles += 1;
+            c.asked.push(name(decodeURIComponent(u)));
+            c.singlesInflight += 1;
+            c.singlesPeak = Math.max(c.singlesPeak, c.singlesInflight);
+        } else {
+            c.batches += 1;
+            items = JSON.parse(options.body).items;
+            for (const item of items) c.asked.push(name(item.path));
+        }
+        c.inflight += 1;
+        c.peak = Math.max(c.peak, c.inflight);
+        const done = () => { c.inflight -= 1; if (single) c.singlesInflight -= 1; };
+        return new Promise((ok, fail) => {
+            const timer = setTimeout(() => {
+                done();
+                if (single) { ok(new Response(png)); return; }
+                if (batch === 'fail') { ok(new Response('', {status: 500})); return; }
+                const head = {items: items.map((item) => later.includes(name(item.path))
+                    ? {later: true} : {type: 'image/png', length: png.size})};
+                const bytes = new TextEncoder().encode(JSON.stringify(head));
+                const size = new Uint8Array(4);
+                new DataView(size.buffer).setUint32(0, bytes.length);
+                const pictures = head.items.filter((item) => item.length).map(() => png);
+                ok(new Response(new Blob([size, bytes, ...pictures]),
+                    {headers: {'Content-Type': 'application/octet-stream'}}));
+            }, delay);
+            if (options.signal) options.signal.addEventListener('abort', () => {
+                clearTimeout(timer); done(); c.aborted += 1;
+                fail(new DOMException('aborted', 'AbortError'));
+            });
+        });
+    };
+}"""
+
+ON_SCREEN_ROWS_JS = """[...document.querySelectorAll('#library .track')].filter((row) => {
+    const r = row.getBoundingClientRect();
+    return r.bottom > 0 && r.top < innerHeight;
+})"""
+
+
+ON_SCREEN_COVERED_JS = f"""(() => {{
+    const rows = {ON_SCREEN_ROWS_JS};
+    return rows.length > 0 && rows.every((row) => row.querySelector('img'));
+}})()"""
+
+
+def _on_screen_covered(page):
+    return page.evaluate(f"{ON_SCREEN_ROWS_JS}.map((row) => !!row.querySelector('img'))")
+
+
 def test_fast_scroll_requests_only_visible_covers(page):
     """Flicking through the list asked for every cover it passed, 600 px
     ahead: a library of two hundred rows queued two hundred pictures. Now a
     row asks only once the list has stopped (50 ms), a row that left the
     screen gives its request up, and no more than four go at once."""
-    page.evaluate(
-        """async (list) => {
-            const c = window.__covers = {asked: 0, inflight: 0, peak: 0, aborted: 0};
-            const real = window.fetch;
-            const png = await (await real('/static/icon-180.png')).blob();
-            window.fetch = (url, options = {}) => {
-                const u = String(url);
-                if (u.startsWith('/api/library?')) {
-                    return Promise.resolve(new Response(list, {headers: {'Content-Type': 'application/json'}}));
-                }
-                if (!u.startsWith('/api/cover?')) return real(url, options);
-                c.asked += 1; c.inflight += 1; c.peak = Math.max(c.peak, c.inflight);
-                return new Promise((ok, fail) => {
-                    const timer = setTimeout(() => { c.inflight -= 1; ok(new Response(png)); }, 120);
-                    if (options.signal) options.signal.addEventListener('abort', () => {
-                        clearTimeout(timer); c.inflight -= 1; c.aborted += 1;
-                        fail(new DOMException('aborted', 'AbortError'));
-                    });
-                });
-            };
-        }""",
-        _fake_rows(200),
-    )
+    page.evaluate(FAKE_COVERS_JS, {"list": _fake_rows(200)})
     page.evaluate("switchView('viewLibrary')")
     page.wait_for_function("document.querySelectorAll('#library .track').length === 200")
     page.evaluate(
@@ -527,23 +581,19 @@ def test_fast_scroll_requests_only_visible_covers(page):
     )
     page.wait_for_timeout(1500)
     covers = page.evaluate("window.__covers")
-    on_screen = page.evaluate(
-        """[...document.querySelectorAll('#library .track')].filter((row) => {
-            const r = row.getBoundingClientRect();
-            return r.bottom > 0 && r.top < innerHeight;
-        }).map((row) => !!row.querySelector('img'))"""
-    )
+    on_screen = _on_screen_covered(page)
     assert on_screen and all(on_screen), on_screen  # what is on screen did arrive
     assert covers["peak"] <= 4, covers
-    assert covers["asked"] <= 2 * len(on_screen) + 20, covers
+    assert len(covers["asked"]) <= 2 * len(on_screen) + 20, covers
 
 
 @pytest.mark.parametrize(("protocol", "places"), [("h2", 8), ("http/1.1", 4), ("", 4)])
 def test_covers_at_once_follow_the_protocol(page, protocol, places):
     """Four at once is the HTTP/1.1 limit of six connections, two left for the
     sound. The phone gets the page through Tailscale over HTTP/2, one
-    connection for everything: there the screen's covers go eight at a time.
-    A browser that does not say its protocol is treated as HTTP/1.1."""
+    connection for everything: there covers asked one by one (the batch
+    failed here) go eight at a time. A browser that does not say its
+    protocol is treated as HTTP/1.1."""
     page.context.add_init_script(
         f"""Object.defineProperty(PerformanceNavigationTiming.prototype, 'nextHopProtocol',
             {{get: () => {protocol!r}}});"""
@@ -551,26 +601,60 @@ def test_covers_at_once_follow_the_protocol(page, protocol, places):
     page.set_viewport_size({"width": 1280, "height": 1400})  # more rows than places
     page.reload()
     page.wait_for_function("typeof switchView === 'function'")
-    page.evaluate(
-        """async (list) => {
-            const c = window.__covers = {inflight: 0, peak: 0};
-            const real = window.fetch;
-            const png = await (await real('/static/icon-180.png')).blob();
-            window.fetch = (url, options = {}) => {
-                const u = String(url);
-                if (u.startsWith('/api/library?')) {
-                    return Promise.resolve(new Response(list, {headers: {'Content-Type': 'application/json'}}));
-                }
-                if (!u.startsWith('/api/cover?')) return real(url, options);
-                c.inflight += 1; c.peak = Math.max(c.peak, c.inflight);
-                return new Promise((ok) => setTimeout(() => { c.inflight -= 1; ok(new Response(png)); }, 300));
-            };
-        }""",
-        _fake_rows(200),
-    )
+    page.evaluate(FAKE_COVERS_JS, {"list": _fake_rows(200), "delay": 300, "batch": "fail"})
     page.evaluate("switchView('viewLibrary')")
     page.wait_for_function("document.querySelectorAll('#library .track img').length >= 12")
-    assert page.evaluate("window.__covers.peak") == places
+    assert page.evaluate("window.__covers.singlesPeak") == places
+
+
+def test_screen_covers_come_in_one_request(page):
+    """Each cover was a request of its own, four at a time: on the phone ten
+    rows on screen were three round trips. The screen's covers now come in
+    one batch, the rows on screen first in it."""
+    page.set_viewport_size({"width": 390, "height": 664})
+    page.evaluate(FAKE_COVERS_JS, {"list": _fake_rows(200), "libraryDelay": 300})
+    page.evaluate("switchView('viewLibrary')")
+    page.wait_for_function(ON_SCREEN_COVERED_JS)
+    covers = page.evaluate("window.__covers")
+    on_screen = page.evaluate(
+        f"{ON_SCREEN_ROWS_JS}.map((row) => row.textContent.match(/Song \\d+/)[0])"
+    )
+    assert covers["batches"] == 1 and covers["singles"] == 0, covers
+    assert set(covers["asked"][: len(on_screen)]) == set(on_screen), (covers, on_screen)
+
+
+def test_the_same_track_twice_is_asked_once(page):
+    """One track on screen twice (a playlist may hold it twice): one picture
+    in the batch, and both rows show it."""
+    rows = json.loads(_fake_rows(200))
+    rows[1] = dict(rows[0])
+    page.evaluate(FAKE_COVERS_JS, {"list": json.dumps(rows)})
+    page.evaluate("switchView('viewLibrary')")
+    page.wait_for_function(ON_SCREEN_COVERED_JS)
+    asked = page.evaluate("window.__covers.asked")
+    assert asked.count("Song 0") == 1, asked
+
+
+def test_covers_fall_back_to_one_by_one(page):
+    """No batch (no network, the laptop asleep behind Tailscale, an error):
+    the covers go the old way, one by one, through the service worker's copy,
+    and no more of them at once than before."""
+    page.evaluate(FAKE_COVERS_JS, {"list": _fake_rows(200), "batch": "fail"})
+    page.evaluate("switchView('viewLibrary')")
+    page.wait_for_function(ON_SCREEN_COVERED_JS)
+    covers = page.evaluate("window.__covers")
+    assert covers["batches"] >= 1 and covers["singlesPeak"] <= 4, covers
+
+
+def test_a_cover_still_to_be_made_comes_alone(page):
+    """A thumbnail ffmpeg still has to make is "later" in the batch: that row
+    asks for its cover alone, and only that row."""
+    page.evaluate(FAKE_COVERS_JS, {"list": _fake_rows(200), "later": ["Song 0", "Song 1"]})
+    page.evaluate("switchView('viewLibrary')")
+    page.wait_for_function(ON_SCREEN_COVERED_JS)
+    covers = page.evaluate("window.__covers")
+    assert covers["singles"] == 2, covers
+    assert sorted(covers["asked"][-2:]) == ["Song 0", "Song 1"], covers
 
 
 def test_opened_list_asks_for_rows_on_screen_first(page):
@@ -579,33 +663,13 @@ def test_opened_list_asks_for_rows_on_screen_first(page):
     queue was served, and the rows the eye was on waited a whole round.
     Phone width: there the page itself scrolls, and the margin is real."""
     page.set_viewport_size({"width": 390, "height": 664})
-    page.evaluate(
-        """async (list) => {
-            const asked = window.__asked = [];
-            const real = window.fetch;
-            const png = await (await real('/static/icon-180.png')).blob();
-            window.fetch = (url, options = {}) => {
-                const u = String(url);
-                if (u.startsWith('/api/library?')) {
-                    // Late enough that no scroll is fresh: the queue is served at once.
-                    return new Promise((ok) => setTimeout(() => ok(new Response(list,
-                        {headers: {'Content-Type': 'application/json'}})), 300));
-                }
-                if (!u.startsWith('/api/cover?')) return real(url, options);
-                asked.push(decodeURIComponent(u).match(/Song \\d+/)[0]);
-                return new Promise((ok) => setTimeout(() => ok(new Response(png)), 300));
-            };
-        }""",
-        _fake_rows(200),
-    )
+    # The list late enough that no scroll is fresh: the queue is served at once.
+    page.evaluate(FAKE_COVERS_JS, {"list": _fake_rows(200), "delay": 300, "libraryDelay": 300})
     page.evaluate("switchView('viewLibrary')")
-    page.wait_for_function("window.__asked.length >= 4")
-    first = page.evaluate("window.__asked.slice(0, 4)")
+    page.wait_for_function("window.__covers.asked.length >= 4")
+    first = page.evaluate("window.__covers.asked.slice(0, 4)")
     on_screen = page.evaluate(
-        """[...document.querySelectorAll('#library .track')].filter((row) => {
-            const r = row.getBoundingClientRect();
-            return r.bottom > 0 && r.top < innerHeight;
-        }).map((row) => row.textContent.match(/Song \\d+/)[0])"""
+        f"{ON_SCREEN_ROWS_JS}.map((row) => row.textContent.match(/Song \\d+/)[0])"
     )
     assert len(on_screen) >= 4 and set(first) <= set(on_screen), (first, on_screen)
 

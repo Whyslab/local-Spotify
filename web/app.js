@@ -1140,14 +1140,23 @@ function forgetCover(key) {
  * после всех видимых и не больше двух сразу — каждая идёт до секунды, и
  * строкам, пришедшим позже, должно остаться где пройти. Обещание с ответом job.
  *
+ * Обложки треков (loadTrackCover) идут не по одной, а пачкой на одно место:
+ * всё, что ждёт, видимые первыми, — один запрос /api/covers. По одной на
+ * телефоне десять строк экрана шли тремя кругами по сети, и цель 0.3 с не
+ * выполнялась (384 мс, замер 08.10.2026). Пачка не вышла (нет сети, ошибка) —
+ * обложки идут по одной, старым путём, через копию service worker'а;
+ * миниатюру, которую ещё делать ffmpeg, строка тоже просит одна. Обложки,
+ * пришедшие пачкой, service worker на случай без сети не запоминает.
+ *
  * Шесть соединений — предел HTTP/1.1. Телефон получает страницу через
- * Tailscale по HTTP/2, все запросы одним соединением: там мест восемь —
- * экран обложек приходит на 40–70 мс раньше (замер 08.10.2026). Браузер не
+ * Tailscale по HTTP/2, все запросы одним соединением: там мест восемь
+ * (обложки по одной: 306 мс против 374, замер 08.10.2026). Браузер не
  * назвал протокол — считаем, что HTTP/1.1. */
 const PAGE_PROTOCOL = performance.getEntriesByType?.("navigation")[0]?.nextHopProtocol || "";
 const COVER_PARALLEL = /^h[23]$/.test(PAGE_PROTOCOL) ? 8 : 4;
 const COVER_QUIET_MS = 50;
 const COVER_IDLE_PARALLEL = 2;
+const COVERS_MAX = 64;  // обложек в одной пачке — как на сервере
 const coverWaiting = [];
 const coverIdle = [];
 let coverIdleBusy = 0;
@@ -1199,9 +1208,12 @@ const coverOnScreen = coverObserver
     })
     : null;
 
-function whenCoverVisible(host, job) {
+/* batch — {path, size}: обложка трека, её можно спросить в пачке. */
+function whenCoverVisible(host, job, batch = null) {
     if (!coverObserver) { job(); return; }
     host._coverJob = job;
+    host._coverBatch = batch;
+    host._coverSingle = false;
     /* Тот же элемент с новой задачей (шапка подборки — одна на все): старая,
      * если идёт, отменяется, и по её концу элемент встанет в очередь заново;
      * стоит в очереди — возьмётся уже новая. */
@@ -1244,25 +1256,8 @@ function pumpCovers() {
         host._coverQueued = false;
         const job = host._coverJob;
         if (!job || !host.isConnected) continue;
-        const controller = new AbortController();
-        host._coverAbort = controller;
-        const free = takeCoverSlot(controller.signal);
-        Promise.resolve()
-            .then(() => job(controller.signal))
-            .catch(() => !controller.signal.aborted)
-            .then((done) => {
-                host._coverAbort = null;
-                if (done !== false && !controller.signal.aborted && host._coverJob === job) {
-                    delete host._coverJob;
-                    coverObserver.unobserve(host);
-                    coverOnScreen.unobserve(host);
-                } else if (host.isConnected) {
-                    /* Снова наблюдать — наблюдатель сам скажет, на экране ли она. */
-                    coverObserver.unobserve(host);
-                    coverObserver.observe(host);
-                }
-                free();
-            });
+        if (batchable(host)) sendCoverBatch([host, ...takeBatchable(COVERS_MAX - 1)]);
+        else runCoverJob(host, job, true);
     }
     while (coverBusy < COVER_PARALLEL && coverIdleBusy < COVER_IDLE_PARALLEL && coverIdle.length) {
         const { job, resolve } = coverIdle.shift();
@@ -1281,6 +1276,144 @@ function pumpCovers() {
     }
 }
 
+/* holdSlot — держать место, пока задача идёт; без него — картинка уже в
+ * coverUrls (пришла пачкой), сети задача не трогает. */
+function runCoverJob(host, job, holdSlot) {
+    const controller = new AbortController();
+    host._coverAbort = controller;
+    const free = holdSlot ? takeCoverSlot(controller.signal) : () => {};
+    Promise.resolve()
+        .then(() => job(controller.signal))
+        .catch(() => !controller.signal.aborted)
+        .then((done) => {
+            host._coverAbort = null;
+            if (done !== false && !controller.signal.aborted && host._coverJob === job) {
+                delete host._coverJob;
+                coverObserver.unobserve(host);
+                coverOnScreen.unobserve(host);
+            } else if (host.isConnected) {
+                /* Снова наблюдать — наблюдатель сам скажет, на экране ли она. */
+                coverObserver.unobserve(host);
+                coverObserver.observe(host);
+            }
+            free();
+        });
+}
+
+function batchKey(host) {
+    return `track:${host._coverBatch.size}:${host._coverBatch.path}`;
+}
+
+/* В пачку — обложка трека, которой ещё нет в coverUrls (есть — задача
+ * возьмёт её оттуда сама) и которую не велено спрашивать одну. */
+function batchable(host) {
+    if (!host._coverBatch || host._coverSingle || !host._coverJob) return false;
+    const have = coverUrls.get(batchKey(host));
+    return have === undefined || (typeof have === "number" && Date.now() >= have);
+}
+
+/* До n строк из очереди для пачки: сначала те, что на экране. */
+function takeBatchable(n) {
+    const taken = [];
+    for (const onScreen of [true, false]) {
+        for (let i = coverWaiting.length - 1; i >= 0 && taken.length < n; i--) {
+            const host = coverWaiting[i];
+            if (!!host._coverOnScreen !== onScreen || !batchable(host) || !host.isConnected) continue;
+            coverWaiting.splice(i, 1);
+            host._coverQueued = false;
+            taken.push(host);
+        }
+    }
+    return taken;
+}
+
+/* Одна пачка — одно место, до заголовков ответа, как одиночный запрос. Пока
+ * она в пути, в coverUrls у каждой обложки — обещание: другой элемент с тем
+ * же треком подождёт его, а не пойдёт за ней сам. */
+function sendCoverBatch(hosts) {
+    const free = takeCoverSlot(new AbortController().signal);
+    /* Тот же трек дважды (одна обложка в двух местах экрана) — второй ждёт
+     * обещание первого, а не спрашивает ту же картинку ещё раз. */
+    const keys = new Set();
+    const unique = hosts.filter((host) => {
+        const key = batchKey(host);
+        if (!keys.has(key)) { keys.add(key); return true; }
+        runCoverJob(host, host._coverJob, false);
+        return false;
+    });
+    const members = unique.map((host) => {
+        const controller = new AbortController();
+        host._coverAbort = controller;
+        const key = batchKey(host);
+        let settle;
+        const pending = new Promise((resolve) => { settle = resolve; });
+        coverUrls.set(key, pending);
+        return { host, job: host._coverJob, controller, key, pending, settle, ...host._coverBatch };
+    });
+    fetch("/api/covers", {
+        method: "POST",
+        headers: { ...headers(), "Content-Type": "application/json" },
+        body: JSON.stringify({ items: members.map(({ path, size }) => ({ path, size })) }),
+    })
+        .then((r) => {
+            free();
+            if (!r.ok) throw new Error(`covers ${r.status}`);
+            return r.blob();
+        })
+        .then(unpackCovers)
+        .catch(() => members.map(() => "later"))
+        .then((answers) => {
+            free();
+            members.forEach((member, i) => finishBatched(member, answers[i] || "later"));
+            trimCovers();
+        });
+}
+
+/* Ответ /api/covers: 4 байта длины заголовка, заголовок JSON, картинки подряд.
+ * Картинка — срез того же Blob, без копирования. */
+async function unpackCovers(blob) {
+    const size = new DataView(await blob.slice(0, 4).arrayBuffer()).getUint32(0);
+    const { items } = JSON.parse(await blob.slice(4, 4 + size).text());
+    let at = 4 + size;
+    return items.map((item) => {
+        if (item.later) return "later";
+        if (!item.length) return "missing";
+        const picture = blob.slice(at, at + item.length, item.type);
+        at += item.length;
+        return picture;
+    });
+}
+
+function finishBatched(member, answer) {
+    const { host, job, controller, key, pending, settle } = member;
+    let url = null;
+    /* Пока шла пачка, обложку могли сбросить (новая загружена) — тогда
+     * устаревший ответ в кэш не кладём, как и у одиночного запроса. */
+    if (coverUrls.get(key) === pending) {
+        coverUrls.delete(key);
+        if (answer instanceof Blob) {
+            url = URL.createObjectURL(answer);
+            coverUrls.set(key, url);
+        } else if (answer === "missing") {
+            coverUrls.set(key, Date.now() + COVER_MISS_MS);
+        }
+    }
+    settle(url);
+    if (host._coverAbort === controller) host._coverAbort = null;
+    const later = answer === "later";
+    if (later) host._coverSingle = true;
+    if (later || controller.signal.aborted || host._coverJob !== job || !host.isConnected) {
+        /* Не сделано: наблюдатель вернёт строку в очередь, если она на экране, —
+         * «позже» уже по одной. */
+        if (host.isConnected) {
+            coverObserver.unobserve(host);
+            coverObserver.observe(host);
+        }
+        return;
+    }
+    runCoverJob(host, job, false);
+}
+
 /* Индекс той, что видна на экране, — с конца очереди; видимых нет — последняя. */
 function nextCoverIndex() {
     for (let i = coverWaiting.length - 1; i >= 0; i--) {
@@ -1290,7 +1423,7 @@ function nextCoverIndex() {
 }
 
 function loadTrackCover(host, path, size = THUMB_SMALL) {
-    whenCoverVisible(host, (signal) => fetchTrackCover(host, path, size, signal));
+    whenCoverVisible(host, (signal) => fetchTrackCover(host, path, size, signal), { path, size });
 }
 
 function fetchTrackCover(host, path, size, signal) {
