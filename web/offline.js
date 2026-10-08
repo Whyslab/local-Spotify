@@ -408,14 +408,22 @@ function queuePlay(body, response) {
 /* Повтор по таймеру, а не только по «online»: сервер мог не принять при живой
  * сети (предел 60 прослушиваний в минуту — 429, компьютер спит — 502), и
  * события «online» тогда не будет. Один таймер на всё; Retry-After сервера,
- * если он есть, — иначе минута. */
+ * если он есть, — иначе минута, и вдвое дольше после каждой новой неудачи
+ * (до 16 минут). Без сети таймер не нужен — придёт «online»; отказ в доступе
+ * (сменили токен) таймером не лечится — отправка ждёт входа (saveToken). */
 let PLAY_RETRY_MS = 60 * 1000;
 let playRetryTimer = null;
+let playRetryFailures = 0;
 
 function retryPendingPlaysLater(response) {
-    const after = response ? Number(response.headers.get("Retry-After")) : NaN;
-    const delay = after > 0 ? Math.min(after * 1000, 10 * PLAY_RETRY_MS) : PLAY_RETRY_MS;
     clearTimeout(playRetryTimer);
+    playRetryTimer = null;
+    if (response && (response.status === 401 || response.status === 403)) return;
+    if (navigator.onLine === false) return;
+    const after = response ? Number(response.headers.get("Retry-After")) : NaN;
+    const backoff = PLAY_RETRY_MS * 2 ** Math.min(playRetryFailures, 4);
+    playRetryFailures += 1;
+    const delay = after > 0 ? Math.min(after * 1000, 10 * PLAY_RETRY_MS) : backoff;
     playRetryTimer = setTimeout(() => { playRetryTimer = null; flushPendingPlays(); }, delay);
 }
 
@@ -441,6 +449,7 @@ async function flushPendingPlays() {
             });
             /* Сервер не принял — повтор позже; 422 — битая запись, выбросить. */
             if (!r.ok && r.status !== 422) { retryPendingPlaysLater(r); break; }
+            playRetryFailures = 0;
             /* Перечитать: пока шёл запрос, queuePlay мог дописать новое. */
             pending = readPendingPlays();
             if (pending.length && JSON.stringify(pending[0]) === JSON.stringify(item)) pending.shift();

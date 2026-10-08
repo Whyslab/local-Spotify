@@ -549,6 +549,62 @@ def test_plays_survive_rate_limit(page):
     assert posts == backlog[:3] + backlog[2:]
 
 
+def test_play_queue_does_not_hammer_the_server(page):
+    """Очередь прослушиваний не стучится раз в минуту вечно: отказ в доступе
+    (токен сменили) ждёт входа, а не таймера; без сети ждёт «online»; каждая
+    новая неудача — пауза вдвое дольше."""
+    import json
+
+    open_library(page)
+    item = {"path": "Loud Band/Singles/Loud.opus", "played_seconds": 5, "source": "player"}
+    page.evaluate("(i) => localStorage.setItem('pendingPlays', JSON.stringify([i]))", item)
+    answers: list[int] = []
+    posts: list[float] = []
+
+    def answer(route):
+        posts.append(time.monotonic())
+        status = answers.pop(0) if answers else 200
+        route.fulfill(status=status, json={})
+
+    page.route("**/api/plays", answer)
+
+    # 401: no timer at all; logging in again sends the backlog.
+    answers[:] = [401]
+    page.evaluate("PLAY_RETRY_MS = 100; playRetryFailures = 0; flushPendingPlays()")
+    page.wait_for_function("!flushingPlays")
+    page.wait_for_timeout(600)
+    assert len(posts) == 1
+    assert page.evaluate("playRetryTimer") is None
+    page.evaluate("(t) => { document.getElementById('tokenInput').value = t; saveToken(); }", TOKEN)
+    page.wait_for_function("JSON.parse(localStorage.getItem('pendingPlays') || '[]').length === 0")
+    assert len(posts) == 2
+
+    # Server errors: each retry waits about twice as long as the one before.
+    page.evaluate("(i) => localStorage.setItem('pendingPlays', JSON.stringify([i]))", item)
+    answers[:] = [503, 503, 503]
+    posts.clear()
+    page.evaluate("PLAY_RETRY_MS = 150; playRetryFailures = 0; flushPendingPlays()")
+    page.wait_for_function(
+        "JSON.parse(localStorage.getItem('pendingPlays') || '[]').length === 0", timeout=5000
+    )
+    gaps = [b - a for a, b in zip(posts, posts[1:], strict=False)]
+    assert len(gaps) == 3, gaps
+    assert gaps[1] > gaps[0] * 1.4 and gaps[2] > gaps[1] * 1.4, gaps
+    assert page.evaluate("playRetryFailures") == 0  # a success starts over
+
+    # Offline: the "online" event sends it, no timer ticks meanwhile.
+    page.evaluate("(i) => localStorage.setItem('pendingPlays', JSON.stringify([i]))", item)
+    posts.clear()
+    page.context.set_offline(True)
+    page.evaluate("flushPendingPlays()")
+    page.wait_for_function("!flushingPlays")
+    assert page.evaluate("playRetryTimer") is None
+    page.context.set_offline(False)
+    page.wait_for_function("JSON.parse(localStorage.getItem('pendingPlays') || '[]').length === 0")
+    assert len(posts) == 1
+    assert json.loads(page.evaluate("localStorage.getItem('pendingPlays')")) == []
+
+
 LOUD = "{path: 'Loud Band/Singles/Loud.opus', title: 'Loud', artist: 'Loud Band', duration: 12}"
 
 

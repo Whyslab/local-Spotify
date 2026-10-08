@@ -61,6 +61,7 @@ function saveToken() {
     document.getElementById("tokenInput").value = "";
     applyLoginState();
     refresh();
+    flushPendingPlays();  /* прослушивания, отвергнутые со старым токеном */
 }
 
 function logout() {
