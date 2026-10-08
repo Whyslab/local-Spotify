@@ -854,7 +854,9 @@ let findsNext = null;
 function findCover(url) {
     const key = "find:" + url;
     const address = "/api/web-cover?url=" + encodeURIComponent(url) + "&size=" + THUMB_LARGE;
-    if (coverUrls.has(key)) return coverUrl(key, address);
+    /* Мимо очереди — только готовая или уже идущая; истёкшее «нет» — снова в очередь. */
+    const have = coverUrls.get(key);
+    if (typeof have === "string" || have instanceof Promise) return coverUrl(key, address);
     return whenCoverIdle((signal) => coverUrl(key, address, signal));
 }
 
@@ -1157,7 +1159,8 @@ const coverObserver = "IntersectionObserver" in window
             }
             if (host._coverQueued) {
                 host._coverQueued = false;
-                coverWaiting.splice(coverWaiting.indexOf(host), 1);
+                const at = coverWaiting.indexOf(host);
+                if (at >= 0) coverWaiting.splice(at, 1);
             }
             if (host._coverAbort) host._coverAbort.abort();
         }

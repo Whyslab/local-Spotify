@@ -589,11 +589,13 @@ def test_audio_not_starved_by_covers(page, monkeypatch):
     assert took < 700, took
 
 
-def test_finds_covers_share_the_cover_limit(page):
+@pytest.mark.parametrize("missed_before", [False, True])
+def test_finds_covers_share_the_cover_limit(page, missed_before):
     """Home asked for twelve finds' pictures and the next twelve at once, each
     a trip to Deezer through the service: all six connections were held for a
     second, and the library's covers (and the track's link) waited behind.
-    Now they go through the covers' queue, two at a time at most."""
+    Now they go through the covers' queue, two at a time at most — also those
+    whose "no picture" from an earlier visit has expired."""
     finds = json.dumps(
         {
             "tracks": [
@@ -604,8 +606,11 @@ def test_finds_covers_share_the_cover_limit(page):
         }
     )  # fmt: skip
     page.evaluate(
-        """async (finds) => {
+        """async ([finds, missedBefore]) => {
             const c = window.__finds = {inflight: 0, peak: 0, finds: 0, findsPeak: 0};
+            if (missedBefore) {
+                for (const f of JSON.parse(finds).tracks) coverUrls.set('find:' + f.cover, Date.now() - 1);
+            }
             const real = window.fetch;
             const png = await (await real('/static/icon-180.png')).blob();
             window.fetch = (url, options = {}) => {
@@ -625,7 +630,7 @@ def test_finds_covers_share_the_cover_limit(page):
             };
             findsNext = null;
         }""",
-        finds,
+        [finds, missed_before],
     )
     page.evaluate("switchView('viewHome')")
     page.wait_for_function("document.querySelectorAll('.is-find img').length === 12")
