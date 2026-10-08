@@ -419,12 +419,20 @@ function retryPendingPlaysLater(response) {
     clearTimeout(playRetryTimer);
     playRetryTimer = null;
     if (response && (response.status === 401 || response.status === 403)) return;
-    if (navigator.onLine === false) return;
+    /* Ответ сервера — уже доказательство связи, что бы ни говорил onLine. */
+    if (!response && navigator.onLine === false) return;
     const after = response ? Number(response.headers.get("Retry-After")) : NaN;
     const backoff = PLAY_RETRY_MS * 2 ** Math.min(playRetryFailures, 4);
     playRetryFailures += 1;
     const delay = after > 0 ? Math.min(after * 1000, 10 * PLAY_RETRY_MS) : backoff;
     playRetryTimer = setTimeout(() => { playRetryTimer = null; flushPendingPlays(); }, delay);
+}
+
+/* Живое прослушивание дошло: сервер снова отвечает, накопленное уходит
+ * сразу, а не по таймеру, который мог отодвинуться до 16 минут. */
+function playAccepted() {
+    playRetryFailures = 0;
+    try { if (readPendingPlays().length) flushPendingPlays(); } catch (e) { /* без хранилища */ }
 }
 
 function readPendingPlays() {

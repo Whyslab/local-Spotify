@@ -80,7 +80,10 @@ function reportPlay(finished) {
         /* Без сети, при недоступном сервере или сверх предела в минуту (429) —
          * в очередь (offline.js): уйдёт позже. Воспроизведение из-за журнала
          * не прерывается. */
-        .then(r => { if (!r.ok && (r.status >= 500 || r.status === 429)) queuePlay(body, r); })
+        .then(r => {
+            if (r.ok) playAccepted();
+            else if (r.status >= 500 || r.status === 429) queuePlay(body, r);
+        })
         .catch(() => queuePlay(body));
 }
 

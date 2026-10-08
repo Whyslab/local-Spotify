@@ -605,6 +605,43 @@ def test_play_queue_does_not_hammer_the_server(page):
     assert json.loads(page.evaluate("localStorage.getItem('pendingPlays')")) == []
 
 
+def test_play_queue_follows_the_server_not_the_network_flag(page):
+    """A server that answered is reachable whatever navigator.onLine says (the
+    laptop without Wi-Fi plays from localhost); and once a live play gets
+    through, the backlog goes too instead of sitting out a long backoff."""
+    open_library(page)
+    item = {"path": "Loud Band/Singles/Loud.opus", "played_seconds": 5, "source": "player"}
+    answers: list[int] = []
+    posts: list[dict] = []
+
+    def answer(route):
+        posts.append(route.request.post_data)
+        route.fulfill(status=answers.pop(0) if answers else 200, json={})
+
+    page.route("**/api/plays", answer)
+
+    # 503 with navigator.onLine false: the server answered, so a timer is set.
+    page.evaluate("(i) => localStorage.setItem('pendingPlays', JSON.stringify([i]))", item)
+    page.evaluate(
+        "Object.defineProperty(navigator, 'onLine', {get: () => false, configurable: true})"
+    )
+    answers[:] = [503]
+    page.evaluate("PLAY_RETRY_MS = 60000; playRetryFailures = 4; flushPendingPlays()")
+    page.wait_for_function("!flushingPlays")
+    assert page.evaluate("playRetryTimer !== null")
+    page.evaluate("delete navigator.onLine")
+
+    # The backoff is long now; a live play that gets through sends the backlog.
+    posts.clear()
+    page.evaluate(
+        "player.queue = [{path: 'Quiet/Singles/Quiet.m4a', title: 'Quiet'}]; player.index = 0;"
+        "player.started = true; player.reported = false; reportPlay(true)"
+    )
+    page.wait_for_function("JSON.parse(localStorage.getItem('pendingPlays') || '[]').length === 0")
+    assert len(posts) == 2
+    assert page.evaluate("playRetryFailures") == 0
+
+
 LOUD = "{path: 'Loud Band/Singles/Loud.opus', title: 'Loud', artist: 'Loud Band', duration: 12}"
 
 
