@@ -589,7 +589,8 @@ def test_play_queue_does_not_hammer_the_server(page):
     )
     gaps = [b - a for a, b in zip(posts, posts[1:], strict=False)]
     assert len(gaps) == 3, gaps
-    assert gaps[1] > gaps[0] * 1.4 and gaps[2] > gaps[1] * 1.4, gaps
+    # Floors, not ratios: a slow round trip under load only lengthens a gap.
+    assert all(gap >= 0.15 * 2**i * 0.9 for i, gap in enumerate(gaps)), gaps
     assert page.evaluate("playRetryFailures") == 0  # a success starts over
 
     # Offline: the "online" event sends it, no timer ticks meanwhile.
