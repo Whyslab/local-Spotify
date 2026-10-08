@@ -486,6 +486,43 @@ def test_fast_scroll_requests_only_visible_covers(page):
     assert covers["asked"] <= 2 * len(on_screen) + 20, covers
 
 
+def test_opened_list_asks_for_rows_on_screen_first(page):
+    """The first four places went to the rows in the margin below the screen:
+    the observer that marks rows on screen had not reported yet when the
+    queue was served, and the rows the eye was on waited a whole round.
+    Phone width: there the page itself scrolls, and the margin is real."""
+    page.set_viewport_size({"width": 390, "height": 664})
+    page.evaluate(
+        """async (list) => {
+            const asked = window.__asked = [];
+            const real = window.fetch;
+            const png = await (await real('/static/icon-180.png')).blob();
+            window.fetch = (url, options = {}) => {
+                const u = String(url);
+                if (u.startsWith('/api/library?')) {
+                    // Late enough that no scroll is fresh: the queue is served at once.
+                    return new Promise((ok) => setTimeout(() => ok(new Response(list,
+                        {headers: {'Content-Type': 'application/json'}})), 300));
+                }
+                if (!u.startsWith('/api/cover?')) return real(url, options);
+                asked.push(decodeURIComponent(u).match(/Song \\d+/)[0]);
+                return new Promise((ok) => setTimeout(() => ok(new Response(png)), 300));
+            };
+        }""",
+        _fake_rows(200),
+    )
+    page.evaluate("switchView('viewLibrary')")
+    page.wait_for_function("window.__asked.length >= 4")
+    first = page.evaluate("window.__asked.slice(0, 4)")
+    on_screen = page.evaluate(
+        """[...document.querySelectorAll('#library .track')].filter((row) => {
+            const r = row.getBoundingClientRect();
+            return r.bottom > 0 && r.top < innerHeight;
+        }).map((row) => row.textContent.match(/Song \\d+/)[0])"""
+    )
+    assert len(on_screen) >= 4 and set(first) <= set(on_screen), (first, on_screen)
+
+
 def test_audio_not_starved_by_covers(page, monkeypatch):
     """The browser keeps six connections to the service. Covers that take a
     second each (a cold thumbnail) held all six, and the track's link waited

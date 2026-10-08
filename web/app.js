@@ -1161,7 +1161,10 @@ const coverObserver = "IntersectionObserver" in window
             }
             if (host._coverAbort) host._coverAbort.abort();
         }
-        pumpCovers();
+        /* Не сразу: второй наблюдатель отмечает видимые строки в той же
+         * задаче, но позже, — без отметок первыми шли строки из запаса. */
+        clearTimeout(coverTimer);
+        coverTimer = setTimeout(pumpCovers, 0);
     }, { rootMargin: "200px 0px" })
     : null;
 
