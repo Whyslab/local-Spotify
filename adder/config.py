@@ -37,7 +37,8 @@ def _positive_float(name: str, default: str) -> float:
     return value
 
 
-LIBRARY = Path(os.environ.get("LIBRARY_PATH", str(Path.home() / "Music" / "Normalized Library")))
+# Empty is unset, as in install.sh: Path("") would be the working directory.
+LIBRARY = Path(os.environ.get("LIBRARY_PATH") or Path.home() / "Music" / "Normalized Library")
 
 PORT = _positive_int("PORT", "8787")
 

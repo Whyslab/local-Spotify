@@ -102,3 +102,21 @@ def test_real_api_token_is_accepted():
     result = _import_config_with_token("a-real-random-token")
 
     assert result.returncode == 0, result.stderr
+
+
+def test_an_empty_library_path_means_the_default_not_the_working_directory():
+    """`LIBRARY_PATH=` in .env: install.sh opens the default folder to the unit,
+    so the service must use that folder too, not Path("") (where it runs)."""
+    import subprocess
+
+    env = {**os.environ, "API_TOKEN": "a-real-random-token", "LIBRARY_PATH": ""}
+    result = subprocess.run(
+        [sys.executable, "-c", "import config; print(config.LIBRARY)"],
+        cwd=Path(__file__).parent.parent / "adder",
+        env={**env, "HOME": "/home/someone"},
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "/home/someone/Music/Normalized Library"
