@@ -1364,7 +1364,7 @@ async function library() {
             if (!data.length && q) showFilterEmpty(empty, q);
             /* Keep the rendered list around: playing one row queues the rest, so
              * "next" carries on down the screen instead of stopping at one track. */
-            for (const t of data) box.appendChild(libraryRow(t, data));
+            appendInChunks(box, data.map((t) => libraryRow(t, data)));
             /* Раньше список молча обрывался на двухсотом треке из тысячи с
              * лишним, и до остальных можно было добраться только поиском. */
             if (data.length === limit) {
@@ -1408,6 +1408,22 @@ async function library() {
         markAppReady();
     } catch (e) {
         // Same reasoning as tasks(): the next keystroke or poll retries.
+    }
+}
+
+/* Строки фонотеки — пачками по пятьдесят. Пропускать раскладку и отрисовку
+ * того, что за экраном (content-visibility), браузер умеет и построчно, но на
+ * 1417 строках каждый кадр прокрутки на «телефоне» раскладывал въезжающие
+ * строки по одной и следил за всеми: 250 задач дольше 50 мс на прокрутку всей
+ * фонотеки. Пачками — 29 (замер 08.10.2026). Вид тот же: style.css, .row-chunk. */
+const ROW_CHUNK = 50;
+
+function appendInChunks(box, rows) {
+    for (let i = 0; i < rows.length; i += ROW_CHUNK) {
+        const chunk = document.createElement("div");
+        chunk.className = "row-chunk";
+        chunk.append(...rows.slice(i, i + ROW_CHUNK));
+        box.appendChild(chunk);
     }
 }
 

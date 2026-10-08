@@ -334,7 +334,8 @@ button:disabled { opacity: .5; cursor: default; }
     background-position: right bottom;
     background-repeat: no-repeat;
 }
-.rows > .track:last-child { background-image: none; }
+.rows > .track:last-child,
+.rows > .row-chunk:last-child > .track:last-child { background-image: none; }
 /* Строка внутри карточки (загрузки, поиск) — с полями карточки. */
 .card .track { padding-left: 0; padding-right: 0; }
 
@@ -2013,8 +2014,10 @@ html.sheet-lock, html.sheet-lock body { overflow: hidden; }
     /* Варианты текста — кнопки выбора, им рамка нужна. */
     /* background-color, а не background: сокращённая запись стёрла бы и
        разделитель строки (он нарисован background-image). */
-    .rows > .track:not(.is-playing):not(.lyrics-choice) { background-color: transparent; }
-    .rows > .track:not(.is-playing):not(.lyrics-choice):hover { background-color: var(--fill-2); }
+    .rows > .track:not(.is-playing):not(.lyrics-choice),
+    .rows > .row-chunk > .track:not(.is-playing):not(.lyrics-choice) { background-color: transparent; }
+    .rows > .track:not(.is-playing):not(.lyrics-choice):hover,
+    .rows > .row-chunk > .track:not(.is-playing):not(.lyrics-choice):hover { background-color: var(--fill-2); }
 }
 
 /* Низкий экран — телефон боком. Тут нет места ни на что, кроме текста: блок
@@ -2067,6 +2070,20 @@ html.sheet-lock, html.sheet-lock body { overflow: hidden; }
    «телефоне»). Строку с открытым меню «⋯» не трогаем — content-visibility
    обрезал бы меню по краю строки. */
 .rows > .track:not(:has(.row-menu)) {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 64px;
+}
+/* Фонотека — пачками по 50 строк (app.js, appendInChunks): так прокрутка на
+   телефоне дешевле. Высота до первого показа — 50 строк по 64. */
+.rows > .row-chunk { display: flex; flex-direction: column; }
+.rows > .row-chunk:not(:has(.row-menu, .confirm)) {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 3200px;
+}
+/* Открыто «⋯» или вопрос под строкой (теги, удаление) — пачка видна целиком
+   (иначе меню обрезалось бы по её краю), а её строки, как раньше, каждая сама
+   по себе: так и раскладка, и текст выходят прежними, до пикселя. */
+.rows > .row-chunk:has(.row-menu, .confirm) > .track:not(:has(.row-menu)) {
     content-visibility: auto;
     contain-intrinsic-size: auto 64px;
 }

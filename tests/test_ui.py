@@ -659,6 +659,35 @@ def test_an_artist_shown_twice_keeps_its_photo_when_one_copy_leaves(page):
     assert shows, page.evaluate("[...coverUrls.keys()].filter((k) => k.includes('Twice'))")
 
 
+def test_library_rows_are_skipped_in_chunks(page):
+    """content-visibility on each of 1417 rows: every scroll frame on the
+    phone profile laid out and shaped the rows coming in, and the browser
+    watched 1417 elements (250 tasks over 50 ms per whole-library scroll).
+    In chunks of fifty: 29. The look is the same — a separator under every
+    row but the last one, also where one chunk meets the next."""
+    page.evaluate(
+        """(list) => {
+            const real = window.fetch;
+            window.fetch = (url, options) => String(url).startsWith('/api/library?')
+                ? Promise.resolve(new Response(list, {headers: {'Content-Type': 'application/json'}}))
+                : real(url, options);
+        }""",
+        _fake_rows(130),
+    )
+    page.evaluate("switchView('viewLibrary')")
+    page.wait_for_function("document.querySelectorAll('#library .track').length === 130")
+    skipped = page.evaluate(
+        """[...document.querySelectorAll('#library, #library *')]
+            .filter((node) => getComputedStyle(node).contentVisibility === 'auto').length"""
+    )
+    assert 0 < skipped <= 3, skipped
+    separators = page.evaluate(
+        """[...document.querySelectorAll('#library .track')]
+            .map((row) => getComputedStyle(row).backgroundImage !== 'none')"""
+    )
+    assert separators == [True] * 129 + [False], separators
+
+
 def test_audio_not_starved_by_covers(page, monkeypatch):
     """The browser keeps six connections to the service. Covers that take a
     second each (a cold thumbnail) held all six, and the track's link waited
