@@ -523,6 +523,43 @@ def test_opened_list_asks_for_rows_on_screen_first(page):
     assert len(on_screen) >= 4 and set(first) <= set(on_screen), (first, on_screen)
 
 
+def test_playlist_header_shows_the_playlist_opened_last(page):
+    """The playlist header is one element. Opening B while A's first-track
+    cover was on its way: A's answer finished, took B's job with it, and the
+    header kept A's picture."""
+    page.evaluate(
+        """async () => {
+            const real = window.fetch;
+            const png = await (await real('/static/icon-180.png')).blob();
+            window.fetch = (url, options = {}) => {
+                const u = String(url);
+                if (u.startsWith('/api/playlists/')) return Promise.resolve(new Response('', {status: 404}));
+                if (!u.startsWith('/api/cover?')) return real(url, options);
+                const wait = u.includes('A%2Fa.m4a') ? 400 : 50;
+                return new Promise((ok) => setTimeout(() => ok(new Response(png)), wait));
+            };
+            window.playlistFirstTrack = (name) => Promise.resolve(name + '/' + name.toLowerCase() + '.m4a');
+            const host = document.createElement('div');
+            host.id = 'testHeader';
+            host.style.cssText = 'position:fixed;top:0;left:0;width:100px;height:100px;z-index:99';
+            document.body.appendChild(host);
+            loadPlaylistCover(host, 'A');
+        }"""
+    )
+    page.wait_for_timeout(200)  # A's first-track cover is on its way
+    page.evaluate("loadPlaylistCover(document.getElementById('testHeader'), 'B')")
+    page.wait_for_timeout(1000)
+    shown = page.evaluate(
+        """(() => {
+            const img = document.querySelector('#testHeader img');
+            if (!img) return 'letter ' + document.getElementById('testHeader').textContent;
+            return img.src === coverUrls.get('track:' + THUMB_LARGE + ':B/b.m4a') ? 'B'
+                : img.src === coverUrls.get('track:' + THUMB_LARGE + ':A/a.m4a') ? 'A' : 'other';
+        })()"""
+    )
+    assert shown == "B", shown
+
+
 def test_audio_not_starved_by_covers(page, monkeypatch):
     """The browser keeps six connections to the service. Covers that take a
     second each (a cold thumbnail) held all six, and the track's link waited

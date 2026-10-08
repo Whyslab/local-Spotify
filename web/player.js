@@ -1817,7 +1817,14 @@ function playlistFirstTrack(name) {
 }
 
 function loadPlaylistCover(host, name) {
-    const letter = () => { host.replaceChildren(); host.textContent = name.slice(0, 1).toUpperCase(); };
+    /* Шапка одна на все подборки: поздний ответ прежней её не трогает. */
+    const ticket = host._playlistCover = {};
+    const mine = () => host._playlistCover === ticket;
+    const letter = () => {
+        if (!mine()) return;
+        host.replaceChildren();
+        host.textContent = name.slice(0, 1).toUpperCase();
+    };
     /* Своей обложки нет — обложка первого трека, как в «Обложке»; нет и её —
      * буква. */
     /* Список подборки берём, только когда её обложка на экране: в рельсе на
@@ -1828,6 +1835,7 @@ function loadPlaylistCover(host, name) {
         return coverUrl(`track:${THUMB_LARGE}:${path}`, "/api/cover?path=" + encodeURIComponent(path) + "&size=" + THUMB_LARGE, signal)
             .then(url => {
                 if (!url) { letter(); return; }
+                if (!mine()) return;
                 const img = document.createElement("img");
                 img.alt = "";
                 img.onerror = letter;
@@ -1845,6 +1853,7 @@ function loadPlaylistCover(host, name) {
      * него обложка подборки мигала бы на букву несколько раз в минуту. */
     coverUrl("playlist:" + name, "/api/playlists/" + encodeURIComponent(name) + "/cover")
         .then(url => {
+            if (!mine()) return;
             if (!url) { fallback(); return; }
             const img = document.createElement("img");
             img.alt = "";

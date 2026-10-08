@@ -1180,6 +1180,11 @@ const coverOnScreen = coverObserver
 function whenCoverVisible(host, job) {
     if (!coverObserver) { job(); return; }
     host._coverJob = job;
+    /* Тот же элемент с новой задачей (шапка подборки — одна на все): старая,
+     * если идёт, отменяется, и по её концу элемент встанет в очередь заново;
+     * стоит в очереди — возьмётся уже новая. */
+    if (host._coverAbort) host._coverAbort.abort();
+    else if (!host._coverQueued) coverObserver.unobserve(host);
     coverObserver.observe(host);
     coverOnScreen.observe(host);
 }
@@ -1225,7 +1230,7 @@ function pumpCovers() {
             .catch(() => !controller.signal.aborted)
             .then((done) => {
                 host._coverAbort = null;
-                if (done !== false && !controller.signal.aborted) {
+                if (done !== false && !controller.signal.aborted && host._coverJob === job) {
                     delete host._coverJob;
                     coverObserver.unobserve(host);
                     coverOnScreen.unobserve(host);
