@@ -622,10 +622,14 @@ def _tag(path: Path, meta: dict) -> None:
     if meta.get("cover"):
         try:
             got = httpx.get(meta["cover"], timeout=10)
-            if got.is_success and got.content:
-                png = got.content[:4] == b"\x89PNG"
-                kind = MP4Cover.FORMAT_PNG if png else MP4Cover.FORMAT_JPEG
-                audio["covr"] = [MP4Cover(got.content, imageformat=kind)]
+            # Only a real JPEG or PNG: a WebP or a 200 error page labelled JPEG
+            # would go on into the library with "в фонотеку".
+            kind = ingest.image_format(got.content) if got.is_success else None
+            if kind:
+                fmt = MP4Cover.FORMAT_PNG if kind == "png" else MP4Cover.FORMAT_JPEG
+                audio["covr"] = [MP4Cover(got.content, imageformat=fmt)]
+            elif got.is_success:
+                logger.info("Обложка для %s — не JPEG и не PNG, не вшита", meta["title"])
         except httpx.HTTPError as exc:
             logger.info("Обложка для %s не скачалась: %s", meta["title"], exc)
     audio.save()

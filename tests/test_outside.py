@@ -10,6 +10,7 @@ import time
 
 import pytest
 from fastapi.testclient import TestClient
+from mutagen.mp4 import MP4Cover
 
 from adder import config, covers, library, navidrome, outside, playlists, runtime, similar
 
@@ -676,3 +677,38 @@ def test_a_rate_limit_or_a_network_blip_is_not_a_week_long_failure(
     # «wanted» — следующая просьба плеера поставит его в очередь снова.
     assert outside.status(KEY) == "wanted"
     assert (runtime.youtube_pause_left() > 0) is paused
+
+
+@pytest.mark.parametrize(
+    "picture, embedded",
+    [
+        (b"\xff\xd8\xff\xe0" + b"j" * 64, MP4Cover.FORMAT_JPEG),
+        (b"\x89PNG\r\n\x1a\n" + b"p" * 64, MP4Cover.FORMAT_PNG),
+        (b"RIFF\x00\x00\x00\x00WEBPVP8 " + b"w" * 64, None),  # WebP, as YouTube sends
+        (b"<!doctype html><title>Not found</title>", None),  # a 200 error page
+    ],
+)
+def test_only_a_real_jpeg_or_png_becomes_the_cover(tmp_path, monkeypatch, picture, embedded):
+    """Обложка трека «не из фонотеки» вшивалась как есть с пометкой JPEG: WebP
+    и страница ошибки попадали в файл и шли дальше в фонотеку по «в фонотеку»."""
+    import shutil
+    from pathlib import Path
+
+    from mutagen.mp4 import MP4
+
+    track = tmp_path / "t.m4a"
+    shutil.copy(Path(__file__).parent / "fixtures" / "tone.m4a", track)
+
+    class Answer:
+        is_success = True
+        content = picture
+
+    monkeypatch.setattr(outside.httpx, "get", lambda url, timeout: Answer())
+    outside._tag(track, {"title": "T", "artist": "A", "cover": "https://example.org/c"})
+
+    covers_now = MP4(track).tags.get("covr") or []
+    if embedded is None:
+        assert covers_now == []
+    else:
+        assert [bytes(c) for c in covers_now] == [picture]
+        assert covers_now[0].imageformat == embedded
