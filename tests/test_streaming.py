@@ -1,5 +1,6 @@
 """Signed stream links: what they allow, and for how long."""
 
+import re
 import subprocess
 from pathlib import Path
 
@@ -165,3 +166,74 @@ def test_a_correctly_signed_link_still_cannot_leave_the_library(client):
             params={"path": path, "exp": expires, "sig": signing.sign(path, expires)},
         )
         assert response.status_code in (400, 403, 404), path
+
+
+# ---------------------------------------------------------------------------
+# Compression and browser caching
+# ---------------------------------------------------------------------------
+
+GZIP = {"Accept-Encoding": "gzip"}
+YEAR = "max-age=31536000"
+
+
+def _linked(client):
+    """Every script and stylesheet the page links, as it links them."""
+    return re.findall(r'(?:src|href)="(/static/[^"]+)"', client.get("/").text)
+
+
+def test_fingerprinted_static_is_immutable_and_compressed(client):
+    """A ?v=<hash> address never changes content, so the browser keeps it a
+    year without asking; the text is sent gzipped (the phone is on Wi-Fi, the
+    scripts and the style sheet are most of the first load)."""
+    linked = [url for url in _linked(client) if "?v=" in url]
+    assert {u.split("?")[0] for u in linked} >= {"/static/app.js", "/static/style.css"}
+    for url in linked:
+        response = client.get(url, headers=GZIP)
+        assert response.status_code == 200, url
+        assert YEAR in response.headers["cache-control"], url
+        assert "immutable" in response.headers["cache-control"], url
+        assert response.headers.get("content-encoding") == "gzip", url
+
+
+def test_unfingerprinted_static_is_not_immutable(client):
+    """Without a fingerprint the address outlives its content: a year in the
+    browser's cache would keep an old file after an update. Fonts are linked
+    from fonts.css without one, and a stamp that is not the file's (a page
+    from before the update) must not pin the new content either."""
+    css = client.get("/static/fonts/fonts.css").text
+    fonts = ["/static/fonts/" + name for name in re.findall(r"url\(([^)]+)\)", css)]
+    assert fonts
+    plain = [url for url in _linked(client) if "?v=" not in url]
+    stale = [url.split("?")[0] + "?v=0000000000" for url in _linked(client) if "?v=" in url]
+    for url in ["/", "/sw.js", "/static/app.js", *plain, *fonts, *stale]:
+        response = client.get(url, headers=GZIP)
+        assert response.status_code == 200, url
+        assert "immutable" not in response.headers.get("cache-control", ""), url
+        assert YEAR not in response.headers.get("cache-control", ""), url
+
+
+def test_compressed_response_varies_on_accept_encoding(client):
+    """A cache in between must not hand the gzipped body to a client that did
+    not ask for it, and the two bodies are not the same entity."""
+    for url in ["/", "/static/app.js", "/static/style.css"]:
+        packed = client.get(url, headers=GZIP)
+        plain = client.get(url, headers={"Accept-Encoding": "identity"})
+        assert packed.headers.get("content-encoding") == "gzip", url
+        assert "content-encoding" not in plain.headers, url
+        for response in (packed, plain):
+            assert "accept-encoding" in response.headers.get("vary", "").lower(), url
+        assert packed.content == plain.content  # the client decodes it
+        if "etag" in plain.headers:
+            assert packed.headers["etag"] != plain.headers["etag"], url
+
+
+def test_stream_is_never_compressed(client):
+    """Audio is compressed already, and a gzipped body breaks Range: the
+    player seeks by byte offsets of the file."""
+    url = client.get("/api/stream-url", params={"path": TRACK}).json()["url"]
+    fresh = TestClient(client.app)
+    whole = fresh.get(url, headers=GZIP)
+    part = fresh.get(url, headers={**GZIP, "Range": "bytes=0-99"})
+    assert whole.status_code == 200 and part.status_code == 206
+    for response in (whole, part):
+        assert "content-encoding" not in response.headers

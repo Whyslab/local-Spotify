@@ -27,6 +27,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import MutableHeaders
+from starlette.middleware.gzip import GZipMiddleware
 
 from . import (
     artist_photos,
@@ -271,6 +272,104 @@ class SecurityHeaders:
 
 
 app.add_middleware(SecurityHeaders)
+
+WEB_DIR = runtime.PROJECT.parent / "web"
+_STAMPS: dict[Path, tuple[tuple[int, int], str]] = {}
+_STAMPS_LOCK = threading.Lock()
+
+
+def static_stamp(path: Path) -> str:
+    """Отпечаток файла из web/ для ?v=: начало sha1 содержимого.
+
+    Считается заново, только когда у файла сменились mtime или размер: раньше
+    каждый GET / читал и хешировал все семь файлов.
+    """
+    st = path.stat()
+    key = (st.st_mtime_ns, st.st_size)
+    with _STAMPS_LOCK:
+        known = _STAMPS.get(path)
+    if known and known[0] == key:
+        return known[1]
+    stamp = hashlib.sha1(path.read_bytes()).hexdigest()[:10]
+    with _STAMPS_LOCK:
+        _STAMPS[path] = (key, stamp)
+    return stamp
+
+
+IMMUTABLE = "public, max-age=31536000, immutable"
+
+
+class StaticCaching:
+    """Год в кэше браузера — только адресу с верным отпечатком.
+
+    /static/app.js?v=<отпечаток> никогда не меняет содержимого: браузер берёт
+    его из кэша, не спрашивая. Без отпечатка (шрифты из fonts.css, sw.js) или
+    с чужим (страница открыта до обновления) — no-cache: браузер переспросит
+    и по ETag получит 304, но устаревший файл на год не закрепится.
+    """
+
+    def __init__(self, inner):
+        self.inner = inner
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or not scope["path"].startswith("/static/"):
+            return await self.inner(scope, receive, send)
+        version = ""
+        for pair in scope.get("query_string", b"").decode("latin-1").split("&"):
+            if pair.startswith("v="):
+                version = pair[2:]
+
+        async def with_cache(message):
+            if message["type"] == "http.response.start" and message["status"] == 200:
+                headers = MutableHeaders(scope=message)
+                headers["Cache-Control"] = "no-cache"
+                if version:
+                    with suppress(OSError, ValueError):
+                        root = WEB_DIR.resolve()
+                        path = (root / scope["path"].removeprefix("/static/")).resolve()
+                        path.relative_to(root)  # только файл из web/, без «..»
+                        if path.is_file() and static_stamp(path) == version:
+                            headers["Cache-Control"] = IMMUTABLE
+            await send(message)
+
+        await self.inner(scope, receive, with_cache)
+
+
+app.add_middleware(StaticCaching)
+
+# Аудио и так сжато, и ответ на Range должен быть байтами самого файла.
+UNCOMPRESSED = ("/api/stream",)
+
+
+class TextCompression:
+    """gzip для текста: страница, скрипты, стили, JSON.
+
+    Узко, как UploadSizeLimit: GZipMiddleware Starlette и сам не трогает
+    аудио, картинки, шрифты и ответы 206, а поток звука сюда не заходит
+    вовсе. Сжатому ответу ETag ставится слабым: у двух тел одного адреса
+    одинаковый сильный ETag значил бы, что это одни и те же байты.
+    """
+
+    def __init__(self, inner):
+        self.inner = inner
+        self.gzip = GZipMiddleware(inner, compresslevel=6)
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope["path"].startswith(UNCOMPRESSED):
+            return await self.inner(scope, receive, send)
+
+        async def weak_etag(message):
+            if message["type"] == "http.response.start":
+                headers = MutableHeaders(scope=message)
+                etag = headers.get("etag")
+                if etag and not etag.startswith("W/") and headers.get("content-encoding") == "gzip":
+                    headers["ETag"] = "W/" + etag
+            await send(message)
+
+        await self.gzip(scope, receive, weak_etag)
+
+
+app.add_middleware(TextCompression)
 
 
 class PublicStaticFiles(StaticFiles):
@@ -2236,6 +2335,5 @@ def index():
         path = web / name
         if not path.is_file():
             continue
-        stamp = hashlib.sha1(path.read_bytes()).hexdigest()[:10]
-        html = html.replace(f"/static/{name}", f"/static/{name}?v={stamp}")
+        html = html.replace(f"/static/{name}", f"/static/{name}?v={static_stamp(path)}")
     return HTMLResponse(html, headers={"Content-Security-Policy": CONTENT_SECURITY_POLICY})
