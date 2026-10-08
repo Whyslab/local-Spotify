@@ -7,6 +7,7 @@ in :mod:`adder.ingest`, the queue and its retry policy in :mod:`adder.queue`.
 
 import hashlib
 import logging
+import math
 import os
 import secrets
 import subprocess
@@ -2005,9 +2006,12 @@ def record_play(req: PlayRequest, authenticated: bool = Depends(verify_token)):
     with _PLAYS_LOCK:
         window = [t for t in _PLAYS_WINDOW.get("all", []) if now - t < 60]
         if len(window) >= PLAYS_PER_MINUTE:
+            # The oldest event leaves the window first; the phone's queue waits for that.
+            free_in = max(1, math.ceil(60 - (now - min(window))))
             raise HTTPException(
                 status_code=429,
                 detail="Too many play events; a played track cannot arrive that often",
+                headers={"Retry-After": str(free_in)},
             )
         window.append(now)
         _PLAYS_WINDOW["all"] = window

@@ -119,4 +119,7 @@ def test_play_journal_is_rate_limited(client, monkeypatch):
     body = {"path": "A.m4a", "played_seconds": 1.0}
     assert client.post("/api/plays", json=body).status_code == 200
     assert client.post("/api/plays", json=body).status_code == 200
-    assert client.post("/api/plays", json=body).status_code == 429
+    refused = client.post("/api/plays", json=body)
+    assert refused.status_code == 429
+    # The phone's queue waits exactly until a slot frees up, not a blind minute.
+    assert 1 <= int(refused.headers["Retry-After"]) <= 60
