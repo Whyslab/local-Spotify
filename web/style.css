@@ -579,8 +579,6 @@ code {
 
 /* ---------------- Playlists ---------------- */
 
-.playlist-row { width: 100%; text-align: left; cursor: pointer; }
-
 .cover img,
 .playlist-cover img {
     width: 100%;
@@ -1032,31 +1030,6 @@ button.danger {
 /* Переключатель «Треки · Альбомы · Синглы» и карточка альбома. */
 
 button.ghost.is-on { color: var(--accent-ink); background: var(--accent); font-weight: 650; }
-
-.album-open-art {
-    flex: none;
-    display: grid;
-    place-items: center;
-    width: 148px;
-    height: 148px;
-    border-radius: 10px;
-    overflow: hidden;
-    background: var(--surface-2);
-    color: var(--text-3);
-    font-size: 40px;
-    font-weight: 650;
-}
-.album-open-art img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.album-open-meta { min-width: 0; }
-.album-open-meta h2 { margin: 0 0 4px; font-size: 26px; }
-.album-open-meta p { margin: 0 0 12px; }
-
-@media (max-width: 560px) {
-    
-    
-    .album-open-art { width: 120px; height: 120px; }
-    .album-open-meta h2 { font-size: 20px; }
-}
 
 /* ---------------- Плеер: мини на телефоне ----------------
    Капсула над вкладками: обложка, название, пауза и «дальше», снизу тонкая
@@ -1522,11 +1495,8 @@ html.sheet-lock, html.sheet-lock body { overflow: hidden; }
    out of the way entirely, so the tab bar keeps behaving as the fixed bar at
    the bottom edge that it is on a phone. */
 .rail { display: contents; }
-/* Тянуть нечего там, где нет колонок: на телефоне раскладка одноколоночная.
-   По той же причине там нет и кнопки «панель трека»: панели, которую она
-   убирает, на узком экране не существует. */
-.rail-grip,
-.wide-only { display: none; }
+/* Тянуть нечего там, где нет колонок: на телефоне раскладка одноколоночная. */
+.rail-grip { display: none; }
 
 /* display:flex in the wide layout would otherwise beat [hidden]. */
 .rail[hidden] { display: none; }
@@ -1577,8 +1547,6 @@ html.sheet-lock, html.sheet-lock body { overflow: hidden; }
     /* Край панели. Узкая полоса поверх стыка: курсор меняется на «тянуть»,
        а видно её только когда к ней подводят мышь — иначе это была бы лишняя
        линия на экране, где и так есть граница. */
-    .wide-only { display: flex; }
-
     .rail-grip {
         display: block;
         grid-area: rail;
@@ -2278,7 +2246,6 @@ html.sheet-lock, html.sheet-lock body { overflow: hidden; }
 .o-mood-play { position: absolute; right: 14px; bottom: 14px; width: 46px; height: 46px; border-radius: 50%;
   display: grid; place-items: center; color: #fff;
   background: rgba(255, 255, 255, 0.2); -webkit-backdrop-filter: blur(20px) saturate(1.6); backdrop-filter: blur(20px) saturate(1.6); }
-.o-mood-play .ic { width: 22px; height: 22px; margin-left: 2px; }
 .o-mood-open:active { transform: scale(0.985); }
 .o-mood-open { transition: transform 160ms ease-out; }
 .o-picks { display: grid; grid-auto-flow: column; grid-template-rows: repeat(4, auto); grid-auto-columns: calc(100% - 44px);
@@ -2294,26 +2261,19 @@ html.sheet-lock, html.sheet-lock body { overflow: hidden; }
   background-image: linear-gradient(var(--line-2), var(--line-2)); background-size: calc(100% - 76px) 0.5px;
   background-position: right bottom; background-repeat: no-repeat; }
 .o-artist-row .o-cover { width: 48px; height: 48px; }
-.o-chev { transform: rotate(180deg); color: var(--text-3); width: 18px !important; height: 18px !important; }
 .o-seg { display: flex; margin: 4px 16px 14px; padding: 2px; border-radius: 9px; background: var(--fill-2); }
 .o-seg-item { flex: 1; height: 32px; border-radius: 7px; text-align: center !important; font-size: 14px; font-weight: 500; color: var(--text); }
 .o-seg-item.is-on { background: #636366; box-shadow: 0 3px 8px rgba(0, 0, 0, 0.25); font-weight: 600; }
 .o-actions { display: flex; gap: 12px; padding: 6px 16px 10px; align-items: center; }
 .o-actions.is-center { justify-content: center; }
-.o-actions.is-quiet { gap: 22px; padding-top: 2px; }
 .o-capsule { flex: 1; height: 48px; border-radius: 12px; display: inline-flex; align-items: center; justify-content: center !important; gap: 8px;
   background: var(--fill-2); color: var(--accent) !important; font-size: 17px; font-weight: 600; max-width: 220px;
   transition: transform 120ms ease-out, background-color 160ms ease-out; }
-.o-capsule .ic { width: 20px; height: 20px; }
-.o-capsule .ic-play [data-fill] { fill: var(--accent); }
 .o-capsule:active { transform: scale(0.97); background: var(--fill); }
-.o-capsule.is-tint { background: var(--accent); color: #000 !important; }
-.o-capsule.is-small { flex: none; height: 32px; padding: 0 14px; font-size: 14px; border-radius: 16px; margin-right: 16px; }
 .o-list-head { display: flex; justify-content: space-between; align-items: baseline; padding: 4px 16px 6px; color: var(--text-2); font-size: 15px; }
 .o-list-head .o-link { font-size: 15px; }
 .o-backbar { position: sticky; top: 0; z-index: 5; padding: 6px 8px; }
 .o-back { display: inline-flex; align-items: center; gap: 2px; height: 40px; padding: 0 8px 0 2px; color: var(--accent); font-size: 17px; }
-.o-back .ic { width: 26px; height: 26px; stroke-width: 2.2; }
 .o-col-head { display: flex; flex-direction: column; align-items: center; text-align: center; padding: 6px 16px 14px; }
 .o-col-art { width: min(68vw, 270px); }
 .o-col-art .o-cover { width: 100%; border-radius: 10px; box-shadow: 0 18px 40px rgba(0, 0, 0, 0.55); }
@@ -2335,14 +2295,11 @@ html.sheet-lock, html.sheet-lock body { overflow: hidden; }
 .o-hero-text { position: absolute; left: 16px; right: 16px; bottom: 14px; display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; }
 .o-hero-text h1 { margin: 0; font-size: clamp(32px, 9vw, 56px); font-weight: 800; letter-spacing: -0.03em; line-height: 1; text-wrap: balance; }
 .o-play-round { width: 54px; height: 54px; flex: none; border-radius: 50%; display: grid; place-items: center; background: var(--accent); color: #000; }
-.o-play-round .ic { width: 24px; height: 24px; margin-left: 3px; }
-.o-artist .o-actions .o-capsule { flex: none; padding: 0 22px; }
 .o-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(148px, 1fr)); gap: 18px 14px; padding: 0 16px; }
 .o-grid .o-card-title { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .o-search { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 6px;
   margin: 0 16px; padding: 0 10px; height: 40px; border-radius: 11px; background: #1c1c1e; color: var(--text-2);
   box-shadow: 0 -12px 0 #000; }
-.o-search .ic { width: 18px; height: 18px; }
 .o-search-input { flex: 1; min-width: 0; height: 100%; border: 0; outline: 0; background: none; color: var(--text); font-size: 17px; }
 .o-search-input::placeholder { color: var(--text-3); }
 .o-browse-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 0 16px; }
@@ -2424,7 +2381,6 @@ html.sheet-lock, html.sheet-lock body { overflow: hidden; }
 /* Правой колонки «что играет» больше нет: обложка, текст и очередь — в
    большом плеере. Узел остаётся: player.js ведёт по нему обложку и цифры. */
 #nowPanel { display: none !important; }
-#playerAsideButton { display: none !important; }
 
 /* Телефон: четыре вкладки, левая панель не видна. */
 .side { display: none; }
