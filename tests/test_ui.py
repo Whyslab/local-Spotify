@@ -663,6 +663,27 @@ def test_a_batch_picture_is_always_an_image(page):
     assert types == ["image/jpeg", "image/jpeg", "image/png", "missing"]
 
 
+@pytest.mark.parametrize("tail", [-2, 5])
+def test_a_batch_whose_pictures_do_not_add_up_is_not_believed(page, tail):
+    """The header's lengths are checked against what came: a cut-off answer
+    (a dropped connection) gave cut-off pictures, kept for the session as
+    covers that never show. Too few or too many bytes — the batch is "later",
+    and the rows ask one by one."""
+    got = page.evaluate(
+        """async (tail) => {
+            const head = new TextEncoder().encode(JSON.stringify({items: [
+                {type: 'image/png', length: 3}, {type: 'image/png', length: 3}]}));
+            const size = new Uint8Array(4);
+            new DataView(size.buffer).setUint32(0, head.length);
+            const body = 'abcdef' + 'xxxxx'.slice(0, Math.max(0, tail));
+            const bytes = await new Blob([size, head, body.slice(0, 6 + tail)]).arrayBuffer();
+            try { unpackCovers(bytes); return 'believed'; } catch (e) { return 'refused'; }
+        }""",
+        tail,
+    )
+    assert got == "refused"
+
+
 @pytest.mark.parametrize("answer", [{"later": ["Song 0"]}, {"batch": "fail"}])
 def test_a_second_copy_gets_the_cover_the_batch_could_not_give(page, answer):
     """The second copy of a track waited for the first one's answer; "later"

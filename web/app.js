@@ -1404,19 +1404,24 @@ const COVER_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif
 
 /* Ответ /api/covers: 4 байта длины заголовка, заголовок JSON, картинки подряд.
  * Каждая картинка — своя копия байтов, не срез общего Blob: срез держал бы в
- * памяти всю пачку, пока жива хоть одна её обложка. */
+ * памяти всю пачку, пока жива хоть одна её обложка. Длины сверяются с тем,
+ * что пришло: обрезанный ответ давал обрезанные картинки, и строка до конца
+ * сеанса показывала битую обложку. Не сходится — ошибка, пачка «позже». */
 function unpackCovers(bytes) {
     const size = new DataView(bytes).getUint32(0);
     const { items } = JSON.parse(new TextDecoder().decode(bytes.slice(4, 4 + size)));
     let at = 4 + size;
-    return items.map((item) => {
+    const answers = items.map((item) => {
         if (item.later) return "later";
         if (!item.length) return "missing";
+        if (at + item.length > bytes.byteLength) throw new Error("covers: answer cut off");
         const type = COVER_TYPES.has(item.type) ? item.type : "image/jpeg";
         const picture = new Blob([bytes.slice(at, at + item.length)], { type });
         at += item.length;
         return picture;
     });
+    if (at !== bytes.byteLength) throw new Error("covers: answer does not add up");
+    return answers;
 }
 
 /* Ответ пачки — в coverUrls и тем, кто ждал обещание. «Позже», сбой или
