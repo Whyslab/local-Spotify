@@ -388,3 +388,43 @@ def test_a_json_body_is_capped_before_it_is_read(client, monkeypatch):
     assert client.put("/api/playlists/x/tracks", content=big).status_code == 413
     # Under the cap nothing changes: no token — 401.
     assert stranger.post("/api/covers", json={"items": []}).status_code == 401
+
+
+def test_an_artist_photo_from_a_phone_is_not_refused_for_its_size(client):
+    """The cap on every body (b441448) left /api/artist-photo at the 2 MB
+    meant for JSON: a 3-6 MB photo straight from a phone got 413, though the
+    handler takes up to MAX_COVER_BYTES (code review, 08.10.2026)."""
+    from adder import config
+
+    photo = b"\xff\xd8\xff" + b"\0" * (3 * 1024 * 1024)
+    assert len(photo) < config.MAX_COVER_BYTES
+    response = client.post(
+        "/api/artist-photo",
+        params={"name": "Nobody"},
+        files={"image": ("photo.jpg", photo, "image/jpeg")},
+    )
+    assert response.status_code != 413, response.text
+
+
+def test_every_upload_route_has_its_own_body_limit():
+    """A route that takes a file must be listed with an upload limit; the
+    default is for JSON and is far too small for a picture or a track."""
+    import inspect
+
+    from fastapi import UploadFile
+    from fastapi.routing import APIRoute
+
+    from adder import app as app_module
+
+    for route in app_module.app.routes:
+        if not isinstance(route, APIRoute):
+            continue
+        hints = inspect.signature(route.endpoint).parameters.values()
+        if not any(
+            UploadFile in (p.annotation, *getattr(p.annotation, "__args__", ())) for p in hints
+        ):
+            continue
+        path = route.path.replace("{name}", "x").replace("{playlist}", "x")
+        for method in route.methods:
+            limit = app_module.upload_limit(method, path)
+            assert limit is not None and limit > app_module.DEFAULT_BODY_LIMIT, (method, route.path)

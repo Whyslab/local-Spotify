@@ -211,17 +211,29 @@ async def _validation_error(request: Request, exc: RequestValidationError) -> JS
 # Limits on a request body, checked before it is read. Starlette writes a
 # whole multipart part to /tmp (RAM on this machine) before the handler sees
 # it, so the per-file check in the handler comes too late to protect memory.
+COVER_BODY_LIMIT = 12 * 1024 * 1024
 BODY_LIMITS = {
     "/api/import": 600 * 1024 * 1024,  # several files at once
     "/api/replace-file": 210 * 1024 * 1024,
+    "/api/artist-photo": COVER_BODY_LIMIT,  # a photo straight from a phone
 }
-COVER_BODY_LIMIT = 12 * 1024 * 1024
 # Every other body: JSON. FastAPI reads and parses it before verify_token runs,
 # so without a cap anyone on the network could make the service hold and parse
 # hundreds of megabytes without a token. The largest real one — a playlist's
 # whole order — is ~150 KB.
 DEFAULT_BODY_LIMIT = 2 * 1024 * 1024
 BODY_METHODS = ("POST", "PUT", "PATCH", "DELETE")
+
+
+def upload_limit(method: str, path: str) -> int | None:
+    """The limit of an upload (a file in the body), or None for any other body."""
+    if method != "POST":
+        return None
+    if path in BODY_LIMITS:
+        return BODY_LIMITS[path]
+    if path.startswith("/api/playlists/") and path.endswith("/cover"):
+        return COVER_BODY_LIMIT
+    return None
 
 
 class _BodyTooLarge(HTTPException):
@@ -242,10 +254,7 @@ class UploadSizeLimit:
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http" or scope["method"] not in BODY_METHODS:
             return await self.inner(scope, receive, send)
-        path = scope["path"]
-        limit = BODY_LIMITS.get(path) if scope["method"] == "POST" else None
-        if limit is None and scope["method"] == "POST" and path.startswith("/api/playlists/"):
-            limit = COVER_BODY_LIMIT if path.endswith("/cover") else None
+        limit = upload_limit(scope["method"], scope["path"])
         length = dict(scope["headers"]).get(b"content-length", b"")
         if limit is not None and not length.isdigit():
             # Uploads say their size up front: refused before a byte is read.
