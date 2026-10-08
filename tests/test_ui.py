@@ -610,6 +610,55 @@ def test_artist_photos_gone_from_screen_give_up_their_places(page):
     assert "New 1" in started and "New 2" in started, started
 
 
+def test_an_artist_shown_twice_keeps_its_photo_when_one_copy_leaves(page):
+    """Two covers of one artist share one request. When the copy that made it
+    left the screen, the other got its cancellation, took it for "no photo"
+    and showed the track's cover instead of the artist's photo."""
+    page.evaluate("switchView('viewAdd')")  # no artists of the home page in the way
+    page.wait_for_timeout(300)
+    page.evaluate(
+        """async () => {
+            const real = window.fetch;
+            const png = await (await real('/static/icon-180.png')).blob();
+            window.__photoAsked = 0;
+            window.fetch = (url, options = {}) => {
+                const u = String(url);
+                if (!u.startsWith('/api/artist-photo?')) return real(url, options);
+                window.__photoAsked += 1;
+                return new Promise((ok, fail) => {
+                    const timer = setTimeout(() => ok(new Response(png)), 400);
+                    if (options.signal) options.signal.addEventListener('abort', () => {
+                        clearTimeout(timer);
+                        fail(new DOMException('aborted', 'AbortError'));
+                    });
+                });
+            };
+            const box = document.createElement('div');
+            box.id = 'testTwice';
+            box.style.cssText = 'position:fixed;top:0;left:0;width:300px;z-index:99';
+            document.body.appendChild(box);
+            window.__addTwice = (id) => {
+                const cover = labArtistCover('Twice', 'Twice/Singles/Song.m4a', 96, false);
+                cover.id = id;
+                cover.style.cssText = 'width:40px;height:40px';
+                box.appendChild(cover);
+            };
+            window.__addTwice('first');
+        }"""
+    )
+    page.wait_for_function("window.__photoAsked >= 1")  # the first copy's request
+    page.evaluate("window.__addTwice('second')")  # joins it
+    page.wait_for_function("artistPhotoBusy === 2")
+    # Scrolled away: far above the screen and its margin.
+    page.evaluate("document.getElementById('first').style.transform = 'translateY(-3000px)'")
+    page.wait_for_function("!!document.querySelector('#second img')", timeout=3000)
+    page.wait_for_timeout(300)
+    shows = page.evaluate(
+        "document.querySelector('#second img').src === coverUrls.get('artist:Twice:96')"
+    )
+    assert shows, page.evaluate("[...coverUrls.keys()].filter((k) => k.includes('Twice'))")
+
+
 def test_audio_not_starved_by_covers(page, monkeypatch):
     """The browser keeps six connections to the service. Covers that take a
     second each (a cold thumbnail) held all six, and the track's link waited

@@ -87,7 +87,8 @@ function labArtistCover(name, fallbackPath, size, round) {
     const box = el("div", "o-cover" + (round ? " is-round" : ""));
     box.style.setProperty("--ph-hue", String(hueOf(name || fallbackPath || "?")));
     const job = (signal) => artistPhotoQueue(box, () => artistPhotoUrl(name, size, signal), signal).then((url) => {
-        if (signal && signal.aborted) return false;  // ушла с экрана — попросит, вернувшись
+        // Ушла с экрана, или отменили общий с другой копией запрос — попросит снова.
+        if ((signal && signal.aborted) || url === ARTIST_PHOTO_ABORTED) return false;
         if (!box.isConnected) return true;
         if (url) {
             const img = document.createElement("img");
@@ -110,6 +111,9 @@ function labArtistCover(name, fallbackPath, size, round) {
  * а ушедшую с экрана (signal) — отменяем, и в очереди, и в пути: иначе она
  * держала место до ответа Deezer, а видимые строки ждали за ней. */
 const artistPhotoWaiting = [];
+/* Ответ очереди «запрос отменён» — не «фото нет»: две копии одного артиста
+ * делят запрос, и ушедшая с экрана отменяет его у оставшейся. */
+const ARTIST_PHOTO_ABORTED = {};
 let artistPhotoBusy = 0;
 
 function artistPhotoQueue(box, ask, signal) {
@@ -129,7 +133,7 @@ function nextArtistPhoto() {
         const { box, ask, resolve, signal } = artistPhotoWaiting.shift();
         if (!box.isConnected || (signal && signal.aborted)) { resolve(null); continue; }
         artistPhotoBusy += 1;
-        ask().catch(() => null).then((url) => {
+        ask().catch((error) => (error && error.name === "AbortError" ? ARTIST_PHOTO_ABORTED : null)).then((url) => {
             artistPhotoBusy -= 1;
             resolve(url);
             nextArtistPhoto();
