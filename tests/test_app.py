@@ -267,7 +267,7 @@ WEB_SCRIPTS = sorted(
     if not any(part.startswith(".") for part in p.relative_to(WEB_DIR).parts)
 )
 # The ones that put library data on the page must do it through the safe APIs.
-ROW_BUILDERS = {"app.js", "player.js", "views.js", "design/core.js", "design/v1.js"}
+ROW_BUILDERS = {"app.js", "player.js", "views.js"}
 
 
 def test_the_script_list_covers_the_page():
@@ -310,6 +310,12 @@ def test_static_scripts_do_not_render_api_data_with_innerhtml(client, script):
     if script in ROW_BUILDERS:
         assert "textContent" in js
         assert "replaceChildren" in js
+
+
+def test_design_pages_are_gone(client):
+    """The design lab was the «Обложка» look's sketch; the look is the player now."""
+    for path in ("/design", "/static/design/index.html", "/static/design/v1.js"):
+        assert client.get(path).status_code == 404, path
 
 
 def test_index_links_every_local_file_with_its_fingerprint(client):
