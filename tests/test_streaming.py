@@ -1,5 +1,6 @@
 """Signed stream links: what they allow, and for how long."""
 
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -193,6 +194,32 @@ def test_fingerprinted_static_is_immutable_and_compressed(client):
         assert YEAR in response.headers["cache-control"], url
         assert "immutable" in response.headers["cache-control"], url
         assert response.headers.get("content-encoding") == "gzip", url
+
+
+def test_index_fingerprints_cached_by_mtime(client, tmp_path, monkeypatch):
+    """GET / read and hashed all seven linked files on every load (B22). A
+    file is read again only when its mtime or size changed."""
+    from adder.app import static_stamp
+
+    reads = []
+    real = Path.read_bytes
+
+    def counting(self):
+        reads.append(self.name)
+        return real(self)
+
+    monkeypatch.setattr(Path, "read_bytes", counting)
+    client.get("/")
+    reads.clear()
+    client.get("/")
+    assert reads == []
+
+    script = tmp_path / "app.js"
+    script.write_text("one")
+    first = static_stamp(script)
+    script.write_text("two")  # same size: the mtime tells
+    os.utime(script, ns=(script.stat().st_atime_ns, script.stat().st_mtime_ns + 1_000_000))
+    assert static_stamp(script) != first
 
 
 def test_unfingerprinted_static_is_not_immutable(client):
