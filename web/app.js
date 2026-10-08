@@ -1062,6 +1062,9 @@ function coverUrl(key, url, signal) {
         // Недавно нужная — в конец очереди на выселение.
         coverUrls.delete(key);
         coverUrls.set(key, have);
+        /* Ждать чужой запрос (пачку, где эта обложка уже есть) — не повод
+         * держать место: такие строки занимали все, и остальные ждали. */
+        coverSlotFree(signal);
         return Promise.resolve(have);
     }
     const pending = fetch(url, { headers: headers(), signal })

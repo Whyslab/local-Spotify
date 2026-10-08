@@ -699,6 +699,27 @@ def test_a_batch_whose_rows_all_left_is_given_up(page):
     page.wait_for_function("window.__covers.asked.filter((n) => n === 'Song 0').length >= 2")
 
 
+def test_a_row_back_on_screen_does_not_hold_a_place_waiting(page):
+    """A row that left the screen and came back while its batch still went
+    (other rows kept it) waited for that batch in a place of its own: a few
+    such rows took every place, and the rest of the list waited for the
+    batch's timeout. Waiting for someone else's request takes no place."""
+    page.set_viewport_size({"width": 390, "height": 664})
+    page.evaluate(FAKE_COVERS_JS, {"list": _fake_rows(200), "batchDelay": 600000})
+    page.evaluate("switchView('viewLibrary')")
+    page.wait_for_function("window.__covers.batches === 1")
+    scroll = f"(y) => {{ {_scroller_of('#library')}.scrollTop = y; }}"
+    # The first rows leave (past the 200 px margin), the last of the batch
+    # stay and keep it going.
+    first = page.evaluate("document.querySelector('#library .track').getBoundingClientRect().top")
+    page.evaluate(scroll, first + 400)
+    page.wait_for_timeout(300)
+    page.evaluate(scroll, 0)
+    page.wait_for_timeout(300)
+    busy, inflight = page.evaluate("[coverBusy, window.__covers.inflight]")
+    assert busy == inflight, (busy, inflight)
+
+
 def test_the_page_and_the_service_agree_on_the_batch_size(page):
     from adder import app as app_module
 
