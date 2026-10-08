@@ -1439,6 +1439,44 @@ def test_search_finds_artists_and_tracks_in_the_library(page):
     assert page.locator("#searchBody .o-yt-ask").count() == 1
 
 
+def test_search_debounce_within_budget(page):
+    """Typing waited 300 ms (library) and 120 ms (search page) before
+    searching at all: the whole 150 ms budget went before any work began."""
+    page.evaluate(
+        """() => {
+            window.__asked = {};
+            const real = window.fetch;
+            window.fetch = (url, options) => {
+                if (String(url).startsWith('/api/library?') && String(url).includes('q=zz')) {
+                    window.__asked.library = window.__asked.library || performance.now();
+                }
+                return real(url, options);
+            };
+            const index = window.labIndex;
+            window.labIndex = () => {
+                if (searchQueryText === 'zz') window.__asked.everywhere = window.__asked.everywhere || performance.now();
+                return index();
+            };
+        }"""
+    )
+    typed = """(sel) => {
+        const field = document.querySelector(sel);
+        field.value = 'zz';
+        window.__typed = performance.now();
+        field.dispatchEvent(new Event('input', {bubbles: true}));
+    }"""
+    open_library(page)
+    page.evaluate(typed, "#librarySearch")
+    page.wait_for_function("window.__asked.library")
+    library_wait = page.evaluate("window.__asked.library - window.__typed")
+    page.evaluate("switchView('viewSearch')")
+    page.wait_for_selector("#searchEverywhere")
+    page.evaluate(typed, "#searchEverywhere")
+    page.wait_for_function("window.__asked.everywhere")
+    everywhere_wait = page.evaluate("window.__asked.everywhere - window.__typed")
+    assert library_wait < 100 and everywhere_wait < 100, (library_wait, everywhere_wait)
+
+
 def test_shuffle_offers_plain_and_smart(page):
     open_library(page)
     page.locator("#libraryShuffle").click()

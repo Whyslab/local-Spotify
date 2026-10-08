@@ -997,7 +997,7 @@ async function fillSearch() {
                 searchQueryText = input.value;
                 if (side && side.value !== input.value) side.value = input.value;
                 fillSearch();
-            }, 120);
+            }, SEARCH_DEBOUNCE_MS);
         });
     }
     if (side) {

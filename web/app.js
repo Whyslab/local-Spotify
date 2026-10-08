@@ -13,7 +13,10 @@
  * видно, не опрашивается ничего. */
 const POLL_MS = 3000;
 const POLL_SLOW_MS = 30000;
-const SEARCH_DEBOUNCE_MS = 300;
+/* Пауза после буквы перед поиском. Было 300 (а в «Поиске» 120): весь бюджет
+ * ответа в 150 мс уходил на ожидание, ещё до работы. С 60 запрос уходит
+ * почти на каждую букву; рисуется только ответ на последний (libraryTicket). */
+const SEARCH_DEBOUNCE_MS = 60;
 
 let activeView = "viewHome";
 let librarySearchTimer = null;
