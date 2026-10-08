@@ -287,6 +287,9 @@ def test_install_env_value_matches_dotenv(tmp_path):
         "/srv/100%",
         r'"/srv/music\n"',  # dotenv turns it into a newline; $(...) would eat it
         r'"/srv/a\nb"',
+        # Accepted as they are: a check that refused everything would pass the rest.
+        "ok:/srv/Моя музыка & x",
+        "ok:/srv/[it];`x` y",
     ],
 )
 def test_install_refuses_a_library_path_that_breaks_the_configs(tmp_path, value):
@@ -302,13 +305,21 @@ def test_install_refuses_a_library_path_that_breaks_the_configs(tmp_path, value)
     (repo / "adder").mkdir(parents=True)
     (repo / ".venv" / "bin").mkdir(parents=True)
     (repo / ".venv" / "bin" / "python").symlink_to(sys.executable)
-    (repo / "adder" / ".env").write_text(f"LIBRARY_PATH={value}\n", encoding="utf-8")
-    script = f'REPO="$1"\n{function}\n{check}\necho "accepted: [$LIBRARY_PATH_VALUE]"'
+    # Single quotes: dotenv takes the text as it is, with no ${...} expansion.
+    raw = f"'{value[3:]}'" if value.startswith("ok:") else value
+    (repo / "adder" / ".env").write_text(f"LIBRARY_PATH={raw}\n", encoding="utf-8")
+    script = (
+        f'set -euo pipefail\nREPO="$1"\n{function}\n{check}\necho "accepted: [$LIBRARY_PATH_VALUE]"'
+    )
 
     run = subprocess.run(["bash", "-c", script, "_", str(repo)], capture_output=True, text=True)
 
-    assert run.returncode == 1, run.stdout
-    assert "LIBRARY_PATH in adder/.env contains" in run.stderr
+    if value.startswith("ok:"):
+        assert run.returncode == 0, run.stderr
+        assert run.stdout == f"accepted: [{value[3:]}]\n"
+    else:
+        assert run.returncode == 1, run.stdout
+        assert "LIBRARY_PATH in adder/.env contains" in run.stderr
 
 
 def test_backup_rotation_ignores_foreign_and_odd_names(tmp_path):
