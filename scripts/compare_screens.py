@@ -21,7 +21,15 @@ Chromium открывает в обеих одни и те же экраны —
 
 Выход 0 — на всех экранах 0 различающихся пикселей. Сдвиг цвета на 1-2
 единицы (сглаживание градиента) за разницу не считается; экран снимается до
-трёх раз, и разница засчитывается, только если держится во всех. Живую службу, фонотеку
+трёх раз с перерисовкой между съёмками, голова судится только по съёмкам, где
+контроль совпал с базой, и разница засчитывается, только если держится во
+всех них. Нестабильный экран тоже даёт выход 1.
+
+Чего скрипт не видит: всё, что ниже первого экрана (снимок — видимая часть
+окна; на ноутбуке разделы прокручиваются внутри себя), и то, что зависит от
+действий на сервере: контроль и база ходят в одну службу. Список экранов
+берётся из ``tests/test_ui.py`` рабочей копии, а не из сравниваемых ревизий.
+Живую службу, фонотеку
 и рабочую копию не трогает; нужны ffmpeg и Chromium Playwright.
 """
 
@@ -312,12 +320,20 @@ def compare(base_url: str, head_url: str, keep: Path | None) -> list[str]:
                 for index, (screen, open_screen, _scope) in enumerate(ui.SWEEP_SCREENS):
                     for page in pages.values():
                         open_screen(page)
-                    # Ещё съёмка — только если эта не совпала: размытие под панелями
-                    # иногда дорисовывается на кадр позже, а пара точек мелькает
-                    # то в одной копии, то в другой. Настоящая разница в вёрстке
-                    # держится во всех съёмках, поэтому довольно одной чистой.
+                    # До трёх съёмок. Первая — не раньше секунды: то, что приходит
+                    # вторым запросом, должно успеть. Между съёмками страница
+                    # перерисовывается заново (окно на пиксель шире и обратно):
+                    # пара точек сглаживания мелькает то в одной копии, то в
+                    # другой, а простое ожидание кадр не перерисовывает. Разница
+                    # головы засчитывается только по съёмкам, где контроль
+                    # совпал с базой, и только если она держится во всех них:
+                    # настоящая разница в вёрстке не пропадает от перерисовки.
                     noise = change = None
-                    for wait_ms in (400, 1000, 2000):
+                    for attempt, wait_ms in enumerate((1000, 1000, 2000)):
+                        if attempt:
+                            for page in pages.values():
+                                page.set_viewport_size({"width": size[0] + 1, "height": size[1]})
+                                page.set_viewport_size({"width": size[0], "height": size[1]})
                         shots = {}
                         for name, page in pages.items():
                             settle(page, wait_ms)
@@ -327,22 +343,28 @@ def compare(base_url: str, head_url: str, keep: Path | None) -> list[str]:
                                 mask=[page.locator(s) for s in LIVE],
                             )
                         urls = {k: "data:image/png;base64," + _b64(v) for k, v in shots.items()}
-                        if noise is None or noise["pixels"]:
-                            noise = differ.evaluate(DIFF_JS, [urls["base"], urls["control"]])
-                        if change is None or change["pixels"]:
-                            change = differ.evaluate(DIFF_JS, [urls["base"], urls["head"]])
-                        if not noise["pixels"] and not change["pixels"]:
+                        here = differ.evaluate(DIFF_JS, [urls["base"], urls["control"]])
+                        if noise is None or here["pixels"] < noise["pixels"]:
+                            noise = here
+                        if here["pixels"]:
+                            continue  # страница не устоялась — голову по ней не судим
+                        moved = differ.evaluate(DIFF_JS, [urls["base"], urls["head"]])
+                        if change is None or moved["pixels"] < change["pixels"]:
+                            change = moved
+                            if keep:
+                                for name, shot in shots.items():
+                                    (keep / f"{size_name}-{index:02d}-{name}.png").write_bytes(shot)
+                        if not change["pixels"]:
                             break
-                    assert noise is not None and change is not None
-                    if keep:
-                        for name, shot in shots.items():
-                            (keep / f"{size_name}-{index:02d}-{name}.png").write_bytes(shot)
+                    assert noise is not None
                     label = f"{size_name:6} {index:02d} {screen}"
-                    if noise["pixels"]:
+                    if change is None:
                         problems.append(f"{label}: unstable (control differs by {noise})")
-                    elif change["pixels"]:
+                        print(f"{label}: control {noise['pixels']} px, head not judged")
+                        continue
+                    if change["pixels"]:
                         problems.append(f"{label}: {change['pixels']} px differ ({change})")
-                    print(f"{label}: control {noise['pixels']} px, head {change['pixels']} px")
+                    print(f"{label}: control 0 px, head {change['pixels']} px")
                 for page in pages.values():
                     page.context.close()
         finally:
