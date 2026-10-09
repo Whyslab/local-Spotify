@@ -1968,7 +1968,7 @@ async function openPlaylist(name) {
         return fail("Не удалось открыть подборку: " + e.message);
     }
     if (mine !== navigation) return false;
-    player.playlist = data;
+    player.playlist = withPendingEdit(data);
     /* Пояснение («Убрано: … Вернуть») — про прежнюю подборку, здесь ему не место. */
     setPlaylistNote("");
     togglePlaylistEdit(false);
@@ -1977,6 +1977,9 @@ async function openPlaylist(name) {
     setViewTitle(player.playlist.name);
     try { localStorage.setItem(PLAYLIST_KEY, player.playlist.name); } catch (e) { /* приватное окно */ }
     renderPlaylist();
+    const edit = readPendingEdits()[name];
+    if (edit && edit.conflict) showEditConflict(name);
+    else if (edit) setPlaylistNote("Есть правка без сети — уйдёт, когда сеть вернётся.");
     return true;
 }
 
@@ -2503,6 +2506,155 @@ function offerUndoRemoval(removed, position, name) {
  * Возвращает true, если записалось. */
 let playlistSaving = false;
 
+/* ---------------- Правки подборок без сети ----------------
+ *
+ * Без сети (или когда компьютер спит и Tailscale отвечает 502–504) правка
+ * не теряется: подборка запоминается здесь целиком, вместе с версией, на
+ * которой её правили, и уходит, когда сеть вернётся. Сервер сверит версию:
+ * если подборку тем временем меняли на другом устройстве, он ответит 409, и
+ * человек выбирает, чья версия остаётся, — молча не затирается ни одна. */
+const PENDING_EDITS_KEY = "pendingPlaylistEdits";
+
+function readPendingEdits() {
+    try { return JSON.parse(localStorage.getItem(PENDING_EDITS_KEY) || "{}"); } catch (e) { return {}; }
+}
+
+function writePendingEdits(edits) {
+    try { localStorage.setItem(PENDING_EDITS_KEY, JSON.stringify(edits)); return true; } catch (e) { return false; }
+}
+
+function dropPendingEdit(name) {
+    const edits = readPendingEdits();
+    if (!(name in edits)) return;
+    delete edits[name];
+    writePendingEdits(edits);
+}
+
+function unreachableStatus(status) { return status === 502 || status === 503 || status === 504; }
+
+/* Отложить правку: следующая правка той же подборки заменяет список, а
+ * версию оставляет первую — с ней сервер и сверит. */
+function queuePlaylistEdit(pl, paths, extra = []) {
+    const known = new Map(pl.entries.concat(extra).map(e => [e.path, e]));
+    const entries = paths.map(path => {
+        const e = known.get(path) || { path };
+        return { path, title: e.title || "", artist: e.artist || "", album: e.album || "", duration: e.duration || null };
+    });
+    const edits = readPendingEdits();
+    const before = edits[pl.name];
+    edits[pl.name] = { revision: before ? before.revision : pl.revision, entries, conflict: Boolean(before && before.conflict) };
+    if (!writePendingEdits(edits)) return null;
+    return entries;
+}
+
+/* Подборка с сервера (или из копии sw.js) и неотправленная правка поверх:
+ * показывается своя правка, а версия — та, на которой её сделали, чтобы
+ * следующая запись не перешагнула чужую правку. */
+function withPendingEdit(data) {
+    const edit = readPendingEdits()[data.name];
+    return edit ? { ...data, revision: edit.revision, entries: edit.entries } : data;
+}
+
+function putPlaylistTracks(name, paths, revision) {
+    return fetch("/api/playlists/" + encodeURIComponent(name) + "/tracks", {
+        method: "PUT",
+        headers: { ...headers(), "Content-Type": "application/json" },
+        body: JSON.stringify({ paths, revision }),
+    });
+}
+
+let flushingEdits = false;
+
+async function flushPlaylistEdits() {
+    if (flushingEdits || !token()) return;
+    flushingEdits = true;
+    try {
+        for (const [name, edit] of Object.entries(readPendingEdits())) {
+            if (edit.conflict) { showEditConflict(name); continue; }
+            let r;
+            try {
+                r = await putPlaylistTracks(name, edit.entries.map(e => e.path), edit.revision);
+            } catch (e) {
+                return;  // сети всё ещё нет
+            }
+            if (unreachableStatus(r.status)) return;
+            if (r.status === 409) {
+                const edits = readPendingEdits();
+                if (edits[name]) { edits[name].conflict = true; writePendingEdits(edits); }
+                showEditConflict(name);
+                continue;
+            }
+            dropPendingEdit(name);
+            if (!r.ok) {
+                // Подборки больше нет или правка неисправима — сказать, а не повторять вечно.
+                setPlayerNoteOrPlaylist(name, `Правку подборки «${name}» без сети сохранить не вышло (${r.status}).`);
+                continue;
+            }
+            const data = await r.json().catch(() => null);
+            if (data && player.playlist && player.playlist.name === name) {
+                player.playlist = data;
+                renderPlaylist();
+                setPlaylistNote("Правка без сети сохранена.");
+            }
+        }
+        playlists();
+    } finally {
+        flushingEdits = false;
+    }
+}
+
+function setPlayerNoteOrPlaylist(name, text) {
+    if (activeView === "viewPlaylist" && player.playlist && player.playlist.name === name) setPlaylistNote(text);
+    else if (!document.getElementById("player").hidden) setPlayerNote(text);
+}
+
+/* Выбор при конфликте — в заметке открытой подборки; если открыта другая,
+ * строка под плеером зовёт её открыть. */
+function showEditConflict(name) {
+    if (!(activeView === "viewPlaylist" && player.playlist && player.playlist.name === name)) {
+        setPlayerNoteOrPlaylist(name, `Подборку «${name}» изменили на другом устройстве, пока не было сети — открой её и выбери версию.`);
+        return;
+    }
+    const note = document.getElementById("playlistNote");
+    if (!note) return;
+    note.textContent = "";
+    const text = document.createElement("span");
+    text.textContent = `Пока не было сети, «${name}» изменили на другом устройстве. Чью версию оставить? `;
+    const mine = document.createElement("button");
+    mine.className = "ghost small-inline";
+    mine.textContent = "Оставить мою";
+    mine.onclick = () => resolveEditConflict(name, true);
+    const theirs = document.createElement("button");
+    theirs.className = "ghost small-inline";
+    theirs.textContent = "Оставить ту";
+    theirs.onclick = () => resolveEditConflict(name, false);
+    note.append(text, mine, document.createTextNode(" · "), theirs);
+}
+
+async function resolveEditConflict(name, keepMine) {
+    const edit = readPendingEdits()[name];
+    if (!edit) return;
+    if (keepMine) {
+        try {
+            const got = await fetch("/api/playlists/" + encodeURIComponent(name) + "/tracks?fresh=1", { headers: headers(), cache: "no-store" });
+            if (!got.ok) throw new Error("Ошибка " + got.status);
+            const now = await got.json();
+            const r = await putPlaylistTracks(name, edit.entries.map(e => e.path), now.revision);
+            if (!r.ok) throw new Error(r.status === 409 ? "подборку снова изменили — попробуй ещё раз" : "Ошибка " + r.status);
+        } catch (e) {
+            setPlaylistNote("Не сохранилось: " + e.message);
+            return;
+        }
+    }
+    dropPendingEdit(name);
+    if (await openPlaylist(name)) setPlaylistNote(keepMine ? "Оставлена твоя версия." : "Оставлена версия с другого устройства.");
+    playlists();
+}
+
+window.addEventListener("online", () => flushPlaylistEdits());
+// Отложенное с прошлого раза — как только страница готова (activeView и прочее из app.js уже есть).
+window.addEventListener("load", () => flushPlaylistEdits());
+
 async function savePlaylist(paths) {
     const pl = player.playlist;
     if (!pl || playlistSaving) return false;
@@ -2510,13 +2662,36 @@ async function savePlaylist(paths) {
     const box = document.getElementById("playlistTracks");
     if (box) box.setAttribute("aria-busy", "true");
     setPlaylistNote("Сохраняю…");
+    /* Без сети — отложить: правка видна сразу и уйдёт, когда сеть вернётся. */
+    const later = () => {
+        const entries = queuePlaylistEdit(pl, paths);
+        if (!entries) return false;
+        if (player.playlist === pl) {
+            player.playlist = { ...pl, entries };
+            renderPlaylist();
+        }
+        setPlaylistNote("Без сети — правка сохранится здесь и уйдёт, когда сеть вернётся.");
+        return true;
+    };
     try {
-        const r = await fetch("/api/playlists/" + encodeURIComponent(pl.name) + "/tracks", {
-            method: "PUT",
-            headers: { ...headers(), "Content-Type": "application/json" },
-            body: JSON.stringify({ paths, revision: pl.revision }),
-        });
+        let r;
+        try {
+            r = await putPlaylistTracks(pl.name, paths, pl.revision);
+        } catch (e) {
+            return later();
+        }
+        if (unreachableStatus(r.status)) return later();
         const data = await r.json();
+        if (r.status === 409 && readPendingEdits()[pl.name]) {
+            /* Правка без сети ещё ждёт, а подборку меняли на другом устройстве:
+             * перечитывание наложило бы отложенное снова — нужен выбор. */
+            queuePlaylistEdit(pl, paths);
+            const edits = readPendingEdits();
+            edits[pl.name].conflict = true;
+            writePendingEdits(edits);
+            showEditConflict(pl.name);
+            return false;
+        }
         if (r.status === 409) {
             /* Someone edited from the other device while this view was open.
              * Reload rather than overwrite: their edit is as real as this one. */
@@ -2527,6 +2702,7 @@ async function savePlaylist(paths) {
             return false;
         }
         if (!r.ok) { setPlaylistNote(data.detail || ("Ошибка " + r.status)); return false; }
+        dropPendingEdit(pl.name);  // записана версия, где отложенное уже учтено
         playlists();  // число треков в рельсе — сразу
         /* Ответ мог прийти, когда открыта уже другая подборка. */
         if (player.playlist === pl) {
@@ -2828,7 +3004,7 @@ async function addToPlaylist(box, card, note, cancel, name, track) {
         const url = "/api/playlists/" + encodeURIComponent(name) + "/tracks";
         const got = await fetch(url, { headers: headers() });
         if (!got.ok) throw new Error("Ошибка " + got.status);
-        const pl = await got.json();
+        const pl = withPendingEdit(await got.json());
 
         const paths = pl.entries.map(e => e.path);
         if (paths.includes(track.path)) {
@@ -2841,11 +3017,19 @@ async function addToPlaylist(box, card, note, cancel, name, track) {
          * хочется услышать сейчас, а не через тысячу треков. */
         paths.unshift(track.path);
 
-        const put = await fetch(url, {
-            method: "PUT",
-            headers: { ...headers(), "Content-Type": "application/json" },
-            body: JSON.stringify({ paths, revision: pl.revision }),
-        });
+        let put;
+        try {
+            put = await putPlaylistTracks(name, paths, pl.revision);
+        } catch (e) {
+            put = null;
+        }
+        if (!put || unreachableStatus(put.status)) {
+            if (!queuePlaylistEdit(pl, paths, [track])) throw new Error("Нет сети, и отложить правку негде");
+            note.textContent = "Без сети — добавлю в «" + name + "», когда сеть вернётся";
+            if (player.playlist && player.playlist.name === name) await openPlaylist(name);
+            setTimeout(() => box.replaceWith(card), 1600);
+            return;
+        }
         if (put.status === 409) {
             note.textContent = "Подборку изменили с другого устройства. Открой ещё раз.";
             cancel.disabled = false;
@@ -2857,6 +3041,7 @@ async function addToPlaylist(box, card, note, cancel, name, track) {
             throw new Error(data.detail || ("Ошибка " + put.status));
         }
 
+        dropPendingEdit(name);
         note.textContent = "Добавлено в «" + name + "»";
         /* Если эта же подборка открыта рядом — показать её новой. */
         if (player.playlist && player.playlist.name === name) await openPlaylist(name);

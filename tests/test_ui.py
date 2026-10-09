@@ -11,6 +11,7 @@ Needs the browser: `python -m playwright install chromium` (CI does this).
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import json
 import socket
@@ -1180,6 +1181,98 @@ def test_next_track_offline_without_network(page):
     finally:
         page.context.set_offline(False)
         page.evaluate("player.audio.pause(); removeAllDownloads()")
+
+
+def _api(server, method, path, body=None):
+    import urllib.parse
+    import urllib.request
+
+    request = urllib.request.Request(
+        server["url"] + urllib.parse.quote(path),
+        method=method,
+        data=json.dumps(body).encode() if body is not None else None,
+        headers={"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(request) as r:
+        return json.loads(r.read() or b"null")
+
+
+QUIET_PATH = "Quiet/Singles/Quiet.m4a"
+EVIL_PATH = "Evil/Singles/evil.m4a"
+
+
+def _offline_edit(page, server, name):
+    """A playlist opened online, then reordered with the network gone."""
+    with contextlib.suppress(Exception):
+        _api(server, "DELETE", "/api/playlists/" + name)
+    _api(server, "POST", "/api/playlists", {"name": name, "paths": [LOUD_PATH, QUIET_PATH]})
+    _controlled(page)
+    page.evaluate(f"openPlaylist('{name}')")
+    page.context.set_offline(True)
+    assert page.evaluate(f"savePlaylist(['{QUIET_PATH}', '{LOUD_PATH}'])") is True
+    assert "без сети" in page.locator("#playlistNote").inner_text().lower()
+    # The phone shows its own order at once, and keeps it across a reload.
+    assert page.evaluate("player.playlist.entries.map(e => e.path)") == [QUIET_PATH, LOUD_PATH]
+    assert name in page.evaluate(
+        "Object.keys(JSON.parse(localStorage.getItem('pendingPlaylistEdits')))"
+    )
+
+
+def test_offline_playlist_edit_applies_on_reconnect(page, server):
+    name = "Offline edit"
+    _offline_edit(page, server, name)
+    page.context.set_offline(False)
+    page.evaluate("window.dispatchEvent(new Event('online'))")
+    page.wait_for_function(
+        "Object.keys(JSON.parse(localStorage.getItem('pendingPlaylistEdits') || '{}')).length === 0"
+    )
+    paths = [e["path"] for e in _api(server, "GET", f"/api/playlists/{name}/tracks")["entries"]]
+    assert paths == [QUIET_PATH, LOUD_PATH]
+    _api(server, "DELETE", "/api/playlists/" + name)
+
+
+def test_offline_playlist_edit_conflict_is_shown(page, server):
+    name = "Offline clash"
+    _offline_edit(page, server, name)
+    # Meanwhile the laptop changed the same playlist.
+    there = _api(server, "GET", f"/api/playlists/{name}/tracks")
+    _api(server, "PUT", f"/api/playlists/{name}/tracks",
+         {"paths": [LOUD_PATH, QUIET_PATH, EVIL_PATH], "revision": there["revision"]})  # fmt: skip
+    try:
+        page.context.set_offline(False)
+        page.evaluate("window.dispatchEvent(new Event('online'))")
+        mine = page.get_by_role("button", name="Оставить мою")
+        mine.wait_for(timeout=15000)
+        assert page.get_by_role("button", name="Оставить ту").is_visible()
+        assert "другом устройстве" in page.locator("#playlistNote").inner_text()
+        # Nothing was overwritten while it waited for the choice.
+        paths = [e["path"] for e in _api(server, "GET", f"/api/playlists/{name}/tracks")["entries"]]
+        assert paths == [LOUD_PATH, QUIET_PATH, EVIL_PATH]
+        mine.click()
+        page.wait_for_function(
+            "Object.keys(JSON.parse(localStorage.getItem('pendingPlaylistEdits') || '{}')).length === 0"
+        )
+        paths = [e["path"] for e in _api(server, "GET", f"/api/playlists/{name}/tracks")["entries"]]
+        assert paths == [QUIET_PATH, LOUD_PATH]
+    finally:
+        _api(server, "DELETE", "/api/playlists/" + name)
+
+
+def test_an_edit_online_over_a_clashing_offline_one_asks_too(page, server):
+    """The network is back but the waiting edit has not gone yet, and the next
+    edit meets the other device's change: the choice, not a reload loop."""
+    name = "Offline clash 2"
+    _offline_edit(page, server, name)
+    there = _api(server, "GET", f"/api/playlists/{name}/tracks")
+    _api(server, "PUT", f"/api/playlists/{name}/tracks",
+         {"paths": [LOUD_PATH, QUIET_PATH, EVIL_PATH], "revision": there["revision"]})  # fmt: skip
+    try:
+        page.context.set_offline(False)
+        page.evaluate(f"savePlaylist(['{LOUD_PATH}', '{QUIET_PATH}'])")
+        page.get_by_role("button", name="Оставить мою").wait_for(timeout=15000)
+    finally:
+        page.evaluate("localStorage.removeItem('pendingPlaylistEdits')")
+        _api(server, "DELETE", "/api/playlists/" + name)
 
 
 def test_media_session_handlers_registered(page):
