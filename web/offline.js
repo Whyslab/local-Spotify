@@ -479,7 +479,11 @@ async function yieldToPlayer(job) {
 
 async function keepScreenOn(job) {
     try {
-        if (navigator.wakeLock && !job.stop) job.lock = await navigator.wakeLock.request("screen");
+        if (!navigator.wakeLock || job.stop) return;
+        const lock = await navigator.wakeLock.request("screen");
+        // Пока ждали, скачивание могло кончиться — тогда экран не держать.
+        if (job.stop || offline.running !== job) { await lock.release(); return; }
+        job.lock = lock;
     } catch (e) { /* нет — качаем и так */ }
 }
 
@@ -524,7 +528,10 @@ async function downloadLibrary(fitOnly = false) {
         tracks = fit;
         need = fit.reduce((sum, row) => sum + (row.size || 0), 0);
     }
-    if (!tracks.length) { setLibraryNote("Вся фонотека уже на телефоне."); return; }
+    if (!tracks.length) {
+        setLibraryNote(left ? "Места не хватает ни на один трек." : "Вся фонотека уже на телефоне.");
+        return;
+    }
 
     const job = { name: "", library: true, done: 0, total: tracks.length, failed: 0, stop: false,
         bytes: 0, need, started: Date.now(), lock: null };
