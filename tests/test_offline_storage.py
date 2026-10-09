@@ -34,6 +34,8 @@ def test_offline_cache_names_are_stable():
     assert worker["AUDIO"] == PINNED["audio"]
     assert worker["META"] == PINNED["meta"]
     assert worker["COVERS"] == PINNED["covers"]
+    # The page refreshes the worker's copy of a playlist after a save.
+    assert offline["API_CACHE"] == worker["API"]
 
     # And activate keeps them: every pinned store is in KNOWN.
     known = re.search(r"const KNOWN = \[([^\]]*)\];", worker_js)

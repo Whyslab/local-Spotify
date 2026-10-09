@@ -73,6 +73,7 @@ function saveToken() {
     applyLoginState();
     refresh();
     flushPendingPlays();  /* прослушивания, отвергнутые со старым токеном */
+    flushPlaylistEdits();  /* правки подборок — тоже */
 }
 
 function logout() {

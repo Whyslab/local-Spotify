@@ -14,6 +14,7 @@
 
 const OFFLINE_AUDIO = "offline-audio-v1";
 const OFFLINE_META = "offline-meta-v1";
+const API_CACHE = "api-v1";  // списки, которые sw.js помнит для работы без сети
 // Обложки и тексты скачанных треков: отдельно от общей памяти sw.js, которую
 // та ограничивает по размеру, — иначе они вытеснялись бы вместе с прочим.
 const OFFLINE_EXTRAS = "offline-covers-v1";

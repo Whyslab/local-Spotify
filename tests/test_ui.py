@@ -1275,6 +1275,207 @@ def test_an_edit_online_over_a_clashing_offline_one_asks_too(page, server):
         _api(server, "DELETE", "/api/playlists/" + name)
 
 
+PENDING = "JSON.parse(localStorage.getItem('pendingPlaylistEdits') || '{}')"
+
+
+def _flushed(page):
+    """Wait until the flush that the returning network started is over."""
+    page.wait_for_function("window.__puts > 0 && !flushingEdits", timeout=15000)
+
+
+def _count_puts(page):
+    page.evaluate(
+        "window.__puts = 0; if (!window.__realFetch) window.__realFetch = window.fetch;"
+        " window.fetch = async (url, options) => {"
+        "   const r = await window.__realFetch(url, options);"
+        "   if (options && options.method === 'PUT') window.__puts += 1;"
+        "   return r; }; true"
+    )
+
+
+def _back_online(page):
+    page.context.set_offline(False)
+    page.evaluate("window.dispatchEvent(new Event('online'))")
+
+
+def test_an_edit_for_a_playlist_deleted_elsewhere_is_dropped_and_said(page, server):
+    name = "Offline gone"
+    _offline_edit(page, server, name)
+    _api(server, "DELETE", "/api/playlists/" + name)  # the laptop deleted it meanwhile
+    _count_puts(page)
+    _back_online(page)
+    _flushed(page)
+    assert name not in page.evaluate(PENDING)
+    page.wait_for_function(
+        "/больше нет/.test(document.getElementById('playlistNote').textContent"
+        " + document.getElementById('playerNote').textContent)"
+    )
+
+
+def test_a_refused_flush_keeps_the_edit(page, server):
+    """401 (token changed) or 500 is no reason to throw the edit away."""
+    name = "Offline refused"
+    _offline_edit(page, server, name)
+    _count_puts(page)
+
+    def refuse(status):
+        return lambda route: (
+            route.fulfill(status=status, body="{}")
+            if route.request.method == "PUT"
+            else route.continue_()
+        )
+
+    try:
+        for status in (401, 500):
+            page.route("**/api/playlists/*/tracks", refuse(status))
+            page.evaluate("window.__puts = 0")
+            _back_online(page)
+            page.evaluate("flushPlaylistEdits()")
+            _flushed(page)
+            assert name in page.evaluate(PENDING), status
+            page.unroute("**/api/playlists/*/tracks")
+    finally:
+        page.evaluate("localStorage.removeItem('pendingPlaylistEdits')")
+        _api(server, "DELETE", "/api/playlists/" + name)
+
+
+def test_an_edit_made_while_the_flush_is_on_its_way_is_kept(page, server):
+    name = "Offline newer"
+    _offline_edit(page, server, name)
+    # While the PUT travels, the next edit lands (as savePlaylist would store it).
+    page.evaluate(
+        "window.__puts = 0; window.__realFetch = window.__realFetch || window.fetch;"
+        " window.fetch = async (url, options) => {"
+        "   const r = await window.__realFetch(url, options);"
+        "   if (options && options.method === 'PUT' && !window.__puts++) {"
+        f"    queuePlaylistEdit(player.playlist, ['{LOUD_PATH}']); }}"
+        "   return r; }; true"
+    )
+    try:
+        _back_online(page)
+        # The newer edit is not lost with the one sent, and it goes on top of
+        # it -- not as a clash with itself.
+        page.wait_for_function(f"window.__puts >= 2 && !({PENDING})['{name}'] && !flushingEdits")
+        paths = [e["path"] for e in _api(server, "GET", f"/api/playlists/{name}/tracks")["entries"]]
+        assert paths == [LOUD_PATH]
+        assert page.get_by_role("button", name="Оставить мою").count() == 0
+    finally:
+        page.evaluate("localStorage.removeItem('pendingPlaylistEdits')")
+        _api(server, "DELETE", "/api/playlists/" + name)
+
+
+def test_an_edit_waits_out_a_sleeping_server(page, server):
+    """The phone is online, the computer sleeps (the proxy answers 502): no
+    'online' event will come, so a timer sends the edit later."""
+    name = "Server asleep"
+    with contextlib.suppress(Exception):
+        _api(server, "DELETE", "/api/playlists/" + name)
+    _api(server, "POST", "/api/playlists", {"name": name, "paths": [LOUD_PATH, QUIET_PATH]})
+    try:
+        page.evaluate(f"EDIT_RETRY_MS = 300; openPlaylist('{name}')")
+        page.route(
+            "**/api/playlists/*/tracks",
+            lambda route: (
+                route.fulfill(status=502, body="asleep")
+                if route.request.method == "PUT"
+                else route.continue_()
+            ),
+        )
+        assert page.evaluate(f"savePlaylist(['{QUIET_PATH}', '{LOUD_PATH}'])") is True
+        page.unroute("**/api/playlists/*/tracks")
+        page.wait_for_function(f"!({PENDING})['{name}']", timeout=10000)
+        paths = [e["path"] for e in _api(server, "GET", f"/api/playlists/{name}/tracks")["entries"]]
+        assert paths == [QUIET_PATH, LOUD_PATH]
+    finally:
+        page.evaluate("EDIT_RETRY_MS = 60000; localStorage.removeItem('pendingPlaylistEdits')")
+        _api(server, "DELETE", "/api/playlists/" + name)
+
+
+def test_an_edit_that_already_arrived_is_no_clash(page, server):
+    """The save reached the server but its answer was lost: the next send
+    meets a 'changed' playlist that is in fact this very edit."""
+    name = "Offline arrived"
+    _offline_edit(page, server, name)
+    there = _api(server, "GET", f"/api/playlists/{name}/tracks")
+    _api(server, "PUT", f"/api/playlists/{name}/tracks",
+         {"paths": [QUIET_PATH, LOUD_PATH], "revision": there["revision"]})  # fmt: skip
+    _count_puts(page)
+    try:
+        _back_online(page)
+        _flushed(page)
+        page.wait_for_function(f"!({PENDING})['{name}']")
+        assert page.get_by_role("button", name="Оставить мою").count() == 0
+    finally:
+        _api(server, "DELETE", "/api/playlists/" + name)
+
+
+def test_a_playlist_named_like_an_object_key_opens(page, server):
+    name = "constructor"
+    with contextlib.suppress(Exception):
+        _api(server, "DELETE", "/api/playlists/" + name)
+    _api(server, "POST", "/api/playlists", {"name": name, "paths": [LOUD_PATH]})
+    try:
+        open_library(page)
+        assert page.evaluate(f"openPlaylist('{name}')") is True
+        assert page.evaluate("player.playlist.entries.map(e => e.path)") == [LOUD_PATH]
+        assert page.evaluate(f"savePlaylist(['{QUIET_PATH}', '{LOUD_PATH}'])") is True
+    finally:
+        _api(server, "DELETE", "/api/playlists/" + name)
+
+
+def test_a_save_refreshes_the_copy_kept_for_offline(page, server):
+    """Otherwise the phone, offline, shows the playlist without its own last
+    edit, and the next offline edit clashes with itself."""
+    name = "Fresh copy"
+    with contextlib.suppress(Exception):
+        _api(server, "DELETE", "/api/playlists/" + name)
+    _api(server, "POST", "/api/playlists", {"name": name, "paths": [LOUD_PATH, QUIET_PATH]})
+    try:
+        _controlled(page)
+        page.evaluate(f"openPlaylist('{name}')")
+        assert page.evaluate(f"savePlaylist(['{QUIET_PATH}', '{LOUD_PATH}'])") is True
+        # Playwright's offline mode does not reach the worker's own fetches, so
+        # the copy the worker would answer with is read straight from its store.
+        url = "/api/playlists/" + name.replace(" ", "%20") + "/tracks"
+        page.wait_for_function(
+            f"caches.match('{url}').then(r => r && r.json())"
+            f".then(d => !!d && d.entries[0].path === '{QUIET_PATH}')"
+        )
+        kept = page.evaluate(f"caches.match('{url}').then(r => r.json())")
+        assert kept["revision"] == _api(server, "GET", f"/api/playlists/{name}/tracks")["revision"]
+    finally:
+        _api(server, "DELETE", "/api/playlists/" + name)
+
+
+def test_rename_and_delete_on_the_phone_take_the_waiting_edit_along(page, server):
+    name, renamed = "Waiting edit", "Waiting edit 2"
+    for n in (name, renamed):
+        with contextlib.suppress(Exception):
+            _api(server, "DELETE", "/api/playlists/" + n)
+    _api(server, "POST", "/api/playlists", {"name": name, "paths": [LOUD_PATH, QUIET_PATH]})
+    try:
+        open_library(page)
+        page.evaluate(f"openPlaylist('{name}')")
+        page.evaluate(
+            "localStorage.setItem('pendingPlaylistEdits', JSON.stringify({"
+            f"'{name}': {{revision: player.playlist.revision, conflict: true, seq: 's1',"
+            f" entries: [{{path: '{QUIET_PATH}', title: 'Quiet'}}]}}}}))"
+        )
+        page.evaluate(
+            f"document.getElementById('playlistRename').value = '{renamed}'; renamePlaylist()"
+        )
+        page.wait_for_function(f"player.playlist && player.playlist.name === '{renamed}'")
+        assert list(page.evaluate(PENDING)) == [renamed]
+        page.evaluate(f"deletePlaylist('{renamed}')")
+        page.wait_for_function("!player.playlist")
+        assert page.evaluate(PENDING) == {}
+    finally:
+        page.evaluate("localStorage.removeItem('pendingPlaylistEdits')")
+        for n in (name, renamed):
+            with contextlib.suppress(Exception):
+                _api(server, "DELETE", "/api/playlists/" + n)
+
+
 def test_smart_shuffle_without_network_uses_downloads(page):
     """Plan 4a.4: no network, no server shuffle -- the downloads are shuffled
     here instead, and the note says so."""
