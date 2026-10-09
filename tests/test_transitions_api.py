@@ -255,3 +255,12 @@ def test_a_key_with_a_trailing_newline_is_not_a_key(client):
         (runtime.TRANSITIONS_DIR / f"{key}\n{suffix}").write_text("x")
     with pytest.raises(HTTPException):
         transitions.audio_file(key + "\n")
+
+
+def test_a_bridge_in_use_is_kept_over_older_ones(client, renders):
+    """Вытесняются давно не нужные, а не давно сделанные: попадание освежает связку."""
+    ready = wait_ready(client)
+    plan = runtime.TRANSITIONS_DIR / f"{ready['key']}.json"
+    os.utime(plan, (1, 1))
+    assert ask(client)["status"] == "ready"
+    assert plan.stat().st_mtime > time.time() - 60

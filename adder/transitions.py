@@ -17,10 +17,12 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import importlib.util
 import json
 import logging
+import os
 import queue
 import re
 import shutil
@@ -137,9 +139,13 @@ def request(a: str, b: str) -> dict:
     if audio.exists() and plan_path.exists():
         try:
             plan = json.loads(plan_path.read_text(encoding="utf-8"))
-            return {"status": "ready", "key": key, "plan": plan}
         except (OSError, ValueError):
             pass  # битый план — собрать заново
+        else:
+            # Вытесняются давно не нужные, а не давно сделанные (_prune).
+            with contextlib.suppress(OSError):
+                os.utime(plan_path)
+            return {"status": "ready", "key": key, "plan": plan}
     with _lock:
         now = time.time()
         for old in [k for k, at in _failed.items() if now - at >= FAILED_TTL]:
