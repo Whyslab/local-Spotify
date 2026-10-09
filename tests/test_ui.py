@@ -449,6 +449,21 @@ def test_where_volume_is_fixed_the_stream_is_asked_to_carry_the_gain(page):
     assert "norm" not in url  # the slider does it here
 
 
+def test_where_volume_is_fixed_the_menu_says_there_are_no_transitions(page):
+    """iPhone: no fade and no DJ mix, and the menu says so instead of hiding it silently."""
+    open_library(page)
+    row_action(page, "Loud", "Играть")
+    page.evaluate("player.volumeAdjustable = false")
+    page.get_by_role("button", name="Таймер сна").click()
+    assert page.locator("#playerFadeBox").is_hidden()
+    note = page.locator("#playerFadeNote")
+    assert note.is_visible() and "переход" in note.inner_text()
+    page.evaluate("closeSleepMenu(); player.volumeAdjustable = true")
+    page.get_by_role("button", name="Таймер сна").click()
+    assert page.locator("#playerFadeBox").is_visible() and note.is_hidden()
+    page.evaluate("closeSleepMenu()")
+
+
 def _controlled_by_worker(page):
     page.evaluate("navigator.serviceWorker.ready.then(() => true)")
     if not page.evaluate("!!navigator.serviceWorker.controller"):

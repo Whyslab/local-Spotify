@@ -2067,6 +2067,7 @@ html.sheet-lock, html.sheet-lock body { overflow: hidden; }
 .sleep-menu button[aria-checked="true"] { color: var(--accent, var(--text)); font-weight: 600; }
 .sleep-menu button[aria-checked="true"]::after { content: " ✓"; }
 .sleep-title { font-size: 13px; color: var(--text-3); padding: 6px 10px 2px; }
+.sleep-note { font-size: 13px; color: var(--text-3); padding: 6px 10px; margin: 0; max-width: 240px; }
 
 /* Строки за пределами экрана браузер не раскладывает и не рисует: в подборке
    на тысячу треков это в разы быстрее (замер 30.09.2026: 265 → 26 мс на

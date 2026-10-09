@@ -3247,6 +3247,8 @@ function toggleSleepMenu() {
     menu.hidden = !menu.hidden;
     const fadeBox = document.getElementById("playerFadeBox");
     if (fadeBox) fadeBox.hidden = !player.volumeAdjustable;
+    const fadeNote = document.getElementById("playerFadeNote");
+    if (fadeNote) fadeNote.hidden = player.volumeAdjustable;
 }
 
 document.addEventListener("click", (event) => {
