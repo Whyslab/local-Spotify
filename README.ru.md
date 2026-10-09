@@ -193,7 +193,7 @@ curl -s http://127.0.0.1:8787/api/tasks -H "Authorization: Bearer $TOKEN"
 
 Файл появится как `<LIBRARY_PATH>/<Исполнитель>/Singles/<Название>.m4a`. Строка лога `Task finished: stored` отмечает его; при ошибке в логе будет строка `ERROR` с причиной, а в `/api/tasks` — поля `error` / `error_type`.
 
-Веб-интерфейс — `http://<хост>:8787/`: один раз вставь токен, дальше добавляй ссылки и смотри очередь с телефона. На iPhone команда из приложения «Команды» добавляет **Поделиться → В local-Spotify** прямо в YouTube: см. [docs/iphone-shortcut.md](docs/iphone-shortcut.md).
+Веб-интерфейс — `http://<хост>:8787/`: один раз вставь токен, дальше добавляй ссылки и смотри очередь с телефона. На iPhone команда из приложения «Команды» добавляет **Поделиться → В local-Spotify** прямо в YouTube: см. [docs/iphone-shortcut.md](docs/iphone-shortcut.md). Что проверить руками на iPhone после правки плеера без сети: [docs/iphone-checklist.md](docs/iphone-checklist.md).
 
 Перед шагом 7 останови сервис (`Ctrl+C`).
 

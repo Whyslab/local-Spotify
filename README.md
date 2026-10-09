@@ -193,7 +193,7 @@ curl -s http://127.0.0.1:8787/api/tasks -H "Authorization: Bearer $TOKEN"
 
 The file appears as `<LIBRARY_PATH>/<Artist>/Singles/<Title>.m4a`. The log line `Task finished: stored` marks it; on failure the log has an `ERROR` line with the cause and `/api/tasks` has it in `error` / `error_type`.
 
-The web interface is at `http://<host>:8787/`: paste the token once, then add links and watch the queue from a phone. On an iPhone, a Shortcuts action puts **Share → local-Spotify** straight into the YouTube app: see [docs/iphone-shortcut.md](docs/iphone-shortcut.md) (in Russian).
+The web interface is at `http://<host>:8787/`: paste the token once, then add links and watch the queue from a phone. On an iPhone, a Shortcuts action puts **Share → local-Spotify** straight into the YouTube app: see [docs/iphone-shortcut.md](docs/iphone-shortcut.md) (in Russian). What to check by hand on an iPhone after a change to the offline player: [docs/iphone-checklist.md](docs/iphone-checklist.md) (in Russian).
 
 Stop the service with `Ctrl+C` before step 7.
 
