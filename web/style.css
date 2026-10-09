@@ -2051,6 +2051,8 @@ html.sheet-lock, html.sheet-lock body { overflow: hidden; }
     box-shadow: 0 18px 48px rgba(0, 0, 0, 0.6), inset 0 0 0 0.5px rgba(255, 255, 255, 0.1);
 }
 .sleep-menu[hidden] { display: none; }
+/* Кнопки перехода — в своём блоке, не прямые дети меню: без этого они вставали в строку. */
+#playerFadeBox:not([hidden]) { display: flex; flex-direction: column; }
 .sleep-menu button {
     text-align: left;
     background: none;

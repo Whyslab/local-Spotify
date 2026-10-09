@@ -464,6 +464,20 @@ def test_where_volume_is_fixed_the_menu_says_there_are_no_transitions(page):
     page.evaluate("closeSleepMenu()")
 
 
+def test_the_transition_choices_stand_one_per_line(page):
+    """«Нет ✓» and «3 секунды» shared a line: the box's buttons sat inline."""
+    page.set_viewport_size({"width": 1266, "height": 603})
+    open_library(page)
+    row_action(page, "Loud", "Играть")
+    page.evaluate("player.volumeAdjustable = true")
+    page.get_by_role("button", name="Таймер сна").click()
+    tops = page.evaluate(
+        "[...document.querySelectorAll('#playerFadeBox button')].map(b => b.getBoundingClientRect().top)"
+    )
+    assert len(tops) == 4 and tops == sorted(tops) and len(set(tops)) == 4, tops
+    page.evaluate("closeSleepMenu()")
+
+
 def _controlled_by_worker(page):
     page.evaluate("navigator.serviceWorker.ready.then(() => true)")
     if not page.evaluate("!!navigator.serviceWorker.controller"):
