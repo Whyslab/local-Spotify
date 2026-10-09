@@ -364,6 +364,10 @@ class PlayerWindow(Gtk.Window):
         self.webview = WebKit2.WebView(
             web_context=WebKit2.WebContext.new_with_website_data_manager(data),
             user_content_manager=manager,
+            # Without it WebKit refuses play() on a second element while the
+            # first one plays: the DJ transition (web/mix.js) starts the next
+            # track that way.
+            website_policies=WebKit2.WebsitePolicies(autoplay=WebKit2.AutoplayPolicy.ALLOW),
         )
         settings = self.webview.get_settings()
         settings.set_enable_developer_extras(True)

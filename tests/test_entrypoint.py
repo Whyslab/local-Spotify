@@ -72,3 +72,19 @@ def test_perf_handler_only_with_env():
     ]
     assert registered, "no perf message handler"
     assert all(call in guarded for call in registered), "perf handler outside `if PERF`"
+
+
+def test_the_window_lets_the_page_start_a_second_track():
+    """Переход «как диджей» запускает следующий трек вторым элементом, пока
+    играет первый. WebKit без разрешения автозапуска такой play() отклоняет
+    (NotAllowedError) даже при media_playback_requires_user_gesture=False."""
+    import ast
+
+    views = [
+        node
+        for node in ast.walk(_desktop_tree())
+        if isinstance(node, ast.Call) and ast.unparse(node.func) == "WebKit2.WebView"
+    ]
+    assert len(views) == 1
+    policies = {k.arg: ast.unparse(k.value) for k in views[0].keywords}.get("website_policies", "")
+    assert "autoplay=WebKit2.AutoplayPolicy.ALLOW" in policies
