@@ -55,6 +55,8 @@ REPO = Path(__file__).resolve().parent.parent
 UNIT = "music-adder"
 DEFAULT_BASE_URL = "http://127.0.0.1:8787"
 PROBE_PLAYLIST = "zz-stress-probe"
+# Как shelves.PREFIX: полки главной служба пересобирает каждую ночь, их ревизии не след проб.
+SHELF_PREFIX = "★ "
 # 429 от YouTube останавливает все скачивания разом (queue.py), поэтому проб мало.
 MAX_PROBES = 5
 # Те же размеры, что thumbs.SIZES: по ним уборка находит миниатюры проб.
@@ -824,6 +826,8 @@ def residue_problems(snapshot: dict, current: dict) -> list[str]:
     if removed := sorted(before - now):
         problems.append(f"library: {len(removed)} track(s) gone since the snapshot: {removed[:10]}")
     for name in sorted(set(snapshot["playlists"]) | set(current["playlists"])):
+        if name.startswith(SHELF_PREFIX):
+            continue
         was, is_now = snapshot["playlists"].get(name), current["playlists"].get(name)
         if was != is_now:
             problems.append(f"playlist {name!r}: revision {was} -> {is_now}")

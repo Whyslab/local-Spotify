@@ -561,6 +561,19 @@ def test_residue_flags_navidrome_queue_and_probe_sync(paths):
     assert "navidrome_pending unknown" in "\n".join(stress.residue_problems(snapshot, unknown))
 
 
+def test_residue_skips_home_shelves_rebuilt_every_night(paths):
+    from adder import shelves
+
+    assert stress.SHELF_PREFIX == shelves.PREFIX
+    snapshot = state_of(paths, ["A/Singles/a.m4a"], 3)
+    snapshot["playlists"] = {"★ Mix": 4, "★ Gone": 1, "Mine": 2}
+    current = dict(snapshot, playlists={"★ Mix": 5, "★ New": 1, "Mine": 2})
+    assert stress.residue_problems(snapshot, current) == []
+
+    current["playlists"] = {"★ Mix": 5, "Mine": 3}
+    assert stress.residue_problems(snapshot, current) == ["playlist 'Mine': revision 2 -> 3"]
+
+
 def test_residue_is_red_when_navidrome_count_is_unknown(paths):
     snapshot = state_of(paths, ["A/Singles/a.m4a"], 3)
     current = state_of(paths, ["A/Singles/a.m4a"], None, {"probes": []}, set())
