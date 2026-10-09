@@ -45,7 +45,7 @@ FAILED_TTL = 3600.0  # не сводить ту же пару заново ра�
 QUEUE_MAX = 4  # плеер просит одну-две пары; больше — устаревшие просьбы
 TIMEOUT = 180
 
-_KEY = re.compile(r"^[0-9a-f]{64}$")
+_KEY = re.compile(r"[0-9a-f]{64}")  # только fullmatch: `$` пропустил бы \n в конце
 
 
 class RenderError(Exception):
@@ -266,7 +266,7 @@ def _prune() -> None:
 
 
 def audio_file(key: str) -> Path:
-    if not _KEY.match(key):
+    if not _KEY.fullmatch(key):
         raise HTTPException(status_code=404, detail="No such transition")
     audio, plan_path = _paths(key)
     if not audio.is_file() or not plan_path.is_file():

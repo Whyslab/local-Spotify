@@ -10,6 +10,7 @@ import subprocess
 import time
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from mutagen.mp4 import MP4
 
@@ -244,3 +245,13 @@ def test_a_request_left_without_a_worker_is_picked_up(client, renders, monkeypat
     assert ask(client)["status"] == "pending"
     monkeypatch.setattr(transitions, "_ensure_worker", real)
     assert wait_ready(client, timeout=3)["status"] == "ready"
+
+
+def test_a_key_with_a_trailing_newline_is_not_a_key(client):
+    """`$` в регулярке пропускает перевод строки в конце: ключ — ровно 64 знака."""
+    key = "a" * 64
+    runtime.TRANSITIONS_DIR.mkdir(parents=True)
+    for suffix in (".flac", ".json"):
+        (runtime.TRANSITIONS_DIR / f"{key}\n{suffix}").write_text("x")
+    with pytest.raises(HTTPException):
+        transitions.audio_file(key + "\n")
