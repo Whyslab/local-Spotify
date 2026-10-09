@@ -23,7 +23,9 @@
  * громкость (не iPhone: там Web Audio обрывает фоновое воспроизведение, и
  * граф даже не создаётся). Где перехода не вышло — обычное затухание 3 с.
  * Громкость в графе ведут узлы: окно не слушает volume и muted элемента,
- * подключённого к Web Audio (проверено 09.10), — см. mixVolume.
+ * подключённого к Web Audio (проверено 09.10), а Chromium, наоборот, при muted
+ * отдаёт в граф тишину — и переход бы ничего не услышал. Поэтому у такого
+ * элемента muted всегда снят, а «без звука» (player.muted) — тоже узлом.
  */
 
 const MIX_LISTEN = 1.2;      // с: столько слушать A (две половины — для сверки)
@@ -38,7 +40,7 @@ const mix = {
     ready: null,       // Promise<boolean>: слух (mix-tap.js) загружен
     silent: null,      // общий узел-заглушка, через который слух тянет звук
     nodes: new WeakMap(),  // <audio> → {source, gain, tap, held}
-    prep: null,        // связка для текущей пары: {from, to, toIndex, status, plan, buffer, ref}
+    prep: null,        // связка для текущей пары: {from, to, status, plan, buffer, ref}
     run: null,         // идущий переход
     last: null,        // как прошёл последний (для журнала и тестов)
 };
@@ -67,7 +69,7 @@ function mixContext() {
         mix.ctx.addEventListener("statechange", () => {
             /* Подключённый элемент звучит только через контекст: остановился
              * контекст — замолчала музыка. Пробуем поднять и пишем в журнал. */
-            if (mix.ctx.state !== "running" && mix.nodes.has(player.audio) && !player.audio.paused) {
+            if (mix.ctx.state !== "running" && mix.nodes.has(player.audio) && !audioPaused()) {
                 mix.ctx.resume().catch(() => {});
                 playerEvent("mix-fail", "звук Web Audio остановлен: " + mix.ctx.state);
             }
@@ -89,6 +91,7 @@ function mixAttach(el) {
         source.connect(gain).connect(ctx.destination);
         mix.nodes.set(el, { source, gain, tap: null, held: false });
         el.volume = 1;
+        el.muted = false;
         return true;
     } catch (e) {
         return false;
@@ -101,7 +104,7 @@ function mixEnable() {
 }
 
 function bridgeLevel() {
-    return player.audio.muted ? 0 : player.userVolume * Math.min(1, sleepLevel());
+    return player.muted ? 0 : player.userVolume * Math.min(1, sleepLevel());
 }
 
 /* Громкость подключённого элемента — его узлом (см. начало файла). Пока идёт
@@ -110,8 +113,9 @@ function mixVolume(el, level) {
     const n = mix.nodes.get(el);
     if (!n) return false;
     el.volume = 1;
+    el.muted = false;
     const now = mix.ctx.currentTime;
-    if (!n.held) n.gain.gain.setValueAtTime(el.muted ? 0 : level, now);
+    if (!n.held) n.gain.gain.setValueAtTime(player.muted ? 0 : level, now);
     const run = mix.run;
     if (run && run.bridgeGain && !run.bridgeHeld) run.bridgeGain.gain.setValueAtTime(bridgeLevel(), now);
     return true;
@@ -126,7 +130,7 @@ function mixPair() {
     if (!current || !next || at === player.index) return null;
     if (isOutside(current) || isOutside(next)) return null;
     if (player.repeat === "one" || (player.sleep && player.sleep.track)) return null;
-    return { from: current.path, to: next.path, toIndex: at };
+    return { from: current.path, to: next.path };
 }
 
 function mixWindow(plan) {
@@ -212,15 +216,23 @@ function mixHoldsEnd() {
 }
 
 /* Звучит связка, а A, доиграв без звука, уже «на паузе» — для кнопок и
- * экрана это всё ещё игра. */
+ * экрана это всё ещё игра. Пока A не доиграл, его пауза — настоящая пауза. */
 function mixSounding() {
-    return Boolean(mix.run && mix.run.phase !== "listen");
+    return Boolean(mix.run && mix.run.phase !== "listen" && mix.run.aEnded);
 }
 
 /* Конец A во время перехода — не повод листать очередь: следующий трек
- * подведёт сам переход. */
+ * подведёт сам переход. Кроме «до конца трека» и «повтора одного», выбранных
+ * уже посреди перехода: тогда переход отменяется, и конец A — обычный. */
 function mixOwnsEnd() {
-    return Boolean(mix.run);
+    const run = mix.run;
+    if (!run) return false;
+    if (player.repeat === "one" || (player.sleep && player.sleep.track)) {
+        mixCancel(null, false);
+        return false;
+    }
+    run.aEnded = true;
+    return true;
 }
 
 /* ---------------- Слух ---------------- */
@@ -319,10 +331,19 @@ function locate(rec, ref) {
         ai[i] = m;
     }
     fft(ar, ai, true);
+    // Лучшее место — по форме, а не по громкости: делить на энергию куска ref
+    // (суммы с накоплением). Иначе громкий повтор той же музыки перебил бы
+    // тихое место, где запись на самом деле лежит.
+    const m = rec.length;
+    const energy = new Float64Array(ref.length + 1);
+    for (let i = 0; i < ref.length; i++) energy[i + 1] = energy[i] + ref[i] * ref[i];
     let at = 0;
     let best = -Infinity;
-    for (let k = 0; k <= ref.length - rec.length; k++) {
-        if (ar[k] > best) { best = ar[k]; at = k; }
+    for (let k = 0; k <= ref.length - m; k++) {
+        const e = energy[k + m] - energy[k];
+        if (e <= 1e-12) continue;
+        const value = ar[k] / Math.sqrt(e);
+        if (value > best) { best = value; at = k; }
     }
     let dot = 0, er = 0, ef = 0;
     for (let i = 0; i < rec.length; i++) {
@@ -336,6 +357,8 @@ function locate(rec, ref) {
 /* Подождать, пока часы контекста дойдут до t. */
 async function ctxWait(t) {
     while (mix.ctx.currentTime < t) {
+        // Часы стоят — ждать нечего (иначе переход висел бы без конца).
+        if (mix.ctx.state !== "running") throw new MixError("звук Web Audio остановлен: " + mix.ctx.state);
         await new Promise(r => setTimeout(r, Math.max(10, Math.min(250, (t - mix.ctx.currentTime) * 1000))));
     }
 }
@@ -344,9 +367,9 @@ function check(run) {
     if (mix.run !== run || run.cancelled) throw new MixError("отменён");
 }
 
-/* «Без звука» — кнопка плеера, она у текущего элемента. */
+/* Уровень элемента с таким усилением трека — по кнопкам плеера. */
 function levelOf(gain) {
-    return player.audio.muted ? 0 : player.userVolume * gainFactor(gain) * Math.min(1, sleepLevel());
+    return player.muted ? 0 : player.userVolume * gainFactor(gain) * Math.min(1, sleepLevel());
 }
 
 /* ---------------- Переход ---------------- */
@@ -402,6 +425,12 @@ async function mixStart(prep) {
         run.src = src;
         run.bridgeGain = gain;
         run.bridgeHeld = true;
+        // Сторож по настенным часам: если B завис (поток, play(), часы контекста),
+        // связка кончится в тишину — через секунду после её конца переход
+        // отменяется, и следующий трек включается обычным путём.
+        run.watchdog = setTimeout(() => {
+            if (mix.run === run) mixCancel(new MixError("переход завис"));
+        }, Math.max(1, run.zero + plan.length + 1 - ctx.currentTime) * 1000);
         nA.held = true;
         nA.gain.gain.cancelScheduledValues(0);
         nA.gain.gain.setValueAtTime(levelOf(player.trackGain), swap);
@@ -426,13 +455,18 @@ async function mixDock(run) {
     const sr = ctx.sampleRate;
     const { prep } = run;
     const plan = prep.plan;
-    const track = player.queue[prep.toIndex];
+    // Следующий — по пути: номера в очереди могли сдвинуться, трек тот же.
+    const track = player.queue[peekNext()];
     if (!track || track.path !== prep.to) throw new MixError("очередь изменилась");
     const stream = takePrefetched(track) || await streamUrlFor(track.path);
     check(run);
     const b = spareDeck();
     run.b = b;
     run.stream = stream;
+    // Свои события B до замены плеер не слышит (они не текущего элемента).
+    const onError = () => { if (mix.run === run) mixCancel(new MixError("ошибка трека B")); };
+    b.addEventListener("error", onError);
+    run.unhook = () => b.removeEventListener("error", onError);
     // В граф до play: иначе B прозвучит мимо связки.
     if (!mixAttach(b)) throw new MixError("B не подключить");
     const nB = mix.nodes.get(b);
@@ -458,9 +492,10 @@ async function mixDock(run) {
     check(run);
 
     const regionStart = Math.round((plan.b_solo_at + 0.03) * sr);  // первые 30 мс — шов
-    const deadline = run.zero + plan.length - 1.0;
+    // Сколько ещё можно стыковать: под конец связки нужна замена (до 0,35 с) с запасом.
+    const left = () => run.zero + plan.length - 0.5 - ctx.currentTime;
     let delta = null;
-    while (ctx.currentTime < deadline) {
+    while (left() > 0.55) {
         const rec = await record(tap, 0.5);
         check(run);
         // Связка в кадр rec.frame — на отсчёте (rec.frame - zero); ищем B рядом (±1,5 с).
@@ -470,6 +505,7 @@ async function mixDock(run) {
         const found = locate(rec.data, prep.ref.subarray(lo, hi));
         if (found.score < MIX_MATCH) {
             // Не узнали — B мог ещё не выйти на место: подтянуть грубо и снова.
+            if (left() < 0.9) break;
             seekB();
             await ctxWait(ctx.currentTime + 0.3);
             continue;
@@ -481,6 +517,7 @@ async function mixDock(run) {
         if (Math.abs(shift) > MIX_SEEK_ABOVE) {
             // Крупно — перемоткой B (звука у B пока нет, её не слышно). Мимо она
             // бывает и после: в Chromium на кусок буфера (21 мс), в WebKit до ±15 мс.
+            if (left() < 0.9) break;
             lead -= shift;
             seekB();
             await ctxWait(ctx.currentTime + 0.3);
@@ -489,6 +526,7 @@ async function mixDock(run) {
             // элемента — нет (Chromium меняет её рывками, с задержкой в полсекунды).
             // Не быстрее MIX_SLEW: 0,5 % — меньше девяти центов, на слух незаметно.
             const span = Math.max(0.3, Math.abs(shift) / MIX_SLEW);
+            if (span + 0.05 > left()) break;
             const t0 = ctx.currentTime + 0.02;
             run.src.playbackRate.setValueAtTime(1 + shift / span, t0);
             run.src.playbackRate.setValueAtTime(1, t0 + span);
@@ -522,7 +560,10 @@ function mixAdopt(run, docked, delta) {
     if (next < 0 || !player.queue[next] || player.queue[next].path !== prep.to) {
         // Очередь поменяли посреди перехода: честнее включить то, что теперь следующее.
         b.pause();
+        b.removeAttribute("src");
+        b.load();
         if (next >= 0) playAt(next);
+        else renderPlayer();
         return;
     }
     swapDeck(b);
@@ -553,6 +594,8 @@ function mixRelease(run) {
     if (mix.run === run) mix.run = null;
     // Эта пара больше не пробуется: после отмены — обычное затухание.
     run.prep.status = "done";
+    clearTimeout(run.watchdog);
+    if (run.unhook) run.unhook();
     if (run.src) {
         try { run.src.stop(); } catch (e) { /* уже стоит */ }
         run.src.disconnect();
@@ -584,7 +627,13 @@ function mixCancel(reason, follow = true) {
     }
     if (run.a !== player.audio) return;
     applyVolume();
-    if (follow && run.a.ended) mixToNext(at, false);
+    if (follow && run.aEnded) {
+        mixToNext(at, false);
+        return;
+    }
+    // Кнопка и система рисовались, пока переход ещё шёл, — перерисовать.
+    renderPlayer();
+    notifyShell();
 }
 
 /* Где сейчас трек B по ходу связки (с): до чистого B — чуть раньше его начала. */
@@ -615,5 +664,16 @@ function mixPauseOnNext() {
  * его конец, а не кнопка. */
 onAudio("timeupdate", mixTick);
 onAudio("pause", () => { if (mix.run && !player.audio.ended) mixCancel(null); });
-onAudio("seeking", () => { if (mix.run) mixCancel(null); });
+onAudio("seeking", () => {
+    const run = mix.run;
+    if (!run) return;
+    // A уже доиграл, и его перемотали (полоска, «назад», система) — играть A оттуда.
+    const resume = run.aEnded;
+    mixCancel(null, false);
+    if (resume) player.audio.play().catch(() => renderPlayer());
+});
+// Подключённый элемент звучит только через контекст: включили — поднять его.
+onAudio("play", () => {
+    if (mix.ctx && mix.ctx.state === "suspended" && mix.nodes.has(player.audio)) mix.ctx.resume().catch(() => {});
+});
 onAudio("error", () => { if (mix.run) mixCancel(new MixError("ошибка уходящего трека")); });

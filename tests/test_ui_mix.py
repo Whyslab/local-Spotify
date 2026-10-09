@@ -49,8 +49,12 @@ TRACKS = {
     "a": "Alpha/Singles/One.opus",
     "b": "Bravo/Singles/Two.opus",
     "c": "Charlie/Singles/Three.opus",
+    # У этого A файл кончается посреди связки (на её 6-й секунде): так бывает
+    # и у настоящих треков — дальше звучит только связка.
+    "d": "Delta/Singles/Four.opus",
 }
 LEAD, MIX, TAIL = 4.0, 4.0, 8.0
+EARLY_END = 6.0  # с от начала связки, когда кончается файл трека "d"
 
 
 def _free_port() -> int:
@@ -94,8 +98,9 @@ def fake_render(job: dict) -> dict:
             ).stdout
         )["format"]["duration"]
     )  # fmt: skip
-    a_from = duration - 14.0
+    a_from = duration - (EARLY_END if a.name == "Four.opus" else 14.0)
     tail_a = _decode(a, a_from, LEAD + MIX)
+    tail_a = np.pad(tail_a, ((0, max(0, int((LEAD + MIX) * SR) - len(tail_a))), (0, 0)))
     head_b = _decode(b, 0.0, MIX + TAIL)
     n = int(MIX * SR)
     t = np.linspace(0, 1, n, dtype=np.float32)[:, None]
@@ -251,18 +256,22 @@ def opened(server, browser):
     assert violations == [], f"blocked by the page's CSP: {violations}"
 
 
-START_DJ = """async () => {
-    setFade('dj');
-    const r = await fetch('/api/library', { headers: headers() });
-    const rows = await r.json();
-    const order = ORDER;
-    const tracks = order.map(p => rows.find(t => t.path === p));
-    playQueue(tracks, 0);
-}""".replace("ORDER", json.dumps(list(TRACKS.values())))
+def start_dj(*keys: str, at: int = 0) -> str:
+    order = [TRACKS[k] for k in keys or ("a", "b", "c")]
+    return """async () => {
+        setFade('dj');
+        const r = await fetch('/api/library', { headers: headers() });
+        const rows = await r.json();
+        const tracks = ORDER.map(p => rows.find(t => t.path === p));
+        playQueue(tracks, AT);
+    }""".replace("ORDER", json.dumps(order)).replace("AT", str(at))
 
 
-def start_and_reach_the_bridge(page):
-    page.evaluate(START_DJ)
+START_DJ = start_dj()
+
+
+def start_and_reach_the_bridge(page, *keys: str, at: int = 0):
+    page.evaluate(start_dj(*keys, at=at))
     wait(page, "!player.audio.paused && player.audio.currentTime > 0.2")
     wait(page, "mix.prep && mix.prep.status === 'ready'")
     plan = page.evaluate("mix.prep.plan")
@@ -328,7 +337,11 @@ WEBKIT_TIMING = """
     const real = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'currentTime');
     Object.defineProperty(HTMLMediaElement.prototype, 'currentTime', {
         get() { const t = real.get.call(this); return t > 0 && !this.paused ? t + 1.0 : t; },
-        set(v) { real.set.call(this, Math.max(0, v + (Math.random() * 0.016 - 0.008))); },
+        // 3–8 мс в любую сторону — не ближе: иначе B мог бы встать без подгонки.
+        set(v) {
+            const off = (0.003 + Math.random() * 0.005) * (Math.random() < 0.5 ? -1 : 1);
+            real.set.call(this, Math.max(0, v + off));
+        },
         configurable: true,
     });
 """
@@ -361,6 +374,12 @@ def test_pause_during_the_bridge_goes_back_to_the_outgoing_track(opened):
     wait(page, "mix.run && mix.run.phase === 'bridge'", timeout=15)
     page.evaluate("togglePlay()")
     assert page.evaluate("mix.run === null && player.index === 0 && player.audio.paused")
+    # И кнопка, и система знают, что это пауза.
+    assert (
+        page.evaluate("document.getElementById('playerToggle').getAttribute('aria-label')")
+        == "Играть"
+    )
+    assert page.evaluate("navigator.mediaSession.playbackState") == "paused"
     # A снова со своей громкостью — не остался приглушённым.
     level = page.evaluate("mix.nodes.get(player.audio).gain.gain.value")
     assert level > 0.5
@@ -414,3 +433,122 @@ def test_where_the_page_cannot_set_volume_no_audio_graph_is_made(server, browser
         assert errors == []
     finally:
         context.close()
+
+
+def reach_the_end_of_a(page):
+    """Трек "d": его файл кончается посреди связки — дальше звучит только она."""
+    start_and_reach_the_bridge(page, "d", "b", "c")
+    wait(page, "mix.run && mix.run.phase === 'bridge' && player.audio.ended", timeout=20)
+    assert page.evaluate("audioPaused()") is False  # музыка-то играет
+
+
+def test_the_sleep_timer_stops_the_music_after_the_outgoing_track_ended(opened):
+    page, _, _ = opened
+    reach_the_end_of_a(page)
+    page.evaluate("player.sleep = { until: Date.now() - 1 }; sleepTick()")
+    page.wait_for_timeout(800)
+    assert page.evaluate("mix.run") is None
+    assert page.evaluate("audioPaused()") is True
+    assert page.evaluate("deck.every(el => el.paused)") is True
+
+
+def test_until_the_end_of_the_track_set_during_the_bridge_stops_after_it(opened):
+    page, _, _ = opened
+    start_and_reach_the_bridge(page, "d", "b", "c")
+    wait(page, "mix.run && mix.run.phase === 'bridge'", timeout=15)
+    page.evaluate("setSleep('track')")
+    wait(page, "player.audio.ended || mix.run === null", timeout=20)
+    page.wait_for_timeout(800)
+    assert page.evaluate("mix.run") is None
+    assert page.evaluate("deck.every(el => el.paused)") is True
+    assert page.evaluate("player.index") == 0
+
+
+def test_a_seek_after_the_outgoing_track_ended_plays_it_from_there(opened):
+    page, _, _ = opened
+    reach_the_end_of_a(page)
+    page.evaluate("player.audio.currentTime = 30")
+    page.wait_for_timeout(1000)
+    assert page.evaluate("mix.run") is None
+    assert page.evaluate("player.index") == 0
+    assert page.evaluate("!player.audio.paused") is True
+    assert 30 < page.evaluate("player.audio.currentTime") < 33
+
+
+HANG_B = """
+    // Поток трека B «завис»: play() не кончается ничем.
+    const realPlay = HTMLMediaElement.prototype.play;
+    HTMLMediaElement.prototype.play = function () {
+        if (window.__hangB && typeof player !== 'undefined' && this !== player.audio) {
+            return new Promise(() => {});
+        }
+        return realPlay.call(this);
+    };
+"""
+
+
+def test_a_stuck_incoming_track_does_not_leave_silence(server, browser):
+    context, page, errors, _, events = _open(server, browser, HANG_B)
+    try:
+        start_and_reach_the_bridge(page, "d", "b", "c")
+        page.evaluate("window.__hangB = true")
+        wait(page, "mix.run && mix.run.phase === 'bridge'", timeout=15)
+        # Связка (16 с) кончилась — плеер сам уходит на B обычным путём.
+        wait(page, "mix.run === null && player.index === 1 && !player.audio.paused", timeout=30)
+        assert any(e["event"] == "mix-fail" and "завис" in e.get("detail", "") for e in events), (
+            events
+        )
+        assert errors == []
+    finally:
+        context.close()
+
+
+def test_the_queue_shifting_under_the_transition_does_not_cancel_it(opened):
+    page, _, _ = opened
+    # Очередь C, A, B, играет A; перед самым переходом C уходит из очереди
+    # (так её сдвигает, например, возврат из умного перемешивания).
+    start_and_reach_the_bridge(page, "c", "a", "b", at=1)
+    page.evaluate(
+        """() => {
+            player.queue.splice(0, 1);
+            player.index -= 1;
+            player.order = player.order.filter(i => i !== 0).map(i => i - 1);
+            player.orderAt = player.order.indexOf(player.index);
+        }"""
+    )
+    wait(page, "player.index === 1 && mix.last", timeout=30)
+    assert page.evaluate("mix.last.docked") is True
+    assert page.evaluate("player.queue[player.index].path") == TRACKS["b"]
+
+
+def test_mute_does_not_deafen_the_transition(opened):
+    page, _, _ = opened
+    page.evaluate("setFade('dj')")
+    page.evaluate("toggleMute()")
+    start_and_reach_the_bridge(page)
+    wait(page, "player.index === 1 && mix.last", timeout=30)
+    assert page.evaluate("mix.last.docked") is True
+    gain = "mix.nodes.get(player.audio).gain.gain.value"
+    assert page.evaluate(gain) == 0  # без звука — и B без звука
+    page.evaluate("toggleMute()")
+    page.wait_for_timeout(100)
+    assert page.evaluate(gain) > 0.5
+
+
+def test_a_quiet_passage_is_found_next_to_a_louder_repeat(opened):
+    """Сходство считается по форме, а не по громкости: тихое место не
+    подменяется громким повтором той же музыки."""
+    page, _, _ = opened
+    at = page.evaluate(
+        """() => {
+            let seed = 7;
+            const noise = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647 - 0.5; };
+            const n = 48000;
+            const quiet = new Float32Array(n).map(() => noise() * 0.02);
+            const ref = new Float32Array(2 * n);
+            ref.set(quiet);
+            for (let i = 0; i < n; i++) ref[n + i] = quiet[i] * 10 + noise() * 0.2;
+            return locate(quiet.subarray(10000, 34000), ref);
+        }"""
+    )
+    assert at["at"] == 10000 and at["score"] > 0.99, at

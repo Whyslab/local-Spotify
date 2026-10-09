@@ -43,6 +43,9 @@ const player = {
     sleep: null,         // {until: мс} | {track: true} | null — таймер сна
     trackGain: null,     // ReplayGain текущего трека в дБ, null — не измерен
     volumeAdjustable: false,
+    /* «Без звука». У элемента в графе Web Audio (mix.js) свой muted всегда
+     * снят — там звук глушит узел; у остальных muted повторяет это. */
+    muted: false,
 };
 
 /* ---------------- Колода ----------------
@@ -2952,7 +2955,7 @@ function updateVolumeIcon() {
     const button = document.getElementById("playerMute");
     if (!icon || !button) return;
 
-    const silent = player.audio.muted || player.userVolume === 0;
+    const silent = player.muted || player.userVolume === 0;
     icon.setAttribute("d", silent
         ? "M4 9v6h4l5 4V5L8 9zM17 9l4 6M21 9l-4 6"
         : "M4 9v6h4l5 4V5L8 9zM16 9a4 4 0 0 1 0 6");
@@ -2961,17 +2964,18 @@ function updateVolumeIcon() {
     /* Без звука ползунок остаётся на месте — к нему вернётся громкость, — но
      * гаснет вместе с числом, чтобы 60% не читались как «играет на 60». */
     const box = document.getElementById("playerVolume");
-    if (box) box.classList.toggle("is-muted", player.audio.muted);
+    if (box) box.classList.toggle("is-muted", player.muted);
     const slider = document.getElementById("playerVolumeRange");
     if (slider) {
         const percent = Math.round(player.userVolume * 100) + "%";
         slider.setAttribute("aria-valuetext",
-            player.audio.muted ? percent + ", звук выключен" : percent);
+            player.muted ? percent + ", звук выключен" : percent);
     }
 }
 
 function setVolumeFromSlider(value) {
     const level = Math.min(100, Math.max(0, Number(value) || 0)) / 100;
+    player.muted = false;
     player.audio.muted = false;
     player.userVolume = level;
     applyVolume();
@@ -2981,11 +2985,12 @@ function setVolumeFromSlider(value) {
 }
 
 function toggleMute() {
-    player.audio.muted = !player.audio.muted;
-    applyVolume();  // в графе Web Audio «без звука» — это узел (mix.js)
+    player.muted = !player.muted;
+    player.audio.muted = player.muted;
+    applyVolume();  // в графе Web Audio «без звука» — это узел, muted снимется (mix.js)
     /* Нажал «без звука» на нуле — это просьба вернуть звук, а не поставить
      * беззвучное воспроизведение: поднимаем ползунок до половины. */
-    if (!player.audio.muted && player.userVolume === 0) setVolumeFromSlider(50);
+    if (!player.muted && player.userVolume === 0) setVolumeFromSlider(50);
     const slider = document.getElementById("playerVolumeRange");
     if (slider) slider.value = String(Math.round(player.userVolume * 100));
     updateVolumeIcon();
@@ -3112,7 +3117,7 @@ function fadeTick() {
     /* Таймер сна ведёт setInterval, а его с погашенным экраном браузер может
      * почти остановить; timeupdate же идёт, пока играет звук. Срок проверяется
      * и здесь, чтобы музыка не играла дальше назначенного. */
-    if (player.sleep && player.sleep.until && Date.now() >= player.sleep.until && !a.paused) {
+    if (player.sleep && player.sleep.until && Date.now() >= player.sleep.until && !audioPaused()) {
         sleepTick();
         return;
     }
@@ -3134,7 +3139,7 @@ function fadeTick() {
         player.fadeLevel = level;
         applyVolume();
     }
-    smoothFade(player.volumeAdjustable && level < 1 && !a.paused);
+    smoothFade(player.volumeAdjustable && level < 1 && !audioPaused());
 }
 
 /* timeupdate приходит раза четыре в секунду — громкость менялась ступеньками,
@@ -3183,7 +3188,10 @@ function sleepTick() {
     if (!player.sleep || !player.sleep.until) return;
     if (Date.now() >= player.sleep.until) {
         player.pauseReason = "таймер сна";
-        player.audio.pause();
+        /* Звучит связка «как диджей», а уходящий трек уже доиграл: его pause()
+         * ничего не остановит — остановиться на следующем. */
+        if (typeof mixSounding === "function" && mixSounding()) mixPauseOnNext();
+        else player.audio.pause();
         clearSleep();
         return;
     }
