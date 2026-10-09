@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 RENDER_VERSION = 1  # то же, что VERSION в scripts/render_transition.py
 SCRIPT = runtime.PROJECT.parent / "scripts" / "render_transition.py"
-KEEP = 60  # связок на диске (~1,5 МБ каждая)
+KEEP = 60  # связок на диске (обычно 2–3 МБ, длинное наложение — до ~9)
 MIN_A = 60.0  # с: короче — переход съел бы заметную часть трека
 MIN_B = 30.0
 FAILED_TTL = 3600.0  # не сводить ту же пару заново раньше, чем через час
@@ -141,8 +141,10 @@ def request(a: str, b: str) -> dict:
         except (OSError, ValueError):
             pass  # битый план — собрать заново
     with _lock:
-        failed = _failed.get(key)
-        if failed is not None and time.time() - failed < FAILED_TTL:
+        now = time.time()
+        for old in [k for k, at in _failed.items() if now - at >= FAILED_TTL]:
+            del _failed[old]
+        if key in _failed:
             return {"status": "none", "reason": "failed"}
         if key not in _pending:
             if not _available():
