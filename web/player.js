@@ -569,7 +569,7 @@ async function smartifyQueue() {
         data = await fetchSmartQueue(paths);
     } catch (e) {
         if (ticket !== player.smartTicket) return null;
-        if (e instanceof TypeError || e.unreachable) return smartifyFromDownloads(ticket, queueAtStart, paths);
+        if (unreachableError(e)) return smartifyFromDownloads(ticket, queueAtStart, paths);
         setPlayerNote(e.message);
         return false;
     }
@@ -602,15 +602,24 @@ async function smartifyQueue() {
     return true;
 }
 
+/* Сервер не ответил: нет сети (TypeError), прокси без компьютера (502–504)
+ * или ответа нет дольше SHUFFLE_TIMEOUT_MS (туннель к спящему компьютеру
+ * может молчать). Тогда перемешивается скачанное. */
+let SHUFFLE_TIMEOUT_MS = 30000;
+
+function unreachableError(e) {
+    return e instanceof TypeError || Boolean(e && e.unreachable) || (e && e.name === "AbortError");
+}
+
 async function fetchSmartQueue(paths) {
-    const r = await fetch("/api/shuffle/smart", {
+    const r = await fetchWithin("/api/shuffle/smart", {
         method: "POST",
         headers: { ...headers(), "Content-Type": "application/json" },
         body: JSON.stringify({
             paths,
             size: Math.min(200, Math.max(30, Math.round(paths.length * 1.5))),
         }),
-    });
+    }, SHUFFLE_TIMEOUT_MS);
     const data = await r.json().catch(() => ({}));
     if (!r.ok) {
         const error = new Error(data.detail || ("Ошибка " + r.status));
@@ -630,10 +639,16 @@ function shuffled(list) {
 
 /* Без сети сервер не соберёт умную очередь, а подмешать новое неоткуда.
  * Тогда очередь — скачанное из неё вперемешку, и записка говорит это прямо.
- * Режим очереди «plain»: статистика пропусков не должна считать это умным.
- * Выключение ✦ возвращает прежнюю очередь, как после умной. */
+ * Режим очереди «manual»: статистика сравнивает пропуски умного и обычного
+ * перемешивания, а набор, выбранный руками (скачанное), пропускают реже — он
+ * приукрасил бы любое из них. Выключение ✦ возвращает прежнюю очередь. */
 async function smartifyFromDownloads(ticket, queueAtStart, paths) {
-    const tracks = await downloadedTracks(new Set(paths));
+    let tracks;
+    try {
+        tracks = await downloadedTracks(new Set(paths));
+    } catch (e) {
+        tracks = [];
+    }
     if (ticket !== player.smartTicket || player.shuffle !== "smart" || player.queue !== queueAtStart) {
         return null;
     }
@@ -653,7 +668,7 @@ async function smartifyFromDownloads(ticket, queueAtStart, paths) {
     const rest = shuffled(tracks.filter(t => !current || t.path !== current.path));
     player.queue = current ? [current, ...rest] : rest;
     player.index = current ? 0 : -1;
-    player.queueMode = "plain";
+    player.queueMode = "manual";
     buildOrder(player.index);
     markPlayingRow();
     renderQueuePanel();
@@ -664,6 +679,8 @@ async function smartifyFromDownloads(ticket, queueAtStart, paths) {
 /* То же для «Перемешать» на главной, у подборки, у альбома: без сети —
  * скачанное из этого набора. Состав подборки worker помнит. */
 async function shuffleDownloads(playlist, paths, say) {
+    /* Пока читалось скачанное, могли включить другое — тогда не перебивать. */
+    const ticket = player.smartTicket;
     let only = paths ? new Set(paths) : null;
     if (playlist) {
         try {
@@ -672,12 +689,19 @@ async function shuffleDownloads(playlist, paths, say) {
         } catch (e) { /* состав не запомнен */ }
         if (!only) { say("Без сети, а состав подборки здесь не запомнен — перемешать нечего."); return; }
     }
-    const tracks = shuffled(await downloadedTracks(only));
+    let tracks;
+    try {
+        tracks = shuffled(await downloadedTracks(only));
+    } catch (e) {
+        say("Без сети, а скачанное прочитать не вышло.");
+        return;
+    }
+    if (ticket !== player.smartTicket) return;
     if (!tracks.length) { say("Без сети, а скачанного отсюда нет — играть нечего."); return; }
     player.shuffle = false;
     player.smartTicket += 1;
     renderPlayerModes();
-    playQueue(tracks, 0, "plain", playlist ? { kind: "playlist", name: playlist } : null);
+    playQueue(tracks, 0, "manual", playlist ? { kind: "playlist", name: playlist } : null);
     say(`Без сети — перемешал скачанное: ${tracks.length}, новых нет`);
 }
 
@@ -1029,13 +1053,13 @@ async function loadShuffle(mode, playlist = "", noteId = "shuffleNote", paths = 
         let r = null;
         try {
             r = paths
-                ? await fetch("/api/shuffle/smart", {
+                ? await fetchWithin("/api/shuffle/smart", {
                     method: "POST",
                     headers: { ...headers(), "Content-Type": "application/json" },
                     body: JSON.stringify({ paths, size: 50 }),
-                })
-                : await fetch(url, { headers: headers() });
-        } catch (e) { /* нет сети — ниже */ }
+                }, SHUFFLE_TIMEOUT_MS)
+                : await fetchWithin(url, { headers: headers() }, SHUFFLE_TIMEOUT_MS);
+        } catch (e) { /* нет сети или нет ответа — ниже */ }
         if (!r || unreachableStatus(r.status)) { await shuffleDownloads(playlist, paths, say); return; }
         const data = await r.json();
         if (!r.ok) { say(data.detail || ("Ошибка " + r.status)); return; }

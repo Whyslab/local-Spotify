@@ -1481,22 +1481,29 @@ def test_smart_shuffle_without_network_uses_downloads(page):
     here instead, and the note says so."""
     open_library(page)
     _controlled(page)
-    page.evaluate(f"downloadTrack({LOUD})")
+    page.evaluate(f"downloadTrack({LOUD}).then(() => downloadTrack({QUIET}))")
+    evil = f"{{path: '{EVIL_PATH}', title: 'evil', artist: 'Evil', duration: 12}}"
     page.context.set_offline(True)
     try:
         page.evaluate("loadShuffle('smart')")
-        assert page.evaluate("player.queue.map(t => t.path)") == [LOUD_PATH]
+        assert set(page.evaluate("player.queue.map(t => t.path)")) == {LOUD_PATH, QUIET_PATH}
         assert "без сети" in page.locator("#shuffleNote").inner_text().lower()
-        assert page.evaluate("player.queueMode") == "plain"  # the skip statistics stay honest
+        # Not "plain": a hand-picked set is skipped less, and the smart-vs-plain
+        # skip comparison would flatter plain shuffle.
+        assert page.evaluate("player.queueMode") == "manual"
 
-        # Smart shuffle of the queue that plays: what is downloaded of it.
-        page.evaluate(f"player.queue = [{LOUD}, {QUIET}]; player.index = 0; setShuffle('smart')")
+        # Smart shuffle of the queue that plays: what is downloaded of it,
+        # the playing track first.
+        page.evaluate(
+            f"player.queue = [{QUIET}, {evil}, {LOUD}]; player.index = 0; setShuffle('smart')"
+        )
         page.wait_for_function(
             "/без сети/i.test(document.getElementById('playerNote').textContent)"
         )
-        assert page.evaluate("player.queue.map(t => t.path)") == [LOUD_PATH]
+        assert page.evaluate("player.queue.map(t => t.path)") == [QUIET_PATH, LOUD_PATH]
+        assert page.evaluate("player.queueMode") == "manual"
         page.evaluate("setShuffle(false)")
-        assert page.evaluate("player.queue.length") == 2  # off brings the queue back
+        assert page.evaluate("player.queue.length") == 3  # off brings the queue back
 
         # A server that is down (the proxy answers 503) counts the same as no network.
         page.context.set_offline(False)
@@ -1507,7 +1514,7 @@ def test_smart_shuffle_without_network_uses_downloads(page):
         page.wait_for_function(
             "/без сети/i.test(document.getElementById('shuffleNote').textContent)"
         )
-        assert page.evaluate("player.queue.map(t => t.path)") == [LOUD_PATH]
+        assert set(page.evaluate("player.queue.map(t => t.path)")) == {LOUD_PATH, QUIET_PATH}
     finally:
         page.unroute("**/api/shuffle?*")
         page.context.set_offline(False)

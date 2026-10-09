@@ -134,16 +134,14 @@ async function saveExtras(path) {
 async function downloadedTracks(only = null) {
     if (!offline.supported) return [];
     const metas = await caches.open(OFFLINE_META);
-    const tracks = [];
-    for (const path of offline.paths) {
-        if (only && !only.has(path)) continue;
+    const paths = [...offline.paths].filter(path => !only || only.has(path));
+    // Разом, а не по одному: при скачанной фонотеке это тысячи ожиданий на айфоне.
+    const found = await Promise.all(paths.map(async path => {
         const r = await metas.match(offlineMetaKey(path));
         const meta = r ? await r.json().catch(() => null) : null;
-        if (meta) {
-            tracks.push({ path, title: meta.title, artist: meta.artist, album: meta.album, duration: meta.duration });
-        }
-    }
-    return tracks;
+        return meta && { path, title: meta.title, artist: meta.artist, album: meta.album, duration: meta.duration };
+    }));
+    return found.filter(Boolean);
 }
 
 async function removeDownloaded(path) {
