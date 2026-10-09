@@ -1436,25 +1436,295 @@ def test_a_download_brings_its_covers_and_a_library_search_is_not_kept(page):
     page.evaluate("removeAllDownloads()")
 
 
+QUIET = "{path: 'Quiet/Singles/Quiet.m4a', title: 'Quiet', artist: 'Quiet', duration: 12}"
+LOUD_PATH = "Loud Band/Singles/Loud.opus"
+
+
+# Как качает «вся фонотека»: строка списка, с размером и отпечатком файла.
+LOUD_ROW = (
+    "fetch('/api/library?limit=100000&fresh=1', {headers: headers()}).then(r => r.json())"
+    f".then(rows => downloadTrack(rows.find(r => r.path === '{LOUD_PATH}')))"
+)
+
+
+def _meta(page, path=LOUD_PATH):
+    return page.evaluate(
+        "(p) => caches.open('offline-meta-v1').then(async c =>"
+        " (await (await c.match('/offline/meta?path=' + encodeURIComponent(p))).json()))",
+        path,
+    )
+
+
+def _set_meta(page, changes, path=LOUD_PATH):
+    page.evaluate(
+        "([p, changes]) => caches.open('offline-meta-v1').then(async c => {"
+        " const key = '/offline/meta?path=' + encodeURIComponent(p);"
+        " const meta = Object.assign(await (await c.match(key)).json(), changes);"
+        " for (const [k, v] of Object.entries(meta)) if (v === null) delete meta[k];"
+        " await c.put(key, new Response(JSON.stringify(meta))); })",
+        [path, changes],
+    )
+
+
+def _library_answer(page, drop=(), extra=0, only=None):
+    """Answer /api/library from the real rows, less `drop`, plus `extra` made-up
+    tracks (so one missing track is not most of the library), or just `only` rows."""
+    page.route(
+        "**/api/library?*",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(
+                (
+                    [r for r in route.fetch().json() if r["path"] not in drop]
+                    + [
+                        {"path": f"Pad/Singles/{i}.m4a", "size": 1, "stamp": "x"}
+                        for i in range(extra)
+                    ]
+                )[: only if only is not None else None]
+            ),
+        ),
+    )
+
+
 def test_a_download_whose_file_changed_on_the_server_is_fetched_again(page):
+    """A copy kept before the stamp existed: its size is compared, once."""
     open_library(page)
     _controlled(page)
     page.evaluate(f"downloadTrack({LOUD})")
     # As if the library file had been replaced since (a new version, Opus).
-    page.evaluate(
-        "caches.open('offline-meta-v1').then(async c => {"
-        " const key = '/offline/meta?path=' + encodeURIComponent('Loud Band/Singles/Loud.opus');"
-        " const meta = await (await c.match(key)).json(); meta.size = 1;"
-        " await c.put(key, new Response(JSON.stringify(meta))); })"
-        ".then(() => localStorage.removeItem('offlineChecked'))"
-    )
-    page.evaluate("reconcileDownloads()")
-    size = page.evaluate(
-        "caches.open('offline-meta-v1').then(async c => (await (await c.match('/offline/meta?path='"
-        " + encodeURIComponent('Loud Band/Singles/Loud.opus'))).json()).size)"
-    )
-    assert size > 1
+    _set_meta(page, {"size": 1, "stamp": None})
+    page.evaluate("reconcileDownloads(true)")
+    meta = _meta(page)
+    assert meta["size"] > 1 and meta["stamp"]
     page.evaluate("removeAllDownloads()")
+
+
+def test_reconcile_uses_one_library_diff(page):
+    open_library(page)
+    _controlled(page)
+    page.evaluate(f"downloadTrack({LOUD}).then(() => downloadTrack({QUIET}))")
+    seen = []
+    page.on("request", lambda r: seen.append(r.url))
+    page.evaluate("reconcileDownloads(true)")
+    asked = [u for u in seen if "/api/" in u and "/api/cover" not in u and "/api/lyrics" not in u]
+    assert [u for u in asked if "/api/library" in u] == [
+        u for u in asked if "/api/library?limit=100000" in u and "fresh=1" in u
+    ]
+    assert len([u for u in asked if "/api/library" in u]) == 1
+    assert not [u for u in asked if "/api/stream" in u], asked
+    page.evaluate("removeAllDownloads()")
+
+
+def test_reconcile_localstorage_writes_batched(page):
+    open_library(page)
+    _controlled(page)
+    page.evaluate(f"downloadTrack({LOUD}).then(() => downloadTrack({QUIET}))")
+    page.evaluate("localStorage.removeItem('offlineChecked')")  # every copy is due
+    _library_answer(page, drop={LOUD_PATH, "Quiet/Singles/Quiet.m4a"}, extra=40)
+    writes = page.evaluate(
+        "(async () => { let n = 0; const real = Storage.prototype.setItem;"
+        " Storage.prototype.setItem = function (...a) { n += 1; return real.apply(this, a); };"
+        " try { await reconcileDownloads(true); } finally { Storage.prototype.setItem = real; }"
+        " return n; })()"
+    )
+    assert writes <= 3
+    page.evaluate("removeAllDownloads()")
+
+
+def test_removed_track_leaves_after_grace(page):
+    open_library(page)
+    _controlled(page)
+    page.evaluate(f"downloadTrack({LOUD})")
+    _library_answer(page, drop={LOUD_PATH}, extra=40)
+    page.evaluate("reconcileDownloads(true)")
+    assert page.evaluate(f"isDownloaded('{LOUD_PATH}')") is True  # first sight: kept
+    page.evaluate(
+        "localStorage.setItem('offlineMissing', JSON.stringify("
+        f"{{'{LOUD_PATH}': Date.now() - 21 * 3600 * 1000}}))"
+    )
+    page.evaluate("reconcileDownloads(true)")
+    assert page.evaluate(f"isDownloaded('{LOUD_PATH}')") is False
+
+
+def test_partial_library_answer_removes_nothing(page):
+    open_library(page)
+    _controlled(page)
+    page.evaluate(f"downloadTrack({LOUD})")
+    page.evaluate("localStorage.setItem('offlineLibraryCount', '50')")
+    _library_answer(page, drop={LOUD_PATH}, extra=10)  # 12 of 50: a library half gone
+    page.evaluate(
+        "localStorage.setItem('offlineMissing', JSON.stringify("
+        f"{{'{LOUD_PATH}': Date.now() - 48 * 3600 * 1000}}))"
+    )
+    page.evaluate("reconcileDownloads(true)")
+    assert page.evaluate(f"isDownloaded('{LOUD_PATH}')") is True
+    page.evaluate("removeAllDownloads()")
+
+
+def test_replaced_file_redownloaded_by_stamp(page):
+    open_library(page)
+    _controlled(page)
+    page.evaluate(LOUD_ROW)
+    before = _meta(page)
+    assert before["stamp"]
+    _set_meta(page, {"stamp": "old", "at": 1})
+    page.evaluate("reconcileDownloads(true)")
+    after = _meta(page)
+    assert after["stamp"] == before["stamp"] and after["at"] > 1
+    page.evaluate("removeAllDownloads()")
+
+
+def test_same_size_retag_detected(page, server):
+    import os
+
+    from mutagen.oggopus import OggOpus
+
+    open_library(page)
+    _controlled(page)
+    page.evaluate(LOUD_ROW)
+    before = _meta(page)
+    path = server["root"] / LOUD_PATH
+    stat = path.stat()
+    tags = OggOpus(path)
+    tags["title"] = ["Loud"] if tags.get("title") != ["Loud"] else ["Lout"]
+    tags.save()
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    library.invalidate_library_index()
+    assert path.stat().st_size == stat.st_size  # size and mtime as before: only ctime moved
+    try:
+        page.evaluate("reconcileDownloads(true)")
+        after = _meta(page)
+        assert after["stamp"] != before["stamp"] and after["at"] > before["at"]
+    finally:
+        tags = OggOpus(path)
+        tags["title"] = ["Loud"]
+        tags.save()
+        library.invalidate_library_index()
+        page.evaluate("removeAllDownloads()")
+
+
+def _storage(page, kept=True, quota=None, usage=0):
+    """What the browser says about its storage, as on the phone."""
+    page.evaluate(
+        "([kept, quota, usage]) => {"
+        " window.__wake = [];"
+        " navigator.storage.persisted = async () => kept;"
+        " navigator.storage.persist = async () => kept;"
+        " if (quota !== null) navigator.storage.estimate = async () => ({quota, usage});"
+        " Object.defineProperty(navigator, 'wakeLock', {configurable: true, value: {request: async () => {"
+        "   const lock = {released: false, release: async () => { lock.released = true; },"
+        "     addEventListener() {}}; window.__wake.push(lock); return lock; }}}); }",
+        [kept, quota, usage],
+    )
+
+
+def _library_done(page):
+    page.wait_for_function("!offline.running", timeout=30000)
+
+
+ALL_PATHS = {LOUD_PATH, "Quiet/Singles/Quiet.m4a", "Evil/Singles/evil.m4a"}
+
+
+def test_whole_library_download_and_resume(page):
+    open_library(page)
+    _controlled(page)
+    _storage(page)
+    page.evaluate("switchView('viewService')")
+    page.get_by_role("button", name="Вся фонотека на телефон").click()
+    # The click only starts it: the checks before the first track take a moment.
+    page.wait_for_function(
+        "document.getElementById('offlineLibraryNote').textContent.startsWith('Готово')"
+    )
+    assert set(page.evaluate("[...offline.paths]")) == ALL_PATHS
+    # The screen was kept on while it ran, and let go after.
+    assert page.evaluate("window.__wake.length >= 1 && window.__wake.every(l => l.released)")
+    assert all(_meta(page, p)["stamp"] for p in ALL_PATHS)
+
+    # Interrupted earlier: only what is missing is fetched again.
+    page.evaluate("removeDownloaded('Quiet/Singles/Quiet.m4a')")
+    streams = []
+    page.on("request", lambda r: streams.append(r.url) if "/api/stream?" in r.url else None)
+    page.evaluate("downloadLibrary()")
+    _library_done(page)
+    assert set(page.evaluate("[...offline.paths]")) == ALL_PATHS
+    assert len(streams) == 1 and "Quiet.m4a" in streams[0]
+    page.evaluate("removeAllDownloads()")
+
+
+def test_whole_library_needs_kept_storage(page):
+    open_library(page)
+    _controlled(page)
+    _storage(page, kept=False)
+    page.evaluate("switchView('viewService')")
+    page.evaluate("downloadLibrary()")
+    assert page.evaluate("offline.paths.size") == 0
+    assert "«Домой»" in page.locator("#offlineLibraryNote").inner_text()
+
+
+def test_quota_checked_before_start(page):
+    open_library(page)
+    _controlled(page)
+    sizes = page.evaluate(
+        "fetch('/api/library?limit=100000&fresh=1', {headers: headers()}).then(r => r.json())"
+        ".then(rows => rows.map(r => r.size))"
+    )
+    room = int(min(sizes) * 1.1) + 10  # the smallest track fits, nothing else
+    _storage(page, quota=room)
+    page.evaluate("switchView('viewService')")
+    page.evaluate("downloadLibrary()")
+    assert page.evaluate("offline.paths.size") == 0  # asked first, fetched nothing
+    assert "не влезет" in page.locator("#offlineLibraryNote").inner_text()
+    page.get_by_role("button", name="Скачать, сколько влезет").click()
+    page.wait_for_function(
+        "document.getElementById('offlineLibraryNote').textContent.startsWith('Готово')"
+    )
+    assert page.evaluate("offline.paths.size") == 1
+    assert "ещё 2 не влезло" in page.locator("#offlineLibraryNote").inner_text()
+    page.evaluate("removeAllDownloads()")
+
+
+def test_quota_error_stops_without_deleting(page):
+    open_library(page)
+    _controlled(page)
+    _storage(page)
+    page.evaluate(LOUD_ROW)
+    page.evaluate(
+        "const realPut = Cache.prototype.put; Cache.prototype.put = function (req, res) {"
+        " if (String((req && req.url) || req).includes('/offline/audio'))"
+        "   return Promise.reject(new DOMException('full', 'QuotaExceededError'));"
+        " return realPut.call(this, req, res); }; true"
+    )
+    page.evaluate("switchView('viewService')")
+    page.evaluate("downloadLibrary()")
+    _library_done(page)
+    assert set(page.evaluate("[...offline.paths]")) == {LOUD_PATH}
+    assert "место" in page.locator("#offlineLibraryNote").inner_text()
+    page.evaluate("removeAllDownloads()")
+
+
+def test_offline_marks_batched(page):
+    """B17: rows are re-marked once per ten tracks, not after every one."""
+    open_library(page)
+    _controlled(page)
+    _storage(page)
+    _library_answer(page, extra=27)  # 30 rows; the made-up ones fail fast (404)
+    marks = page.evaluate(
+        "(async () => { let n = 0; const real = document.querySelectorAll;"
+        " document.querySelectorAll = function (sel) { if (sel === '[data-track-path]') n += 1;"
+        "   return real.call(this, sel); };"
+        " try { await downloadLibrary(); } finally { document.querySelectorAll = real; }"
+        " return n; })()"
+    )
+    assert marks <= 5, marks
+    assert set(page.evaluate("[...offline.paths]")) == ALL_PATHS
+    page.evaluate("removeAllDownloads()")
+
+
+def test_library_download_says_how_long(page):
+    left = page.evaluate("libraryTimeLeft({bytes: 10e6, need: 40e6, started: Date.now() - 60000})")
+    assert "3 мин" in left and "открыт" in left
+    assert page.evaluate("libraryTimeLeft({bytes: 0, need: 40e6, started: Date.now()})") == ""
 
 
 def test_the_sleep_timer_counts_down_and_stops_playback(page):

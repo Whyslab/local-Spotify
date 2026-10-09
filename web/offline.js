@@ -18,15 +18,17 @@ const OFFLINE_META = "offline-meta-v1";
 // та ограничивает по размеру, — иначе они вытеснялись бы вместе с прочим.
 const OFFLINE_EXTRAS = "offline-covers-v1";
 const COVER_SIZES = [96, 300, 600];  // те, что просят список, плеер и экран блокировки
-const RECHECK_MS = 24 * 3600 * 1000;
-const CHECKED_KEY = "offlineChecked";
+const RECHECK_MS = 6 * 3600 * 1000;
+const RECONCILED_KEY = "offlineReconciled";      // когда сверка прошла целиком
+const LIBRARY_COUNT_KEY = "offlineLibraryCount"; // сколько треков было в фонотеке тогда
+const OLD_CHECKED_KEY = "offlineChecked";        // отметки по трекам прежней сверки: стереть
 const PENDING_PLAYS_KEY = "pendingPlays";
 const PENDING_PLAYS_MAX = 500;
 
 const offline = {
     supported: "caches" in window && "serviceWorker" in navigator && window.isSecureContext,
     paths: new Set(),     // что скачано
-    running: null,        // {name, done, total, stop} — идущее скачивание подборки
+    running: null,        // {name, done, total, stop} — идущее скачивание подборки или фонотеки
     epoch: 0,             // растёт при «удалить всё»: начатые до него скачивания не сохраняются
 };
 
@@ -48,7 +50,11 @@ async function loadOfflineIndex() {
     refreshOfflineMarks();
 }
 
-/* Строки со скачанным треком помечаются — тем же проходом, что и играющая. */
+/* Строки со скачанным треком помечаются — тем же проходом, что и играющая.
+ * Проход по всем строкам дорог: при скачивании многих треков — раз на
+ * MARKS_EVERY треков, а между ними обновляется только счётчик. */
+const MARKS_EVERY = 10;
+
 function refreshOfflineMarks() {
     for (const row of document.querySelectorAll("[data-track-path]")) {
         row.classList.toggle("is-offline", offline.paths.has(row.dataset.trackPath));
@@ -85,6 +91,10 @@ async function downloadTrack(track, force = false) {
         duration: track.duration || null,
         gain: stream.gain,
         size: blob.size,
+        // Отпечаток файла из строки фонотеки: по нему сверка видит замену и
+        // перетегирование того же размера. У трека из подборки его нет —
+        // тогда первая сверка сравнит размер и запишет отпечаток.
+        stamp: track.stamp || "",
         at: Date.now(),
     };
     try {
@@ -103,7 +113,6 @@ async function downloadTrack(track, force = false) {
         return;
     }
     offline.paths.add(track.path);
-    markChecked(track.path);
     await saveExtras(track.path);
 }
 
@@ -143,18 +152,21 @@ function forgetOfflineLinks(path) {
     }
 }
 
-/* Скачанное сверяется с фонотекой раз в сутки на трек: трек удалили —
- * копия уходит; заменили файл (другая версия, перевод в Opus) — копия
- * перекачивается. Размер файла спрашивается одним байтом.
+/* Скачанное сверяется с фонотекой одним запросом её списка (не чаще раза в
+ * RECHECK_MS): трек удалили — копия уходит; заменили файл (другая версия,
+ * перевод в Opus) или переписали теги — копия перекачивается. Замену видно по
+ * отпечатку файла `stamp` в строке списка.
  *
- * Удаление — осторожно: 404 бывает и когда вся фонотека недоступна (диск не
- * подключён, папку переименовывают), и одна такая сверка стёрла бы с телефона
- * всё. Поэтому: сервер сам должен сказать, что фонотека в порядке; трек должен
- * пропадать дольше суток (две сверки в разные дни); и не больше
- * MAX_REMOVALS за проход. */
+ * Удаление — осторожно: трек пропадает из списка и когда фонотека недоступна
+ * целиком или частично (диск не подключён, папку переименовывают), и одна
+ * такая сверка стёрла бы с телефона всё. Поэтому: сервер сам должен сказать,
+ * что фонотека в порядке; в ответе не меньше 90 % прошлого числа треков; трек
+ * должен пропадать дольше MISSING_GRACE_MS (две сверки в разное время); и не
+ * больше MAX_REMOVALS за проход. */
 const MISSING_KEY = "offlineMissing";
 const MISSING_GRACE_MS = 20 * 3600 * 1000;
 const MAX_REMOVALS = 10;
+const FULL_ANSWER = 0.9;
 
 function readMap(key) {
     try { return JSON.parse(localStorage.getItem(key) || "{}"); } catch (e) { return {}; }
@@ -164,29 +176,28 @@ function writeMap(key, map) {
     try { localStorage.setItem(key, JSON.stringify(map)); } catch (e) { /* без памяти — проверим ещё раз */ }
 }
 
-function markChecked(path) {
-    const checked = readMap(CHECKED_KEY);
-    checked[path] = Date.now();
-    writeMap(CHECKED_KEY, checked);
+function readNumber(key) {
+    try { return Number(localStorage.getItem(key)) || 0; } catch (e) { return 0; }
 }
 
-/* Записи о треках, которых на устройстве больше нет, не копятся. */
-function pruneMarks() {
-    for (const key of [CHECKED_KEY, MISSING_KEY]) {
-        const map = readMap(key);
-        for (const path of Object.keys(map)) if (!offline.paths.has(path)) delete map[path];
-        writeMap(key, map);
+async function libraryTrackCount() {
+    try {
+        const r = await fetch("/health", { headers: headers(), cache: "no-store" });
+        if (!r.ok) return 0;
+        const health = await r.json();
+        return health.library === "ok" ? Number(health.tracks) || 0 : 0;
+    } catch (e) {
+        return 0;
     }
 }
 
-async function libraryIsHealthy() {
+/* Вся фонотека одним ответом, мимо копии sw.js. null — не вышло. */
+async function fetchLibraryRows() {
     try {
-        const r = await fetch("/health", { headers: headers(), cache: "no-store" });
-        if (!r.ok) return false;
-        const health = await r.json();
-        return health.library === "ok" && Number(health.tracks) > 0;
+        const r = await fetch("/api/library?limit=100000&sort=name&fresh=1", { headers: headers(), cache: "no-store" });
+        return r.ok ? await r.json() : null;
     } catch (e) {
-        return false;
+        return null;
     }
 }
 
@@ -197,55 +208,69 @@ async function hasExtras(path) {
 
 let reconciling = false;
 
-async function reconcileDownloads() {
+async function reconcileDownloads(force = false) {
     if (!offline.supported || reconciling || !token()) return;
+    if (!force && Date.now() - readNumber(RECONCILED_KEY) < RECHECK_MS) return;
     reconciling = true;
-    const checked = readMap(CHECKED_KEY);
     const missing = readMap(MISSING_KEY);
     let removed = 0;
+    let finished = false;
     try {
-        if (!await libraryIsHealthy()) return;  // не сейчас: вывод «трека нет» был бы ложным
+        const healthy = await libraryTrackCount();
+        if (!healthy) return;  // не сейчас: вывод «трека нет» был бы ложным
+        const rows = await fetchLibraryRows();
+        if (!rows) return;
+        const byPath = new Map(rows.map(row => [row.path, row]));
+        // Неполный ответ — не повод удалять: фонотека может быть видна частично.
+        const full = rows.length >= FULL_ANSWER * Math.max(healthy, readNumber(LIBRARY_COUNT_KEY));
         const metas = await caches.open(OFFLINE_META);
+        const current = player.queue[player.index];
         for (const path of [...offline.paths]) {
-            if (offline.running) break;  // не мешать скачиванию подборки
-            if (Date.now() - (checked[path] || 0) < RECHECK_MS) continue;
-            let stream;
-            try {
-                stream = await streamUrlFor(path, true);
-            } catch (e) {
-                if (e.status !== 404) break;  // сервер недоступен — в другой раз
+            if (offline.running) return;  // не мешать скачиванию
+            const row = byPath.get(path);
+            if (!row) {
+                if (!full) continue;
                 missing[path] = missing[path] || Date.now();
-                writeMap(MISSING_KEY, missing);
                 if (Date.now() - missing[path] >= MISSING_GRACE_MS && removed < MAX_REMOVALS) {
                     await removeDownloaded(path);
+                    delete missing[path];
                     removed += 1;
                 }
                 continue;
             }
             delete missing[path];
-            writeMap(MISSING_KEY, missing);
-            const probe = await fetch(stream.url + "&fresh=1", { headers: { Range: "bytes=0-0" }, cache: "no-store" })
-                .catch(() => null);
-            if (!probe || !probe.ok) break;
-            const total = Number(((probe.headers.get("Content-Range") || "").split("/")[1]) || 0);
             let meta = {};
             try { meta = await (await metas.match(offlineMetaKey(path))).json(); } catch (e) { /* пусто */ }
-            const current = player.queue[player.index];
-            const playing = current && current.path === path && !player.audio.paused;
-            if (total && meta.size && total !== meta.size) {
+            // Копия до отпечатков: сравнить размер; совпал — запомнить отпечаток.
+            const changed = meta.stamp ? meta.stamp !== row.stamp : Boolean(meta.size && row.size !== meta.size);
+            if (changed) {
                 // Играющий сейчас — не трогать: его звук читается из этой копии.
-                if (playing) continue;
+                if (current && current.path === path && !player.audio.paused) continue;
                 try {
-                    await downloadTrack({ ...meta, path }, true);
-                } catch (e) { continue; }
+                    await downloadTrack({ ...meta, ...row }, true);
+                } catch (e) { /* в другой раз */ }
+            } else if (!meta.stamp && row.stamp) {
+                await metas.put(offlineMetaKey(path), new Response(JSON.stringify({ ...meta, stamp: row.stamp }), {
+                    headers: { "Content-Type": "application/json" },
+                }));
             } else if (!await hasExtras(path)) {
                 await saveExtras(path);  // скачанное до обложек и текстов
             }
-            markChecked(path);
         }
+        finished = true;
+        try {
+            localStorage.setItem(RECONCILED_KEY, String(Date.now()));
+            if (full) localStorage.setItem(LIBRARY_COUNT_KEY, String(rows.length));
+        } catch (e) { /* без памяти — сверим ещё раз */ }
     } finally {
         reconciling = false;
-        pruneMarks();
+        // Отметки о треках, которых на устройстве больше нет, не копятся;
+        // всё — одной записью за проход.
+        for (const path of Object.keys(missing)) if (!offline.paths.has(path)) delete missing[path];
+        writeMap(MISSING_KEY, missing);
+        if (finished) {
+            try { localStorage.removeItem(OLD_CHECKED_KEY); } catch (e) { /* не важно */ }
+        }
         refreshOfflineMarks();
     }
 }
@@ -285,7 +310,8 @@ async function downloadPlaylist() {
                 }
             }
             job.done += 1;
-            refreshOfflineMarks();
+            if (job.done % MARKS_EVERY === 0) refreshOfflineMarks();
+            else renderPlaylistOffline();
         }
     } finally {
         offline.running = null;
@@ -329,6 +355,154 @@ async function toggleTrackDownload(track) {
     refreshOfflineMarks();
 }
 
+/* ---------------- Вся фонотека на телефон ----------------
+ *
+ * По одному треку, как подборка: прерванное продолжается с места. Перед
+ * стартом — две проверки, без которых на айфоне скачанное пропадёт или не
+ * влезет: хранилище «надёжное» (persisted) и места хватает с запасом. */
+const ROOM_MARGIN = 1.1;
+const YIELD_MS = 500;
+const YIELD_MAX_MS = 30000;
+
+function setLibraryNote(text) {
+    const note = document.getElementById("offlineLibraryNote");
+    if (note) note.textContent = text;
+}
+
+async function storageKept() {
+    try {
+        if (!navigator.storage || !navigator.storage.persisted) return true;  // не узнать — не мешать
+        return await navigator.storage.persisted();
+    } catch (e) {
+        return true;
+    }
+}
+
+/* Сколько ещё можно положить, байт; null — браузер не говорит. */
+async function freeRoom() {
+    try {
+        if (!navigator.storage || !navigator.storage.estimate) return null;
+        const { quota, usage } = await navigator.storage.estimate();
+        return quota ? quota - (usage || 0) : null;
+    } catch (e) {
+        return null;
+    }
+}
+
+function gigabytes(bytes) { return (bytes / 1e9).toFixed(2) + " ГБ"; }
+
+/* «Осталось ~N мин» по скорости уже скачанного; пусто, пока мерить не по чему. */
+function libraryTimeLeft(job) {
+    const elapsed = Date.now() - job.started;
+    if (!job.bytes || elapsed <= 0) return "";
+    const minutes = Math.max(1, Math.round((job.need - job.bytes) / (job.bytes / elapsed) / 60000));
+    return `осталось ~${minutes} мин; держи приложение открытым — iOS в фоне не качает`;
+}
+
+/* Скачивание не отнимает сеть у играющего трека: пока тот ждёт данных, ждёт и оно. */
+async function yieldToPlayer(job) {
+    const until = Date.now() + YIELD_MAX_MS;
+    while (!job.stop && Date.now() < until) {
+        const a = player.audio;
+        const src = a.getAttribute("src") || "";
+        if (a.paused || a.readyState >= 3 || src.includes("sig=offline")) return;
+        await new Promise(resolve => setTimeout(resolve, YIELD_MS));
+    }
+}
+
+async function keepScreenOn(job) {
+    try {
+        if (navigator.wakeLock && !job.stop) job.lock = await navigator.wakeLock.request("screen");
+    } catch (e) { /* нет — качаем и так */ }
+}
+
+/* Экран, погасший и включённый снова, отпускает блокировку — взять заново. */
+document.addEventListener("visibilitychange", () => {
+    const job = offline.running;
+    if (job && job.library && document.visibilityState === "visible") keepScreenOn(job);
+});
+
+async function downloadLibrary(fitOnly = false) {
+    if (!offline.supported || offline.running) return;
+    const partial = document.getElementById("offlineLibraryPartial");
+    if (partial) partial.hidden = true;
+    await askToKeepStorage();
+    if (!await storageKept()) {
+        setLibraryNote("Браузер может стереть скачанное, поэтому всю фонотеку не качаю. На айфоне: «Поделиться» → "
+            + "«На экран «Домой»», открыть плеер оттуда и нажать ещё раз.");
+        return;
+    }
+    const rows = await fetchLibraryRows();
+    if (!rows) { setLibraryNote("Сервер не ответил — попробуй позже."); return; }
+    let tracks = rows.filter(row => !isDownloaded(row.path));
+    let left = 0;  // треков, которым не хватило места
+    let need = tracks.reduce((sum, row) => sum + (row.size || 0), 0);
+    const room = await freeRoom();
+    if (room !== null && room < need * ROOM_MARGIN) {
+        // Сначала спросить: молча скачать половину и упереться — хуже.
+        let budget = room / ROOM_MARGIN;
+        const fit = [];
+        for (const row of tracks) {
+            if ((row.size || 0) > budget) continue;
+            budget -= row.size || 0;
+            fit.push(row);
+        }
+        if (!fitOnly) {
+            setLibraryNote(`Всё не влезет: нужно ${gigabytes(need * ROOM_MARGIN)}, свободно ${gigabytes(room)}. `
+                + `Влезет треков: ${fit.length} из ${tracks.length}.`);
+            if (partial) partial.hidden = fit.length === 0;
+            return;
+        }
+        left = tracks.length - fit.length;
+        tracks = fit;
+        need = fit.reduce((sum, row) => sum + (row.size || 0), 0);
+    }
+    if (!tracks.length) { setLibraryNote("Вся фонотека уже на телефоне."); return; }
+
+    const job = { name: "", library: true, done: 0, total: tracks.length, failed: 0, stop: false,
+        bytes: 0, need, started: Date.now(), lock: null };
+    offline.running = job;
+    setLibraryNote("");
+    await keepScreenOn(job);
+    renderOfflineCard();
+    let full = false;
+    try {
+        for (const row of tracks) {
+            if (job.stop) break;
+            await yieldToPlayer(job);
+            if (job.stop) break;
+            try {
+                await downloadTrack(row);
+                job.bytes += row.size || 0;
+            } catch (e) {
+                if (isQuotaError(e)) { full = true; break; }
+                job.failed += 1;
+            }
+            job.done += 1;
+            if (job.done % MARKS_EVERY === 0) refreshOfflineMarks();
+            else renderLibraryProgress(job);
+        }
+    } finally {
+        offline.running = null;
+        try { if (job.lock) await job.lock.release(); } catch (e) { /* уже отпущена */ }
+        refreshOfflineMarks();
+    }
+    if (full) setLibraryNote("На телефоне кончилось место — скачано не всё, ничего не удалено.");
+    else if (job.failed) setLibraryNote(`Не скачалось: ${job.failed}. Нажми ещё раз — докачает.`);
+    else if (job.stop) setLibraryNote("");
+    else if (left) setLibraryNote(`Готово: скачано ${job.done}, ещё ${left} не влезло.`);
+    else setLibraryNote("Готово: вся фонотека на телефоне.");
+}
+
+function renderLibraryProgress(job) {
+    const button = document.getElementById("offlineLibrary");
+    if (!button) return;
+    button.textContent = `Скачиваю ${job.done} из ${job.total} · стоп`;
+    button.onclick = stopDownloading;
+    button.disabled = false;
+    setLibraryNote(libraryTimeLeft(job));
+}
+
 function uniqueTracks(entries) {
     const seen = new Set();
     const out = [];
@@ -355,7 +529,7 @@ function renderPlaylistOffline() {
     const tracks = uniqueTracks(pl.entries).filter(t => !isOutside(t));
     const have = tracks.filter(t => isDownloaded(t.path)).length;
     const job = offline.running;
-    if (job && job.name === pl.name) {
+    if (job && job.name === pl.name && !job.library) {
         button.textContent = `Скачиваю ${job.done} из ${job.total} · стоп`;
         button.onclick = stopDownloading;
     } else if (tracks.length && have === tracks.length) {
@@ -366,7 +540,7 @@ function renderPlaylistOffline() {
         button.onclick = downloadPlaylist;
         button.disabled = Boolean(job);
     }
-    if (!job || job.name === pl.name) button.disabled = false;
+    if (!job || (job.name === pl.name && !job.library)) button.disabled = false;
 }
 
 /* Карточка в «Сервисе»: сколько скачано и сколько это места. */
@@ -389,6 +563,15 @@ async function renderOfflineCard() {
     } catch (e) { /* без этого */ }
     facts.textContent = `Скачано треков: ${offline.paths.size}${used}${kept}`;
     document.getElementById("offlineRemoveAll").disabled = offline.paths.size === 0;
+    const job = offline.running;
+    const button = document.getElementById("offlineLibrary");
+    if (job && job.library) {
+        renderLibraryProgress(job);
+    } else {
+        button.textContent = "Вся фонотека на телефон";
+        button.onclick = () => downloadLibrary();
+        button.disabled = Boolean(job);  // идёт подборка
+    }
 }
 
 /* ---------------- Прослушивания без сети ----------------

@@ -304,9 +304,12 @@
           <h2>На этом устройстве</h2>
         </div>
         <p id="offlineFacts" class="muted"></p>
-        <p class="muted">Скачанное играет без сети. Качать — кнопкой «На телефон» в подборке.
+        <p class="muted">Скачанное играет без сети. Качать — кнопкой «На телефон» в подборке или всю фонотеку сразу.
           На айфоне держи плеер на экране «Домой»: у сайта в Safari iOS стирает скачанное после недели без открытия.</p>
+        <p id="offlineLibraryNote" class="muted" aria-live="polite"></p>
         <div class="row wrap">
+          <button id="offlineLibrary" onclick="downloadLibrary()">Вся фонотека на телефон</button>
+          <button id="offlineLibraryPartial" class="ghost" hidden onclick="downloadLibrary(true)">Скачать, сколько влезет</button>
           <button id="offlineRemoveAll" class="ghost" onclick="removeAllDownloads()">Удалить всё скачанное</button>
         </div>
       </div>
