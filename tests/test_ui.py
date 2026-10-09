@@ -18,6 +18,7 @@ import socket
 import subprocess
 import threading
 import time
+import urllib.parse
 from pathlib import Path
 
 import pytest
@@ -2068,11 +2069,38 @@ def test_reconcile_localstorage_writes_batched(page):
     page.evaluate("removeAllDownloads()")
 
 
+def _server_says_gone(page, paths):
+    """The server, asked past the phone's copy, has no such file (404)."""
+    page.route(
+        "**/api/stream-url?*",
+        lambda route: (
+            route.fulfill(status=404, body="{}")
+            if "fresh=1" in route.request.url
+            and urllib.parse.parse_qs(urllib.parse.urlsplit(route.request.url).query)["path"][0]
+            in paths
+            else route.continue_()
+        ),
+    )
+
+
+def _fake_downloads(page, paths, stamp="old"):
+    """Metadata-only downloads: enough for the reconcile pass to weigh them."""
+    page.evaluate(
+        "([paths, stamp]) => caches.open('offline-meta-v1').then(async c => {"
+        " for (const p of paths) {"
+        "  await c.put('/offline/meta?path=' + encodeURIComponent(p),"
+        "   new Response(JSON.stringify({path: p, size: 1, stamp})));"
+        "  offline.paths.add(p); } })",
+        [list(paths), stamp],
+    )
+
+
 def test_removed_track_leaves_after_grace(page):
     open_library(page)
     _controlled(page)
     page.evaluate(f"downloadTrack({LOUD})")
     _library_answer(page, drop={LOUD_PATH}, extra=40)
+    _server_says_gone(page, {LOUD_PATH})
     page.evaluate("reconcileDownloads(true)")
     assert page.evaluate(f"isDownloaded('{LOUD_PATH}')") is True  # first sight: kept
     page.evaluate(
@@ -2081,6 +2109,117 @@ def test_removed_track_leaves_after_grace(page):
     )
     page.evaluate("reconcileDownloads(true)")
     assert page.evaluate(f"isDownloaded('{LOUD_PATH}')") is False
+
+
+def test_a_track_the_server_still_has_is_not_removed(page):
+    """Missing from the list (unreadable tags, an odd suffix) is not missing on
+    disk: removal needs the server's own 404 for that very path."""
+    open_library(page)
+    _controlled(page)
+    page.evaluate(f"downloadTrack({LOUD})")
+    page.evaluate("localStorage.setItem('offlineLibraryCount', '42')")
+    _library_answer(page, drop={LOUD_PATH}, extra=40)
+    page.evaluate(
+        "localStorage.setItem('offlineMissing', JSON.stringify("
+        f"{{'{LOUD_PATH}': Date.now() - 48 * 3600 * 1000}}))"
+    )
+    page.evaluate("reconcileDownloads(true)")
+    assert page.evaluate(f"isDownloaded('{LOUD_PATH}')") is True
+    page.evaluate("removeAllDownloads()")
+
+
+def test_the_first_pass_only_learns(page):
+    """No count from an earlier pass: whatever the answer, nothing is removed yet."""
+    open_library(page)
+    _controlled(page)
+    page.evaluate(f"downloadTrack({LOUD})")
+    _library_answer(page, drop={LOUD_PATH}, extra=40)
+    _server_says_gone(page, {LOUD_PATH})
+    page.evaluate(
+        "localStorage.removeItem('offlineLibraryCount');"
+        " localStorage.setItem('offlineMissing', JSON.stringify("
+        f"{{'{LOUD_PATH}': Date.now() - 48 * 3600 * 1000}}))"
+    )
+    page.evaluate("reconcileDownloads(true)")
+    assert page.evaluate(f"isDownloaded('{LOUD_PATH}')") is True
+    assert page.evaluate("localStorage.getItem('offlineLibraryCount')") == "42"
+    page.evaluate("removeAllDownloads()")
+
+
+def test_an_unhealthy_library_touches_nothing(page):
+    open_library(page)
+    _controlled(page)
+    page.evaluate(f"downloadTrack({LOUD})")
+    page.evaluate("localStorage.setItem('offlineLibraryCount', '42')")
+    _library_answer(page, drop={LOUD_PATH}, extra=40)
+    _server_says_gone(page, {LOUD_PATH})
+    page.route(
+        "**/health",
+        lambda route: route.fulfill(
+            status=200, content_type="application/json", body='{"library": "not found"}'
+        ),
+    )
+    page.evaluate(
+        "localStorage.setItem('offlineMissing', JSON.stringify("
+        f"{{'{LOUD_PATH}': Date.now() - 48 * 3600 * 1000}}))"
+    )
+    page.evaluate("reconcileDownloads(true)")
+    assert page.evaluate(f"isDownloaded('{LOUD_PATH}')") is True
+    page.evaluate("removeAllDownloads()")
+
+
+def test_at_most_ten_removals_per_pass(page):
+    gone = [f"Gone/Singles/{i}.m4a" for i in range(14)]
+    open_library(page)
+    _controlled(page)
+    _fake_downloads(page, gone)
+    page.evaluate("localStorage.setItem('offlineLibraryCount', '43')")
+    _library_answer(page, extra=40)
+    _server_says_gone(page, set(gone))
+    page.evaluate(
+        "(paths) => localStorage.setItem('offlineMissing', JSON.stringify("
+        " Object.fromEntries(paths.map(p => [p, Date.now() - 48 * 3600 * 1000]))))",
+        gone,
+    )
+    page.evaluate("reconcileDownloads(true)")
+    left = page.evaluate("(paths) => paths.filter(p => isDownloaded(p)).length", gone)
+    assert left == 4
+    page.evaluate("removeAllDownloads()")
+
+
+def test_a_library_that_really_shrank_is_believed_after_a_while(page):
+    """Otherwise, after a big clean-up, removals would stop for good."""
+    open_library(page)
+    _controlled(page)
+    page.evaluate("localStorage.setItem('offlineLibraryCount', '50')")
+    _library_answer(page, extra=10)  # 13 of 50
+    page.evaluate("localStorage.removeItem('offlineLibraryLowerSince')")
+    page.evaluate("reconcileDownloads(true)")
+    assert page.evaluate("localStorage.getItem('offlineLibraryCount')") == "50"  # not yet
+    page.evaluate(
+        "localStorage.setItem('offlineLibraryLowerSince', String(Date.now() - 21 * 3600 * 1000))"
+    )
+    page.evaluate("reconcileDownloads(true)")
+    assert page.evaluate("localStorage.getItem('offlineLibraryCount')") == "13"
+
+
+def test_changed_copies_are_refetched_a_few_per_pass(page):
+    """Restoring a backup touches every file's ctime: the phone must not pull
+    the whole library again at once, 15 s after opening the app."""
+    pad = [f"Pad/Singles/{i}.m4a" for i in range(30)]
+    open_library(page)
+    _controlled(page)
+    _fake_downloads(page, pad, stamp="old")  # the library answers stamp "x"
+    page.evaluate("localStorage.setItem('offlineLibraryCount', '33')")
+    _library_answer(page, extra=30)
+    asked = page.evaluate(
+        "(async () => { let n = 0; const real = downloadTrack;"
+        " downloadTrack = async () => { n += 1; };"
+        " try { await reconcileDownloads(true); } finally { downloadTrack = real; }"
+        " return n; })()"
+    )
+    assert asked == 20
+    page.evaluate("removeAllDownloads()")
 
 
 def test_partial_library_answer_removes_nothing(page):

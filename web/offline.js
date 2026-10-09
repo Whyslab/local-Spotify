@@ -104,7 +104,12 @@ async function downloadTrack(track, force = false) {
             headers: { "Content-Type": "application/json" },
         }));
     } catch (e) {
-        await audio.delete(offlineAudioKey(track.path));  // без записи звук — сирота
+        if (force) {
+            // Прежний звук уже заменён новым: прежняя запись без него лгала бы.
+            await removeDownloaded(track.path);
+        } else {
+            await audio.delete(offlineAudioKey(track.path));  // без записи звук — сирота
+        }
         throw e;
     }
     if (epoch !== offline.epoch) {
@@ -176,12 +181,25 @@ function forgetOfflineLinks(path) {
  * Удаление — осторожно: трек пропадает из списка и когда фонотека недоступна
  * целиком или частично (диск не подключён, папку переименовывают), и одна
  * такая сверка стёрла бы с телефона всё. Поэтому: сервер сам должен сказать,
- * что фонотека в порядке; в ответе не меньше 90 % прошлого числа треков; трек
- * должен пропадать дольше MISSING_GRACE_MS (две сверки в разное время); и не
- * больше MAX_REMOVALS за проход. */
+ * что фонотека в порядке; в ответе не меньше 90 % прошлого числа треков
+ * (первая сверка только запоминает число и не удаляет ничего); трек должен
+ * пропадать дольше MISSING_GRACE_MS (две сверки в разное время); сервер,
+ * спрошенный об этом самом файле мимо копии, отвечает «нет такого» (в списке
+ * нет и файлов с нечитаемыми тегами — их сервер всё равно отдаёт); и не больше
+ * MAX_REMOVALS за проход.
+ *
+ * Фонотека, которая правда уменьшилась (чистка), — после MISSING_GRACE_MS
+ * меньших ответов подряд новое число принимается, иначе удаления встали бы
+ * навсегда.
+ *
+ * Перекачка — не больше MAX_REFRESHES за проход: восстановление из бэкапа или
+ * переезд на другой диск меняют отпечаток у всех файлов разом, и телефон
+ * тянул бы всю фонотеку молча, сразу после открытия. */
 const MISSING_KEY = "offlineMissing";
+const LOWER_SINCE_KEY = "offlineLibraryLowerSince";
 const MISSING_GRACE_MS = 20 * 3600 * 1000;
 const MAX_REMOVALS = 10;
+const MAX_REFRESHES = 20;
 const FULL_ANSWER = 0.9;
 
 function readMap(key) {
@@ -222,6 +240,17 @@ async function hasExtras(path) {
     return Boolean(await extras.match(coverKey(path, 600)) || await extras.match(lyricsKey(path)));
 }
 
+/* Есть ли файл на сервере — спросить его самого, мимо скачанной копии:
+ * true — есть, false — нет (404), null — сейчас не узнать. */
+async function serverHasFile(path) {
+    try {
+        await streamUrlFor(path, true);
+        return true;
+    } catch (e) {
+        return e.status === 404 ? false : null;
+    }
+}
+
 let reconciling = false;
 
 async function reconcileDownloads(force = false) {
@@ -231,6 +260,8 @@ async function reconcileDownloads(force = false) {
     const missing = readMap(MISSING_KEY);
     let removed = 0;
     let finished = false;
+    let baseline = null;    // число треков, которое запомнить
+    let lowerSince = null;  // с каких пор ответы меньше запомненного
     try {
         const healthy = await libraryTrackCount();
         if (!healthy) return;  // не сейчас: вывод «трека нет» был бы ложным
@@ -238,19 +269,30 @@ async function reconcileDownloads(force = false) {
         if (!rows) return;
         const byPath = new Map(rows.map(row => [row.path, row]));
         // Неполный ответ — не повод удалять: фонотека может быть видна частично.
-        const full = rows.length >= FULL_ANSWER * Math.max(healthy, readNumber(LIBRARY_COUNT_KEY));
+        const previous = readNumber(LIBRARY_COUNT_KEY);
+        const full = rows.length >= FULL_ANSWER * Math.max(healthy, previous);
+        const mayRemove = full && previous > 0;
+        if (!previous || full) {
+            baseline = rows.length;
+        } else {
+            lowerSince = readNumber(LOWER_SINCE_KEY) || Date.now();
+            if (Date.now() - lowerSince >= MISSING_GRACE_MS) baseline = rows.length;
+        }
         const metas = await caches.open(OFFLINE_META);
-        const current = player.queue[player.index];
+        let refreshed = 0;
         for (const path of [...offline.paths]) {
             if (offline.running) return;  // не мешать скачиванию
             const row = byPath.get(path);
             if (!row) {
-                if (!full) continue;
+                if (!mayRemove) continue;
                 missing[path] = missing[path] || Date.now();
                 if (Date.now() - missing[path] >= MISSING_GRACE_MS && removed < MAX_REMOVALS) {
-                    await removeDownloaded(path);
-                    delete missing[path];
-                    removed += 1;
+                    const there = await serverHasFile(path);
+                    if (there === false) {
+                        await removeDownloaded(path);
+                        removed += 1;
+                    }
+                    if (there !== null) delete missing[path];  // есть на диске — не пропавший
                 }
                 continue;
             }
@@ -260,12 +302,16 @@ async function reconcileDownloads(force = false) {
             // Копия до отпечатков: сравнить размер; совпал — запомнить отпечаток.
             const changed = meta.stamp ? meta.stamp !== row.stamp : Boolean(meta.size && row.size !== meta.size);
             if (changed) {
-                // Играющий сейчас — не трогать: его звук читается из этой копии.
-                if (current && current.path === path && !player.audio.paused) continue;
+                if (refreshed >= MAX_REFRESHES) continue;  // остальное — в следующий раз
+                // Трек в плеере (и на паузе) — не трогать: его звук читается из этой копии.
+                const current = player.queue[player.index];
+                if (current && current.path === path) continue;
+                refreshed += 1;
+                await yieldToPlayer({ stop: false });
                 try {
                     await downloadTrack({ ...meta, ...row }, true);
                 } catch (e) { /* в другой раз */ }
-            } else if (!meta.stamp && row.stamp) {
+            } else if (!meta.stamp && row.stamp && offline.paths.has(path)) {
                 await metas.put(offlineMetaKey(path), new Response(JSON.stringify({ ...meta, stamp: row.stamp }), {
                     headers: { "Content-Type": "application/json" },
                 }));
@@ -276,7 +322,12 @@ async function reconcileDownloads(force = false) {
         finished = true;
         try {
             localStorage.setItem(RECONCILED_KEY, String(Date.now()));
-            if (full) localStorage.setItem(LIBRARY_COUNT_KEY, String(rows.length));
+            if (baseline !== null) localStorage.setItem(LIBRARY_COUNT_KEY, String(baseline));
+            const keptSince = readNumber(LOWER_SINCE_KEY);
+            if (baseline !== null && keptSince) localStorage.removeItem(LOWER_SINCE_KEY);
+            else if (baseline === null && lowerSince !== keptSince) {
+                localStorage.setItem(LOWER_SINCE_KEY, String(lowerSince));
+            }
         } catch (e) { /* без памяти — сверим ещё раз */ }
     } finally {
         reconciling = false;
