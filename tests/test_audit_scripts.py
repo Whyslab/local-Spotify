@@ -41,3 +41,54 @@ def test_audit_library_groups_two_copies_of_one_song(tmp_path):
     other = _tagged(tmp_path / "C" / "x.m4a", "Artist", "Other")
     groups = audit.find_duplicates([one, two, other])
     assert [sorted(p.name for p in group) for group in groups] == [["one.m4a", "two.m4a"]]
+
+
+def _ffmpeg(*args):
+    import subprocess
+
+    subprocess.run(["ffmpeg", "-v", "error", "-y", *args], check=True)
+
+
+def test_quality_audit_flags_16khz_cutoff_and_clipping(tmp_path):
+    """Три трека: целый шум (Opus в .m4a, как фонотека), шум со стеной на
+    16 кГц (как AAC с YouTube) и перегруженный синус (срезанные пики)."""
+    import pytest
+
+    pytest.importorskip("scipy")
+    quality_audit = _load("quality_audit")
+    lib = tmp_path / "lib"
+    (lib / "A" / "Singles").mkdir(parents=True)
+    noise = "anoisesrc=d=40:c=pink:r=48000:a=0.3:seed=1"
+    _ffmpeg("-f", "lavfi", "-i", noise, "-ac", "2", "-c:a", "libopus", "-b:a", "160k",
+            "-f", "mp4", str(lib / "A" / "Singles" / "full.m4a"))  # fmt: skip
+    _ffmpeg("-f", "lavfi", "-i", noise, "-af", "firequalizer=gain='if(gt(f,16000),-120,0)'",
+            "-ac", "2", "-c:a", "aac", "-b:a", "128k", str(lib / "A" / "Singles" / "cut.m4a"))  # fmt: skip
+    _ffmpeg("-f", "lavfi", "-i", "sine=f=220:d=40:r=48000", "-af", "volume=12",
+            "-ac", "2", "-c:a", "flac", "-sample_fmt", "s16",
+            str(lib / "A" / "Singles" / "loud.flac"))  # fmt: skip
+
+    # Громкий мастер после сжатия: выше предела, но без плоских верхушек — не клиппинг.
+    _ffmpeg("-f", "lavfi", "-i", noise, "-af", "volume=8", "-ac", "2", "-c:a", "libopus", "-sample_fmt", "flt",
+            "-b:a", "160k", "-f", "mp4", str(lib / "A" / "Singles" / "hot.m4a"))  # fmt: skip
+
+    report = {row["path"]: row for row in quality_audit.audit(lib)}
+    hot = report["A/Singles/hot.m4a"]
+    assert hot["peak"] > 1.0 and hot["over_full_scale"] > 0 and hot["flags"] == [], hot
+
+    full = report["A/Singles/full.m4a"]
+    assert full["codec"] == "opus" and full["sample_rate"] == 48000
+    assert full["flags"] == []
+    cut = report["A/Singles/cut.m4a"]
+    assert cut["codec"] == "aac"
+    assert "cut16" in cut["flags"] and cut["above16_db"] < quality_audit.CUT_DB
+    assert cut["advice"] == "upgrade_audio.py"
+    loud = report["A/Singles/loud.flac"]
+    assert "clipped" in loud["flags"] and loud["clipped_samples"] >= quality_audit.CLIP_SAMPLES
+    assert "clipped" not in full["flags"] and "clipped" not in cut["flags"]
+    # Только чтение: файлы те же.
+    assert sorted(p.name for p in lib.rglob("*.*")) == [
+        "cut.m4a",
+        "full.m4a",
+        "hot.m4a",
+        "loud.flac",
+    ]
