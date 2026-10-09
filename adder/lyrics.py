@@ -89,6 +89,24 @@ def _key(rel_path: str) -> Path:
     return CACHE_DIR / f"{digest}.json"
 
 
+def first_voice(rel_path: str) -> float | None:
+    """Где в треке начинается голос: первая непустая строка синхронного текста.
+
+    Только кэш, без сети: зовётся, пока играет музыка (переход «как диджей»),
+    и не должен ждать каталог. Пустые строки в начале — проигрыш, не голос.
+    """
+    try:
+        cached = json.loads(_key(rel_path).read_text(encoding="utf-8"))
+        times = [
+            float(item["at"])
+            for item in cached.get("synced") or []
+            if str(item.get("line", "")).strip()
+        ]
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        return None
+    return min(times) if times else None
+
+
 def primary_artist(artist: str) -> str:
     """Первый артист из строки.
 

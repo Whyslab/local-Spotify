@@ -29,6 +29,8 @@ OUTSIDE_DIR = PROJECT / "outside-cache"
 # Уменьшенные обложки треков для списков: полноразмерные весили до 7 МБ при
 # показе в 34 пикселя, и первые двести строк фонотеки тянули 81 МБ.
 THUMB_DIR = PROJECT / "thumb-cache"
+# Связки перехода «как диджей» (adder/transitions.py): кэш, его можно удалить.
+TRANSITIONS_DIR = PROJECT / "transitions"
 # Картинки из Deezer — обложки «Нового для вас» и фото артистов. Временный
 # кэш, чистится сам (adder/webcovers.py).
 WEB_COVERS_DIR = PROJECT / "web-covers"

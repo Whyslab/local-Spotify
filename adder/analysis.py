@@ -28,13 +28,18 @@ PYTHON = runtime.PROJECT.parent / ".venv" / "bin" / "python"
 
 
 def _command(args: list[str]) -> list[str]:
-    """Wrap the analyser in whatever bounding the system can offer.
+    """The analyser, bounded (see bounded)."""
+    return bounded([str(PYTHON), str(SCRIPT), *args])
+
+
+def bounded(base: list[str]) -> list[str]:
+    """Wrap a heavy script in whatever bounding the system can offer.
 
     systemd-run gives a real memory ceiling. Without it -- a container, another
     init -- nice alone is all there is, which is worth saying out loud rather
-    than pretending the limit is in force.
+    than pretending the limit is in force. The DJ transitions (transitions.py)
+    run their mixer the same way.
     """
-    base = [str(PYTHON), str(SCRIPT), *args]
     if shutil.which("systemd-run"):
         return [
             "systemd-run",

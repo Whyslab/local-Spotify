@@ -55,6 +55,7 @@ from . import (
     sources,
     sync,
     thumbs,
+    transitions,
     webcovers,
 )
 from . import queue as task_queue
@@ -873,6 +874,30 @@ def lyrics_choose(req: LyricsChoiceRequest, authenticated: bool = Depends(verify
     if not result.get("found"):
         raise HTTPException(status_code=404, detail="В этой записи нет текста")
     return result
+
+
+class TransitionRequest(BaseModel):
+    from_: str = Field(alias="from", max_length=1024)
+    to: str = Field(max_length=1024)
+
+
+@app.post("/api/transitions")
+def transition(req: TransitionRequest, authenticated: bool = Depends(verify_token)):
+    """Связка перехода «как диджей» от трека к следующему (см. transitions.py).
+
+    Не ждёт сведения: ответ «pending» — плеер спросит снова через несколько
+    секунд; «none» с причиной — перехода для этой пары не будет.
+    """
+    return transitions.request(req.from_, req.to)
+
+
+@app.get("/api/transitions/{name}")
+def transition_audio(name: str, authenticated: bool = Depends(verify_token)):
+    """Звук связки. Плеер берёт его fetch'ем (с токеном) и расшифровывает сам."""
+    key, dot, suffix = name.partition(".")
+    if dot != "." or suffix != "flac":
+        raise HTTPException(status_code=404, detail="No such transition")
+    return FileResponse(transitions.audio_file(key), media_type="audio/flac")
 
 
 class LyricsTextRequest(BaseModel):

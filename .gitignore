@@ -100,3 +100,5 @@ adder/cache/
 
 # Nightly consistent copies of adder.db (deploy/music-db-snapshot)
 adder/snapshots/
+# Связки перехода «как диджей» — кэш, собирается по просьбе плеера.
+adder/transitions/
