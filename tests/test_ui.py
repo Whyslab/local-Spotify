@@ -2412,6 +2412,52 @@ def test_storage_state_shown(page):
     assert "Домой" not in kept.inner_text()
 
 
+def test_storage_state_from_the_home_screen_is_told_straight(page):
+    """iOS may refuse "persistent" even to the player opened from the Home
+    Screen (WebKit bug 271401). The card then must not send the user to the
+    Home Screen they already use (seen on the phone, 10.10), and it does not
+    repeat the advice or show a file path from the repo."""
+    _controlled(page)
+    _storage(page, kept=False)
+    page.evaluate(
+        "Object.defineProperty(navigator, 'standalone', {configurable: true, value: true})"
+    )
+    try:
+        page.evaluate("switchView('viewService')")
+        page.evaluate("renderOfflineCard()")
+        page.wait_for_function(
+            "document.getElementById('offlineKept').textContent.includes('открыт с экрана')"
+        )
+        kept = page.locator("#offlineKept").inner_text()
+        assert "кончится место" in kept and "открой плеер" not in kept
+        card = page.locator("#offlineCard").inner_text()
+        assert "docs/" not in card
+        assert card.count("Домой") == 1  # said once, not in two paragraphs
+
+        # The whole library is still not fetched into wipeable storage, and the
+        # note says why without the Home Screen advice.
+        page.evaluate("downloadLibrary()")
+        note = page.locator("#offlineLibraryNote").inner_text()
+        assert "подборк" in note and "Домой" not in note
+        assert page.evaluate("offline.paths.size") == 0
+
+        # Installed elsewhere (Chrome on a laptop, Android): standalone too, but
+        # no Home Screen and no iOS -- the general wording.
+        page.evaluate(
+            "delete navigator.standalone; const real = window.matchMedia;"
+            " window.matchMedia = q => q === '(display-mode: standalone)'"
+            "   ? {matches: true, addEventListener() {}} : real.call(window, q);"
+            " renderOfflineCard()"
+        )
+        page.wait_for_function(
+            "document.getElementById('offlineKept').textContent.includes('может стереть')"
+            " && !document.getElementById('offlineKept').textContent.includes('открыт с экрана')"
+        )
+        assert "iOS" not in page.locator("#offlineKept").inner_text()
+    finally:
+        page.evaluate("delete navigator.standalone; setLibraryNote('')")
+
+
 def test_library_download_says_how_long(page):
     left = page.evaluate("libraryTimeLeft({bytes: 10e6, need: 40e6, started: Date.now() - 60000})")
     assert "3 мин" in left and "открыт" in left
