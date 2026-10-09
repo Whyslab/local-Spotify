@@ -1435,6 +1435,36 @@ def test_a_save_over_an_edit_that_already_arrived_goes_through(page, server):
         _api(server, "DELETE", "/api/playlists/" + name)
 
 
+def test_a_save_that_waits_for_the_flush_stays_with_its_playlist(page, server):
+    """A save waits while waiting edits are sent; the person meanwhile opens
+    another playlist. The save must still go to its own one."""
+    a, b = "Wait A", "Wait B"
+    for n in (a, b):
+        with contextlib.suppress(Exception):
+            _api(server, "DELETE", "/api/playlists/" + n)
+    _api(server, "POST", "/api/playlists", {"name": a, "paths": [LOUD_PATH, QUIET_PATH]})
+    _api(server, "POST", "/api/playlists", {"name": b, "paths": [EVIL_PATH]})
+    try:
+        open_library(page)
+        page.evaluate(f"openPlaylist('{a}')")
+        page.evaluate(
+            f"flushingEdits = true; window.__saved = savePlaylist(['{QUIET_PATH}']); true"
+        )
+        page.evaluate(f"openPlaylist('{b}')")
+        page.evaluate("flushingEdits = false; true")
+        assert page.evaluate("window.__saved") is True
+        assert [
+            e["path"] for e in _api(server, "GET", f"/api/playlists/{b}/tracks")["entries"]
+        ] == [EVIL_PATH]
+        assert [
+            e["path"] for e in _api(server, "GET", f"/api/playlists/{a}/tracks")["entries"]
+        ] == [QUIET_PATH]
+    finally:
+        for n in (a, b):
+            with contextlib.suppress(Exception):
+                _api(server, "DELETE", "/api/playlists/" + n)
+
+
 def test_a_failed_keep_mine_says_why(page, server):
     name = "Offline clash 3"
     _offline_edit(page, server, name)
