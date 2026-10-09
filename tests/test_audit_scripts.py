@@ -92,3 +92,47 @@ def test_quality_audit_flags_16khz_cutoff_and_clipping(tmp_path):
         "hot.m4a",
         "loud.flac",
     ]
+
+
+def test_recon_threshold():
+    # Plan 7.6: go only when more than 20 % of the 50 sampled tracks have a better legal copy.
+    recon = _load("source_recon")
+
+    def rows(better):
+        return [{"better": i < better} for i in range(50)]
+
+    assert recon.verdict(rows(10)) == ("no-go", 10, 50)
+    assert recon.verdict(rows(11)) == ("go", 11, 50)
+    # A hit that is not better (same quality or a different performance) does not count.
+    assert recon.verdict([{"better": False, "found": "x"}] * 50)[0] == "no-go"
+
+
+def test_recon_counts_only_licensed_archive_items_by_the_same_artist():
+    recon = _load("source_recon")
+    docs = [
+        {"identifier": "rip", "creator": "Michael Jackson", "title": "Thriller - Beat It"},
+        {"identifier": "cc", "creator": "Nef The Pharaoh", "title": "Beat It",
+         "licenseurl": "https://creativecommons.org/licenses/by/4.0/"},
+        {"identifier": "ok", "creator": ["Michael Jackson"], "title": "Beat It (live)",
+         "licenseurl": "https://creativecommons.org/licenses/by-nc/4.0/"},
+    ]  # fmt: skip
+    assert recon.archive_matches(docs, "Michael Jackson", "Beat It") == ["ok"]
+
+
+def test_recon_bandcamp_needs_the_same_artist_and_a_free_download():
+    recon = _load("source_recon")
+    results = [
+        {"type": "t", "name": "Beat It", "band_name": "Michael Jackson",
+         "item_url_path": "https://mj.bandcamp.com/track/beat-it"},
+        {"type": "t", "name": "Beat It (cover)", "band_name": "Somebody",
+         "item_url_path": "https://sb.bandcamp.com/track/beat-it"},
+        {"type": "a", "name": "Beat It", "band_name": "Michael Jackson",
+         "item_url_root": "https://mj.bandcamp.com"},
+    ]  # fmt: skip
+    assert recon.bandcamp_matches(results, "Michael Jackson", "Beat It") == [
+        "https://mj.bandcamp.com/track/beat-it"
+    ]
+    paid = '<div data-tralbum="{&quot;freeDownloadPage&quot;:null,&quot;minimum_price&quot;:1.0}">'
+    nyp = '<div data-tralbum="{&quot;freeDownloadPage&quot;:null,&quot;minimum_price&quot;:0.0}">'
+    free = '<div data-tralbum="{&quot;freeDownloadPage&quot;:&quot;https://x/download&quot;}">'
+    assert [recon.bandcamp_free(p) for p in (paid, nyp, free)] == [False, True, True]
