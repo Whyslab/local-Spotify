@@ -1721,6 +1721,22 @@ def test_offline_marks_batched(page):
     page.evaluate("removeAllDownloads()")
 
 
+def test_storage_state_shown(page):
+    """Plan 4a.2: whether the browser may wipe the downloads is always on the card,
+    with what to do about it when it may."""
+    _controlled(page)
+    _storage(page, kept=False)
+    page.evaluate("switchView('viewService')")
+    page.evaluate("renderOfflineCard()")
+    kept = page.locator("#offlineKept")
+    page.wait_for_function("document.getElementById('offlineKept').textContent.includes('Домой')")
+    assert kept.is_visible() and "может стереть" in kept.inner_text()
+    _storage(page, kept=True)
+    page.evaluate("renderOfflineCard()")
+    page.wait_for_function("document.getElementById('offlineKept').textContent.includes('надёжно')")
+    assert "Домой" not in kept.inner_text()
+
+
 def test_library_download_says_how_long(page):
     left = page.evaluate("libraryTimeLeft({bytes: 10e6, need: 40e6, started: Date.now() - 60000})")
     assert "3 мин" in left and "открыт" in left

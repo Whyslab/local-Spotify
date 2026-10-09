@@ -555,13 +555,19 @@ async function renderOfflineCard() {
         const estimate = navigator.storage && navigator.storage.estimate ? await navigator.storage.estimate() : null;
         if (estimate && estimate.usage) used = ` · занято ${(estimate.usage / 1e9).toFixed(2)} ГБ`;
     } catch (e) { /* без цифр */ }
-    let kept = "";
+    facts.textContent = `Скачано треков: ${offline.paths.size}${used}`;
+    // Надёжно ли хранится — всегда на виду: на айфоне от этого зависит, доживёт ли скачанное до завтра.
+    let kept = null;
     try {
-        if (navigator.storage && navigator.storage.persisted) {
-            kept = (await navigator.storage.persisted()) ? " · хранится надёжно" : " · браузер может стереть при нехватке места";
-        }
-    } catch (e) { /* без этого */ }
-    facts.textContent = `Скачано треков: ${offline.paths.size}${used}${kept}`;
+        if (navigator.storage && navigator.storage.persisted) kept = await navigator.storage.persisted();
+    } catch (e) { /* не узнать */ }
+    document.getElementById("offlineKept").textContent = kept === true
+        ? "Хранится надёжно: браузер не сотрёт скачанное сам."
+        : kept === false
+            ? "Браузер может стереть скачанное, когда ему не хватит места или плеер долго не открывали. "
+                + "На айфоне открой плеер с экрана «Домой» («Поделиться» → «На экран «Домой»») — "
+                + "там хранилище надёжное. Что ещё проверить — docs/iphone-checklist.md."
+            : "Браузер не говорит, надёжно ли хранится скачанное.";
     document.getElementById("offlineRemoveAll").disabled = offline.paths.size === 0;
     const job = offline.running;
     const button = document.getElementById("offlineLibrary");
