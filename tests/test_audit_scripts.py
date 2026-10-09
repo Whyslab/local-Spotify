@@ -94,6 +94,90 @@ def test_quality_audit_flags_16khz_cutoff_and_clipping(tmp_path):
     ]
 
 
+def test_quality_audit_clipping_numbers_and_odd_files(tmp_path):
+    """Рецензия 09.10: чистый басовый синус у предела в 16 битах — не обрезка;
+    обрезанный и потом приглушённый мастер — обрезка; обрезка в одном канале
+    считается; спектр белого шума даёт расчётные числа; короткий и битый файл
+    не роняют проход, у битого — причина от ffmpeg."""
+    import json
+
+    import pytest
+
+    pytest.importorskip("scipy")
+    qa = _load("quality_audit")
+    lib = tmp_path / "lib"
+    (lib / "A").mkdir(parents=True)
+    a = lib / "A"
+    s16 = ["-c:a", "flac", "-sample_fmt", "s16"]
+    _ffmpeg("-f", "lavfi", "-i", "anoisesrc=d=30:c=white:r=48000:a=0.3:seed=2",
+            "-ac", "1", *s16, str(a / "white.flac"))  # fmt: skip
+    _ffmpeg("-f", "lavfi", "-i", "sine=f=40:d=60:r=48000", "-af", "volume=7.96",
+            "-ac", "1", *s16, str(a / "subbass.flac"))  # fmt: skip
+    _ffmpeg("-f", "lavfi", "-i", "sine=f=220:d=20:r=48000",
+            "-af", "volume=12,aformat=sample_fmts=s16,volume=0.891",
+            "-ac", "1", *s16, str(a / "lowered.flac"))  # fmt: skip
+    _ffmpeg("-f", "lavfi", "-i", "sine=f=220:d=20:r=48000,volume=12",
+            "-f", "lavfi", "-i", "sine=f=330:d=20:r=48000,volume=4",
+            "-filter_complex", "[0][1]join=inputs=2:channel_layout=stereo",
+            *s16, str(a / "left.flac"))  # fmt: skip
+    _ffmpeg("-f", "lavfi", "-i", "sine=f=440:d=3:r=48000", *s16, str(a / "short.flac"))
+    (a / "broken.mp3").write_bytes(b"not audio at all" * 100)
+    out = tmp_path / "report.jsonl"
+
+    assert qa.main([str(lib), "--json", str(out)]) == 0
+    report = {row["path"]: row for row in map(json.loads, out.read_text().splitlines())}
+    assert len(report) == 6
+
+    white = report["A/white.flac"]
+    # Полосы 16.5-19 и 19.5-21 кГц против 1-16 кГц у ровного спектра: 2.5/15 и 1.5/15.
+    assert white["above16_db"] == pytest.approx(-7.8, abs=1.0)
+    assert white["above19_db"] == pytest.approx(-10.0, abs=1.0)
+    assert white["flags"] == []
+    assert report["A/subbass.flac"]["clipped_samples"] == 0
+    assert report["A/subbass.flac"]["flags"] == []
+    assert "clipped" in report["A/lowered.flac"]["flags"]
+    left = report["A/left.flac"]
+    assert "clipped" in left["flags"] and left["channels"] == 2
+    assert (
+        report["A/short.flac"]["flags"] == [] and report["A/short.flac"]["above16_db"] is not None
+    )
+    broken = report["A/broken.mp3"]
+    assert broken["flags"] == ["unreadable"]
+    assert "returned non-zero" not in broken["error"] and broken["error"].strip()
+
+
+def test_quality_audit_refuses_a_missing_library_and_keeps_rows_on_a_crash(tmp_path, monkeypatch):
+    import json
+
+    import pytest
+
+    pytest.importorskip("scipy")
+    qa = _load("quality_audit")
+    assert qa.main([str(tmp_path / "nowhere"), "--json", str(tmp_path / "r.jsonl")]) == 2
+    (tmp_path / "empty").mkdir()
+    assert qa.main([str(tmp_path / "empty")]) == 2
+    with pytest.raises(SystemExit):
+        qa.main([str(tmp_path / "empty"), "--limit", "0"])
+
+    lib = tmp_path / "lib"
+    for name in ("a", "b"):
+        _tagged(lib / "X" / f"{name}.m4a", "X", name)
+    real = qa.check
+    calls = []
+
+    def check(path, root):
+        calls.append(path)
+        if len(calls) == 2:
+            raise KeyboardInterrupt  # остановили посреди прохода
+        return real(path, root)
+
+    monkeypatch.setattr(qa, "check", check)
+    out = tmp_path / "r.jsonl"
+    with pytest.raises(KeyboardInterrupt):
+        qa.main([str(lib), "--json", str(out)])
+    assert [json.loads(line)["path"] for line in out.read_text().splitlines()] == ["X/a.m4a"]
+
+
 def test_recon_threshold():
     # Plan 7.6: go only when more than 20 % of the 50 sampled tracks have a better legal copy.
     recon = _load("source_recon")
