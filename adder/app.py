@@ -688,6 +688,8 @@ def list_library(
                     "duration",
                     "added",
                     "source",
+                    "size",
+                    "stamp",
                 )
             }
         )

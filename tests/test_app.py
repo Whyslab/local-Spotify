@@ -1051,3 +1051,38 @@ def test_every_html_page_has_the_csp_and_every_answer_nosniff(client):
         assert "default-src 'self'" in response.headers.get("content-security-policy", ""), path
     for path in ("/static/app.js", "/health", "/api/library"):
         assert client.get(path).headers.get("x-content-type-options") == "nosniff", path
+
+
+def test_library_rows_have_size_and_stamp(client):
+    """The phone reconciles its downloads with one /api/library answer (plan 4a.1):
+    the size tells it how much room the rest needs, the stamp that a file changed,
+    even when a retag kept the size and the mtime (the "added" date) the same."""
+    import os
+    import shutil
+
+    from mutagen.mp4 import MP4
+
+    from adder import library
+
+    path = config.LIBRARY / "Tone/Singles/Tone.m4a"
+    path.parent.mkdir(parents=True)
+    shutil.copy(Path(__file__).parent / "fixtures" / "tone.m4a", path)
+    library.invalidate_library_index()
+
+    def the_row():
+        library.invalidate_library_index()
+        r = client.get("/api/library?limit=100000&fresh=1", headers=auth_headers())
+        assert r.status_code == 200
+        return next(row for row in r.json() if row["path"] == "Tone/Singles/Tone.m4a")
+
+    before = the_row()
+    assert before["size"] == path.stat().st_size
+    assert isinstance(before["stamp"], str) and before["stamp"]
+
+    stat = path.stat()
+    tags = MP4(path)
+    tags["\xa9nam"] = ["Tone"] if tags.get("\xa9nam") != ["Tone"] else ["Tonf"]
+    tags.save()
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    after = the_row()
+    assert after["stamp"] != before["stamp"]

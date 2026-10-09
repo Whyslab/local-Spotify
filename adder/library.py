@@ -223,6 +223,10 @@ def library_index() -> list[dict]:
                     "source": meta.get("source") or "",
                     "gain": meta.get("gain"),
                     "has_cover": meta.get("has_cover", False),
+                    # Для телефона: сколько места займёт и изменился ли файл с
+                    # тех пор, как его скачали (тот же отпечаток, что у кэша).
+                    "size": stat.st_size,
+                    "stamp": "-".join(f"{n:x}" for n in stamp),
                     "haystack": f"{artist} {title} {album}".lower(),
                 }
             )
