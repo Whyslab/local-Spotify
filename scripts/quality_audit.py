@@ -15,7 +15,8 @@ What the numbers mean:
   YouTube's AAC stream, or an upload made from one -- leaves 60 dB and more
   less: ``cut16``.
 * ``clipped``: CLIP_SAMPLES or more samples in flat tops -- FLAT_RUN or more
-  equal samples in a row at the channel's own peak (within PEAK_TOLERANCE), so
+  equal samples in a row at the channel's own peak (within PEAK_TOLERANCE;
+  counted where such a run starts, so a run of n samples counts n - 7), so
   a master clipped and then turned down a little counts too. That is what
   hard clipping leaves in PCM (and in lossless files). A clean low sine at the
   peak of a 16-bit file stays within one step for only a few samples (about 3
