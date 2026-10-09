@@ -474,7 +474,10 @@ class PlayerEvent(BaseModel):
     healthy, and nothing anywhere said why: the page never told the server.
     """
 
-    event: Literal["pause", "error", "stall", "stall-reload", "stall-giveup", "device"]
+    # mix / mix-fail — переход «как диджей» (web/mix.js): вышел и как встал стык; не вышел — почему.
+    event: Literal[
+        "pause", "error", "stall", "stall-reload", "stall-giveup", "device", "mix", "mix-fail"
+    ]
     path: str = Field(default="", max_length=4096)
     at: float | None = Field(default=None, ge=0, le=86400, allow_inf_nan=False)
     detail: str = Field(default="", max_length=200)
@@ -2139,7 +2142,7 @@ def player_event(req: PlayerEvent, authenticated: bool = Depends(verify_token)):
         _EVENTS_WINDOW.append(now)
     at = f" at {req.at:.1f}s" if req.at is not None else ""
     detail = f" ({req.detail})" if req.detail else ""
-    level = logging.INFO if req.event == "pause" else logging.WARNING
+    level = logging.INFO if req.event in ("pause", "mix") else logging.WARNING
     logger.log(
         level,
         "Player: %s%s %s%s",
@@ -2405,6 +2408,7 @@ def index():
         "style.css",
         "app.js",
         "player.js",
+        "mix.js",
         "offline.js",
         "look.js",
         "views.js",

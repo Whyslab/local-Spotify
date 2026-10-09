@@ -2063,6 +2063,9 @@ html.sheet-lock, html.sheet-lock body { overflow: hidden; }
     font-weight: 400;
 }
 .sleep-menu button:hover { background: rgba(255, 255, 255, 0.08); }
+/* Выбранный переход: раньше выбор нигде не был виден — нажал и гадай. */
+.sleep-menu button[aria-checked="true"] { color: var(--accent, var(--text)); font-weight: 600; }
+.sleep-menu button[aria-checked="true"]::after { content: " ✓"; }
 .sleep-title { font-size: 13px; color: var(--text-3); padding: 6px 10px 2px; }
 
 /* Строки за пределами экрана браузер не раскладывает и не рисует: в подборке

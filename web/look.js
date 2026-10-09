@@ -453,7 +453,7 @@ syncRailToggle();
 /* Пауза видна и по обложке большого плеера: она отступает. */
 (function followPause() {
     const bar = document.getElementById("player");
-    const sync = () => bar.classList.toggle("is-paused", player.audio.paused);
+    const sync = () => bar.classList.toggle("is-paused", audioPaused());
     onAudio("play", sync);
     onAudio("pause", sync);
     sync();

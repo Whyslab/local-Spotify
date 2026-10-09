@@ -454,9 +454,11 @@
           <button role="menuitem" onclick="setSleep('track')">До конца трека</button>
           <div id="playerFadeBox" hidden>
             <div class="sleep-title">Плавный переход</div>
-            <button role="menuitem" onclick="setFade(0)">Нет</button>
-            <button role="menuitem" onclick="setFade(3)">3 секунды</button>
-            <button role="menuitem" onclick="setFade(6)">6 секунд</button>
+            <button role="menuitemradio" data-fade="0" onclick="setFade(0)">Нет</button>
+            <button role="menuitemradio" data-fade="3" onclick="setFade(3)">3 секунды</button>
+            <button role="menuitemradio" data-fade="6" onclick="setFade(6)">6 секунд</button>
+            <button role="menuitemradio" data-fade="dj" onclick="setFade('dj')"
+                    title="Треки сводятся удар в удар, начало следующего слышно. Где не выйдет — затухание 3 секунды">Как диджей</button>
           </div>
         </div>
       </div>
@@ -572,6 +574,7 @@
 
 <script src="/static/app.js"></script>
 <script src="/static/player.js"></script>
+<script src="/static/mix.js"></script>
 <script src="/static/offline.js"></script>
 <script src="/static/look.js"></script>
 <script src="/static/views.js"></script>

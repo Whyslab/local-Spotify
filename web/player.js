@@ -38,6 +38,8 @@ const player = {
     userVolume: 1,       // ползунок; звучит userVolume × поправка трека — см. applyVolume
     fadeLevel: 1,        // 0…1: затухание на стыке треков и перед сном — см. fadeTick
     fadeSeconds: 0,      // длина затухания на стыке, 0 — без него
+    djMode: false,       // переход «как диджей» (mix.js); где не выйдет — затухание fadeSeconds
+    mixAdopted: false,   // трек начался с середины (переход «как диджей») — без выхода из тишины
     sleep: null,         // {until: мс} | {track: true} | null — таймер сна
     trackGain: null,     // ReplayGain текущего трека в дБ, null — не измерен
     volumeAdjustable: false,
@@ -222,8 +224,12 @@ function takePrefetched(track) {
  * «назад» упиралось бы в него и возвращало на тот же трек.
  *
  * Возвращает true, если трек заиграл и это включение всё ещё последнее. */
-async function playAt(position, skipped = 0, direction = 1) {
+/* options.startAt — с какого места (с), options.paused — не запускать: так
+ * переход «как диджей», прерванный кнопкой, оставляет следующий трек там, куда
+ * дошёл (mix.js). */
+async function playAt(position, skipped = 0, direction = 1, options = {}) {
     if (position < 0 || position >= player.queue.length) return false;
+    if (typeof mixCancel === "function") mixCancel(null, false);
     reportPlay(false);
 
     /* Номер включения. Пока ждём ссылку или play(), человек мог нажать
@@ -233,6 +239,7 @@ async function playAt(position, skipped = 0, direction = 1) {
     player.index = position;
     player.reported = false;
     player.started = false;
+    player.mixAdopted = false;
     /* Метка для журнала — какой была очередь, когда трек включили: иначе
      * переключение режима посреди трека приписывало его не той очереди. */
     player.playingMode = player.queueMode;
@@ -285,10 +292,15 @@ async function playAt(position, skipped = 0, direction = 1) {
          * это до src: смену трека браузер отмечает timeupdate сам, но только
          * если позиция была не нулевой, — первое включение прозвучало бы на
          * прежней громкости до первого timeupdate. */
-        player.fadeLevel = player.fadeSeconds > 0 ? 0 : Math.min(1, sleepLevel());
+        const midway = options.startAt > 0;
+        player.fadeLevel = player.fadeSeconds > 0 && !midway ? 0 : Math.min(1, sleepLevel());
+        player.mixAdopted = midway;  // начало уже прозвучало — выход из тишины не нужен
+        /* «Как диджей»: элемент — в граф Web Audio до того, как зазвучит. */
+        if (typeof mixAttach === "function" && mixEnabled()) mixAttach(player.audio);
         applyVolume();
         player.audio.src = url;
-        await player.audio.play();
+        if (midway) player.audio.currentTime = options.startAt;
+        if (!options.paused) await player.audio.play();
     } catch (e) {
         if (generation !== player.generation) return false;
         /* AbortError — это не сбой трека: play() прервала пауза, нажатая, пока
@@ -303,13 +315,19 @@ async function playAt(position, skipped = 0, direction = 1) {
         return false;
     }
     if (generation !== player.generation) return false;
+    trackStarted();
+    return true;
+}
+
+/* Всё, что следует за сменой трека, — и после playAt, и после перехода «как
+ * диджей», где следующий трек уже играет (mix.js). */
+function trackStarted() {
     renderPlayer();
     markPlayingRow();
     renderQueuePanel();
     prefetchOutside();
     extendSmartQueue();
     prefetchNextStream();
-    return true;
 }
 
 /* ---------------- Треки со стороны ----------------
@@ -999,6 +1017,12 @@ function shuffleTracks(tracks, noteId) {
 
 function togglePlay() {
     if (!player.queue.length) return;
+    /* Звучит связка «как диджей», а уходящий трек уже доиграл: «пауза» —
+     * остановиться на следующем, там, куда дошёл переход. */
+    if (player.audio.paused && typeof mixSounding === "function" && mixSounding()) {
+        mixPauseOnNext();
+        return;
+    }
     if (player.audio.paused && !player.audio.getAttribute("src") && player.index >= 0) {
         playAt(player.index);  // источник сброшен неудачной загрузкой — ещё попытка
         return;
@@ -1030,6 +1054,8 @@ function prevTrack() {
 }
 
 onAudio("ended", () => {
+    /* Переход «как диджей» сам подведёт следующий трек (mix.js). */
+    if (typeof mixOwnsEnd === "function" && mixOwnsEnd()) return;
     reportPlay(true);
     /* «До конца трека»: этот доиграл — дальше тишина. */
     if (player.sleep && player.sleep.track) {
@@ -1226,16 +1252,16 @@ function renderPlayer() {
     document.getElementById("playerTitle").textContent = track.title || track.path;
     document.getElementById("playerArtist").textContent = track.artist || "";
     document.getElementById("playerToggle").setAttribute(
-        "aria-label", player.audio.paused ? "Играть" : "Пауза");
+        "aria-label", audioPaused() ? "Играть" : "Пауза");
     document.getElementById("playerToggleIcon").setAttribute(
-        "d", player.audio.paused ? "M8 5v14l11-7z" : "M7 5h4v14H7zM13 5h4v14h-4z");
+        "d", audioPaused() ? "M8 5v14l11-7z" : "M7 5h4v14H7zM13 5h4v14h-4z");
     if (track !== renderedTrack) {
         renderedTrack = track;
         setPlayerNote("");
         announceTrack(track);
     }
     if ("mediaSession" in navigator) {
-        navigator.mediaSession.playbackState = player.audio.paused ? "paused" : "playing";
+        navigator.mediaSession.playbackState = audioPaused() ? "paused" : "playing";
     }
     renderProgress();
 }
@@ -1295,9 +1321,9 @@ function sharePosition() {
     const on = (action, handler) => {
         try { navigator.mediaSession.setActionHandler(action, handler); } catch (e) { /* не поддерживается */ }
     };
-    on("play", () => { if (player.audio.paused) togglePlay(); });
+    on("play", () => { if (audioPaused()) togglePlay(); });
     on("pause", () => {
-        if (player.audio.paused) return;
+        if (audioPaused()) return;
         player.pauseReason = "кнопка наушников или системы";
         togglePlay();
     });
@@ -2842,7 +2868,7 @@ function notifyShell() {
     if (!handler) return;
     const track = player.queue[player.index];
     handler.postMessage(JSON.stringify({
-        status: !track ? "stopped" : (player.audio.paused ? "paused" : "playing"),
+        status: !track ? "stopped" : (audioPaused() ? "paused" : "playing"),
         path: track ? track.path : "",
         title: track ? (track.title || track.path) : "",
         artist: track ? (track.artist || "") : "",
@@ -2878,15 +2904,23 @@ const VOLUME_KEY = "playerVolume";
  * поправку. Только вниз — громкость <audio> выше 1 не бывает, а поднимать
  * тихие треки через Web Audio значит потерять фоновое воспроизведение (см.
  * выше). Треки громче опорного — почти всё с YouTube — выравниваются. */
-function gainFactor() {
-    const gain = player.trackGain;
+function gainFactor(gain = player.trackGain) {
     if (typeof gain !== "number") return 1;
     return Math.min(1, Math.pow(10, gain / 20));
 }
 
 function applyVolume() {
     if (!player.volumeAdjustable) return;
-    player.audio.volume = player.userVolume * gainFactor() * player.fadeLevel;
+    const level = player.userVolume * gainFactor() * player.fadeLevel;
+    /* Элемент в графе Web Audio («как диджей», mix.js): громкость ведёт узел. */
+    if (typeof mixVolume === "function" && mixVolume(player.audio, level)) return;
+    player.audio.volume = level;
+}
+
+/* Пауза для кнопок и экрана. Пока звучит переход «как диджей», уходящий трек
+ * может уже доиграть без звука — но музыка играет. */
+function audioPaused() {
+    return player.audio.paused && !(typeof mixSounding === "function" && mixSounding());
 }
 
 function volumeIsAdjustable() {
@@ -2948,6 +2982,7 @@ function setVolumeFromSlider(value) {
 
 function toggleMute() {
     player.audio.muted = !player.audio.muted;
+    applyVolume();  // в графе Web Audio «без звука» — это узел (mix.js)
     /* Нажал «без звука» на нуле — это просьба вернуть звук, а не поставить
      * беззвучное воспроизведение: поднимаем ползунок до половины. */
     if (!player.audio.muted && player.userVolume === 0) setVolumeFromSlider(50);
@@ -3085,8 +3120,10 @@ function fadeTick() {
     if (player.fadeSeconds > 0) {
         const known = Number.isFinite(a.duration);
         if (!known || a.duration > player.fadeSeconds * 2) {
-            if (a.currentTime < player.fadeSeconds) level = a.currentTime / player.fadeSeconds;
-            if (known) {
+            if (a.currentTime < player.fadeSeconds && !player.mixAdopted) level = a.currentTime / player.fadeSeconds;
+            /* Конец трека уведёт переход «как диджей» — без затухания. */
+            const mixing = typeof mixHoldsEnd === "function" && mixHoldsEnd();
+            if (known && !mixing) {
                 const left = a.duration - a.currentTime;
                 if (left < player.fadeSeconds) level = Math.min(level, Math.max(0, left / player.fadeSeconds));
             }
@@ -3168,11 +3205,23 @@ function setSleep(minutes) {
     renderSleep();
 }
 
+/* seconds — 0, 3, 6 или "dj": переход «как диджей» (mix.js), а где он не
+ * выйдет (айфон не в счёт — там меню нет), — затухание 3 с. */
 function setFade(seconds) {
     closeSleepMenu();
-    player.fadeSeconds = seconds;
+    player.djMode = seconds === "dj";
+    player.fadeSeconds = player.djMode ? 3 : seconds;
     try { localStorage.setItem(FADE_KEY, String(seconds)); } catch (e) { /* приватное окно */ }
+    if (player.djMode && typeof mixEnable === "function") mixEnable();
+    renderFadeChoice();
     fadeTick();
+}
+
+function renderFadeChoice() {
+    const chosen = player.djMode ? "dj" : String(player.fadeSeconds);
+    for (const button of document.querySelectorAll("#playerFadeBox [data-fade]")) {
+        button.setAttribute("aria-checked", String(button.dataset.fade === chosen));
+    }
 }
 
 function closeSleepMenu() {
@@ -3195,7 +3244,10 @@ document.addEventListener("click", (event) => {
 
 (function initFade() {
     try {
-        const saved = parseInt(localStorage.getItem(FADE_KEY), 10);
+        const stored = localStorage.getItem(FADE_KEY);
+        const saved = parseInt(stored, 10);
         if (saved === 3 || saved === 6) player.fadeSeconds = saved;
+        if (stored === "dj") { player.djMode = true; player.fadeSeconds = 3; }
     } catch (e) { /* приватное окно — без перехода */ }
+    renderFadeChoice();
 })();
