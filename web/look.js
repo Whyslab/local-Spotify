@@ -454,8 +454,8 @@ syncRailToggle();
 (function followPause() {
     const bar = document.getElementById("player");
     const sync = () => bar.classList.toggle("is-paused", player.audio.paused);
-    player.audio.addEventListener("play", sync);
-    player.audio.addEventListener("pause", sync);
+    onAudio("play", sync);
+    onAudio("pause", sync);
     sync();
 })();
 

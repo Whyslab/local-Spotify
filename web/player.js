@@ -43,6 +43,41 @@ const player = {
     volumeAdjustable: false,
 };
 
+/* ---------------- Колода ----------------
+ *
+ * Трек играет один <audio> — player.audio. Переход «как диджей» (mix.js)
+ * держит рядом второй: следующий трек, который подводится под связку, а в
+ * конце перехода становится player.audio. Обработчики вешаются через onAudio
+ * на все элементы колоды, а срабатывают только у текущего: события элемента,
+ * который готовится или доигрывает приглушённым, плеера не касаются. */
+const deck = [player.audio];
+const deckListeners = [];
+
+function onAudio(name, handler) {
+    const guarded = (event) => { if (event.target === player.audio) handler(event); };
+    deckListeners.push([name, guarded]);
+    for (const el of deck) el.addEventListener(name, guarded);
+}
+
+/* Второй элемент колоды (создаётся при первой нужде). */
+function spareDeck() {
+    let spare = deck.find(el => el !== player.audio);
+    if (!spare) {
+        spare = new Audio();
+        for (const [name, guarded] of deckListeners) spare.addEventListener(name, guarded);
+        deck.push(spare);
+    }
+    return spare;
+}
+
+/* Сделать el текущим. Состояние «без звука» — кнопка плеера, а не трека. */
+function swapDeck(el) {
+    const before = player.audio;
+    if (el === before) return;
+    el.muted = before.muted;
+    player.audio = el;
+}
+
 /* ---------------- Journal ---------------- */
 
 /* Navidrome keeps a play count and a last-played date, not a log, so the
@@ -994,7 +1029,7 @@ function prevTrack() {
     if (back >= 0) playAt(back, 0, -1);
 }
 
-player.audio.addEventListener("ended", () => {
+onAudio("ended", () => {
     reportPlay(true);
     /* «До конца трека»: этот доиграл — дальше тишина. */
     if (player.sleep && player.sleep.track) {
@@ -1014,13 +1049,13 @@ player.audio.addEventListener("ended", () => {
     if (next >= 0) playAt(next);
     else renderPlayer();
 });
-player.audio.addEventListener("timeupdate", renderProgress);
-player.audio.addEventListener("timeupdate", fadeTick);
-player.audio.addEventListener("timeupdate", prefetchNextStream);
-player.audio.addEventListener("timeupdate", () => highlightLyric(false));
-player.audio.addEventListener("seeked", () => highlightLyric(true));
-player.audio.addEventListener("play", renderPlayer);
-player.audio.addEventListener("pause", renderPlayer);
+onAudio("timeupdate", renderProgress);
+onAudio("timeupdate", fadeTick);
+onAudio("timeupdate", prefetchNextStream);
+onAudio("timeupdate", () => highlightLyric(false));
+onAudio("seeked", () => highlightLyric(true));
+onAudio("play", renderPlayer);
+onAudio("pause", renderPlayer);
 
 /* A signed link outlives its track and then some, but a long pause can still
  * outlast it. Fetch a fresh one and carry on from the same spot rather than
@@ -1036,7 +1071,7 @@ let errorSkips = 0;    // сколько подряд пропущено — ч�
 /* Попытка — одна на включение трека, и «playing» её не возвращает: файл,
  * битый в середине, после новой ссылки снова начинал играть с того же места,
  * снова падал — и так по кругу. */
-player.audio.addEventListener("playing", () => { errorSkips = 0; player.started = true; });
+onAudio("playing", () => { errorSkips = 0; player.started = true; });
 
 /* ---------------- Журнал плеера и сторож застревания ----------------
  *
@@ -1080,14 +1115,14 @@ function watchForStall() {
     }, STALL_MS);
 }
 
-for (const name of ["waiting", "stalled"]) player.audio.addEventListener(name, watchForStall);
+for (const name of ["waiting", "stalled"]) onAudio(name, watchForStall);
 /* Попытки обнуляет только настоящее воспроизведение. Не «emptied»: его
  * вызывает сама новая ссылка (reloadCurrentSource), и счётчик обнулялся бы
  * на каждой попытке — сторож дёргал бы сервер раз в 12 с без конца. */
-player.audio.addEventListener("playing", () => { clearTimeout(stallTimer); stallTries = 0; });
-player.audio.addEventListener("ended", () => clearTimeout(stallTimer));
-player.audio.addEventListener("emptied", () => clearTimeout(stallTimer));
-player.audio.addEventListener("pause", () => {
+onAudio("playing", () => { clearTimeout(stallTimer); stallTries = 0; });
+onAudio("ended", () => clearTimeout(stallTimer));
+onAudio("emptied", () => clearTimeout(stallTimer));
+onAudio("pause", () => {
     clearTimeout(stallTimer);
     const reason = player.pauseReason;
     player.pauseReason = "";
@@ -1100,7 +1135,7 @@ if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
     });
 }
 
-player.audio.addEventListener("error", async () => {
+onAudio("error", async () => {
     const track = player.queue[player.index];
     const error = player.audio.error;
     if (error) playerEvent("error", `код ${error.code}${error.message ? ": " + error.message : ""}`);
@@ -1272,9 +1307,9 @@ function sharePosition() {
         if (typeof d.seekTime === "number") player.audio.currentTime = d.seekTime;
         sharePosition();
     });
-    player.audio.addEventListener("loadedmetadata", sharePosition);
-    player.audio.addEventListener("seeked", sharePosition);
-    player.audio.addEventListener("play", sharePosition);
+    onAudio("loadedmetadata", sharePosition);
+    onAudio("seeked", sharePosition);
+    onAudio("play", sharePosition);
 })();
 
 /* The right-hand panel. Everything here also exists somewhere else -- the bar
@@ -2817,7 +2852,7 @@ function notifyShell() {
 }
 
 for (const event of ["play", "pause", "ended", "loadedmetadata"]) {
-    player.audio.addEventListener(event, notifyShell);
+    onAudio(event, notifyShell);
 }
 
 /* Кнопки должны показывать своё состояние сразу, а не после первого нажатия. */

@@ -340,6 +340,42 @@ def test_a_fade_is_driven_by_a_fast_timer_only_while_it_runs(page):
     assert page.evaluate("fadeTimer") is None
 
 
+def test_the_deck_follows_the_current_element_only(page):
+    """Колода (переход «как диджей», mix.js): события второго элемента плеера
+    не касаются, а после смены текущего обработчики слушают новый."""
+    open_library(page)
+    row_action(page, "Loud", "Играть")
+    page.wait_for_function("!player.audio.paused && player.audio.duration > 10")
+    index = page.evaluate("player.index")
+
+    # Запасной элемент «доиграл» — очередь не листается.
+    page.evaluate("spareDeck().dispatchEvent(new Event('ended'))")
+    page.wait_for_timeout(200)
+    assert page.evaluate("player.index") == index
+
+    # Текущим стал запасной: прогресс рисуется по нему, а «конец» старого молчит.
+    page.evaluate(
+        """() => {
+            const old = player.audio;
+            const spare = spareDeck();
+            spare.src = old.src;
+            spare.currentTime = 7;
+            swapDeck(spare);
+            old.pause();
+            window.__old = old;
+            return player.audio.play();
+        }"""
+    )
+    page.wait_for_function("!player.audio.paused && player.audio.currentTime > 7")
+    page.wait_for_function("document.getElementById('playerElapsed').textContent === '0:07'")
+    page.evaluate("window.__old.dispatchEvent(new Event('ended'))")
+    page.wait_for_timeout(200)
+    assert page.evaluate("player.index") == index
+    # И кнопка паузы работает с новым.
+    page.evaluate("togglePlay()")
+    assert page.evaluate("player.audio.paused && window.__old !== player.audio")
+
+
 def test_the_lock_screen_shows_the_track_and_its_state(page):
     open_library(page)
     row_action(page, "Loud", "Играть")
