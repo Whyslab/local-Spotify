@@ -128,6 +128,23 @@ async function saveExtras(path) {
     }
 }
 
+/* Скачанные треки строками очереди — для перемешивания без сети. `only` —
+ * множество путей, из которых брать (очередь, подборка); без него — всё. */
+async function downloadedTracks(only = null) {
+    if (!offline.supported) return [];
+    const metas = await caches.open(OFFLINE_META);
+    const tracks = [];
+    for (const path of offline.paths) {
+        if (only && !only.has(path)) continue;
+        const r = await metas.match(offlineMetaKey(path));
+        const meta = r ? await r.json().catch(() => null) : null;
+        if (meta) {
+            tracks.push({ path, title: meta.title, artist: meta.artist, album: meta.album, duration: meta.duration });
+        }
+    }
+    return tracks;
+}
+
 async function removeDownloaded(path) {
     if (!offline.supported) return;
     await (await caches.open(OFFLINE_META)).delete(offlineMetaKey(path));

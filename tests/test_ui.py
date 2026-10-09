@@ -1275,6 +1275,44 @@ def test_an_edit_online_over_a_clashing_offline_one_asks_too(page, server):
         _api(server, "DELETE", "/api/playlists/" + name)
 
 
+def test_smart_shuffle_without_network_uses_downloads(page):
+    """Plan 4a.4: no network, no server shuffle -- the downloads are shuffled
+    here instead, and the note says so."""
+    open_library(page)
+    _controlled(page)
+    page.evaluate(f"downloadTrack({LOUD})")
+    page.context.set_offline(True)
+    try:
+        page.evaluate("loadShuffle('smart')")
+        assert page.evaluate("player.queue.map(t => t.path)") == [LOUD_PATH]
+        assert "без сети" in page.locator("#shuffleNote").inner_text().lower()
+        assert page.evaluate("player.queueMode") == "plain"  # the skip statistics stay honest
+
+        # Smart shuffle of the queue that plays: what is downloaded of it.
+        page.evaluate(f"player.queue = [{LOUD}, {QUIET}]; player.index = 0; setShuffle('smart')")
+        page.wait_for_function(
+            "/без сети/i.test(document.getElementById('playerNote').textContent)"
+        )
+        assert page.evaluate("player.queue.map(t => t.path)") == [LOUD_PATH]
+        page.evaluate("setShuffle(false)")
+        assert page.evaluate("player.queue.length") == 2  # off brings the queue back
+
+        # A server that is down (the proxy answers 503) counts the same as no network.
+        page.context.set_offline(False)
+        page.route("**/api/shuffle?*", lambda route: route.fulfill(status=503, body="down"))
+        page.evaluate(
+            "document.getElementById('shuffleNote').textContent = ''; loadShuffle('plain')"
+        )
+        page.wait_for_function(
+            "/без сети/i.test(document.getElementById('shuffleNote').textContent)"
+        )
+        assert page.evaluate("player.queue.map(t => t.path)") == [LOUD_PATH]
+    finally:
+        page.unroute("**/api/shuffle?*")
+        page.context.set_offline(False)
+        page.evaluate("player.audio.pause(); setShuffle(false); removeAllDownloads()")
+
+
 def test_media_session_handlers_registered(page):
     """Plan 4a.3: the lock screen and headphones have every control, ±10 s too."""
     assert sorted(page.evaluate("Object.keys(mediaHandlers)")) == sorted(
