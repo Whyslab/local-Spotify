@@ -1447,9 +1447,14 @@ function seekBy(seconds) {
         if (typeof d.seekTime === "number") player.audio.currentTime = d.seekTime;
         sharePosition();
     });
-    // Наушники и часы: «±10 с»; система может прислать свой шаг.
-    on("seekbackward", (d) => seekBy(-((d && d.seekOffset) || SEEK_STEP_S)));
-    on("seekforward", (d) => seekBy((d && d.seekOffset) || SEEK_STEP_S));
+    /* «±10 с» — только где есть мышь (ноутбук). iOS и Android показывают на
+     * экране блокировки, в наушниках и в машине либо ±10 с, либо «назад/дальше»
+     * по трекам, а не оба: с этой парой трек с замкнутого телефона было не
+     * переключить. Пользователь выбрал треки (09.10); перемотка — ползунком. */
+    if (window.matchMedia && matchMedia("(pointer: fine)").matches) {
+        on("seekbackward", (d) => seekBy(-((d && d.seekOffset) || SEEK_STEP_S)));
+        on("seekforward", (d) => seekBy((d && d.seekOffset) || SEEK_STEP_S));
+    }
     onAudio("loadedmetadata", sharePosition);
     onAudio("seeked", sharePosition);
     onAudio("play", sharePosition);

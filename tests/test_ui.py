@@ -1613,8 +1613,35 @@ def test_smart_shuffle_without_network_uses_downloads(page):
         page.evaluate("player.audio.pause(); setShuffle(false); removeAllDownloads()")
 
 
+def test_a_phone_lock_screen_keeps_next_and_previous_track(server, browser):
+    """iOS (and Android) show either ±10 s or previous/next track, never both:
+    with the seek pair registered, the lock screen could not skip a song. On a
+    touch phone only the track buttons are given (the user's choice, 09.10)."""
+    context = browser.new_context(
+        viewport={"width": 390, "height": 844},
+        device_scale_factor=3,
+        is_mobile=True,
+        has_touch=True,
+        user_agent=(
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15"
+            " (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"
+        ),
+    )
+    try:
+        context.add_init_script(f"localStorage.setItem('token', '{TOKEN}');")
+        phone = context.new_page()
+        phone.goto(server["url"] + "/")
+        phone.wait_for_function("typeof mediaHandlers === 'object'")
+        handlers = phone.evaluate("Object.keys(mediaHandlers)")
+        assert "nexttrack" in handlers and "previoustrack" in handlers
+        assert "seekbackward" not in handlers and "seekforward" not in handlers
+    finally:
+        context.close()
+
+
 def test_media_session_handlers_registered(page):
-    """Plan 4a.3: the lock screen and headphones have every control, ±10 s too."""
+    """Plan 4a.3: on the laptop the lock screen and headphones have every
+    control, ±10 s too."""
     assert sorted(page.evaluate("Object.keys(mediaHandlers)")) == sorted(
         ["play", "pause", "nexttrack", "previoustrack", "seekto", "seekbackward", "seekforward"]
     )
