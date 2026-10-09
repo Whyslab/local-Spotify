@@ -150,7 +150,9 @@ def request(a: str, b: str) -> dict:
             _pending[key] = job
             _jobs.put(key)
             _trim_queue()
-            _ensure_worker()
+        # Каждый раз, не только с новой просьбой: поток мог уйти (30 с тишины)
+        # ровно после того, как она легла в очередь, — и её никто бы не взял.
+        _ensure_worker()
     return {"status": "pending", "key": key}
 
 

@@ -234,3 +234,13 @@ def test_render_version_matches_the_script():
     script = Path(transitions.__file__).resolve().parents[1] / "scripts" / "render_transition.py"
     source = script.read_text(encoding="utf-8")
     assert f"VERSION = {transitions.RENDER_VERSION}\n" in source
+
+
+def test_a_request_left_without_a_worker_is_picked_up(client, renders, monkeypatch):
+    """Поток ушёл (30 с тишины) ровно когда пришла просьба: она в очереди, а
+    работать некому. Следующая же просьба той же пары должна поднять поток."""
+    real = transitions._ensure_worker
+    monkeypatch.setattr(transitions, "_ensure_worker", lambda: None)
+    assert ask(client)["status"] == "pending"
+    monkeypatch.setattr(transitions, "_ensure_worker", real)
+    assert wait_ready(client, timeout=3)["status"] == "ready"
