@@ -1287,23 +1287,23 @@ function announceTrack(track) {
     const meta = { title: track.title || track.path, artist: track.artist || "", album: track.album || "" };
     navigator.mediaSession.metadata = new MediaMetadata(meta);
     if (isOutside(track)) return;
-    fetch("/api/cover?path=" + encodeURIComponent(track.path) + "&size=600", { headers: headers() })
+    // Три размера, как их хранит скачанное (offline.js): система берёт подходящий.
+    const one = (size) => fetch("/api/cover?path=" + encodeURIComponent(track.path) + "&size=" + size, { headers: headers() })
         .then(r => (r.ok ? r.blob() : null))
         .then(blob => new Promise(resolve => {
             if (!blob) { resolve(null); return; }
             const reader = new FileReader();
-            reader.onload = () => resolve({ url: reader.result, type: blob.type || "image/jpeg" });
+            reader.onload = () => resolve({ src: reader.result, sizes: `${size}x${size}`, type: blob.type || "image/jpeg" });
             reader.onerror = () => resolve(null);
             reader.readAsDataURL(blob);
         }))
-        .then(data => {
-            // Пока грузилась обложка, могли переключить трек.
-            if (!data || announced !== track) return;
-            navigator.mediaSession.metadata = new MediaMetadata({
-                ...meta, artwork: [{ src: data.url, sizes: "600x600", type: data.type }],
-            });
-        })
-        .catch(() => { /* без обложки */ });
+        .catch(() => null);
+    Promise.all(COVER_SIZES.map(one)).then(found => {
+        const artwork = found.filter(Boolean);
+        // Пока грузилась обложка, могли переключить трек.
+        if (!artwork.length || announced !== track) return;
+        navigator.mediaSession.metadata = new MediaMetadata({ ...meta, artwork });
+    });
 }
 
 function sharePosition() {
@@ -1319,9 +1319,20 @@ function sharePosition() {
     } catch (e) { /* позиция за пределами — пропускаем */ }
 }
 
+const SEEK_STEP_S = 10;
+const mediaHandlers = {};  // что отдано системе: по имени действия
+
+function seekBy(seconds) {
+    const a = player.audio;
+    if (!Number.isFinite(a.duration)) return;
+    a.currentTime = Math.min(Math.max(0, a.currentTime + seconds), Math.max(0, a.duration - 0.25));
+    sharePosition();
+}
+
 (function initMediaSession() {
     if (!("mediaSession" in navigator)) return;
     const on = (action, handler) => {
+        mediaHandlers[action] = handler;
         try { navigator.mediaSession.setActionHandler(action, handler); } catch (e) { /* не поддерживается */ }
     };
     on("play", () => { if (audioPaused()) togglePlay(); });
@@ -1336,6 +1347,9 @@ function sharePosition() {
         if (typeof d.seekTime === "number") player.audio.currentTime = d.seekTime;
         sharePosition();
     });
+    // Наушники и часы: «±10 с»; система может прислать свой шаг.
+    on("seekbackward", (d) => seekBy(-((d && d.seekOffset) || SEEK_STEP_S)));
+    on("seekforward", (d) => seekBy((d && d.seekOffset) || SEEK_STEP_S));
     onAudio("loadedmetadata", sharePosition);
     onAudio("seeked", sharePosition);
     onAudio("play", sharePosition);

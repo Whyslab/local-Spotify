@@ -1162,6 +1162,55 @@ def test_a_downloaded_track_plays_and_seeks_without_a_network(page):
     assert page.evaluate("isDownloaded('Loud Band/Singles/Loud.opus')") is False
 
 
+def test_next_track_offline_without_network(page):
+    """Plan 4a.3: in airplane mode the next downloaded track starts by itself."""
+    open_library(page)
+    _controlled(page)
+    page.evaluate(f"downloadTrack({LOUD})")
+    page.context.set_offline(True)
+    try:
+        page.evaluate(f"playQueue([{LOUD}, {LOUD}], 0)")
+        page.wait_for_function("!player.audio.paused && player.audio.currentTime > 0.3")
+        page.evaluate("player.audio.currentTime = 11.5")
+        page.wait_for_function(
+            "player.index === 1 && !player.audio.paused && player.audio.currentTime > 0.3",
+            timeout=15000,
+        )
+        assert page.evaluate("player.audio.error") is None
+    finally:
+        page.context.set_offline(False)
+        page.evaluate("player.audio.pause(); removeAllDownloads()")
+
+
+def test_media_session_handlers_registered(page):
+    """Plan 4a.3: the lock screen and headphones have every control, ±10 s too."""
+    assert sorted(page.evaluate("Object.keys(mediaHandlers)")) == sorted(
+        ["play", "pause", "nexttrack", "previoustrack", "seekto", "seekbackward", "seekforward"]
+    )
+    open_library(page)
+    # The test tracks have no cover: answer every size with the app's icon.
+    page.evaluate(
+        "(async () => { const real = window.fetch;"
+        " const png = await (await real('/static/icon-180.png')).blob();"
+        " window.fetch = (url, options) => String(url).startsWith('/api/cover?')"
+        "   ? Promise.resolve(new Response(png, {headers: {'Content-Type': 'image/png'}}))"
+        "   : real(url, options); })()"
+    )
+    row_action(page, "Loud", "Играть")
+    page.wait_for_function("!player.audio.paused && player.audio.duration > 0")
+    page.evaluate("player.audio.currentTime = 1; mediaHandlers.seekforward({})")
+    page.wait_for_function("player.audio.currentTime >= 10.9")
+    page.evaluate("mediaHandlers.seekbackward({seekOffset: 5})")
+    page.wait_for_function("player.audio.currentTime < 7")
+    # Three cover sizes for the lock screen, as the downloads keep them.
+    page.wait_for_function(
+        "navigator.mediaSession.metadata && navigator.mediaSession.metadata.artwork.length === 3"
+    )
+    sizes = page.evaluate("navigator.mediaSession.metadata.artwork.map(a => a.sizes)")
+    assert sizes == ["96x96", "300x300", "600x600"]
+    page.evaluate("player.audio.pause()")
+
+
 def test_a_play_heard_offline_is_sent_when_the_network_returns(page, server):
     from adder import db
 
