@@ -2458,6 +2458,31 @@ def test_storage_state_from_the_home_screen_is_told_straight(page):
         page.evaluate("delete navigator.standalone; setLibraryNote('')")
 
 
+def test_no_button_is_left_in_the_browser_grey(page):
+    """`button` sets white text but no background: a button without a class got
+    the browser's own light grey under it, and its label could not be read
+    («Вся фонотека на телефон», seen on the phone, 10.10)."""
+    _controlled(page)
+    page.evaluate("switchView('viewService')")
+    page.wait_for_function("!document.getElementById('offlineCard').hidden")
+    # The browser's own grey: what a button gets from `button` and nothing else.
+    seen, grey = page.evaluate(
+        "(() => { const probe = document.createElement('button');"
+        " document.body.append(probe); const plain = getComputedStyle(probe).backgroundColor;"
+        " probe.remove(); const views = ['viewHome', 'viewLibrary', 'viewPlaylists', 'viewSearch',"
+        " 'viewAdd', 'viewService']; const seen = [], bad = [];"
+        " for (const v of views) { switchView(v);"
+        "   for (const b of document.querySelectorAll('#' + v + ' button')) {"
+        "     if (!b.getClientRects().length) continue;"
+        "     seen.push(b.id);"
+        "     if (getComputedStyle(b).backgroundColor === plain) bad.push(v + ': ' + b.textContent.trim()); } }"
+        " return [seen, bad]; })()"
+    )
+    assert "offlineLibrary" in seen
+    assert grey == []
+    page.evaluate("switchView('viewHome')")
+
+
 def test_library_download_says_how_long(page):
     left = page.evaluate("libraryTimeLeft({bytes: 10e6, need: 40e6, started: Date.now() - 60000})")
     assert "3 мин" in left and "открыт" in left
