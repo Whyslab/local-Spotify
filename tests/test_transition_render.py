@@ -234,3 +234,17 @@ def test_a_failure_is_one_json_line_and_a_nonzero_exit(tmp_path):
     )
     assert run.returncode == 1
     assert "error" in json.loads(run.stdout)
+
+
+def test_a_track_without_beats_still_gets_a_bridge(tracks):
+    """Без ударов librosa отвечает темпом 0: сведение не делит на него, а
+    просто не подгоняет темп."""
+    import numpy as np
+
+    def no_beats(x, prior):
+        return 0.0, np.array([])
+
+    job = {"a": str(tracks["a120"]), "b": str(tracks["b123"]), "tempo_a": None, "tempo_b": None}
+    bridge, plan = rt.render(job, beats_hook=no_beats)
+    assert plan["stretch"] == 1.0
+    assert plan["length"] == pytest.approx(len(bridge) / SR, abs=1e-5)

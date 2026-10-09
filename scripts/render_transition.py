@@ -69,7 +69,8 @@ MAX_STRETCH = 0.08
 INTRO_SOLO_BEATS = 4  # столько ударов начало B звучит одно, до голоса
 BEATLESS_INTRO = 4.0  # с: вступление без барабана, которого хватает на способ «intro»
 VOICE_SOON = 3.0  # с: голос раньше — способ «cut»
-CEILING = 0.999  # прижимается только сумма двух треков: каждый сам по себе не выше 1
+CEILING = 0.999  # прижимается только сумма двух треков; чистые края — как есть, чтобы
+# совпадать с самим треком отсчёт в отсчёт (редкий пик выше 1 после декодера срежет FLAC)
 
 
 def gain_factor(gain_db: float | None) -> float:
@@ -291,6 +292,10 @@ def render(job: dict, beats_hook=None) -> tuple[np.ndarray, dict]:
     beats_a = beats_a + max(0.0, a_end - 30.0)
     tempo_b, beats_b = beat_finder(b_body[: int(30 * SR)], job.get("tempo_b"))
     first_beat_b = float(beats_b[0]) if len(beats_b) else 0.0
+    # Без ударов librosa даёт темп 0. Подгонять тогда нечего (ударов мало —
+    # растяжки не будет), а длины в «ударах» считаются от условных 120.
+    tempo_a = tempo_a if tempo_a > 0 else 120.0
+    tempo_b = tempo_b if tempo_b > 0 else 120.0
     decision = choose(tempo_a, tempo_b, len(beats_a) > 20, len(beats_b) > 4, first_beat_b, voice_b)
     beat = decision["beat"]
 
