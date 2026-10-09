@@ -1405,7 +1405,58 @@ def test_an_edit_that_already_arrived_is_no_clash(page, server):
         _flushed(page)
         page.wait_for_function(f"!({PENDING})['{name}']")
         assert page.get_by_role("button", name="Оставить мою").count() == 0
+        # The open playlist moved to the server's revision with it: the next
+        # edit is not taken for another device's change.
+        assert page.evaluate(f"savePlaylist(['{LOUD_PATH}', '{QUIET_PATH}'])") is True
+        paths = [e["path"] for e in _api(server, "GET", f"/api/playlists/{name}/tracks")["entries"]]
+        assert paths == [LOUD_PATH, QUIET_PATH]
     finally:
+        _api(server, "DELETE", "/api/playlists/" + name)
+
+
+def test_a_save_over_an_edit_that_already_arrived_goes_through(page, server):
+    """The waiting edit reached the server (its answer was lost), and the next
+    save comes before any flush: it goes on top, it is no clash."""
+    name = "Arrived, then saved"
+    _offline_edit(page, server, name)
+    there = _api(server, "GET", f"/api/playlists/{name}/tracks")
+    _api(server, "PUT", f"/api/playlists/{name}/tracks",
+         {"paths": [QUIET_PATH, LOUD_PATH], "revision": there["revision"]})  # fmt: skip
+    page.evaluate("window.__flush = flushPlaylistEdits; flushPlaylistEdits = async () => {}; true")
+    try:
+        page.context.set_offline(False)
+        assert page.evaluate(f"savePlaylist(['{LOUD_PATH}'])") is True
+        paths = [e["path"] for e in _api(server, "GET", f"/api/playlists/{name}/tracks")["entries"]]
+        assert paths == [LOUD_PATH]
+        assert page.get_by_role("button", name="Оставить мою").count() == 0
+        assert name not in page.evaluate(PENDING)
+    finally:
+        page.evaluate("flushPlaylistEdits = window.__flush; true")
+        _api(server, "DELETE", "/api/playlists/" + name)
+
+
+def test_a_failed_keep_mine_says_why(page, server):
+    name = "Offline clash 3"
+    _offline_edit(page, server, name)
+    there = _api(server, "GET", f"/api/playlists/{name}/tracks")
+    _api(server, "PUT", f"/api/playlists/{name}/tracks",
+         {"paths": [LOUD_PATH, QUIET_PATH, EVIL_PATH], "revision": there["revision"]})  # fmt: skip
+    try:
+        _back_online(page)
+        mine = page.get_by_role("button", name="Оставить мою")
+        mine.wait_for(timeout=15000)
+        page.route(
+            "**/api/playlists/*/tracks?fresh=1",
+            lambda route: route.fulfill(status=500, body="{}"),
+        )
+        mine.click()
+        page.wait_for_function(
+            "/Не сохранилось/.test(document.getElementById('playlistNote').textContent)"
+        )
+        assert mine.is_visible()  # and the choice is still there
+    finally:
+        page.unroute("**/api/playlists/*/tracks?fresh=1")
+        page.evaluate("localStorage.removeItem('pendingPlaylistEdits')")
         _api(server, "DELETE", "/api/playlists/" + name)
 
 
@@ -1515,6 +1566,17 @@ def test_smart_shuffle_without_network_uses_downloads(page):
             "/без сети/i.test(document.getElementById('shuffleNote').textContent)"
         )
         assert set(page.evaluate("player.queue.map(t => t.path)")) == {LOUD_PATH, QUIET_PATH}
+
+        # A shuffle that never answers, and meanwhile something else is put on:
+        # when it gives up, it does not take over.
+        page.unroute("**/api/shuffle?*")
+        page.route("**/api/shuffle?*", lambda route: None)  # no answer at all
+        page.evaluate(
+            f"SHUFFLE_TIMEOUT_MS = 400; loadShuffle('plain'); playQueue([{evil}], 0); true"
+        )
+        page.wait_for_timeout(1200)
+        assert page.evaluate("player.queue.map(t => t.path)") == [EVIL_PATH]
+        assert "Собираю" not in page.locator("#shuffleNote").inner_text()
     finally:
         page.unroute("**/api/shuffle?*")
         page.context.set_offline(False)
