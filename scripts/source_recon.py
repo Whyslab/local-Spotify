@@ -18,7 +18,8 @@ downloading for free and legally:
   file before ``--verdict``.
 
 A hit counts only when it is *better*: lossless, or AAC >= 256 / MP3 320 with
-energy above 19 kHz, and the same performance. That is decided by hand for each
+energy above 19 kHz, the same performance, and a licence the artist gave (an
+uploader can claim CC on a rip). That is decided by hand for each
 hit (the ``better`` column: yes/no). Go -- worth building a fetcher (4b.4) --
 when more than 20 % of the sample has one (>= 11 of 50).
 
@@ -67,13 +68,24 @@ FMA_TRACK = r'href="(https://freemusicarchive\.org/music/[^"]+/[^"]+/[^"]+/)"'
 UA = {"User-Agent": "local-Spotify source recon (one-off, ~100 requests)"}
 
 
+FREE_LICENCE = re.compile(r"https?://creativecommons\.org/(licenses|publicdomain)/")
+YES = {"yes", "y", "true", "да"}
+AUDIO_SUFFIXES = (".m4a", ".mp3", ".flac", ".opus", ".ogg")  # as adder/library.py
+
+
 def norm(text: str) -> str:
-    return re.sub(r"[^0-9a-zа-я]+", "", text.casefold().replace("ё", "е"))
+    return re.sub(r"[\W_]+", "", text.casefold().replace("ё", "е"))
+
+
+def has_title(title: str, text: str) -> bool:
+    """The title is in text. An empty one (only signs) matches nothing, not everything."""
+    wanted = norm(title)
+    return bool(wanted) and wanted in norm(text)
 
 
 def verdict(rows: list[dict]) -> tuple[str, int, int]:
     """("go" | "no-go", tracks with a better copy, sample size)."""
-    better = sum(1 for r in rows if r.get("better") in (True, "yes"))
+    better = sum(1 for r in rows if str(r.get("better", "")).strip().lower() in YES)
     total = len(rows)
     return ("go" if better > GOAL * total else "no-go"), better, total
 
@@ -82,7 +94,7 @@ def library_rows(root: Path) -> list[dict]:
     from mutagen import File
 
     rows = []
-    for path in sorted(root.rglob("*.m4a")):
+    for path in sorted(p for p in root.rglob("*") if p.suffix.lower() in AUDIO_SUFFIXES):
         try:
             tags = File(path, easy=True) or {}
         except Exception:
@@ -127,13 +139,16 @@ def _creators(doc: dict) -> list[str]:
 
 
 def archive_matches(docs: list[dict], artist: str, title: str) -> list[str]:
-    """Archive items by this artist, with this title, under a licence."""
+    """Archive items by this artist, with this title, under a free licence.
+
+    Any ``licenseurl`` is only the uploader's claim; Creative Commons and public
+    domain are the ones that allow downloading at all."""
     return [
         d["identifier"]
         for d in docs
-        if d.get("licenseurl")
+        if FREE_LICENCE.match(str(d.get("licenseurl") or ""))
         and any(norm(c) == norm(artist) for c in _creators(d))
-        and norm(title) in norm(str(d.get("title", "")))
+        and has_title(title, str(d.get("title", "")))
     ]
 
 
@@ -144,7 +159,7 @@ def bandcamp_matches(results: list[dict], artist: str, title: str) -> list[str]:
         for r in results
         if r.get("type") == "t"
         and norm(r.get("band_name") or "") == norm(artist)
-        and norm(title) in norm(r.get("name") or "")
+        and has_title(title, r.get("name") or "")
     ]
 
 
@@ -163,8 +178,15 @@ def bandcamp_search(artist: str, title: str) -> list[str]:
     main_artist = re.split(r",| feat\.| & ", artist)[0].strip()
     body = {"search_text": f"{main_artist} {title}", "search_filter": "t",
             "full_page": False, "fan_id": None}  # fmt: skip
-    resp = requests.post(BANDCAMP, json=body, headers=UA, timeout=30)
-    resp.raise_for_status()
+    for attempt in range(3):
+        try:
+            resp = requests.post(BANDCAMP, json=body, headers=UA, timeout=30)
+            resp.raise_for_status()
+            break
+        except requests.RequestException:
+            if attempt == 2:
+                raise
+            time.sleep(5)
     pages = bandcamp_matches(resp.json()["auto"]["results"], main_artist, title)
     return [url for url in pages if bandcamp_free(_get(url, {}).text)]
 
@@ -198,7 +220,7 @@ def fma_matches(html: str, artist: str, title: str) -> list[str]:
     found = []
     for link in set(re.findall(FMA_TRACK, html)):
         parts = urllib.parse.unquote(link).rstrip("/").split("/")
-        if norm(parts[-3]) == norm(artist) and norm(title) in norm(parts[-1]):
+        if norm(parts[-3]) == norm(artist) and has_title(title, parts[-1]):
             found.append(link)
     return sorted(found)
 
@@ -220,7 +242,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     out = csv.DictWriter(sys.stdout, FIELDS, delimiter="\t", extrasaction="ignore")
 
-    if args.pick:
+    if args.pick is not None:
         sample = pick(library_rows(args.library), args.seed)
         if len(sample) != args.pick:
             print(f"warning: {len(sample)} tracks, not {args.pick}", file=sys.stderr)
@@ -228,7 +250,7 @@ def main(argv: list[str] | None = None) -> int:
         out.writerows(sample)
         return 0
 
-    if args.check:
+    if args.check is not None:
         with args.check.open(encoding="utf-8") as f:
             rows = list(csv.DictReader(f, delimiter="\t"))
         out.writeheader()

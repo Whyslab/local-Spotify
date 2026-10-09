@@ -220,3 +220,27 @@ def test_recon_bandcamp_needs_the_same_artist_and_a_free_download():
     nyp = '<div data-tralbum="{&quot;freeDownloadPage&quot;:null,&quot;minimum_price&quot;:0.0}">'
     free = '<div data-tralbum="{&quot;freeDownloadPage&quot;:&quot;https://x/download&quot;}">'
     assert [recon.bandcamp_free(p) for p in (paid, nyp, free)] == [False, True, True]
+
+
+def test_recon_review_details():
+    """Рецензия 09.10: «да» в любом написании; пустое после нормализации название
+    (японское, из одних знаков) не совпадает со всем подряд; лицензия на Archive —
+    только Creative Commons или общественное достояние."""
+    recon = _load("source_recon")
+    assert (
+        recon.verdict([{"better": v} for v in ("Yes", " yes ", "y", "да", "true")] + [{}] * 5)[1]
+        == 5
+    )
+    docs = [
+        {"identifier": "any", "creator": "Yasuha", "title": "Other song",
+         "licenseurl": "https://creativecommons.org/licenses/by/4.0/"},
+        {"identifier": "claim", "creator": "Artist", "title": "Song",
+         "licenseurl": "http://rightsstatements.org/vocab/InC/1.0/"},
+        {"identifier": "pd", "creator": "Artist", "title": "Song",
+         "licenseurl": "https://creativecommons.org/publicdomain/zero/1.0/"},
+    ]  # fmt: skip
+    assert recon.archive_matches(docs, "Yasuha", "フライディ・チャイナタウン") == []
+    assert recon.archive_matches(docs, "Artist", "Song") == ["pd"]
+    bc = [{"type": "t", "name": "Anything", "band_name": "Yasuha", "item_url_path": "u"}]
+    assert recon.bandcamp_matches(bc, "Yasuha", "フライディ・チャイナタウン") == []
+    assert recon.norm("フライディ") != ""
