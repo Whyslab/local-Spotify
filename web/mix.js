@@ -218,12 +218,15 @@ function mixHoldsEnd() {
 /* Звучит связка, а A, доиграв без звука, уже «на паузе» — для кнопок и
  * экрана это всё ещё игра. Пока A не доиграл, его пауза — настоящая пауза. */
 function mixSounding() {
-    return Boolean(mix.run && mix.run.phase !== "listen" && mix.run.aEnded);
+    const run = mix.run;
+    // a.ended — уже на «паузе», которая у браузера приходит раньше «конца» (тогда и рисуют).
+    return Boolean(run && run.phase !== "listen" && (run.aEnded || run.a.ended));
 }
 
 /* Конец A во время перехода — не повод листать очередь: следующий трек
  * подведёт сам переход. Кроме «до конца трека» и «повтора одного», выбранных
- * уже посреди перехода: тогда переход отменяется, и конец A — обычный. */
+ * уже посреди перехода: тогда переход отменяется, и конец A — обычный.
+ * Не просто вопрос: отменяет и отмечает конец A — зовётся только из ended. */
 function mixOwnsEnd() {
     const run = mix.run;
     if (!run) return false;
@@ -495,7 +498,8 @@ async function mixDock(run) {
     // Сколько ещё можно стыковать: под конец связки нужна замена (до 0,35 с) с запасом.
     const left = () => run.zero + plan.length - 0.5 - ctx.currentTime;
     let delta = null;
-    while (left() > 0.55) {
+    // Запись 0,5 с и поиск по ней (на медленном ноутбуке — до 0,3 с).
+    while (left() > 0.8) {
         const rec = await record(tap, 0.5);
         check(run);
         // Связка в кадр rec.frame — на отсчёте (rec.frame - zero); ищем B рядом (±1,5 с).
@@ -674,6 +678,6 @@ onAudio("seeking", () => {
 });
 // Подключённый элемент звучит только через контекст: включили — поднять его.
 onAudio("play", () => {
-    if (mix.ctx && mix.ctx.state === "suspended" && mix.nodes.has(player.audio)) mix.ctx.resume().catch(() => {});
+    if (mix.ctx && mix.ctx.state !== "running" && mix.nodes.has(player.audio)) mix.ctx.resume().catch(() => {});
 });
 onAudio("error", () => { if (mix.run) mixCancel(new MixError("ошибка уходящего трека")); });

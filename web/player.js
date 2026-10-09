@@ -3190,8 +3190,12 @@ function sleepTick() {
         player.pauseReason = "таймер сна";
         /* Звучит связка «как диджей», а уходящий трек уже доиграл: его pause()
          * ничего не остановит — остановиться на следующем. */
-        if (typeof mixSounding === "function" && mixSounding()) mixPauseOnNext();
-        else player.audio.pause();
+        if (typeof mixSounding === "function" && mixSounding()) {
+            mixPauseOnNext();
+            player.pauseReason = "";  // события pause тут нет — иначе причина прилипла бы к следующей
+        } else {
+            player.audio.pause();
+        }
         clearSleep();
         return;
     }

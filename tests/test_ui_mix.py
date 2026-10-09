@@ -246,6 +246,15 @@ def wait(page, expression, timeout=30.0):
         page.wait_for_timeout(20)
 
 
+def wait_event(page, events, name, timeout=5.0):
+    """События запросов Playwright отдаёт Python не сразу — дождаться нужного."""
+    deadline = time.monotonic() + timeout
+    while not any(e["event"] == name for e in events):
+        if time.monotonic() > deadline:
+            raise AssertionError(f"нет события {name}: {events}")
+        page.wait_for_timeout(50)
+
+
 @pytest.fixture()
 def opened(server, browser):
     context, page, errors, plays, events = _open(server, browser)
@@ -325,7 +334,7 @@ def test_the_next_track_is_handed_over_sample_exact(opened):
     assert page.evaluate("player.index") == 1
     a_play = [p for p in plays if p.get("path") == TRACKS["a"]]
     assert len(a_play) == 1 and a_play[0]["skipped"] is False
-    assert any(e["event"] == "mix" for e in events)
+    wait_event(page, events, "mix")
     assert not any(e["event"] == "mix-fail" for e in events), events
     # Без выхода из тишины: начало B уже прозвучало в связке.
     assert page.evaluate("player.fadeLevel") == 1
@@ -362,7 +371,7 @@ def test_webkit_timing_is_made_up_for(server, browser):
         assert last["lag"] == pytest.approx(1.0, abs=0.06)
         # Подгонка связкой: последний шаг до стыка — мелкий сдвиг, не перемотка.
         assert any(0.5 < abs(ms) <= 12 for ms, _ in last["trace"]), last
-        assert any(e["event"] == "mix" for e in events)
+        wait_event(page, events, "mix")
         assert errors == []
     finally:
         context.close()
@@ -440,6 +449,10 @@ def reach_the_end_of_a(page):
     start_and_reach_the_bridge(page, "d", "b", "c")
     wait(page, "mix.run && mix.run.phase === 'bridge' && player.audio.ended", timeout=20)
     assert page.evaluate("audioPaused()") is False  # музыка-то играет
+    # И кнопка с системой это знают: «пауза» приходит раньше «конца», рисуют по ней.
+    label = "document.getElementById('playerToggle').getAttribute('aria-label')"
+    assert page.evaluate(label) == "Пауза"
+    assert page.evaluate("navigator.mediaSession.playbackState") == "playing"
 
 
 def test_the_sleep_timer_stops_the_music_after_the_outgoing_track_ended(opened):
@@ -495,6 +508,7 @@ def test_a_stuck_incoming_track_does_not_leave_silence(server, browser):
         wait(page, "mix.run && mix.run.phase === 'bridge'", timeout=15)
         # Связка (16 с) кончилась — плеер сам уходит на B обычным путём.
         wait(page, "mix.run === null && player.index === 1 && !player.audio.paused", timeout=30)
+        wait_event(page, events, "mix-fail")
         assert any(e["event"] == "mix-fail" and "завис" in e.get("detail", "") for e in events), (
             events
         )
