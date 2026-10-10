@@ -49,25 +49,48 @@ SCREEN = "1280x800x24"
 
 
 def start_xvfb() -> tuple[subprocess.Popen, str]:
-    """Свой виртуальный экран на весь замер; номер выбирает сам Xvfb."""
+    """Свой виртуальный экран на весь замер, номер от 99 и выше.
+
+    Номер задаём сами: без номера Xvfb с -displayfd берёт первый «свободный»,
+    не смотрит на /tmp/.X1-lock, садится на :1 рабочего стола (Xwayland
+    Hyprland), подменяет его /tmp/.X11-unix/X1 и при выходе стирает — Steam и
+    прочие X-программы потом не открываются (10.10.2026). С явным номером
+    Xvfb занятый экран не трогает: видит замок и выходит.
+    """
     if not shutil.which("Xvfb"):
         raise SystemExit("нужен Xvfb (pacman -S xorg-server-xvfb): окна на рабочий стол не выводим")
-    read, write = os.pipe()
-    proc = subprocess.Popen(
-        ["Xvfb", "-displayfd", str(write), "-screen", "0", SCREEN, "-nolisten", "tcp"],
-        pass_fds=(write,),
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    os.close(write)
-    # Xvfb пишет номер экрана, когда готов; повис — не ждать вечно.
-    ready, _, _ = select.select([read], [], [], 15)
-    with os.fdopen(read) as pipe:
-        number = pipe.readline().strip() if ready else ""
-    if not number:
+    for number in range(99, 199):
+        if Path(f"/tmp/.X{number}-lock").exists() or Path(f"/tmp/.X11-unix/X{number}").exists():
+            continue
+        read, write = os.pipe()
+        proc = subprocess.Popen(
+            [
+                "Xvfb",
+                f":{number}",
+                "-displayfd",
+                str(write),
+                "-screen",
+                "0",
+                SCREEN,
+                "-nolisten",
+                "tcp",
+            ],
+            pass_fds=(write,),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        os.close(write)
+        # Xvfb пишет номер экрана, когда готов; повис — не ждать вечно.
+        ready, _, _ = select.select([read], [], [], 15)
+        with os.fdopen(read) as pipe:
+            got = pipe.readline().strip() if ready else ""
+        if got == str(number):
+            return proc, f":{number}"
         proc.kill()
-        raise SystemExit("Xvfb не запустился")
-    return proc, ":" + number
+        proc.wait()
+        if not ready:
+            break  # повис, а не упёрся в занятый номер — следующие не спасут
+    raise SystemExit("Xvfb не запустился")
 
 
 def parse_perf(lines: list[str]) -> list[dict]:
