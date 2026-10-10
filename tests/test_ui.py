@@ -561,7 +561,7 @@ def _scroller_of(selector):
 # "ok", or "fail" (500); `later` — rows the batch answers "later" for;
 # `batchDelay` — the batch's own delay (a hung network: a very long one).
 FAKE_COVERS_JS = """async ({list, delay = 120, batch = 'ok', later = [], libraryDelay = 0, batchDelay = null}) => {
-    const c = window.__covers = {asked: [], singles: 0, batches: 0, inflight: 0, peak: 0,
+    const c = window.__covers = {asked: [], alone: [], singles: 0, batches: 0, inflight: 0, peak: 0,
                                  singlesInflight: 0, singlesPeak: 0, aborted: 0, delivered: 0};
     const real = window.fetch;
     const png = await (await real('/static/icon-180.png')).blob();
@@ -583,6 +583,7 @@ FAKE_COVERS_JS = """async ({list, delay = 120, batch = 'ok', later = [], library
         if (single) {
             c.singles += 1;
             c.asked.push(name(decodeURIComponent(u)));
+            c.alone.push(name(decodeURIComponent(u)));
             c.singlesInflight += 1;
             c.singlesPeak = Math.max(c.singlesPeak, c.singlesInflight);
         } else {
@@ -860,6 +861,38 @@ def test_a_cover_still_to_be_made_comes_alone(page):
     covers = page.evaluate("window.__covers")
     assert covers["singles"] == 2, covers
     assert sorted(covers["asked"][-2:]) == ["Song 0", "Song 1"], covers
+
+
+def test_rows_on_screen_go_in_the_batch_when_the_mark_comes_late(page):
+    """Only a row marked on screen goes into a batch, and the second observer
+    marked it. When that one reported late (CI, 10.10), the first four rows were
+    served before it, each alone: four requests in place of one batch. The first
+    observer now marks the row from its own entry."""
+    page.context.add_init_script(
+        """(() => {
+            const Real = window.IntersectionObserver;
+            window.IntersectionObserver = class extends Real {
+                constructor(callback, options) {
+                    // The on-screen observer (no margin) answers late.
+                    const late = !(options && options.rootMargin);
+                    super(late ? (entries, observer) => setTimeout(() => callback(entries, observer), 300)
+                        : callback, options);
+                }
+            };
+        })()"""
+    )
+    page.reload()
+    page.wait_for_function("typeof switchView === 'function'")
+    page.evaluate(FAKE_COVERS_JS, {"list": _fake_rows(200), "later": ["Song 0", "Song 1"]})
+    page.evaluate("switchView('viewLibrary')")
+    page.wait_for_function(ON_SCREEN_COVERED_JS)
+    covers = page.evaluate("window.__covers")
+    on_screen = set(
+        page.evaluate(f"{ON_SCREEN_ROWS_JS}.map((row) => row.textContent.match(/Song \\d+/)[0])")
+    )
+    # Rows in the margin below the screen go alone by design; rows on screen
+    # only when the batch said "later".
+    assert set(covers["alone"]) & on_screen == {"Song 0", "Song 1"}, (covers, on_screen)
 
 
 def test_opened_list_asks_for_rows_on_screen_first(page):

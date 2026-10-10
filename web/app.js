@@ -1182,11 +1182,28 @@ document.addEventListener("scroll", () => {
     lastScrollAt = performance.now();
 }, { capture: true, passive: true });
 
+const COVER_MARGIN_PX = 200;
+
+/* На экране ли строка — по тому, что принёс первый наблюдатель: его окно
+ * (rootBounds) — экран, расширенный на COVER_MARGIN_PX сверху и снизу, так что
+ * экран — это rootBounds без отступа. Второй наблюдатель скажет точнее, но
+ * позже: опоздав (CI, 10.10), он оставлял строки экрана без отметки, и четыре
+ * первые шли по одной вместо пачки. Не узнать (нет rootBounds — только у
+ * чужого фрейма) — undefined: отметку не трогать, её поставит второй. */
+function seenOnScreen(entry) {
+    const root = entry.rootBounds;
+    if (!root) return undefined;
+    const r = entry.intersectionRect;
+    return r.height > 0 && r.bottom > root.top + COVER_MARGIN_PX && r.top < root.bottom - COVER_MARGIN_PX;
+}
+
 const coverObserver = "IntersectionObserver" in window
     ? new IntersectionObserver((entries) => {
         for (const entry of entries) {
             const host = entry.target;
             if (entry.isIntersecting) {
+                const seen = seenOnScreen(entry);
+                if (seen !== undefined) host._coverOnScreen = seen;
                 /* Отменённый запрос (строка уходила с экрана) места не держит:
                  * вернувшись, строка встаёт в очередь сразу, не дожидаясь его
                  * конца — пачка, в которой он был, может ещё идти. */
@@ -1208,7 +1225,7 @@ const coverObserver = "IntersectionObserver" in window
          * задаче, но позже, — без отметок первыми шли строки из запаса. */
         clearTimeout(coverTimer);
         coverTimer = setTimeout(pumpCovers, 0);
-    }, { rootMargin: "200px 0px" })
+    }, { rootMargin: `${COVER_MARGIN_PX}px 0px` })
     : null;
 
 /* Видна ли строка сейчас, без запаса, — его отмечает второй наблюдатель.
