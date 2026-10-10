@@ -1591,6 +1591,38 @@ def test_rename_and_delete_on_the_phone_take_the_waiting_edit_along(page, server
                 _api(server, "DELETE", "/api/playlists/" + n)
 
 
+# Network trouble for one kind of request, made in the page itself. Under the
+# offline worker a request can slip past page.route and set_offline to the
+# server (seen on CI, 10.10: a POST that page.route was to abort got 200).
+# The page knows the network only by how its fetch ends, so this is what it
+# sees with no network too. window.__net maps a URL prefix to 'offline'
+# (TypeError), 'down' (503, a proxy with the computer asleep) or 'silent' (no
+# answer until the page gives up); window.__sent keeps the bodies of what went
+# to the server.
+NET_JS = """() => {
+    const real = window.fetch;
+    window.__net = {};
+    window.__sent = [];
+    window.fetch = (url, options = {}) => {
+        const u = String(url);
+        const prefix = Object.keys(window.__net).find((p) => u.startsWith(p));
+        const mode = prefix && window.__net[prefix];
+        if (!mode) {
+            if (typeof options.body === 'string') window.__sent.push({url: u, body: options.body});
+            return real(url, options);
+        }
+        if (mode === 'offline') return Promise.reject(new TypeError('Failed to fetch'));
+        if (mode === 'down') return Promise.resolve(new Response('down', {status: 503}));
+        return new Promise((_, reject) => {
+            if (options.signal) {
+                options.signal.addEventListener('abort',
+                    () => reject(new DOMException('aborted', 'AbortError')));
+            }
+        });
+    };
+}"""
+
+
 def test_smart_shuffle_without_network_uses_downloads(page):
     """Plan 4a.4: no network, no server shuffle -- the downloads are shuffled
     here instead, and the note says so."""
@@ -1598,6 +1630,8 @@ def test_smart_shuffle_without_network_uses_downloads(page):
     _controlled(page)
     page.evaluate(f"downloadTrack({LOUD}).then(() => downloadTrack({QUIET}))")
     evil = f"{{path: '{EVIL_PATH}', title: 'evil', artist: 'Evil', duration: 12}}"
+    page.evaluate(NET_JS)
+    page.evaluate("window.__net = {'/api/shuffle': 'offline'}")
     page.context.set_offline(True)
     try:
         page.evaluate("loadShuffle('smart')")
@@ -1608,21 +1642,30 @@ def test_smart_shuffle_without_network_uses_downloads(page):
         assert page.evaluate("player.queueMode") == "manual"
 
         # Smart shuffle of the queue that plays: what is downloaded of it,
-        # the playing track first.
+        # the playing track first. The shuffle above settles first: Quiet is
+        # AAC, which this Chromium cannot play, and its late "not playing,
+        # skipped" note overwrote the next one (CI, 10.10). The new queue is
+        # drawn before too: a track that starts drawing later clears the note,
+        # and on the phone the playing track is the one already drawn.
+        page.wait_for_function(
+            f"(player.queue[player.index] || {{}}).path === '{LOUD_PATH}'"
+            " && player.audio.currentTime > 0"
+        )
         page.evaluate(
-            f"player.queue = [{QUIET}, {evil}, {LOUD}]; player.index = 0; setShuffle('smart')"
+            f"player.audio.pause(); player.queue = [{LOUD}, {evil}, {QUIET}]; player.index = 0;"
+            " renderPlayer(); setShuffle('smart')"
         )
         page.wait_for_function(
             "/без сети/i.test(document.getElementById('playerNote').textContent)"
         )
-        assert page.evaluate("player.queue.map(t => t.path)") == [QUIET_PATH, LOUD_PATH]
+        assert page.evaluate("player.queue.map(t => t.path)") == [LOUD_PATH, QUIET_PATH]
         assert page.evaluate("player.queueMode") == "manual"
         page.evaluate("setShuffle(false)")
         assert page.evaluate("player.queue.length") == 3  # off brings the queue back
 
         # A server that is down (the proxy answers 503) counts the same as no network.
         page.context.set_offline(False)
-        page.route("**/api/shuffle?*", lambda route: route.fulfill(status=503, body="down"))
+        page.evaluate("window.__net = {'/api/shuffle': 'down'}")
         page.evaluate(
             "document.getElementById('shuffleNote').textContent = ''; loadShuffle('plain')"
         )
@@ -1633,8 +1676,7 @@ def test_smart_shuffle_without_network_uses_downloads(page):
 
         # A shuffle that never answers, and meanwhile something else is put on:
         # when it gives up, it does not take over.
-        page.unroute("**/api/shuffle?*")
-        page.route("**/api/shuffle?*", lambda route: None)  # no answer at all
+        page.evaluate("window.__net = {'/api/shuffle': 'silent'}")  # no answer at all
         page.evaluate(
             f"SHUFFLE_TIMEOUT_MS = 400; loadShuffle('plain'); playQueue([{evil}], 0); true"
         )
@@ -1642,9 +1684,11 @@ def test_smart_shuffle_without_network_uses_downloads(page):
         assert page.evaluate("player.queue.map(t => t.path)") == [EVIL_PATH]
         assert "Собираю" not in page.locator("#shuffleNote").inner_text()
     finally:
-        page.unroute("**/api/shuffle?*")
         page.context.set_offline(False)
-        page.evaluate("player.audio.pause(); setShuffle(false); removeAllDownloads()")
+        page.evaluate(
+            "window.__net = {}; SHUFFLE_TIMEOUT_MS = 30000;"
+            " player.audio.pause(); setShuffle(false); removeAllDownloads()"
+        )
 
 
 def test_a_phone_lock_screen_keeps_next_and_previous_track(server, browser):
@@ -1735,7 +1779,8 @@ def test_a_play_heard_offline_keeps_the_time_it_was_heard(page, server):
     page.evaluate("player.audio.pause()")
 
     # No network: the play goes to the queue with the time it was heard.
-    page.route("**/api/plays", lambda route: route.abort())
+    page.evaluate(NET_JS)
+    page.evaluate("window.__net = {'/api/plays': 'offline'}")
     heard = page.evaluate("Date.now() / 1000 - player.audio.currentTime")
     page.evaluate("reportPlay(false)")
     page.wait_for_function("JSON.parse(localStorage.getItem('pendingPlays') || '[]').length === 1")
@@ -1744,15 +1789,11 @@ def test_a_play_heard_offline_keeps_the_time_it_was_heard(page, server):
 
     # The network is back some time later: the queued time travels unchanged.
     page.wait_for_timeout(1500)
-    page.unroute("**/api/plays")
-    sent = []
-    page.on(
-        "request",
-        lambda r: sent.append(json.loads(r.post_data)) if r.url.endswith("/api/plays") else None,
-    )
+    page.evaluate("window.__net = {}")
     page.evaluate("flushPendingPlays()")
     page.wait_for_function("JSON.parse(localStorage.getItem('pendingPlays') || '[]').length === 0")
-    assert sent == [queued]
+    sent = page.evaluate("window.__sent.filter(s => s.url === '/api/plays').map(s => s.body)")
+    assert [json.loads(body) for body in sent] == [queued]
     row = db.db_query("SELECT played_at FROM plays ORDER BY id DESC LIMIT 1")[0]
     ended = datetime.fromtimestamp(int(queued["heard_at"] + queued["played_seconds"]))
     assert row["played_at"] == ended.strftime("%Y-%m-%d %H:%M:%S")
