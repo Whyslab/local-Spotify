@@ -813,9 +813,13 @@ def test_only_a_wait_for_a_batch_gives_the_place_up(page):
     """Waiting for a batch frees the place: after it a track cover asks for
     nothing. Waiting for another copy's artist photo does not: a 404 sends
     that job on to the track cover, and the place is what limits it."""
+    # The home page's own covers wait aside meanwhile: freeing a place serves
+    # the queue at once, and their requests counted here (CI, 10.10).
     busy = page.evaluate(
         """async () => {
             const seen = [];
+            const waiting = coverWaiting.splice(0);
+            const idle = coverIdle.splice(0);
             for (const batched of [true, false]) {
                 const key = 'test:' + batched;
                 const pending = new Promise(() => {});
@@ -829,6 +833,9 @@ def test_only_a_wait_for_a_batch_gives_the_place_up(page):
                 free();
                 coverUrls.delete(key);
             }
+            coverWaiting.push(...waiting);
+            coverIdle.push(...idle);
+            pumpCovers();
             return seen;
         }"""
     )
