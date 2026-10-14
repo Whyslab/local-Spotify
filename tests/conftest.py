@@ -51,6 +51,7 @@ def _outside_stays_offline(monkeypatch, tmp_path, request):
     monkeypatch.setattr(runtime, "WEB_COVERS_DIR", tmp_path / "web-covers")
     monkeypatch.setattr(runtime, "ARTIST_PHOTOS_DIR", tmp_path / "artist-photos")
     monkeypatch.setattr(runtime, "ARTIST_IMPORT_FILE", tmp_path / "artist-import.json")
+    monkeypatch.setattr(runtime, "NEW_RELEASES_FILE", tmp_path / "new-releases.json")
     # Фоновый разбор «Артиста целиком» тестам не нужен: шаг проверяется
     # напрямую (discography.step), а живой поток ходил бы на YouTube.
     monkeypatch.setattr(discography, "start", lambda queue_one: None)

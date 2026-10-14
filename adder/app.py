@@ -48,6 +48,7 @@ from . import (
     outside,
     playlists,
     radio,
+    releases,
     runtime,
     shelves,
     shuffle,
@@ -1781,6 +1782,8 @@ def home(authenticated: bool = Depends(verify_token)):
             for m in moods.collections(features, limit=40, seed=shelves.shelf_seed())
         ],
         "discover": shelves.discover(rows, seed=shelves.shelf_seed()),
+        # Новые релизы артистов фонотеки — из файла ночного прохода, без сети.
+        "releases": releases.shelf(),
         "albums": [
             {
                 "artist": who,

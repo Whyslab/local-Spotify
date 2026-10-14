@@ -40,6 +40,9 @@ ARTIST_PHOTOS_DIR = PROJECT / "artist-photos"
 # «Артист целиком»: выбранные треки, ждущие поиска на YouTube. На диске —
 # чтобы перезапуск службы посреди работы её не терял (adder/discography.py).
 ARTIST_IMPORT_FILE = PROJECT / "artist-import.json"
+# Новые релизы артистов фонотеки: пишет ночной проход (adder/releases.py),
+# читает главная.
+NEW_RELEASES_FILE = PROJECT / "new-releases.json"
 # yt-dlp keeps player data here and Deno its compiled scripts (both honour
 # XDG_CACHE_HOME). Their default, ~/.cache, is read-only under the systemd
 # unit's ProtectHome=read-only, so each call started from scratch.

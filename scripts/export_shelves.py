@@ -11,6 +11,9 @@ Navidrome нашёл в фонотеке, а там подборка — это 
 ночного разбора звука: полки строятся из `audio_features`, поэтому запуск до
 анализа собрал бы их по вчерашним измерениям.
 
+Заодно — новые релизы артистов фонотеки (adder/releases.py): полка
+«Новые релизы» на главной и уведомление о впервые увиденном.
+
 Файлы перезаписываются целиком. Своя правка внутри `★ ...` не живёт — прежнее
 содержимое уходит в adder/playlist-history, но постоянной подборке лучше дать
 своё имя, без звезды.
@@ -30,7 +33,7 @@ def main() -> int:
     # ничего не слушается, поэтому значение любое.
     os.environ.setdefault("API_TOKEN", "shelves")
     try:
-        from adder import config, shelves, thumbs
+        from adder import config, library, releases, shelves, thumbs
     except ModuleNotFoundError as exc:
         # Всё нужное стоит в виртуальном окружении проекта, а в системном
         # python этого нет. Трассировка про fastapi об этом не скажет —
@@ -62,10 +65,33 @@ def main() -> int:
     # Миниатюры строк и плиток — для всего, что ещё без них (добавленное мимо
     # службы, кэш, который почистили): первый показ их уже не ждёт.
     print(f"Миниатюры: просмотрено треков {thumbs.prepare_library(config.LIBRARY)}", flush=True)
+    new_releases(library, releases)
     # Ни одной записанной полки — это уже неисправность, а не «просто нечего
     # показывать»: таймер должен пожаловаться в журнал, иначе подборки будут
     # молча стареть.
     return 0 if written else 1
+
+
+def new_releases(library, releases) -> None:
+    """Новые релизы артистов фонотеки — полка на главной (adder/releases.py).
+
+    Сбой здесь не должен ронять выгрузку полок: она уже сделана, а релизы
+    просто останутся вчерашними.
+    """
+    try:
+        report = releases.check(library.library_index())
+        releases.tell(report["new"])
+        sent = releases.queue_downloads()
+    except Exception as exc:  # noqa: BLE001 — сеть, диск, ответ Deezer
+        print(f"Новые релизы: не вышло ({exc})", flush=True)
+        return
+    print(
+        f"Новые релизы: спрошено артистов {report['asked']}, неузнанных {report['unknown']}, "
+        f"новых {len(report['new'])}"
+        + (f", отдано в скачивание {sent}" if sent else "")
+        + ("" if report["complete"] else " — Deezer перестал отвечать, проход неполный"),
+        flush=True,
+    )
 
 
 if __name__ == "__main__":

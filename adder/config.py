@@ -83,6 +83,10 @@ MAX_DURATION_MINUTES = _nonnegative_int("MAX_DURATION_MINUTES", "30")
 # failed, a yt-dlp update rolled back. Needs notify-send (libnotify-bin).
 DESKTOP_NOTIFICATIONS = os.environ.get("DESKTOP_NOTIFICATIONS", "true").strip().lower() != "false"
 
+# New releases of library artists go to the download queue on their own.
+# Off by default: the library must not grow without being asked.
+NEW_RELEASES_AUTO = os.environ.get("NEW_RELEASES_AUTO", "false").strip().lower() == "true"
+
 # ListenBrainz user token (https://listenbrainz.org/settings/). Empty: listens
 # from the web player are not sent anywhere.
 LISTENBRAINZ_TOKEN = os.environ.get("LISTENBRAINZ_TOKEN", "").strip()

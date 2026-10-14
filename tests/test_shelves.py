@@ -184,6 +184,40 @@ def test_home_answers_over_http_with_moods_discover_and_albums(shelf_library, mo
 
     assert response.status_code == 200
     body = response.json()
-    assert set(body) == {"moods", "discover", "albums"}
+    assert set(body) == {"moods", "discover", "albums", "releases"}
     assert body["moods"] and all({"key", "name", "tracks"} <= set(m) for m in body["moods"])
     assert len(body["discover"]["tracks"]) == 10
+
+
+def test_home_has_new_releases(shelf_library, monkeypatch):
+    """Plan 4c.2: the night's finds reach the home page as they are, with no
+    request to Deezer of its own."""
+    import json
+
+    from fastapi.testclient import TestClient
+
+    from adder import app as app_module
+    from adder import navidrome, runtime, similar
+
+    monkeypatch.setattr(config, "API_TOKEN", "test-secret")
+    monkeypatch.setattr(navidrome, "configured", lambda: False)
+    monkeypatch.setattr(similar, "_get", lambda *a, **k: pytest.fail("home asked Deezer"))
+    found = {
+        "id": "11",
+        "artist": "Seed",
+        "title": "Fresh Album",
+        "kind": "album",
+        "date": "2026-10-04",
+        "cover": "https://e-cdns-images.dzcdn.net/images/cover/x/250x250.jpg",
+        "seen": 1.0,
+        "queued": True,
+    }
+    runtime.NEW_RELEASES_FILE.write_text(
+        json.dumps({"artists": {}, "releases": [found], "checked_at": 1.0}), encoding="utf-8"
+    )
+    client = TestClient(app_module.app)
+    body = client.get("/api/home", headers={"Authorization": "Bearer test-secret"}).json()
+
+    assert body["releases"] == [
+        {k: found[k] for k in ("id", "artist", "title", "kind", "date", "cover")}
+    ]
