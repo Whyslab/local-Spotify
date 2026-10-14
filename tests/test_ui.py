@@ -807,7 +807,15 @@ def test_a_row_back_on_screen_does_not_hold_a_place_waiting(page):
     page.evaluate(scroll, first + 400)
     page.wait_for_timeout(300)
     page.evaluate(scroll, 0)
+    # The rows come back into the queue first: equal counts before that
+    # prove nothing.
     page.wait_for_timeout(300)
+    # A row coming back may hold a place for a moment, until its job reaches
+    # the batch or sends its own request; a busy full run read that moment
+    # ((1, 0), 09.10). A place held for the batch stays held: the batch never
+    # answers and gives up only after COVERS_TIMEOUT_MS (6 s), past this wait.
+    with contextlib.suppress(TimeoutError):
+        page.wait_for_function("coverBusy === window.__covers.inflight", timeout=4000)
     busy, inflight = page.evaluate("[coverBusy, window.__covers.inflight]")
     assert busy == inflight, (busy, inflight)
 
@@ -3246,8 +3254,15 @@ def test_new_finds_on_every_visit_home(page, monkeypatch):
         n = next(shown)
         return [{"artist": f"Артист {n}", "title": f"Находка {n}", "cover": ""}]
 
+    # Только полка «Новое для вас»: обложку находки носят и релизы, и подборка недели.
+    titles = """[...document.querySelectorAll('#homeBody .o-section')]
+        .filter((s) => s.querySelector('h2').textContent === 'Новое для вас')
+        .flatMap((s) => [...s.querySelectorAll('.o-card-title')].map((t) => t.textContent))"""
+    # Главная, открытая при загрузке, ещё могла быть в пути: её ответ рисует
+    # полку заново. Ждём её и заготовку следующего набора до подмены.
+    page.wait_for_function("homeCache !== null")
+    page.evaluate("async () => { await findsNext; }")
     monkeypatch.setattr(shelves, "external", external)
-    titles = "[...document.querySelectorAll('.o-card:has(.is-find) .o-card-title')].map(t => t.textContent)"
     # Следующий набор страница готовит заранее — тот, что заготовлен до
     # подмены, пропускаем лишним заходом.
     page.evaluate("switchView('viewLibrary'); switchView('viewHome')")
@@ -3257,6 +3272,8 @@ def test_new_finds_on_every_visit_home(page, monkeypatch):
     page.evaluate("switchView('viewLibrary')")
     page.evaluate("switchView('viewHome')")
     page.wait_for_function(f"{titles}[0] !== {first[0]!r}")
+    # Запросы находок закончились — дальше полку менять нечему, кроме ошибки.
+    page.evaluate("async () => { await findsNext; }")
     # Фоновый опрос главной набор не меняет — под рукой полка не прыгает.
     second = page.evaluate(titles)
     page.evaluate("refresh(true)")
