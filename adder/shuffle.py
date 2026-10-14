@@ -188,7 +188,9 @@ def build_queue(
         queue.append(current)
 
     while pool and len(queue) < size:
-        recent_artists = {t.artist for t in [current, *queue][-2:] if t.artist}
+        recent_artists = {
+            t.artist for t in [*([previous] if previous else []), *queue][-2:] if t.artist
+        }
 
         # Решаем сначала, чьё это место, и только потом ищем трек. Иначе всё
         # чужое встанет в начало: фонотека в сто раз больше подборки, и по

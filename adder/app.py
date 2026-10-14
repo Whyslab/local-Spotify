@@ -2023,7 +2023,7 @@ def radio_portion(req: RadioRequest, authenticated: bool = Depends(verify_token)
     Без сети (Deezer молчит) радио всё равно собирается — из всей фонотеки
     по темпу, без нового: как умное перемешивание.
     """
-    if bool(req.path) == bool(req.artist):
+    if bool(req.path) == bool(req.artist.strip()):
         raise HTTPException(status_code=400, detail="Нужен трек или артист — одно из двух")
     tracks = _shuffle_tracks()
     seed_artist = req.artist.strip()
@@ -2094,7 +2094,7 @@ def outside_keep(key: str, authenticated: bool = Depends(verify_token)):
     if meta is None or found is None:
         # Не скачан — сразу просим скачать, чтобы повторное нажатие сработало.
         # Состояние в ответе: плеер отличает «ещё качается» от «не нашёлся».
-        state = outside.request([key]).get(key, "unknown") if meta else "unknown"
+        state = outside.request([key], keep=True).get(key, "unknown") if meta else "unknown"
         return JSONResponse(
             status_code=409,
             content={"detail": "Трек ещё не скачан", "status": state},

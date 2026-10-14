@@ -11,7 +11,7 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-from adder import config, library, navidrome, outside, radio, runtime, shuffle, similar
+from adder import config, db, library, navidrome, outside, radio, runtime, shuffle, similar
 
 KEY = "0123456789abcdef"
 
@@ -102,6 +102,18 @@ def test_nothing_is_fetched_while_the_users_own_downloads_run(monkeypatch, runni
 
     runtime.PROCESSING_URLS.clear()
     assert wait_for(lambda: fetched == [KEY])
+
+
+def test_a_keep_by_hand_does_not_wait_for_the_hour(monkeypatch, running):
+    fetched: list[str] = []
+    monkeypatch.setattr(outside, "fetch", fake_fetch(fetched))
+    monkeypatch.setattr(outside, "FETCHES_PER_HOUR", 0)
+    remember(KEY, "f" * 16)
+
+    outside.request(["f" * 16])
+    outside.request([KEY], keep=True)
+    assert wait_for(lambda: not outside._pending)
+    assert fetched == [KEY]
 
 
 def test_one_fetch_at_a_time(monkeypatch, running):
@@ -213,6 +225,30 @@ def test_a_portion_goes_on_from_the_track_before_it(deezer):
         assert shuffle.tempo_distance(80, local[0].tempo) <= shuffle.TEMPO_TOLERANCE
 
 
+def test_a_portion_after_a_track_from_outside_goes_on_from_the_last_library_one(deezer):
+    tracks = [
+        shuffle.Track(path=f"x{i}", artist="Seed" if i < 10 else "Near1", tempo=80 + 10 * i)
+        for i in range(20)
+    ]
+    tail = outside.PREFIX + KEY
+    for _ in range(10):
+        local, _ = radio.build(tracks, "Seed", ["x5", tail], previous=tail, size=5)
+        # Не «радио артиста с начала»: продолжение за x5 (130 BPM), а не за
+        # первым попавшимся треком Seed.
+        assert shuffle.tempo_distance(130, local[0].tempo) <= shuffle.TEMPO_TOLERANCE
+
+
+def test_skipped_tracks_of_the_artist_do_not_come_back_mid_radio(deezer):
+    tracks = library_tracks()
+    skipped = {t.path for t in tracks if t.artist == "Seed"}
+    # Порция кончилась треком со стороны — так и было, когда пропущенное
+    # возвращалось: сервер принимал продолжение за начало радио артиста.
+    heard = [tracks[-1].path, outside.PREFIX + KEY]
+    for _ in range(10):
+        local, _ = radio.build(tracks, "Seed", heard, previous=heard[-1], size=12, skipped=skipped)
+        assert not {t.path for t in local} & skipped
+
+
 def test_skipped_tracks_are_left_out(deezer):
     tracks = library_tracks()
     skipped = {t.path for t in tracks if t.artist == "Near1"}
@@ -318,6 +354,7 @@ def test_radio_from_a_track_takes_its_artist_and_leaves_the_track_out(client):
         ({"path": "outside:../../etc/passwd"}, 404),
         ({"artist": "Seed", "recent": ["x"] * 51}, 422),
         ({"artist": "Seed", "size": 51}, 422),
+        ({"artist": "   "}, 400),
     ],
 )
 def test_bad_radio_requests_are_refused(client, request_body, status):
@@ -340,4 +377,10 @@ def test_a_skip_keeps_a_track_off_the_radio_until_it_is_heard_through(client):
                 },
             ).raise_for_status()
 
+    assert radio.recently_skipped() == {skipped}
+    # Пропуск старше двух недель трек уже не держит.
+    db.db_exec(
+        "INSERT INTO plays(path, played_at, skipped) "
+        "VALUES('Seed/Singles/Seed2.m4a', datetime('now', 'localtime', '-15 days'), 1)"
+    )
     assert radio.recently_skipped() == {skipped}

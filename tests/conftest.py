@@ -88,6 +88,7 @@ def _outside_stays_offline(monkeypatch, tmp_path, request):
     monkeypatch.setattr(outside, "_jobs", queue.Queue())
     monkeypatch.setattr(outside, "_pending", set())
     monkeypatch.setattr(outside, "_fetch_times", collections.deque())
+    monkeypatch.setattr(outside, "_asked_by_hand", set())
     # Адреса в очереди добавления — тоже состояние процесса: тест, который
     # ставит задачу без рабочих потоков, оставлял её здесь навсегда, и
     # скачивания со стороны в следующих тестах ждали «своих задач» вечно.

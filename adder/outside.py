@@ -509,6 +509,8 @@ FETCHES_PER_HOUR = 20
 _fetch_times: deque[float] = deque()
 # Как часто проверять, не кончились ли свои задачи пользователя.
 USER_WAIT_STEP = 1.0
+# Ключи, которые попросил человек кнопкой «В фонотеку», — мимо потолка.
+_asked_by_hand: set[str] = set()
 
 
 def _hour_has_room() -> bool:
@@ -526,13 +528,19 @@ def _wait_for_users_downloads() -> None:
         runtime.shutdown_event.wait(USER_WAIT_STEP)
 
 
-def request(keys: list[str]) -> dict[str, str]:
-    """Попросить скачать. Возвращает состояние каждого ключа после просьбы."""
+def request(keys: list[str], keep: bool = False) -> dict[str, str]:
+    """Попросить скачать. Возвращает состояние каждого ключа после просьбы.
+
+    ``keep`` — человек нажал «В фонотеку»: такое скачивание часового потолка
+    не ждёт, его просили руками, а не радио само.
+    """
     global _worker
     answer = {}
     for key in keys:
         if not _KEY.fullmatch(key or ""):
             continue
+        if keep:
+            _asked_by_hand.add(key)
         state = status(key)
         if state == "wanted":
             with _pending_lock:
@@ -567,7 +575,7 @@ def _work() -> None:
                 _wait_for_users_downloads()
                 if runtime.shutdown_event.is_set():
                     return
-                if not _hour_has_room():
+                if key not in _asked_by_hand and not _hour_has_room():
                     # Остаётся «wanted»: плеер этот трек пропустит, а просьба,
                     # пришедшая, когда час освободится, поставит его заново.
                     logger.info("Трек со стороны %s отложен: за час уже %d", key, FETCHES_PER_HOUR)
@@ -597,6 +605,7 @@ def _work() -> None:
             finally:
                 with _pending_lock:
                     _pending.discard(key)
+                    _asked_by_hand.discard(key)
     finally:
         # Как бы ни кончился цикл — даже исключением, — следующий request()
         # должен знать, что потока нет, и запустить новый.

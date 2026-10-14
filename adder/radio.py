@@ -31,6 +31,7 @@ NEIGHBOURS = 12
 # навсегда (similar), так что ждать приходится только в первый раз.
 SECOND_LEVEL = 6
 SECOND_LEVEL_BUDGET = 4.0
+FIRST_BUDGET = 8.0
 
 
 def _name(artist: str) -> str:
@@ -54,7 +55,14 @@ def station(seed_artist: str, need: int, tracks: list[shuffle.Track]) -> set[str
     """Имена круга: сам артист, похожие на него и, если своих в фонотеке
     меньше ``need``, похожие на похожих."""
     cache = outside._similar_cache()
-    neighbours = similar.similar_artists(seed_artist, cache, limit=NEIGHBOURS)
+    # Первый вопрос о незнакомом артисте — тоже со сроком: Deezer, который
+    # молча держит соединение, не должен держать и плеер.
+    asked = outside._gather(
+        [seed_artist],
+        lambda name: similar.similar_artists(name, cache, limit=NEIGHBOURS),
+        time.monotonic() + FIRST_BUDGET,
+    )
+    neighbours = asked.get(seed_artist, [])
     names = {_name(seed_artist), *(_name(n) for n in neighbours)}
     names.discard("")
     if sum(1 for t in tracks if _name(t.artist) in names) >= need:
@@ -99,9 +107,15 @@ def build(
     core = {t.path for t in eligible if _name(t.artist) in names}
 
     by_path = {t.path: t for t in tracks}
-    before = by_path.get(previous) if previous else None
+    # Продолжаем за последним треком из фонотеки: weave часто ставит в конец
+    # порции трек со стороны, а его темпа сервер не знает.
+    before = None
+    for path in reversed([*recent[-WINDOW:], *([previous] if previous else [])]):
+        if path in by_path:
+            before = by_path[path]
+            break
     opening: list[shuffle.Track] = []
-    if before is None:
+    if not recent and not previous:
         # Радио артиста начинается с него самого — без «предыдущего» иначе
         # первым мог встать любой из похожих.
         own = [t for t in eligible if _name(t.artist) == _name(seed_artist)]
