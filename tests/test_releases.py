@@ -70,10 +70,17 @@ def deezer(monkeypatch):
     return asked
 
 
-def baseline():
-    """Первый проход уже был: дальше всё найденное — «новое»."""
+def baseline(artists=None):
+    """Первый проход по артистам уже был: дальше всё найденное у них — «новое».
+
+    ``artists`` — имя → номер Deezer; по умолчанию Seed с номером 1."""
+    known = {
+        releases._key(name): {"id": rid, "at": NOW - 86400, "checked": True}
+        for name, rid in (artists or {"Seed": "1"}).items()
+    }
     runtime.NEW_RELEASES_FILE.write_text(
-        json.dumps({"artists": {}, "releases": [], "checked_at": NOW - 86400}), encoding="utf-8"
+        json.dumps({"artists": known, "releases": [], "checked_at": NOW - 86400}),
+        encoding="utf-8",
     )
 
 
@@ -123,7 +130,137 @@ def test_an_artist_deezer_does_not_know_by_name_is_skipped_for_a_month(deezer):
     releases.check(LIBRARY, now=NOW + 31 * 86400)
     assert sum(1 for name in deezer["find"] if name == "Channel TV") == 2
     # Найденный артист повторно не ищется вовсе.
-    assert deezer["find"].count("Seed") == 1
+    assert "Seed" not in deezer["find"]
+
+
+def test_a_pass_cut_short_on_the_first_night_baselines_only_who_was_asked(deezer, monkeypatch):
+    """Review: a first pass broken by the network made everyone after the
+    break «new» the next night — two months of releases at once."""
+    library = LIBRARY + [row("Second", "Song", album="Old Two")]
+    ALBUMS["2"] = [
+        {"id": 21, "title": "Two Fresh", "record_type": "album", "release_date": day(8)},
+        {"id": 22, "title": "Old Two", "record_type": "album", "release_date": day(30)},
+    ]
+    monkeypatch.setattr(
+        discography,
+        "find_artist",
+        lambda name: (
+            {"id": {"Seed": "1", "Second": "2"}[name]} if name in ("Seed", "Second") else None
+        ),
+    )
+    real_get = similar._get
+    down = [True]  # the first question about Second, and only that one
+
+    def flaky(client, url, params):
+        if "/artist/2/" in url and down:
+            down.pop()
+            raise similar._Unreachable("ответ 503")
+        return real_get(client, url, params)
+
+    monkeypatch.setattr(similar, "_get", flaky)
+    try:
+        assert releases.check(library, now=NOW)["complete"] is False
+        report = releases.check(library, now=NOW + 86400)
+    finally:
+        del ALBUMS["2"]
+    assert report["complete"] is True
+    # Second got its first look only tonight: its releases are a baseline too.
+    assert report["new"] == []
+    assert "Two Fresh" in [r["title"] for r in releases.shelf()]
+
+
+def test_an_artist_deezer_dropped_does_not_stop_the_night(deezer, monkeypatch):
+    """Review: a stale id answered «no data» every night and the pass broke on it."""
+    library = LIBRARY + [row("Gone", "Song")] * 3
+    baseline({"Gone": "404", "Seed": "1"})
+    real_get = similar._get
+
+    def get(client, url, params):
+        if "/artist/404/" in url:
+            raise similar._NoData("ошибка Deezer: {'code': 800}")
+        return real_get(client, url, params)
+
+    monkeypatch.setattr(similar, "_get", get)
+    report = releases.check(library, now=NOW)
+    assert report["complete"] is True
+    assert [r["title"] for r in report["new"]] == ["Fresh Album"]
+    # Forgotten, so tomorrow it is looked up by name again.
+    assert "gone" not in releases.load()["artists"]
+
+
+def test_deezer_no_data_is_told_apart_from_a_quota_error(monkeypatch):
+    answers = iter(
+        [
+            {"error": {"type": "DataException", "message": "no data", "code": 800}},
+            {"error": {"type": "Exception", "message": "Quota limit exceeded", "code": 4}},
+        ]
+    )
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json=next(answers)))
+    monkeypatch.setattr(similar, "MIN_INTERVAL", 0.0)
+    with httpx.Client(transport=transport) as client:
+        with pytest.raises(similar._NoData):
+            similar._get(client, "https://api.deezer.com/artist/1/albums", {})
+        with pytest.raises(similar._Unreachable) as quota:
+            similar._get(client, "https://api.deezer.com/artist/1/albums", {})
+    assert not isinstance(quota.value, similar._NoData)
+
+
+def test_a_namesake_is_not_adopted(deezer, monkeypatch):
+    """Review: the most famous «X» on Deezer is not the small «X» of the library."""
+    monkeypatch.setattr(discography, "find_artist", lambda name: {"id": "7", "name": name})
+    ALBUMS["7"] = [{"id": 71, "title": "Stadium", "record_type": "album", "release_date": day(4)}]
+    real_get = similar._get
+
+    def get(client, url, params):
+        if "/artist/7/top" in url:
+            return [{"title": "Their Hit"}]
+        return real_get(client, url, params)
+
+    monkeypatch.setattr(similar, "_get", get)
+    try:
+        report = releases.check([row("Tiny", "My Song")], now=NOW)
+    finally:
+        del ALBUMS["7"]
+    assert releases.shelf() == []
+    assert report["unknown"] == 1
+    entry = releases.load()["artists"]["tiny"]
+    assert entry["id"] is None and entry["namesake"] == "7"
+
+
+def test_the_same_name_is_adopted_when_a_title_matches_its_top_tracks(deezer, monkeypatch):
+    monkeypatch.setattr(discography, "find_artist", lambda name: {"id": "7", "name": name})
+    ALBUMS["7"] = [{"id": 71, "title": "Stadium", "record_type": "album", "release_date": day(4)}]
+    real_get = similar._get
+
+    def get(client, url, params):
+        if "/artist/7/top" in url:
+            return [{"title": "My Song"}]
+        return real_get(client, url, params)
+
+    monkeypatch.setattr(similar, "_get", get)
+    try:
+        releases.check([row("Tiny", "My Song")], now=NOW)
+    finally:
+        del ALBUMS["7"]
+    assert [r["title"] for r in releases.shelf()] == ["Stadium"]
+    assert releases.load()["artists"]["tiny"]["id"] == "7"
+
+
+def test_a_release_that_drops_off_and_returns_is_not_new_again(deezer):
+    """Review: an artist slipping out of the top and back made its releases
+    «new» a second time — a second notice, a second download."""
+    baseline()
+    assert releases.check(LIBRARY, now=NOW)["new"]
+    without_seed = [r for r in LIBRARY if not r["artist"].startswith("Seed")]
+    releases.check(without_seed, now=NOW + 86400)
+    assert releases.shelf() == []
+    assert releases.check(LIBRARY, now=NOW + 2 * 86400)["new"] == []
+
+
+def test_valid_json_of_the_wrong_shape_is_an_empty_shelf():
+    for broken in ({"releases": None}, {"releases": [1, "x", {"id": 5}]}, {"artists": []}):
+        runtime.NEW_RELEASES_FILE.write_text(json.dumps(broken), encoding="utf-8")
+        assert releases.shelf() == []
 
 
 def test_artists_are_the_biggest_first_and_capped(monkeypatch):
@@ -148,7 +285,7 @@ def test_requests_are_paced(monkeypatch):
     monkeypatch.setattr(
         httpx, "Client", lambda **kw: real_client(transport=httpx.MockTransport(handler), **kw)
     )
-    baseline()
+    baseline({f"A{i}": f"A{i}" for i in range(12)})
     releases.check([row(f"A{i}", "t") for i in range(12)], now=NOW)
 
     assert len(times) == 12
@@ -244,6 +381,79 @@ def test_an_unreachable_service_is_tried_again_next_night(deezer, monkeypatch):
     releases.check(LIBRARY, now=NOW)
     assert releases.queue_downloads() == 0
     assert not releases.load()["releases"][0].get("queued")
+
+
+def _mock_service(monkeypatch, status_for=lambda body: 200):
+    monkeypatch.setattr(config, "NEW_RELEASES_AUTO", True)
+    monkeypatch.setattr(releases, "_service_token", lambda: "tok")
+    posts = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        posts.append(body)
+        return httpx.Response(status_for(body), json={})
+
+    real_client = httpx.Client
+    monkeypatch.setattr(
+        httpx, "Client", lambda **kw: real_client(transport=httpx.MockTransport(handler), **kw)
+    )
+    return posts
+
+
+def _shelf_of(*items):
+    runtime.NEW_RELEASES_FILE.write_text(
+        json.dumps({"artists": {}, "releases": list(items), "checked_at": NOW}), encoding="utf-8"
+    )
+
+
+def _release(rid, date):
+    return {"id": rid, "artist": "Seed", "title": f"R{rid}", "kind": "album", "date": date}
+
+
+def test_one_refused_release_does_not_block_the_rest(deezer, monkeypatch):
+    """Review: one 422 broke the loop, every night, for two months."""
+    posts = _mock_service(
+        monkeypatch, lambda body: 422 if body["tracks"][0]["album"] == "31" else 200
+    )
+    _shelf_of(_release("31", day(3)), _release("32", day(2)))
+    assert releases.queue_downloads() == 1
+    assert [p["tracks"][0]["album"] for p in posts] == ["31", "32"]
+    # The refused one is not asked again tomorrow.
+    assert all(r["queued"] for r in releases.load()["releases"])
+    assert releases.queue_downloads() == 0
+
+
+def test_a_service_that_turns_the_token_away_is_tried_again(deezer, monkeypatch):
+    _mock_service(monkeypatch, lambda body: 401)
+    _shelf_of(_release("31", day(3)), _release("32", day(2)))
+    assert releases.queue_downloads() == 0
+    assert not any(r.get("queued") for r in releases.load()["releases"])
+
+
+def test_a_release_not_out_yet_waits_for_its_date(deezer, monkeypatch):
+    posts = _mock_service(monkeypatch)
+    tomorrow = (datetime.date.today() + datetime.timedelta(days=1)).isoformat()
+    _shelf_of(_release("31", tomorrow))
+    assert releases.queue_downloads() == 0
+    assert posts == []
+
+
+def test_turning_auto_download_on_does_not_fetch_the_backlog(deezer, monkeypatch):
+    """Review: what was found while it was off stays off."""
+    baseline()
+    releases.check(LIBRARY, now=NOW)  # NEW_RELEASES_AUTO is off
+    posts = _mock_service(monkeypatch)
+    assert releases.queue_downloads() == 0
+    assert posts == []
+
+
+def test_the_service_address_follows_host(monkeypatch):
+    monkeypatch.setattr(config, "HOST", "192.168.1.5")
+    assert releases._service_url() == f"http://192.168.1.5:{config.PORT}/api/artists/import"
+    monkeypatch.setattr(config, "HOST", "0.0.0.0")
+    assert releases._service_url().startswith("http://127.0.0.1:")
+    monkeypatch.setattr(config, "HOST", "::1")
+    assert releases._service_url().startswith("http://[::1]:")
 
 
 def _export_script():

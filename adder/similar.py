@@ -35,6 +35,8 @@ logger = logging.getLogger(__name__)
 SEARCH = "https://api.deezer.com/search/artist"
 RELATED = "https://api.deezer.com/artist/{id}/related"
 TOP = "https://api.deezer.com/artist/{id}/top"
+# Код ошибки Deezer «DataException: no data».
+NO_DATA = 800
 TIMEOUT = 8
 MISS_TTL = 30 * 24 * 3600
 
@@ -43,6 +45,14 @@ class _Unreachable(Exception):
     """Deezer не ответил. Отличать это от «не знает такого» приходится потому,
     что промах можно запомнить, а обрыв связи запоминать нельзя: завтра тот же
     артист найдётся."""
+
+
+class _NoData(_Unreachable):
+    """Deezer ответил «нет данных» (код 800) — про этот номер, а не про связь.
+
+    Наследник ``_Unreachable``: кто не различает, тот и дальше считает это
+    сбоем. Различают новые релизы: удалённый у Deezer артист не должен
+    обрывать ночной проход на себе каждую ночь."""
 
 
 def _slot(cache_dir: Path, name: str, kind: str = "") -> Path:
@@ -113,7 +123,10 @@ def _get(client: httpx.Client, url: str, params: dict) -> list:
     except ValueError as exc:
         raise _Unreachable("ответ не JSON") from exc
     if "error" in body:
-        raise _Unreachable(f"ошибка Deezer: {body['error']}")
+        error = body["error"]
+        if isinstance(error, dict) and error.get("code") == NO_DATA:
+            raise _NoData(f"ошибка Deezer: {error}")
+        raise _Unreachable(f"ошибка Deezer: {error}")
     return body.get("data") or []
 
 

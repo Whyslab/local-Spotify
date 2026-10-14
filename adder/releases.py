@@ -8,17 +8,21 @@ Deezer, что у них вышло за последние ``RECENT_DAYS`` дн
 
 Кого спрашиваем. Только артиста, которого Deezer знает под **тем же**
 именем (``discography.find_artist``): в фонотеке есть каналы YouTube вместо
-артистов, и по такому имени Deezer назвал бы чужие релизы. Номер артиста
-запоминается навсегда; «не нашёлся» — на месяц, потом ищем снова.
+артистов, и по такому имени Deezer назвал бы чужие релизы. И не тёзку: хоть
+одно название из фонотеки должно быть у него среди релизов или популярных
+треков (``_same_artist``). Номер артиста запоминается, пока Deezer его знает;
+«не нашёлся» — на месяц, потом ищем снова.
 
 Что новое. Альбом, EP или сингл не старше ``RECENT_DAYS``, не версия
 (ремикс, sped up — как в «Артисте целиком») и не то, что уже лежит в
 фонотеке: альбом с тем же названием или трек с названием сингла у того же
-артиста. Уведомление на рабочем столе — только о впервые увиденном.
+артиста. Уведомление на рабочем столе — только о впервые увиденном, и не в
+первый проход по артисту: тогда всё его за два месяца — точка отсчёта.
 
 Скачивать само — настройка ``NEW_RELEASES_AUTO``, по умолчанию выключена:
 фонотека не должна расти без спроса. Включённая — новые треки уходят в
 обычное «Артист целиком» через службу (``POST /api/artists/import``).
+Найденное, пока она была выключена, так и остаётся нескачанным.
 
 Запросы идут через ``similar._get``: не чаще одного в ``similar.MIN_INTERVAL``
 (0,15 с — это 33 за пять секунд при лимите Deezer 50).
@@ -57,11 +61,21 @@ def load() -> dict:
     try:
         state = json.loads(runtime.NEW_RELEASES_FILE.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return {"artists": {}, "releases": []}
+        state = {}
     if not isinstance(state, dict):
-        return {"artists": {}, "releases": []}
-    state.setdefault("artists", {})
-    state.setdefault("releases", [])
+        state = {}
+    # Файл чужим не пишется, но и разобранный JSON бывает не той формы:
+    # главная из-за этого падать не должна.
+    if not isinstance(state.get("artists"), dict):
+        state["artists"] = {}
+    if not isinstance(state.get("memory"), dict):
+        state["memory"] = {}
+    releases = state.get("releases")
+    state["releases"] = [
+        r
+        for r in (releases if isinstance(releases, list) else [])
+        if isinstance(r, dict) and all(isinstance(r.get(k), str) for k in ("id", "artist", "title"))
+    ]
     return state
 
 
@@ -108,33 +122,43 @@ def check(rows: list[dict], now: float | None = None) -> dict:
         "%Y-%m-%d"
     )
     state = load()
-    # Первый проход — точка отсчёта: всё за два месяца сразу было бы не
-    # «новым», а дискографией. Полка покажет его, но без уведомления и
-    # без автоскачивания.
-    first = "checked_at" not in state
     known = state["artists"]
+    # Что уже видели (и отдали ли в скачивание) — отдельно от полки: релиз
+    # артиста, выпавшего из первых ста пятидесяти, иначе вернулся бы «новым».
+    memory: dict[str, dict] = state["memory"]
     have = _have(rows)
-    old = {
-        item["id"]: item for item in state["releases"] if isinstance(item, dict) and "id" in item
-    }
+    old = {item["id"]: item for item in state["releases"]}
     found: dict[str, dict] = {}
     asked = unknown = 0
     reachable = True
 
     with httpx.Client(timeout=similar.TIMEOUT) as client:
         for name in library_artists(rows):
-            entry = known.get(_key(name))
+            key = _key(name)
+            entry = known.get(key)
             try:
                 if entry is None or (not entry.get("id") and now - entry.get("at", 0) > MISS_TTL):
                     artist = discography.find_artist(name)
                     entry = {"id": artist["id"] if artist else None, "at": now}
-                    known[_key(name)] = entry
+                    known[key] = entry
                 if not entry.get("id"):
                     unknown += 1
                     continue
                 albums = similar._get(
                     client, discography.ALBUMS.format(id=entry["id"]), {"limit": 100}
                 )
+                if not entry.get("checked") and not _same_artist(client, entry, albums, have, key):
+                    # Тёзка: по имени нашёлся чужой артист. Как промах — через
+                    # месяц поищем снова.
+                    known[key] = {"id": None, "at": now, "namesake": entry["id"]}
+                    unknown += 1
+                    continue
+            except similar._NoData as exc:
+                # Такого номера у Deezer больше нет: завтра ищем по имени заново.
+                logger.info("Новые релизы: Deezer не знает %s (%s)", name, exc)
+                known.pop(key, None)
+                unknown += 1
+                continue
             except (similar._Unreachable, httpx.HTTPError) as exc:
                 # Сеть пропала посреди прохода: что успели — сохраняем, а
                 # прежние находки не трогаем — их не опровергли.
@@ -142,31 +166,42 @@ def check(rows: list[dict], now: float | None = None) -> dict:
                 reachable = False
                 break
             asked += 1
+            # Первый проход по артисту — точка отсчёта: всё его за два месяца
+            # сразу было бы не «новым», а дискографией. Полка это покажет, но
+            # без уведомления и без скачивания. По артисту, а не по файлу:
+            # проход, оборванный сетью, иначе сделал бы точкой отсчёта только
+            # первых, а остальных назавтра объявил бы новыми целиком.
+            baseline = not entry.get("checked")
+            entry["checked"] = True
             for album in albums:
                 date = album.get("release_date") or ""
                 title = (album.get("title") or "").strip()
+                rid = str(album.get("id") or "")
                 if (
                     album.get("record_type") not in discography.KINDS
                     or date < since
                     or not title
+                    or not rid.isdigit()
                     or discography.is_version(title)
                 ):
                     continue
+                before = memory.get(rid) or old.get(rid) or {}
                 release = {
-                    "id": str(album.get("id")),
+                    "id": rid,
                     "artist": name,
                     "title": title,
                     "kind": album["record_type"],
                     "date": date,
                     "cover": album.get("cover_medium") or "",
-                    "seen": old.get(str(album.get("id")), {}).get("seen", now),
+                    "seen": before.get("seen", now),
+                    # Найденное, пока скачивание выключено, им и останется:
+                    # включённое позже не должно разом скачать весь запас.
+                    "queued": before.get("queued", baseline or not config.NEW_RELEASES_AUTO),
                 }
-                if release["id"] in old:
-                    release["queued"] = old[release["id"]].get("queued", False)
-                elif first:
-                    release["queued"] = True
+                if not before:
+                    release["fresh"] = not baseline
                 if not _is_had(release, have):
-                    found[release["id"]] = release
+                    found[rid] = release
 
     if not reachable:
         # Не дошли до всех — остальные прежние находки ещё в силе.
@@ -175,10 +210,42 @@ def check(rows: list[dict], now: float | None = None) -> dict:
                 found[rid] = item
 
     releases = sorted(found.values(), key=lambda r: (r["date"], r["seen"]), reverse=True)[:KEEP]
-    fresh = [] if first else [r for r in releases if r["id"] not in old]
+    fresh = [r for r in releases if r.pop("fresh", False)]
+    for r in found.values():
+        r.pop("fresh", None)
+        memory[r["id"]] = {"date": r["date"], "seen": r["seen"], "queued": r.get("queued", False)}
+    # Помнить дольше окна незачем: старше двух месяцев релиз уже не новый.
+    state["memory"] = {rid: m for rid, m in memory.items() if m.get("date", "") >= since}
     state.update(artists=known, releases=releases, checked_at=now)
     _save(state)
     return {"new": fresh, "asked": asked, "unknown": unknown, "complete": reachable}
+
+
+def _same_artist(
+    client: httpx.Client, entry: dict, albums: list[dict], have: dict[str, set[str]], key: str
+) -> bool:
+    """Тот ли это артист, что в фонотеке: хоть одно название из фонотеки
+    есть у него среди релизов или популярных треков.
+
+    Имя совпадает и у тёзок, и ``find_artist`` из них берёт самого
+    известного. Без этой сверки маленький артист фонотеки получал бы на
+    полку — а с ``NEW_RELEASES_AUTO`` и в фонотеку — релизы знаменитого."""
+    mine = have.get(key, set())
+    titles = {discography._title_key(a.get("title") or "") for a in albums}
+    if not mine & titles:
+        top = similar._get(client, similar.TOP.format(id=entry["id"]), {"limit": 50})
+        titles |= {discography._title_key(t.get("title") or "") for t in top}
+    titles.discard("")
+    return bool(mine & titles)
+
+
+def _service_url() -> str:
+    """Куда стучаться к службе: она слушает HOST, а 0.0.0.0 и :: — это все
+    адреса, и тогда достаточно своего."""
+    host = config.HOST if config.HOST not in ("", "0.0.0.0", "::") else "127.0.0.1"
+    if ":" in host:
+        host = f"[{host}]"
+    return f"http://{host}:{config.PORT}/api/artists/import"
 
 
 def _service_token() -> str:
@@ -217,25 +284,41 @@ def queue_downloads() -> int:
     if not config.NEW_RELEASES_AUTO:
         return 0
     state = load()
-    todo = [r for r in state["releases"] if not r.get("queued")]
+    today = datetime.date.today().isoformat()
+    # Ещё не вышедшее (предзаказ) ждёт своей даты: на YouTube его пока нет.
+    todo = [r for r in state["releases"] if not r.get("queued") and r.get("date", "") <= today]
     if not todo:
         return 0
     sent = 0
-    try:
-        with httpx.Client(timeout=similar.TIMEOUT) as client:
-            for release in todo:
+    with httpx.Client(timeout=similar.TIMEOUT) as client:
+        for release in todo:
+            try:
                 tracks = _release_tracks(client, release)
                 if tracks:
                     answer = client.post(
-                        f"http://127.0.0.1:{config.PORT}/api/artists/import",
+                        _service_url(),
                         json={"tracks": tracks},
                         headers={"Authorization": f"Bearer {_service_token()}"},
                     )
                     answer.raise_for_status()
-                release["queued"] = True
+            except similar._NoData as exc:
+                # Альбома у Deezer больше нет — и не будет: больше не пробуем.
+                logger.warning("Новые релизы: %s не скачать (%s)", release["id"], exc)
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code in (401, 403) or exc.response.status_code >= 500:
+                    # Служба не пустила или лежит — дело не в релизе.
+                    logger.warning("Новые релизы: служба не приняла (%s)", exc)
+                    break
+                # Отказ про сам релиз (422 и т. п.): каждую ночь он повторится.
+                logger.warning("Новые релизы: служба отказала %s (%s)", release["id"], exc)
+            except (similar._Unreachable, httpx.HTTPError) as exc:
+                logger.warning("Новые релизы: не отдал в скачивание (%s)", exc)
+                break
+            else:
                 sent += 1
-    except (similar._Unreachable, httpx.HTTPError) as exc:
-        logger.warning("Новые релизы: не отдал в скачивание (%s)", exc)
+            release["queued"] = True
+            if release["id"] in state["memory"]:
+                state["memory"][release["id"]]["queued"] = True
     _save(state)
     return sent
 
