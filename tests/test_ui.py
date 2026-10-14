@@ -3254,6 +3254,9 @@ def test_the_big_player_fits_a_low_window_and_play_is_a_white_circle(page):
 def test_home_asks_the_server_once_while_its_answer_is_on_the_way(page):
     """Library and back before the home page came: a second request drew the
     whole page again, scrolled shelves back and skipped a set of finds."""
+    # Запрос, ушедший при загрузке, ещё в пути — оба вызова ждали бы его, и
+    # считать было бы нечего.
+    page.wait_for_function("homeLoading === null")
     asked = page.evaluate(
         """async () => {
             const real = window.fetch;
