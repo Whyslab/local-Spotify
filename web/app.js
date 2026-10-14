@@ -1045,17 +1045,27 @@ function homeNote(box, text) {
     box.replaceChildren(note);
 }
 
-async function home() {
+/* Запрос главной в пути. Ушли в фонотеку и вернулись, пока он шёл, — второй
+ * такой же запрос перерисовал бы всю главную ещё раз: полки вернулись бы в
+ * начало, а полка находок пропустила бы набор. Ждём тот же. */
+let homeLoading = null;
+
+function home() {
     const box = document.getElementById("homeBody");
-    if (!box) return;
+    if (!box) return Promise.resolve();
     if (homeCache) {
         if (homeRendered !== homeCache) {
             renderHome(homeCache);
             homeRendered = homeCache;
         }
         markAppReady();
-        return;
+        return Promise.resolve();
     }
+    if (!homeLoading) homeLoading = loadHome(box).finally(() => { homeLoading = null; });
+    return homeLoading;
+}
+
+async function loadHome(box) {
     try {
         const r = await fetch("/api/home", { headers: headers() });
         if (!r.ok) { homeNote(box, "Не собралось."); return; }

@@ -3245,6 +3245,27 @@ def test_the_big_player_fits_a_low_window_and_play_is_a_white_circle(page):
     assert play == "rgb(255, 255, 255)"
 
 
+def test_home_asks_the_server_once_while_its_answer_is_on_the_way(page):
+    """Library and back before the home page came: a second request drew the
+    whole page again, scrolled shelves back and skipped a set of finds."""
+    asked = page.evaluate(
+        """async () => {
+            const real = window.fetch;
+            let asked = 0;
+            window.fetch = (url, options) => {
+                if (String(url).startsWith('/api/home')) asked += 1;
+                return real(url, options);
+            };
+            homeCache = null;
+            homeRendered = null;
+            await Promise.all([home(), home()]);
+            window.fetch = real;
+            return asked;
+        }"""
+    )
+    assert asked == 1
+
+
 def test_new_finds_on_every_visit_home(page, monkeypatch):
     from adder import shelves
 
@@ -3481,6 +3502,8 @@ def test_new_releases_shelf_opens_the_artists_discography(page, fake_deezer_arti
         json.dumps({"artists": {}, "releases": [found], "checked_at": 1.0}), encoding="utf-8"
     )
     try:
+        # Ответ на запрос, ушедший при загрузке, пришёл бы без новых данных.
+        page.wait_for_function("homeLoading === null")
         page.evaluate("homeCache = null; switchView('viewHome'); home()")
         section = page.locator(".o-section").filter(has_text="Новые релизы")
         section.wait_for()
@@ -3529,6 +3552,8 @@ def test_weekly_selection_starts_from_a_downloaded_track(page, monkeypatch):
     _weekly(keys)
     try:
         page.evaluate(SPY_PLAY_QUEUE)
+        # Ответ на запрос, ушедший при загрузке, пришёл бы без новых данных.
+        page.wait_for_function("homeLoading === null")
         page.evaluate("homeCache = null; switchView('viewHome'); home()")
         section = page.locator(".o-section").filter(has_text="Подборка недели")
         section.wait_for()
@@ -3555,6 +3580,8 @@ def test_weekly_selection_not_downloaded_yet_says_so(page, monkeypatch):
     _weekly({"d" * 16: False, "e" * 16: False})
     try:
         page.evaluate(SPY_PLAY_QUEUE)
+        # Ответ на запрос, ушедший при загрузке, пришёл бы без новых данных.
+        page.wait_for_function("homeLoading === null")
         page.evaluate("homeCache = null; switchView('viewHome'); home()")
         section = page.locator(".o-section").filter(has_text="Подборка недели")
         section.wait_for()
