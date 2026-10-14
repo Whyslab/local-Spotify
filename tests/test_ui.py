@@ -2689,13 +2689,13 @@ def test_all_playlists_are_a_tab_with_a_grid(page, server):
     page.wait_for_function("activeView === 'viewPlaylists'")
 
 
-def test_a_library_row_has_one_menu_button_with_four_actions(page):
+def test_a_library_row_has_one_menu_button_with_five_actions(page):
     open_library(page)
     buttons = row(page, "Quiet").get_by_role("button")
     assert buttons.count() == 1
     buttons.first.click()
     items = page.get_by_role("menuitem").all_inner_texts()
-    assert items == ["Играть", "В подборку…", "Изменить теги…", "Удалить…"]
+    assert items == ["Играть", "Радио", "В подборку…", "Изменить теги…", "Удалить…"]
     page.keyboard.press("Escape")
     assert page.get_by_role("menuitem").count() == 0
 
@@ -3214,12 +3214,60 @@ def test_an_artist_page_shows_its_own_header(page):
         # Меню открывается после ответа «своя ли шапка» — ждём его.
         page.get_by_role("menuitem").first.wait_for()
         assert page.get_by_role("menuitem").all_inner_texts() == [
+            "Радио",
             "Скачать недостающее…",
             "Другая шапка…",
             "Вернуть фото из Deezer",
         ]
     finally:
         artist_photos.delete("Quiet")
+
+
+RADIO_JS = """() => {
+    const real = window.fetch;
+    window.__radio = [];
+    window.fetch = (url, options = {}) => {
+        if (!String(url).startsWith('/api/radio')) return real(url, options);
+        window.__radio.push(JSON.parse(options.body));
+        // Первая порция — настоящая, от сервера; следующие — одна строка.
+        if (window.__radio.length === 1) return real(url, options);
+        return Promise.resolve(new Response(JSON.stringify({
+            artist: 'Loud Band', external: 0,
+            queue: [{path: 'Quiet/Singles/Quiet.m4a', artist: 'Quiet', title: 'Quiet', duration: 12}],
+        }), {status: 200, headers: {'Content-Type': 'application/json'}}));
+    };
+}"""
+
+
+def test_radio_queue_refills(page):
+    """Plan 4c.1: «Радио» у артиста — очередь начинается с него, а когда
+    впереди меньше пяти треков, плеер просит следующую порцию сам и шлёт
+    с ней сыгранное и стоящее в очереди."""
+    page.evaluate(RADIO_JS)
+    page.evaluate("openArtistPage('Loud Band')")
+    page.wait_for_selector("#artistBody .o-more-round")
+    page.locator("#artistBody .o-more-round").click()
+    page.get_by_role("menuitem", name="Радио").click()
+
+    page.wait_for_function("player.queueMode === 'radio' && player.queue.length > 0")
+    assert page.evaluate("player.queue[0].artist") == "Loud Band"
+    assert page.evaluate("player.queueSource") == {"kind": "radio", "seed": {"artist": "Loud Band"}}
+
+    # Фонотека теста мала — порция короче пяти, и плеер сразу просит ещё.
+    page.wait_for_function("window.__radio.length >= 2 && player.queue.at(-1).title === 'Quiet'")
+    first, second = page.evaluate("window.__radio.slice(0, 2)")
+    assert first == {"artist": "Loud Band", "recent": []}
+    assert second["artist"] == "Loud Band"
+    assert second["recent"] == page.evaluate("player.queue.slice(0, -1).map(t => t.path)")
+    assert page.evaluate("player.queueMode") == "radio"
+
+
+def test_radio_from_a_track_plays_it_first(page):
+    open_library(page)
+    page.evaluate(f"startRadio({{path: {LOUD}.path}}, {LOUD})")
+    page.wait_for_function("player.queueMode === 'radio' && player.queue.length > 1")
+    assert page.evaluate("player.queue[0].path") == "Loud Band/Singles/Loud.opus"
+    assert page.evaluate("player.queue.slice(1).every(t => t.path !== player.queue[0].path)")
 
 
 def _tiny_png() -> bytes:

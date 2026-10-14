@@ -1719,6 +1719,7 @@ function openLibraryMenu(button, card, t, rows) {
         return b;
     };
     item("Играть", () => playFromLibrary(t, rows));
+    item("Радио", () => startRadio({ path: t.path }, t));
     item("В подборку…", () => askAddToPlaylist(card, t));
     item("Изменить теги…", () => askEdit(card, t, rows));
     const line = document.createElement("div");

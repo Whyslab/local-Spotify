@@ -57,6 +57,7 @@ It is not built to be a public SaaS or to work around YouTube's restrictions —
 * **A player** — the same page in two widths, with playback served through short-lived signed URLs, so an `<audio>` element can seek without the API token ever entering a URL.
 * **Play journal** — Navidrome keeps a play count and a last-played date, not a log. This one records track, time, how far it got and whether it was skipped.
 * **Shuffling that has a shape** — the library has no genre or BPM tags at all, so `scripts/analyze_audio.py` measures tempo, energy, brightness and key from the audio itself, and queues are walked rather than sampled: neighbours are close in tempo, the same artist does not follow itself, and a track heard recently is unlikely to come back. See `scripts/README.md`.
+* **Radio** — «Радио» in a track's or an artist's «⋯» starts an endless queue: the artist, the artists Deezer calls similar that are in the library, and about one track in three from outside it. It comes in portions of 20, the next one asked for when fewer than five are left; the last 50 tracks and anything recently skipped are left out. Downloads from outside are capped at 20 an hour and wait while the add queue is busy.
 * **Library audit tooling** — offline scripts for finding duplicates, checking metadata, and bulk-migrating a playlist from CSV.
 
 ---
@@ -305,6 +306,7 @@ Authorise with an `Authorization: Bearer <API_TOKEN>` header. `/health` without 
 | `POST` | `/api/shuffle/smart` | Smart shuffle of any set of tracks (album, current queue); about a third are new tracks |
 | `GET` `POST` | `/api/outside/status` `/api/outside/prefetch` | State of new (non-library) tracks; download ahead |
 | `POST` | `/api/outside/{key}/keep` | Put a new track into the library through the normal import |
+| `POST` | `/api/radio` | Next portion of a radio from a track or an artist, without the recent tracks sent |
 | `GET` | `/api/lyrics` | Lyrics, with timings where available |
 | `GET` `POST` | `/api/lyrics/candidates` `/api/lyrics/choose` `/api/lyrics/custom` | Pick lyrics by hand or paste your own |
 
@@ -424,7 +426,7 @@ The suite runs fully offline and needs no real `.env`; the import and streaming 
 * **writing into the library** — `process()` end to end on a real one-second AAC file (`tests/fixtures/tone.m4a`): tags read back with mutagen, the `Artist/Singles/Title.m4a` layout, cover fallback, corrupt downloads, content deduplication;
 * the API: authorisation, link validation and canonicalisation, deletion and path traversal, `/health`, task recovery after a restart, graceful shutdown, and an XSS regression in the frontend;
 * **the panel and player in a real browser** (`tests/test_ui.py`, Playwright + Chromium): tag editing, ReplayGain volume, fades, the sleep timer, the DJ transition's handover (`tests/test_ui_mix.py`), retry, library health, album choice, duplicates, and titles rendered as text;
-* playlists, Navidrome synchronisation, streaming signatures, file import, lyrics, shuffles and the smart-shuffle downloads.
+* playlists, Navidrome synchronisation, streaming signatures, file import, lyrics, shuffles, the radio and the smart-shuffle downloads.
 
 CI (`.github/workflows/ci.yml`) runs `ruff check`, `ruff format --check`, `mypy`, `compileall` and the full suite on a clean environment for every push and pull request.
 

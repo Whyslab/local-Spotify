@@ -20,8 +20,8 @@ const player = {
     playlist: null,      // {name, revision, entries}
     reported: false,     // one journal entry per track, not one per pause
     started: false,      // the current track has actually played ("playing" fired)
-    queueMode: "manual", // "smart", "plain" or "manual" -- see reportPlay
-    queueSource: null,   // {kind: "playlist", name} | {kind: "library"} | null
+    queueMode: "manual", // "smart", "plain", "radio" or "manual" -- see reportPlay
+    queueSource: null,   // {kind: "playlist", name} | {kind: "library"} | {kind: "radio", seed} | null
 
     /* Порядок обхода очереди — список её позиций, а не сама очередь.
      * Так перемешивание не перетасовывает список, который человек видит:
@@ -330,6 +330,7 @@ function trackStarted() {
     renderQueuePanel();
     prefetchOutside();
     extendSmartQueue();
+    extendRadio();
     prefetchNextStream();
 }
 
@@ -775,6 +776,99 @@ function restoreBeforeSmart() {
     buildOrder(index);
     markPlayingRow();
     renderQueuePanel();
+}
+
+/* ---------------- Радио ----------------
+ *
+ * Очередь без конца от трека или артиста (adder/radio.py): сервер отдаёт
+ * порцию по двадцать — сам артист, похожие на него и примерно каждый третий
+ * трек со стороны, — а плеер просит следующую, когда в нынешней остаётся
+ * меньше RADIO_AHEAD. С собой посылаются последние RADIO_RECENT треков: их в
+ * порции не будет, а за последним из них порция продолжит по темпу.
+ *
+ * Источник очереди — {kind: "radio", seed}, где seed — {path} или {artist}:
+ * с ним же просится каждая следующая порция.
+ */
+const RADIO_AHEAD = 5;
+const RADIO_RECENT = 50;
+/* Чья просьба о порции сейчас в пути: вторая, пока идёт первая, не нужна.
+ * Не флаг, а метка — запуск нового радио не должен снимать чужую. */
+let radioLoading = null;
+
+async function fetchRadio(seed, recent) {
+    const r = await fetchWithin("/api/radio", {
+        method: "POST",
+        headers: { ...headers(), "Content-Type": "application/json" },
+        body: JSON.stringify({ ...seed, recent: recent.slice(-RADIO_RECENT) }),
+    }, SHUFFLE_TIMEOUT_MS);
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.detail || ("Ошибка " + r.status));
+    return data;
+}
+
+/* `track` — радио от трека: он играет сразу, а порция встаёт за ним, когда
+ * придёт. От артиста играть нечего, пока не придёт порция. */
+async function startRadio(seed, track = null) {
+    /* Порядок радио задаёт сервер — перемешивание поверх его бы ломало. */
+    player.shuffle = false;
+    renderPlayerModes();
+    const source = { kind: "radio", seed };
+    if (track) playQueue([track], 0, "radio", source);
+    else player.smartTicket += 1;
+    const ticket = player.smartTicket;
+    setPlayerNote("Собираю радио…");
+    const mine = {};
+    radioLoading = mine;
+    try {
+        const data = await fetchRadio(seed, track ? [track.path] : []);
+        if (ticket !== player.smartTicket) return;
+        const queue = data.queue || [];
+        if (!queue.length) {
+            setPlayerNote("Для радио ничего не нашлось");
+            return;
+        }
+        if (track) {
+            player.queue = [...player.queue, ...queue];
+            buildOrder(player.index);
+            renderQueuePanel();
+            prefetchOutside();
+        } else {
+            playQueue(queue, 0, "radio", source);
+        }
+        setPlayerNote(`Радио «${data.artist || seed.artist || ""}»`
+            + (data.external ? `, новых ${data.external}` : ""));
+    } catch (e) {
+        if (ticket !== player.smartTicket) return;
+        setPlayerNote(unreachableError(e) ? "Радио не собралось: нет связи с сервером" : e.message);
+    } finally {
+        if (radioLoading === mine) radioLoading = null;
+    }
+}
+
+async function extendRadio() {
+    const source = player.queueSource;
+    if (player.queueMode !== "radio" || !source || source.kind !== "radio" || radioLoading) return;
+    const route = player.order.length ? player.order : player.queue.map((_, i) => i);
+    const at = route.indexOf(player.index);
+    if (at < 0 || route.length - at - 1 >= RADIO_AHEAD) return;
+    const ticket = player.smartTicket;
+    const queueAtStart = player.queue;
+    const mine = {};
+    radioLoading = mine;
+    try {
+        const data = await fetchRadio(source.seed, route.map(i => player.queue[i].path));
+        if (ticket !== player.smartTicket || player.queue !== queueAtStart) return;
+        const more = data.queue || [];
+        if (!more.length) return;
+        player.queue = [...player.queue, ...more];
+        buildOrder(player.index);
+        renderQueuePanel();
+        prefetchOutside();
+    } catch (e) {
+        /* Не вышло — попробуем на следующем треке; очередь пока доигрывает своё. */
+    } finally {
+        if (radioLoading === mine) radioLoading = null;
+    }
 }
 
 function cycleRepeat() {
@@ -2336,8 +2430,9 @@ function openTrackMenu(button, position) {
     const separator = document.createElement("div");
     separator.className = "row-menu-line";
     menu.appendChild(separator);
-    menu.appendChild(item("Заменить другой версией…", "", () => askForReplacement(button, position)));
     const entry = player.playlist.entries[position];
+    if (entry && !isOutside(entry)) menu.appendChild(item("Радио", "", () => startRadio({ path: entry.path }, entry)));
+    menu.appendChild(item("Заменить другой версией…", "", () => askForReplacement(button, position)));
     if (offline.supported && entry && !isOutside(entry)) {
         menu.appendChild(item(isDownloaded(entry.path) ? "Убрать с телефона" : "Скачать на телефон", "",
             () => toggleTrackDownload(entry)));

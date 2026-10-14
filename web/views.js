@@ -781,8 +781,8 @@ function artistHero(name, fallbackPath) {
     return cover;
 }
 
-/* «⋯» артиста: скачать недостающее из его дискографии; своя шапка вместо
- * фото из Deezer — и обратно. */
+/* «⋯» артиста: радио от него; скачать недостающее из его дискографии;
+ * своя шапка вместо фото из Deezer — и обратно. */
 async function openArtistMenu(anchor, name) {
     const wasMine = openMenu && openMenu.button === anchor;
     closeTrackMenu();
@@ -802,6 +802,7 @@ async function openArtistMenu(anchor, name) {
         menu.appendChild(b);
         return b;
     };
+    item("Радио", () => startRadio({ artist: name }));
     item("Скачать недостающее…", () => downloadArtistFromLibrary(name));
     item(own ? "Другая шапка…" : "Своя шапка…", () => pickArtistPhoto(name));
     if (own) item("Вернуть фото из Deezer", () => dropArtistPhoto(name));
