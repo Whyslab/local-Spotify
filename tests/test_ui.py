@@ -98,6 +98,7 @@ def server(tmp_path_factory):
         "ARTIST_PHOTOS_DIR": tmp / "artist-photos",
         "ARTIST_IMPORT_FILE": tmp / "artist-import.json",
         "NEW_RELEASES_FILE": tmp / "new-releases.json",
+        "WEEKLY_FILE": tmp / "weekly.json",
     }.items():
         mp.setattr(runtime, name, value)
     mp.setattr(playlists, "HISTORY_DIR", tmp / "history")
@@ -3415,6 +3416,75 @@ def test_new_releases_shelf_opens_the_artists_discography(page, fake_deezer_arti
         assert page.locator("#artistQuery").input_value() == "Quiet"
     finally:
         runtime.NEW_RELEASES_FILE.unlink(missing_ok=True)
+
+
+def _weekly(keys_ready):
+    picks = [
+        {"key": key, "artist": f"New{i}", "title": f"Новое {i}", "duration": 12, "seed": "Quiet"}
+        for i, key in enumerate(keys_ready)
+    ]
+    runtime.WEEKLY_FILE.write_text(
+        json.dumps({"week": "2026-W42", "tracks": picks, "history": {}}), encoding="utf-8"
+    )
+    outside.remember(picks)
+    for key, ready in keys_ready.items():
+        if ready:
+            outside._update_meta(key, status="ready", fetched=time.time())
+            outside._audio_path(key).write_bytes(b"audio")
+
+
+SPY_PLAY_QUEUE = """() => {
+    const real = window.playQueue;
+    window.__played = [];
+    window.playQueue = (tracks, start, mode, source) => {
+        window.__played.push({start, mode, source, n: tracks.length});
+    };
+    window.__realPlayQueue = real;
+}"""
+
+
+def test_weekly_selection_starts_from_a_downloaded_track(page, monkeypatch):
+    """Plan 4c.3: «Подборка недели» on the home page; a track not downloaded
+    yet hands over to the nearest downloaded one after it."""
+    monkeypatch.setattr(outside, "request", lambda keys, keep=False: {})
+    keys = {"a" * 16: False, "b" * 16: True, "c" * 16: False}
+    _weekly(keys)
+    try:
+        page.evaluate(SPY_PLAY_QUEUE)
+        page.evaluate("homeCache = null; switchView('viewHome'); home()")
+        section = page.locator(".o-section").filter(has_text="Подборка недели")
+        section.wait_for()
+        assert section.locator(".o-card-title").all_inner_texts() == [
+            "Новое 0",
+            "Новое 1",
+            "Новое 2",
+        ]
+        section.locator(".o-card").first.click()
+        page.wait_for_function("window.__played.length === 1")
+        assert page.evaluate("window.__played[0]") == {
+            "start": 1,
+            "mode": "manual",
+            "source": {"kind": "weekly"},
+            "n": 3,
+        }
+    finally:
+        runtime.WEEKLY_FILE.unlink(missing_ok=True)
+
+
+def test_weekly_selection_not_downloaded_yet_says_so(page, monkeypatch):
+    asked = []
+    monkeypatch.setattr(outside, "request", lambda keys, keep=False: asked.append(keys) or {})
+    _weekly({"d" * 16: False, "e" * 16: False})
+    try:
+        page.evaluate(SPY_PLAY_QUEUE)
+        page.evaluate("homeCache = null; switchView('viewHome'); home()")
+        section = page.locator(".o-section").filter(has_text="Подборка недели")
+        section.wait_for()
+        section.get_by_role("button", name="Слушать").click()
+        section.get_by_text("Подборка ещё скачивается").wait_for()
+        assert page.evaluate("window.__played") == []
+    finally:
+        runtime.WEEKLY_FILE.unlink(missing_ok=True)
 
 
 def test_an_artist_is_downloaded_from_a_ticked_list(page, fake_deezer_artist):

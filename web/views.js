@@ -546,6 +546,18 @@ function renderLabHome(data) {
                 labCard(findCoverBox(r), r.title || "", releaseLine(r), () => downloadArtistFromLibrary(r.artist))))));
     }
 
+    /* Подборка недели (adder/weekly.py) — сплошь треки со стороны, и каждый
+     * качается на сервер по просьбе. «Слушать» начинает с уже скачанного. */
+    const week = (data.weekly && data.weekly.tracks) || [];
+    if (week.length) {
+        const note = el("p", "o-section-note",
+            "Новое по тому, что вы слушаете, — обновляется по понедельникам. Понравилось — «В фонотеку» в плеере");
+        parts.push(labSection("Подборка недели", { label: "Слушать", run: () => playWeekly(week, 0, note) },
+            note,
+            labShelf(week.map((t, i) => labCard(findCoverBox(t), t.title || "", t.artist || "",
+                () => playWeekly(week, i, note))))));
+    }
+
     if (disc.length) {
         const picks = el("div", "o-picks");
         disc.slice(0, 16).forEach((t, i) => {
@@ -624,6 +636,27 @@ function showFinds(fresh) {
             labShelf(finds.slice(0, 12).map((f) =>
                 labCard(findCoverBox(f), f.title || "", f.artist || "", () => searchForFind(f))))));
     });
+}
+
+/* С нажатого трека, а если он ещё не скачан — с ближайшего скачанного
+ * после него. Состояние спрашивается сейчас: главную могли открыть давно. */
+async function playWeekly(tracks, from, note) {
+    const keys = tracks.map((t) => outsideKey(t));
+    try {
+        const r = await fetch("/api/outside/status?keys=" + keys.join(","), { headers: headers() });
+        if (r.ok) {
+            const states = (await r.json()).status || {};
+            tracks.forEach((t, i) => { if (states[keys[i]]) t.state = states[keys[i]]; });
+        }
+    } catch (e) { /* без ответа — по тому, что знала главная */ }
+    const order = [...tracks.keys()].slice(from).concat([...tracks.keys()].slice(0, from));
+    const start = order.find((i) => tracks[i].state === "ready");
+    if (start === undefined) {
+        requestOutside(order.slice(0, 3).map((i) => keys[i]));
+        note.textContent = "Подборка ещё скачивается — попробуйте через минуту";
+        return;
+    }
+    playQueue(tracks, start, "manual", { kind: "weekly" });
 }
 
 const RELEASE_KINDS = { album: "альбом", ep: "EP", single: "сингл" };
