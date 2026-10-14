@@ -111,7 +111,10 @@ def weekly_selection(library, weekly) -> None:
     if report["built"]:
         print(f"Подборка недели {report['week']}: треков {report['count']}", flush=True)
     else:
-        print("Подборка недели: Deezer ничего не дал, осталась прошлая", flush=True)
+        print(
+            f"Подборка недели: Deezer дал мало ({report.get('found', 0)}), осталась прошлая",
+            flush=True,
+        )
 
 
 if __name__ == "__main__":

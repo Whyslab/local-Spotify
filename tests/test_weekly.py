@@ -127,7 +127,7 @@ def test_a_silent_deezer_keeps_last_weeks_selection(deezer, journal):
     weekly.build(LIBRARY, now=MONDAY)
     deezer["answer"] = []
     report = weekly.build(LIBRARY, now=MONDAY + 7 * DAY)
-    assert report == {"built": False, "week": "2026-W42", "count": 25}
+    assert report == {"built": False, "week": "2026-W42", "count": 25, "found": 0}
     assert len(weekly.current()["tracks"]) == 25
     # И завтра попробуем снова.
     assert weekly.due(MONDAY + 8 * DAY)
@@ -195,6 +195,27 @@ def test_twenty_weeks_from_one_fixed_circle_stay_full(journal, monkeypatch):
     # ...and never last week's tracks again.
     for n in range(1, 20):
         assert not weeks[n] & weeks[n - 1], n
+
+
+def test_ready_tracks_far_down_do_not_stop_the_head_being_fetched(deezer, journal, monkeypatch):
+    """Review round 2: «Слушать» starts from the first ready track; five ready
+    at the end (the radio shares the cache) would start the selection midway."""
+    asked = []
+    monkeypatch.setattr(outside, "request", lambda keys, keep=False: asked.append(keys))
+    weekly.build(LIBRARY, now=MONDAY)
+    tracks = weekly.current()["tracks"]
+    for t in tracks[-weekly.PREFETCH :]:
+        t["state"] = "ready"
+    tracks[1]["state"] = "failed"
+    weekly.prefetch(tracks)
+    head = [tracks[0], *tracks[2:6]]
+    assert asked == [[outside.track_key(t["path"]) for t in head]]
+
+
+def test_a_thin_first_week_is_still_shown(deezer, journal):
+    deezer["answer"] = finds(weekly.MIN_SIZE - 1, artists=50)
+    report = weekly.build(LIBRARY, now=MONDAY)
+    assert report["built"] and report["count"] == weekly.MIN_SIZE - 1
 
 
 def test_a_thin_week_keeps_last_weeks_selection(deezer, journal):

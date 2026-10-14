@@ -66,10 +66,13 @@ def load() -> dict:
         state = {}
     # Файл чужим не пишется, но и разобранный JSON бывает не той формы:
     # главная из-за этого падать не должна.
-    if not isinstance(state.get("artists"), dict):
-        state["artists"] = {}
-    if not isinstance(state.get("memory"), dict):
-        state["memory"] = {}
+    for field in ("artists", "memory"):
+        values = state.get(field)
+        state[field] = {
+            k: v
+            for k, v in (values.items() if isinstance(values, dict) else [])
+            if isinstance(v, dict)
+        }
     releases = state.get("releases")
     state["releases"] = [
         r
@@ -153,8 +156,18 @@ def check(rows: list[dict], now: float | None = None) -> dict:
                     known[key] = {"id": None, "at": now, "namesake": entry["id"]}
                     unknown += 1
                     continue
+                if albums:
+                    entry.pop("empty_since", None)
+                elif now - entry.setdefault("empty_since", now) > MISS_TTL:
+                    # Номер, у которого месяц пусто, — скорее всего, Deezer
+                    # слил или удалил артиста (на /albums он отвечает пустым
+                    # списком, а не ошибкой). Забываем: завтра — поиск по имени.
+                    known.pop(key, None)
+                    unknown += 1
+                    continue
             except similar._NoData as exc:
-                # Такого номера у Deezer больше нет: завтра ищем по имени заново.
+                # «Нет данных» вместо ответа — тоже про номер, а не про связь:
+                # завтра ищем по имени заново.
                 logger.info("Новые релизы: Deezer не знает %s (%s)", name, exc)
                 known.pop(key, None)
                 unknown += 1
@@ -202,6 +215,11 @@ def check(rows: list[dict], now: float | None = None) -> dict:
                     release["fresh"] = not baseline
                 if not _is_had(release, have):
                     found[rid] = release
+                elif not before:
+                    # Уже в фонотеке, когда впервые увидели: скачали руками.
+                    # Запомнить как отданное — удалённый потом из фонотеки он
+                    # не должен вернуться «новым» и скачаться снова.
+                    memory[rid] = {"date": date, "seen": now, "queued": True}
 
     if not reachable:
         # Не дошли до всех — остальные прежние находки ещё в силе.
@@ -301,6 +319,7 @@ def queue_downloads() -> int:
                         headers={"Authorization": f"Bearer {_service_token()}"},
                     )
                     answer.raise_for_status()
+                    sent += 1
             except similar._NoData as exc:
                 # Альбома у Deezer больше нет — и не будет: больше не пробуем.
                 logger.warning("Новые релизы: %s не скачать (%s)", release["id"], exc)
@@ -314,8 +333,7 @@ def queue_downloads() -> int:
             except (similar._Unreachable, httpx.HTTPError) as exc:
                 logger.warning("Новые релизы: не отдал в скачивание (%s)", exc)
                 break
-            else:
-                sent += 1
+            # Отдан, отказан или пуст (одни версии) — больше не пробуем.
             release["queued"] = True
             if release["id"] in state["memory"]:
                 state["memory"][release["id"]]["queued"] = True

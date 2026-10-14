@@ -15,7 +15,7 @@ Deezer, тем же подбором, что подмешивает новое �
 стороны в журнал не пишутся, и «отвергнуто» здесь значит «показали и не
 взяли». Круг похожих у Deezer конечен, и когда новое кончилось, добирается
 предложенное давнее всего. Неделя, когда Deezer дал меньше ``MIN_SIZE``,
-оставляет прошлую подборку: полка в пять треков хуже вчерашней.
+оставляет прошлую подборку, если она есть: полка в пять треков хуже вчерашней.
 
 Слушается подборка как треки со стороны (``outside:<ключ>``): скачиваются
 по просьбе плеера, с тем же потолком в час, что у радио, а понравившееся
@@ -71,7 +71,7 @@ def due(now: float | None = None) -> bool:
 
 
 def favourites(rows: list[dict]) -> list[str]:
-    """Кого слушали за четыре недели (``shelves.favourites``) — до ``SEEDS``."""
+    """Кого слушали за четыре недели (``shelves.favourite_artists``) — до ``SEEDS``."""
     return shelves.favourite_artists(rows, SEEDS)
 
 
@@ -79,8 +79,11 @@ def build(rows: list[dict], now: float | None = None, budget: float = BUDGET) ->
     """Собрать подборку этой недели. Возвращает, что вышло."""
     now = time.time() if now is None else now
     state = load()
+    stored = state.get("history")
     history: dict[str, list[str]] = {
-        week: keys for week, keys in (state.get("history") or {}).items() if isinstance(keys, list)
+        week: [k for k in keys if isinstance(k, str)]
+        for week, keys in (stored.items() if isinstance(stored, dict) else [])
+        if isinstance(keys, list)
     }
     offered = {key for keys in history.values() for key in keys}
     seeds, have = favourites(rows), outside.library_keys(rows)
@@ -91,12 +94,20 @@ def build(rows: list[dict], now: float | None = None, budget: float = BUDGET) ->
         # кэшируются навсегда, и через три-четыре месяца всё из круга уже
         # предлагалось. Тогда добираем тем, что предлагалось давнее всего, —
         # полка из двадцати пяти лучше полки из пяти.
-        again = outside.candidates(seeds, have, SIZE * 8, budget=budget)
+        # Весь круг, а не первые сколько-то вперемешку: иначе «давнее всего»
+        # выбиралось бы из случайной части. Ответы Deezer уже в кэше.
+        again = outside.candidates(seeds, have, SIZE * 40, budget=budget)
         age = {key: n for n, week in enumerate(sorted(history)) for key in history[week]}
         again.sort(key=lambda item: age.get(item["key"], -1))
         picks = _pick(again, picks)
-    if len(picks) < MIN_SIZE:
-        return {"built": False, "week": state.get("week"), "count": len(state.get("tracks") or [])}
+    # Мало — оставляем прошлую. Прошлой нет — пусть будет хоть столько.
+    if not picks or (len(picks) < MIN_SIZE and state.get("tracks")):
+        return {
+            "built": False,
+            "week": state.get("week"),
+            "count": len(state.get("tracks") or []),
+            "found": len(picks),
+        }
 
     week = week_of(now)
     outside.remember(picks)
@@ -163,11 +174,11 @@ def prefetch(tracks: list[dict]) -> None:
     начать. Не больше: каждое открытие главной иначе просило бы следующие
     пять, и за неделю скачалась бы вся подборка, даже не слушанная, — заодно
     съев часовой потолок скачиваний у радио."""
-    ready = sum(1 for t in tracks if t.get("state") in ("ready", "pending"))
+    # Первые по порядку, а не любые: «Слушать» начинает с первого готового, и
+    # готовые в конце (их могло скачать радио) начали бы подборку с середины.
+    head = [t for t in tracks if t.get("state") != "failed"][:PREFETCH]
     keys = [
-        outside.track_key(t["path"]) or ""
-        for t in tracks
-        if t.get("state") in ("wanted", "unknown")
+        outside.track_key(t["path"]) or "" for t in head if t.get("state") in ("wanted", "unknown")
     ]
-    if ready < PREFETCH and keys:
-        outside.request(keys[: PREFETCH - ready])
+    if keys:
+        outside.request(keys)

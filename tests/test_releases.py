@@ -169,8 +169,25 @@ def test_a_pass_cut_short_on_the_first_night_baselines_only_who_was_asked(deezer
     assert "Two Fresh" in [r["title"] for r in releases.shelf()]
 
 
-def test_an_artist_deezer_dropped_does_not_stop_the_night(deezer, monkeypatch):
-    """Review: a stale id answered «no data» every night and the pass broke on it."""
+def test_an_artist_id_empty_for_a_month_is_looked_up_again(deezer, monkeypatch):
+    """Review round 2: a merged or deleted Deezer artist answers /albums with an
+    empty list, not an error; it must not stay silent for good."""
+    library = LIBRARY + [row("Gone", "Song")] * 3
+    baseline({"Gone": "404", "Seed": "1"})
+    report = releases.check(library, now=NOW)
+    assert report["complete"] is True
+    assert [r["title"] for r in report["new"]] == ["Fresh Album"]
+    assert releases.load()["artists"]["gone"]["empty_since"] == NOW
+
+    releases.check(library, now=NOW + 20 * 86400)
+    assert "Gone" not in deezer["find"]
+    releases.check(library, now=NOW + 31 * 86400)
+    assert "gone" not in releases.load()["artists"]
+    releases.check(library, now=NOW + 32 * 86400)
+    assert deezer["find"].count("Gone") == 1
+
+
+def test_deezer_no_data_for_an_artist_is_forgotten_not_an_outage(deezer, monkeypatch):
     library = LIBRARY + [row("Gone", "Song")] * 3
     baseline({"Gone": "404", "Seed": "1"})
     real_get = similar._get
@@ -183,8 +200,6 @@ def test_an_artist_deezer_dropped_does_not_stop_the_night(deezer, monkeypatch):
     monkeypatch.setattr(similar, "_get", get)
     report = releases.check(library, now=NOW)
     assert report["complete"] is True
-    assert [r["title"] for r in report["new"]] == ["Fresh Album"]
-    # Forgotten, so tomorrow it is looked up by name again.
     assert "gone" not in releases.load()["artists"]
 
 
@@ -257,10 +272,25 @@ def test_a_release_that_drops_off_and_returns_is_not_new_again(deezer):
     assert releases.check(LIBRARY, now=NOW + 2 * 86400)["new"] == []
 
 
-def test_valid_json_of_the_wrong_shape_is_an_empty_shelf():
-    for broken in ({"releases": None}, {"releases": [1, "x", {"id": 5}]}, {"artists": []}):
+def test_valid_json_of_the_wrong_shape_is_an_empty_shelf(deezer):
+    for broken in (
+        {"releases": None},
+        {"releases": [1, "x", {"id": 5}]},
+        {"artists": []},
+        {"artists": {"seed": "1"}, "memory": {"11": None}},
+    ):
         runtime.NEW_RELEASES_FILE.write_text(json.dumps(broken), encoding="utf-8")
         assert releases.shelf() == []
+        releases.check(LIBRARY, now=NOW)  # and the night does not fail on it
+
+
+def test_a_release_downloaded_by_hand_and_deleted_is_not_new_later(deezer):
+    """Review round 2: first seen while already in the library, then removed."""
+    baseline()
+    with_it = LIBRARY + [row("Seed", "x", album="Fresh Album")]
+    assert releases.check(with_it, now=NOW)["new"] == []
+    assert releases.check(LIBRARY, now=NOW + 86400)["new"] == []
+    assert releases.load()["releases"][0]["queued"] is True
 
 
 def test_artists_are_the_biggest_first_and_capped(monkeypatch):
@@ -290,7 +320,9 @@ def test_requests_are_paced(monkeypatch):
 
     assert len(times) == 12
     gaps = [b - a for a, b in zip(times, times[1:], strict=False)]
-    assert min(gaps) >= 0.019
+    # Время ловит обработчик, после работы клиента, и зазор дрожит на доли
+    # миллисекунды (было 0.0188 под нагрузкой). Без паузы он был бы ~0.001.
+    assert min(gaps) >= 0.015
 
 
 def test_deezer_going_silent_keeps_what_was_found(deezer, monkeypatch):
@@ -428,6 +460,22 @@ def test_a_service_that_turns_the_token_away_is_tried_again(deezer, monkeypatch)
     _shelf_of(_release("31", day(3)), _release("32", day(2)))
     assert releases.queue_downloads() == 0
     assert not any(r.get("queued") for r in releases.load()["releases"])
+
+
+def test_a_release_of_only_versions_is_done_but_not_counted_as_sent(deezer, monkeypatch):
+    posts = _mock_service(monkeypatch)
+    real_get = similar._get
+
+    def get(client, url, params):
+        if "/album/" in url:
+            return [{"title": "One (Remix)", "duration": 200, "artist": {"name": "Seed"}}]
+        return real_get(client, url, params)
+
+    monkeypatch.setattr(similar, "_get", get)
+    _shelf_of(_release("31", day(3)))
+    assert releases.queue_downloads() == 0
+    assert posts == []
+    assert releases.load()["releases"][0]["queued"] is True
 
 
 def test_a_release_not_out_yet_waits_for_its_date(deezer, monkeypatch):
