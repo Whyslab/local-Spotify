@@ -62,6 +62,30 @@ UNKNOWN_TRANSITION = 0.12
 # треков новых наберётся десяток, то есть незаметно.
 OUTSIDE_SHARE = 0.3
 
+# Вкус — что из журнала видно про сам трек, а не про его место в очереди.
+#
+# Пропуск и дослушивание весят тем меньше, чем дальше в журнале: за пятьдесят
+# прослушиваний их вес падает вдвое. Считаем прослушиваниями, а не днями: месяц
+# без музыки не делает вчерашний пропуск старым — после него ничего и не слушали.
+#
+# Числа ниже подобраны бэктестом (scripts/backtest_shuffle.py --fit) на первой
+# половине журнала 14.10.2026 и проверены на второй: пропущенное встало ниже
+# (перцентиль 0.474 → 0.455), дослушанное выше (0.480 → 0.484). Сдвиг скромный:
+# в журнале 542 прослушивания, повторов у трека мало, и больше всего говорит
+# артист.
+TASTE_HALF_LIFE = 50
+# Дослушанным считается трек, сыгранный хотя бы на столько от длины.
+HEARD_SHARE = 0.9
+# Насколько свежий пропуск прячет трек: exp(-SKIP_PENALTY) после одного.
+SKIP_PENALTY = 0.5
+# Насколько свежее дослушивание поднимает трек: до 1 + HEARD_BONUS.
+HEARD_BONUS = 1.0
+# Артист: доля пропусков у него против доли по всему журналу, сглаженная
+# ARTIST_PRIOR воображаемыми прослушиваниями со средней долей, — один пропуск
+# у нового артиста ещё ничего не говорит.
+ARTIST_PENALTY = 3.0
+ARTIST_PRIOR = 3.0
+
 
 @dataclass
 class Track:
@@ -77,6 +101,11 @@ class Track:
     # How often this track was played in the current hour of the day, over the
     # whole journal. The "context of the moment", once there is one.
     hour_affinity: float = 0.0
+    # Пропуски и дослушивания этого трека, свежие весят больше (TASTE_HALF_LIFE).
+    skip_score: float = 0.0
+    heard_score: float = 0.0
+    # Насколько артиста пропускают чаще (> 0) или реже (< 0), чем всех.
+    artist_skip: float = 0.0
     extra: dict = field(default_factory=dict)
 
 
@@ -108,6 +137,44 @@ def _coverage_weight(track: Track) -> float:
     return 0.05 + 0.95 * (track.last_play_rank / RECENCY_WINDOW)
 
 
+def taste_weight(track: Track) -> float:
+    """Ниже для того, что недавно пропускали, выше для дослушанного.
+
+    Это множитель, а не запрет: пропущенный однажды трек становится реже, но
+    не исчезает — пропускают и под настроение.
+    """
+    weight = math.exp(-SKIP_PENALTY * track.skip_score)
+    weight *= 1.0 + HEARD_BONUS * min(track.heard_score, 1.0)
+    weight *= math.exp(-ARTIST_PENALTY * track.artist_skip)
+    return weight
+
+
+def candidate_weight(
+    current: Track | None,
+    candidate: Track,
+    use_moment: bool = True,
+    use_taste: bool = True,
+) -> float:
+    """Вес кандидата за ``current`` (``None`` — первый трек очереди).
+
+    Тот же, что в ``build_queue``, без поправки на повтор артиста: бэктест
+    (``scripts/backtest_shuffle.py``) сравнивает им старую и новую оценку.
+    """
+    weight = _coverage_weight(candidate)
+    if current is None:
+        # The first track has nothing to follow, so start where the queue can
+        # be steered from.
+        if not candidate.tempo:
+            weight *= UNKNOWN_TRANSITION
+    else:
+        weight *= _transition_weight(current, candidate)
+    if use_moment:
+        weight *= 1.0 + candidate.hour_affinity
+    if use_taste:
+        weight *= taste_weight(candidate)
+    return weight
+
+
 def _transition_weight(current: Track, candidate: Track) -> float:
     """Higher the better the candidate follows the current track."""
     if not candidate.tempo or not current.tempo:
@@ -133,6 +200,7 @@ def build_queue(
     core: set[str] | None = None,
     outside_share: float = OUTSIDE_SHARE,
     previous: Track | None = None,
+    use_taste: bool = True,
 ) -> list[Track]:
     """Order tracks so that each one follows plausibly from the one before.
 
@@ -149,6 +217,8 @@ def build_queue(
     ``previous`` — трек, который уже играет (в очередь он не входит). Тогда
     первый трек выбирается как следующий за ним, а не сам по себе: так
     продолжается радио, и стык между порциями не слышен.
+
+    ``use_taste`` — учитывать пропуски и дослушивания (``taste_weight``).
     """
     if not tracks:
         return []
@@ -162,17 +232,10 @@ def build_queue(
     # тратится, и когда он кончился, очередь снова только из подборки.
     outside_budget = round(size * outside_share) if core_paths else 0
 
-    # The first track is chosen on standing alone -- coverage, and the hour if
-    # there is a journal -- since there is nothing yet for it to follow.
+    # The first track is chosen on standing alone -- coverage, the hour and
+    # taste if there is a journal -- since there is nothing yet for it to follow.
     def opening_weight(track: Track) -> float:
-        weight = _coverage_weight(track)
-        if use_moment:
-            weight *= 1.0 + track.hour_affinity
-        # The first track has nothing to follow, so the same reasoning applies
-        # to it directly: start where the queue can be steered from.
-        if not track.tempo:
-            weight *= UNKNOWN_TRANSITION
-        return max(weight, 1e-6)
+        return max(candidate_weight(None, track, use_moment, use_taste), 1e-6)
 
     # Начинать со своего. Включили подборку — первым должно заиграть то, что в
     # ней лежит, иначе это не «подборка с добавками», а чужая очередь.
@@ -233,9 +296,7 @@ def build_queue(
 
         weights = []
         for candidate in candidates:
-            weight = _transition_weight(current, candidate) * _coverage_weight(candidate)
-            if use_moment:
-                weight *= 1.0 + candidate.hour_affinity
+            weight = candidate_weight(current, candidate, use_moment, use_taste)
             if candidate.artist and candidate.artist in recent_artists:
                 # Not forbidden outright -- in a library where one artist holds
                 # a tenth of the tracks, a hard ban distorts everything after
@@ -304,13 +365,20 @@ def tracks_from_rows(
     hour affinity are derived, and that should be testable without a database.
 
     ``play_rows`` must be newest first -- the position in that list is what
-    "recently" means here.
+    "recently" means here. ``skipped``, ``played_seconds`` and ``duration`` в
+    строках — для вкуса (``taste_weight``); без них вкус нейтрален.
     """
     features = {row["path"]: row for row in feature_rows}
+    artist_of = {row["path"]: _artist_key(row.get("artist") or "") for row in index_rows}
 
     last_rank: dict[str, int] = {}
     hour_counts: dict[str, int] = {}
     total_at_hour = 0
+    skip_score: dict[str, float] = {}
+    heard_score: dict[str, float] = {}
+    artist_plays: dict[str, float] = {}
+    artist_skips: dict[str, float] = {}
+    all_plays = all_skips = 0.0
     for rank, play in enumerate(play_rows):
         path = play["path"]
         last_rank.setdefault(path, rank)
@@ -318,6 +386,29 @@ def tracks_from_rows(
         if played_hour is not None and int(played_hour) == current_hour:
             hour_counts[path] = hour_counts.get(path, 0) + 1
             total_at_hour += 1
+
+        fade = 0.5 ** (rank / TASTE_HALF_LIFE)
+        skipped = bool(play.get("skipped"))
+        if skipped:
+            skip_score[path] = skip_score.get(path, 0.0) + fade
+        elif _heard_through(play):
+            heard_score[path] = heard_score.get(path, 0.0) + fade
+        all_plays += fade
+        all_skips += fade if skipped else 0.0
+        artist = artist_of.get(path)
+        if artist:
+            artist_plays[artist] = artist_plays.get(artist, 0.0) + fade
+            artist_skips[artist] = artist_skips.get(artist, 0.0) + (fade if skipped else 0.0)
+
+    overall = all_skips / all_plays if all_plays else 0.0
+
+    def artist_skip(artist: str) -> float:
+        if not artist or artist not in artist_plays:
+            return 0.0
+        rate = (artist_skips[artist] + ARTIST_PRIOR * overall) / (
+            artist_plays[artist] + ARTIST_PRIOR
+        )
+        return rate - overall
 
     tracks = []
     for row in index_rows:
@@ -337,9 +428,21 @@ def tracks_from_rows(
                 music_key=feature.get("music_key") or "",
                 last_play_rank=last_rank.get(path),
                 hour_affinity=min(affinity * 5.0, 1.0),
+                skip_score=skip_score.get(path, 0.0),
+                heard_score=heard_score.get(path, 0.0),
+                artist_skip=artist_skip(artist_of[path]),
             )
         )
     return tracks
+
+
+def _artist_key(artist: str) -> str:
+    return " ".join(artist.lower().split())
+
+
+def _heard_through(play: dict) -> bool:
+    played, duration = play.get("played_seconds"), play.get("duration")
+    return bool(played and duration and played >= HEARD_SHARE * duration)
 
 
 def plain_shuffle(tracks: list[Track], size: int = 50, seed: int | None = None) -> list[Track]:

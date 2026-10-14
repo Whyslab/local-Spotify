@@ -221,3 +221,42 @@ def test_home_has_new_releases(shelf_library, monkeypatch):
     assert body["releases"] == [
         {k: found[k] for k in ("id", "artist", "title", "kind", "date", "cover")}
     ]
+
+
+def test_maybe_like_follows_listening(tmp_path, monkeypatch):
+    """Plan 4c.4: «Может понравиться» starts from what is being listened to,
+    and only falls back to the biggest artists of the library."""
+    from adder import runtime, similar
+
+    monkeypatch.setattr(runtime, "DB_PATH", tmp_path / "shelves.db")
+    db.db_init()
+    neighbours = {"heard": ["Kin of Heard"], "big": ["Cousin of Big"]}
+    monkeypatch.setattr(
+        similar, "similar_artists", lambda name, cache, limit=10: neighbours.get(name.lower(), [])
+    )
+
+    def row(artist, n):
+        return {"path": f"{artist}/{n}.m4a", "artist": artist, "title": f"{artist} {n}"}
+
+    rows = [row("Big", i) for i in range(5)] + [row("Heard", 0)]
+    rows += [row("Kin of Heard", i) for i in range(3)] + [row("Cousin of Big", i) for i in range(3)]
+
+    # No journal yet: the most collected artist leads.
+    assert shelves.discover(rows, top=1)["based_on"] == ["Big"]
+
+    def play(path, skipped=0, days_ago=1):
+        db.db_exec(
+            "INSERT INTO plays(path, played_at, skipped) "
+            "VALUES(?, datetime('now', 'localtime', ?), ?)",
+            (path, f"-{days_ago} days", skipped),
+        )
+
+    for _ in range(3):
+        play("Heard/0.m4a")
+    play("Big/0.m4a", skipped=1)  # a skip is not listening
+    play("Big/1.m4a", days_ago=60)  # too long ago
+    found = shelves.discover(rows, top=1)
+    assert found["based_on"] == ["Heard"]
+    assert {t["artist"] for t in found["tracks"]} == {"Kin of Heard"}
+    # The fallback still fills the rest, without repeating anyone.
+    assert shelves.favourite_artists(rows, top=3)[:2] == ["Heard", "Big"]

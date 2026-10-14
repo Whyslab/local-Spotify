@@ -178,6 +178,143 @@ def test_no_journal_means_no_hour_affinity():
     assert tracks[0].last_play_rank is None
 
 
+def test_recent_skips_penalised():
+    index = [
+        {"path": "fresh_skip.m4a", "artist": "A"},
+        {"path": "old_skip.m4a", "artist": "B"},
+        {"path": "untouched.m4a", "artist": "C"},
+    ]
+    filler = [{"path": f"other{i}.m4a", "hour": 12} for i in range(400)]
+    # Newest first: a skip just now, the same skip four hundred plays ago.
+    plays = [
+        {"path": "fresh_skip.m4a", "hour": 12, "skipped": 1, "played_seconds": 5, "duration": 200},
+        *filler,
+        {"path": "old_skip.m4a", "hour": 12, "skipped": 1, "played_seconds": 5, "duration": 200},
+    ]
+    tracks = {t.path: t for t in shuffle.tracks_from_rows(index, [], plays, current_hour=12)}
+
+    fresh, old, untouched = (
+        shuffle.taste_weight(tracks[p]) for p in ("fresh_skip.m4a", "old_skip.m4a", "untouched.m4a")
+    )
+    assert fresh < old < untouched
+
+    # And it reaches the queue: a track skipped three times lately comes up
+    # less often, but still comes up.
+    pool = [track(f"t{i}.m4a", f"A{i}", tempo=100) for i in range(20)]
+    for t in pool[:10]:
+        t.skip_score = 3.0
+    picked = {True: 0, False: 0}
+    seen = set()
+    for taste in (True, False):
+        for seed in range(30):
+            queue = shuffle.build_queue(pool, size=5, seed=seed, use_taste=taste)
+            picked[taste] += sum(1 for t in queue if t.skip_score)
+            seen.update(t.path for t in queue)
+    assert picked[True] < picked[False] * 0.6
+    assert {t.path for t in pool[:10]} <= seen
+
+
+def test_heard_through_lifts_and_artist_skips_carry_over():
+    index = [
+        {"path": "liked.m4a", "artist": "Liked"},
+        {"path": "bad1.m4a", "artist": "Skipped A Lot"},
+        {"path": "bad2.m4a", "artist": "skipped  a lot"},
+        {"path": "bad_new.m4a", "artist": "Skipped a lot"},
+        {"path": "neutral.m4a", "artist": "Neutral"},
+        {"path": "half.m4a", "artist": "Half"},
+    ]
+    skip = {"skipped": 1, "played_seconds": 4, "duration": 180}
+    plays = [
+        {"path": "liked.m4a", "hour": 9, "skipped": 0, "played_seconds": 175, "duration": 180},
+        {"path": "bad1.m4a", "hour": 9, **skip},
+        {"path": "bad2.m4a", "hour": 9, **skip},
+        {"path": "bad1.m4a", "hour": 9, **skip},
+        {"path": "neutral.m4a", "hour": 9, "skipped": 0, "played_seconds": 175, "duration": 180},
+        # Not skipped but stopped at a third: not "heard through" either.
+        {"path": "half.m4a", "hour": 9, "skipped": 0, "played_seconds": 60, "duration": 180},
+    ]
+    tracks = {t.path: t for t in shuffle.tracks_from_rows(index, [], plays, current_hour=9)}
+
+    assert tracks["liked.m4a"].heard_score > 0
+    assert tracks["half.m4a"].heard_score == 0 and tracks["half.m4a"].skip_score == 0
+    # Never played itself, but its artist is skipped far more than the journal's average.
+    assert tracks["bad_new.m4a"].artist_skip > 0
+    assert shuffle.taste_weight(tracks["bad_new.m4a"]) < 1.0
+    assert shuffle.taste_weight(tracks["liked.m4a"]) > shuffle.taste_weight(tracks["bad1.m4a"])
+
+
+def test_no_skip_columns_means_neutral_taste():
+    """Old callers pass plays with only path and hour: taste must not move anything."""
+    index = [{"path": "a.m4a", "artist": "A"}, {"path": "b.m4a", "artist": "B"}]
+    plays = [{"path": "a.m4a", "hour": 3}, {"path": "b.m4a", "hour": 3}]
+    for t in shuffle.tracks_from_rows(index, [], plays, current_hour=3):
+        assert shuffle.taste_weight(t) == 1.0
+
+
+def _backtest_module():
+    import importlib.util
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location(
+        "backtest_shuffle", Path(__file__).parent.parent / "scripts" / "backtest_shuffle.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _synthetic_journal(plays=320, seed=7):
+    """A listener who skips two artists, keeps two, and is lukewarm on the rest.
+
+    Made up on purpose: the real journal stays out of a public repository.
+    """
+    import random
+
+    rng = random.Random(seed)
+    index = [{"path": f"{a}/{i}.m4a", "artist": f"Artist {a}"} for a in range(6) for i in range(10)]
+    features = [
+        {"path": row["path"], "tempo": 100.0 + (n % 7), "energy": 0.5}
+        for n, row in enumerate(index)
+    ]
+    skip_odds = {0: 0.9, 1: 0.85, 2: 0.1, 3: 0.15, 4: 0.5, 5: 0.5}
+    journal = []
+    for _ in range(plays):
+        row = rng.choice(index)
+        artist = int(row["path"].split("/")[0])
+        skipped = rng.random() < skip_odds[artist]
+        journal.append(
+            {
+                "path": row["path"],
+                "hour": 20,
+                "skipped": int(skipped),
+                "played_seconds": 6.0 if skipped else 200.0,
+                "duration": 200.0,
+            }
+        )
+    return index, features, journal
+
+
+def test_backtest_new_scoring_ranks_skips_lower():
+    backtest = _backtest_module()
+    index, features, journal = _synthetic_journal()
+    half = len(journal) // 2
+
+    old = backtest.evaluate(index, features, journal, half, use_taste=False)
+    new = backtest.evaluate(index, features, journal, half)
+
+    assert new["n_skipped"] and new["n_heard"]
+    assert new["skipped"] < old["skipped"]
+    assert new["heard"] > old["heard"]
+    assert new["gap"] > old["gap"]
+
+
+def test_backtest_percentile_splits_ties():
+    backtest = _backtest_module()
+    assert backtest._percentile([1.0, 2.0, 3.0], 3.0) == 1.0
+    assert backtest._percentile([1.0, 2.0, 3.0], 1.0) == 0.0
+    assert backtest._percentile([1.0, 1.0, 1.0], 1.0) == 0.5
+
+
 # ---------------------------------------------------------------------------
 # Подборка как костяк очереди
 # ---------------------------------------------------------------------------
@@ -355,6 +492,24 @@ def test_a_blind_trial_records_one_answer(client):
     # A second answer to the same trial would be a second vote for one listen.
     assert client.post(f"/api/shuffle/blind/{trial}", json={"choice": "B"}).status_code == 409
     assert client.post(f"/api/shuffle/blind/{trial}", json={"choice": "C"}).status_code == 400
+
+
+def test_blind_plays_keep_their_label_and_skips_reach_the_queue(client):
+    """A blind queue's plays are neither smart nor plain in the journal, and a
+    skip is read back by the queue builder (plan 4c.4)."""
+    from adder import app as app_module
+
+    path = client.post("/api/shuffle/blind", params={"size": 4}).json()["A"][0]["path"]
+    response = client.post(
+        "/api/plays",
+        json={"path": path, "played_seconds": 3, "duration": 180, "skipped": True, "mode": "blind"},
+    )
+    assert response.status_code == 200
+    assert db.db_query("SELECT mode FROM plays WHERE path = ?", (path,))[0]["mode"] == "blind"
+
+    tracks = {t.path: t for t in app_module._shuffle_tracks()}
+    assert tracks[path].skip_score > 0
+    assert shuffle.taste_weight(tracks[path]) < 1.0
 
 
 def test_blind_results_apply_the_stated_threshold(client, monkeypatch):

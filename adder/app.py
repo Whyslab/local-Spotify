@@ -497,7 +497,8 @@ class PlayRequest(BaseModel):
     # Which kind of queue this track came out of. Criterion 26 is a comparison
     # of skip rates between the two, and that comparison needs the label at the
     # moment the track is played -- it cannot be reconstructed afterwards.
-    mode: Literal["manual", "smart", "plain", "radio"] = "manual"
+    # blind — очередь слепого сравнения: какая она, клиент не знает.
+    mode: Literal["manual", "smart", "plain", "radio", "blind"] = "manual"
     # When listening started, by the client's clock (epoch seconds) -- the
     # same moment ListenBrainz calls listened_at. The phone sends plays heard
     # without network later, and the time of the request would be hours or
@@ -1719,7 +1720,8 @@ def _shuffle_tracks() -> list[shuffle.Track]:
     """Everything the queue builder needs, out of the three tables that hold it."""
     features = db.db_query("SELECT path, tempo, energy, brightness, music_key FROM audio_features")
     plays = db.db_query(
-        "SELECT path, CAST(strftime('%H', played_at) AS INTEGER) AS hour "
+        "SELECT path, CAST(strftime('%H', played_at) AS INTEGER) AS hour, "
+        "skipped, played_seconds, duration "
         "FROM plays ORDER BY played_at DESC, id DESC LIMIT 2000"
     )
     return shuffle.tracks_from_rows(

@@ -20,6 +20,7 @@ from __future__ import annotations
 import datetime
 import logging
 import random
+import sqlite3
 from collections import Counter
 
 from . import db, library, moods, playlists, runtime, similar
@@ -49,17 +50,49 @@ def shelf_seed(now: datetime.datetime | None = None) -> int:
     return moment.date().toordinal()
 
 
-def _favourites(rows: list[dict], top: int) -> list[str]:
-    """Самые собранные артисты фонотеки.
+# Кого считать любимцами: слушали за столько дней, не пропуская.
+LISTEN_DAYS = 28
 
-    «Предпочтения» берутся из состава фонотеки, а не из истории прослушиваний:
-    в `plays` сейчас четыре десятка записей, и почти все — проверочные включения
-    по секунде. Собранное своими руками — свидетельство вкуса надёжнее, чем
-    журнал, которого пока нет.
+
+def favourite_artists(rows: list[dict], top: int) -> list[str]:
+    """Кого слушали за ``LISTEN_DAYS`` дней, без пропусков; мало журнала —
+    добираем самыми собранными артистами фонотеки.
+
+    До 14.10.2026 здесь был только состав фонотеки: журнал тогда был
+    в четыре десятка проверочных включений. Теперь в нём сотни настоящих
+    прослушиваний, и «Может понравиться» идёт от того, что слушают, а не от
+    того, чего больше на полке.
     """
-    counted = Counter(similar.primary(row.get("artist") or "") for row in rows if row.get("artist"))
-    counted.pop("", None)
-    return [name for name, _ in counted.most_common(top)]
+    by_path = {row["path"]: row for row in rows if row.get("path")}
+    try:
+        plays = db.db_query(
+            "SELECT path FROM plays WHERE skipped = 0 "
+            "AND played_at >= datetime('now', 'localtime', ?)",
+            (f"-{LISTEN_DAYS} days",),
+        )
+    except sqlite3.Error as exc:
+        # Журнала не прочесть — полки всё равно нужны: по составу фонотеки.
+        logger.warning("Любимые артисты: журнал не прочитан (%s)", exc)
+        plays = []
+    heard: Counter[str] = Counter()
+    for play in plays:
+        name = similar.primary((by_path.get(play["path"]) or {}).get("artist") or "")
+        if len(name) >= 2:
+            heard[name] += 1
+    names = [name for name, _ in heard.most_common(top)]
+
+    collected = Counter(
+        similar.primary(row.get("artist") or "") for row in rows if row.get("artist")
+    )
+    collected.pop("", None)
+    taken = {name.lower() for name in names}
+    for name, _ in collected.most_common():
+        if len(names) >= top:
+            break
+        if name.lower() not in taken:
+            names.append(name)
+            taken.add(name.lower())
+    return names
 
 
 def _neighbours(favourites: list[str]) -> set[str]:
@@ -78,7 +111,7 @@ def discover(rows: list[dict], top: int = 6, want: int = 24, seed: int | None = 
     отбирается то, что этими похожими написано, — за вычетом самих любимцев:
     их треки не открытие.
     """
-    favourites = _favourites(rows, top)
+    favourites = favourite_artists(rows, top)
     if not favourites:
         return {"based_on": [], "tracks": []}
 
@@ -128,7 +161,7 @@ def external(rows: list[dict], want: int = 12, seed: int | None = None) -> list[
     У находки есть обложка (адрес Deezer, может быть пустым) — показать
     картинку, а не первую букву имени.
     """
-    favourites = _favourites(rows, top=6)
+    favourites = favourite_artists(rows, top=6)
     if not favourites:
         return []
 

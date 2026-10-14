@@ -29,12 +29,11 @@ import json
 import time
 from collections import Counter
 
-from . import db, ingest, outside, releases, runtime, similar
+from . import ingest, outside, runtime, shelves, similar
 
 SIZE = 25
 PER_ARTIST = 2
 SEEDS = 12
-LISTEN_DAYS = 28
 HISTORY_WEEKS = 26
 # Ночью спешить некуда: подбор может ждать Deezer дольше, чем перемешивание.
 BUDGET = 60.0
@@ -65,26 +64,8 @@ def due(now: float | None = None) -> bool:
 
 
 def favourites(rows: list[dict]) -> list[str]:
-    """Кого слушали за ``LISTEN_DAYS`` дней; мало журнала — добираем самыми
-    крупными артистами фонотеки."""
-    by_path = {row["path"]: row for row in rows}
-    plays = db.db_query(
-        "SELECT path FROM plays WHERE skipped = 0 AND played_at >= datetime('now', 'localtime', ?)",
-        (f"-{LISTEN_DAYS} days",),
-    )
-    counts: Counter[str] = Counter()
-    for play in plays:
-        row = by_path.get(play["path"])
-        name = similar.primary((row or {}).get("artist") or "")
-        if len(name) >= 2:
-            counts[name] += 1
-    names = [name for name, _ in counts.most_common(SEEDS)]
-    for name in releases.library_artists(rows, SEEDS * 2):
-        if len(names) >= SEEDS:
-            break
-        if name.lower() not in {n.lower() for n in names}:
-            names.append(name)
-    return names
+    """Кого слушали за четыре недели (``shelves.favourites``) — до ``SEEDS``."""
+    return shelves.favourite_artists(rows, SEEDS)
 
 
 def build(rows: list[dict], now: float | None = None, budget: float = BUDGET) -> dict:
