@@ -174,6 +174,15 @@ def test_an_artists_radio_starts_with_the_artist(deezer):
         assert local[0].artist == "Seed"
 
 
+def test_an_artists_radio_starts_with_the_artist_even_if_skipped_lately(deezer):
+    tracks = library_tracks()
+    skipped = {t.path for t in tracks if t.artist == "Seed"}
+    local, _ = radio.build(tracks, "Seed", [], size=12, skipped=skipped)
+    assert local[0].artist == "Seed"
+    # Только первый: дальше пропущенное по-прежнему не ставится.
+    assert not {t.path for t in local[1:]} & skipped
+
+
 def test_nothing_from_the_last_fifty_comes_back(deezer):
     tracks = library_tracks()
     recent = [t.path for t in tracks if t.artist in ("Seed", "Near1")]
@@ -206,7 +215,7 @@ def test_a_portion_goes_on_from_the_track_before_it(deezer):
 
 def test_skipped_tracks_are_left_out(deezer):
     tracks = library_tracks()
-    skipped = {t.path for t in tracks if t.artist == "Seed"}
+    skipped = {t.path for t in tracks if t.artist == "Near1"}
     for _ in range(10):
         local, _ = radio.build(tracks, "Seed", [], size=12, skipped=skipped)
         assert not {t.path for t in local} & skipped

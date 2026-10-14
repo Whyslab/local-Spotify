@@ -105,6 +105,15 @@ def build(
         # Радио артиста начинается с него самого — без «предыдущего» иначе
         # первым мог встать любой из похожих.
         own = [t for t in eligible if _name(t.artist) == _name(seed_artist)]
+        if not own:
+            # Его треки недавно пропускали — но радио этого артиста включили
+            # нарочно, и начать с другого значило бы не услышать просьбу.
+            recent_only = set(recent[-WINDOW:])
+            own = [
+                t
+                for t in tracks
+                if _name(t.artist) == _name(seed_artist) and t.path not in recent_only
+            ]
         if own:
             first = rng.choices(own, weights=[shuffle._coverage_weight(t) for t in own], k=1)[0]
             opening, before = [first], first
