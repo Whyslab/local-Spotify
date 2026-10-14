@@ -35,6 +35,7 @@ import random
 import re
 import threading
 import time
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor, wait
 from pathlib import Path
 
@@ -497,6 +498,33 @@ _pending: set[str] = set()
 _pending_lock = threading.Lock()
 _worker: threading.Thread | None = None
 
+# Сколько треков со стороны можно скачать за час. Радио и подборка недели
+# просят скачивать сами, без человека у кнопки, и без потолка за ночь
+# набежали бы сотни вызовов YouTube — а за ними блокировка (429), которая
+# остановит и обычное добавление. Час радио — это около шести треков со
+# стороны и по два заранее; двадцать оставляют запас на пропуски.
+FETCHES_PER_HOUR = 20
+# Когда начинались скачивания последнего часа (monotonic). Поток скачивания
+# один, поэтому без замка.
+_fetch_times: deque[float] = deque()
+# Как часто проверять, не кончились ли свои задачи пользователя.
+USER_WAIT_STEP = 1.0
+
+
+def _hour_has_room() -> bool:
+    now = time.monotonic()
+    while _fetch_times and now - _fetch_times[0] > 3600:
+        _fetch_times.popleft()
+    return len(_fetch_times) < FETCHES_PER_HOUR
+
+
+def _wait_for_users_downloads() -> None:
+    """Своё — первым. Пока очередь добавления занята (``PROCESSING_URLS`` —
+    и ждущие, и идущие задачи), трек со стороны ждёт: он не должен отнимать
+    у человека ни YouTube, ни сеть."""
+    while runtime.PROCESSING_URLS and not runtime.shutdown_event.is_set():
+        runtime.shutdown_event.wait(USER_WAIT_STEP)
+
 
 def request(keys: list[str]) -> dict[str, str]:
     """Попросить скачать. Возвращает состояние каждого ключа после просьбы."""
@@ -536,6 +564,15 @@ def _work() -> None:
                         return
                 continue
             try:
+                _wait_for_users_downloads()
+                if runtime.shutdown_event.is_set():
+                    return
+                if not _hour_has_room():
+                    # Остаётся «wanted»: плеер этот трек пропустит, а просьба,
+                    # пришедшая, когда час освободится, поставит его заново.
+                    logger.info("Трек со стороны %s отложен: за час уже %d", key, FETCHES_PER_HOUR)
+                    continue
+                _fetch_times.append(time.monotonic())
                 fetch(key)
             except runtime.ShutdownRequested:
                 return

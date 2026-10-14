@@ -41,6 +41,7 @@ def _outside_stays_offline(monkeypatch, tmp_path, request):
     настоящий кэш рядом с кодом. Тесты самих треков со стороны возвращают
     настоящий подбор у себя (см. test_outside.py).
     """
+    import collections
     import queue
 
     from adder import discography, outside, runtime
@@ -85,6 +86,11 @@ def _outside_stays_offline(monkeypatch, tmp_path, request):
     # Очередь скачиваний — состояние модуля; каждому тесту своя.
     monkeypatch.setattr(outside, "_jobs", queue.Queue())
     monkeypatch.setattr(outside, "_pending", set())
+    monkeypatch.setattr(outside, "_fetch_times", collections.deque())
+    # Адреса в очереди добавления — тоже состояние процесса: тест, который
+    # ставит задачу без рабочих потоков, оставлял её здесь навсегда, и
+    # скачивания со стороны в следующих тестах ждали «своих задач» вечно.
+    monkeypatch.setattr(runtime, "PROCESSING_URLS", set())
     # Всё, куда служба пишет, — во временную папку теста, даже если тест
     # сам об этом не подумал. Иначе TestClient на выходе чистил настоящий
     # adder/tmp — там живая служба держит скачивания в процессе, — а на входе
