@@ -116,6 +116,13 @@ def test_a_keep_by_hand_does_not_wait_for_the_hour(monkeypatch, running):
     assert fetched == [KEY]
 
 
+def test_a_keep_of_a_failed_track_leaves_no_mark(monkeypatch, running):
+    remember(KEY)
+    outside._update_meta(KEY, status="failed", failed_at=time.time())
+    assert outside.request([KEY], keep=True) == {KEY: "failed"}
+    assert outside._asked_by_hand == set()
+
+
 def test_one_fetch_at_a_time(monkeypatch, running):
     """Больше двух разом нельзя по плану; поток скачивания один — значит, один."""
     inside = 0

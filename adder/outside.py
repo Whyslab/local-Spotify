@@ -539,14 +539,16 @@ def request(keys: list[str], keep: bool = False) -> dict[str, str]:
     for key in keys:
         if not _KEY.fullmatch(key or ""):
             continue
-        if keep:
-            _asked_by_hand.add(key)
         state = status(key)
-        if state == "wanted":
+        if state in ("wanted", "pending"):
             with _pending_lock:
                 if key not in _pending:
                     _pending.add(key)
                     _jobs.put(key)
+                # Только поставленному в очередь: метку снимает конец его
+                # скачивания, а неудачный или готовый ключ держал бы её вечно.
+                if keep:
+                    _asked_by_hand.add(key)
             state = "pending"
         answer[key] = state
     with _pending_lock:

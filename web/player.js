@@ -799,6 +799,8 @@ const RADIO_RECENT = 50;
 /* Чья просьба о порции сейчас в пути: вторая, пока идёт первая, не нужна.
  * Не флаг, а метка — запуск нового радио не должен снимать чужую. */
 let radioLoading = null;
+/* Подпись говорит, что радио не собралось, — до первой пришедшей порции. */
+let radioNoteFailed = false;
 
 async function fetchRadio(seed, recent) {
     const r = await fetchWithin("/api/radio", {
@@ -826,6 +828,7 @@ async function startRadio(seed, track = null) {
     }
     const ticket = player.smartTicket;
     setPlayerNote("Собираю радио…");
+    radioNoteFailed = false;
     const mine = {};
     radioLoading = mine;
     try {
@@ -850,6 +853,7 @@ async function startRadio(seed, track = null) {
     } catch (e) {
         if (ticket !== player.smartTicket) return;
         setPlayerNote(unreachableError(e) ? "Радио не собралось: нет связи с сервером" : e.message);
+        radioNoteFailed = true;
     } finally {
         if (radioLoading === mine) radioLoading = null;
         /* Радио от трека: пока шла первая порция, его трек уже играл, и
@@ -884,6 +888,9 @@ async function extendRadio() {
         buildOrder(player.index);
         renderQueuePanel();
         prefetchOutside();
+        /* Первая порция не пришла, а повтор пришёл — подпись о неудаче уже неправда. */
+        if (radioNoteFailed) setPlayerNote(`Радио «${data.artist || ""}»`);
+        radioNoteFailed = false;
     } catch (e) {
         /* Не вышло — попробуем на следующем треке; очередь пока доигрывает своё. */
     } finally {

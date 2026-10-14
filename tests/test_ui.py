@@ -3232,6 +3232,7 @@ RADIO_JS = """() => {
     window.fetch = (url, options = {}) => {
         if (!String(url).startsWith('/api/radio')) return real(url, options);
         window.__radio.push(JSON.parse(options.body));
+        window.__radioQueue = (window.__radioQueue || []).concat([player.queue.map((t) => t.path)]);
         // Первая порция — настоящая, от сервера; следующие — одна строка.
         if (window.__radio.length === 1) return real(url, options);
         return Promise.resolve(new Response(JSON.stringify({
@@ -3261,9 +3262,9 @@ def test_radio_queue_refills(page):
     first, second = page.evaluate("window.__radio.slice(0, 2)")
     assert first == {"artist": "Loud Band", "recent": []}
     assert second["artist"] == "Loud Band"
-    # Сыгранное и стоящее — по порядку, с начала очереди (до первой своей порции).
-    queue = page.evaluate("player.queue.map(t => t.path)")
-    assert second["recent"] and second["recent"] == queue[: len(second["recent"])]
+    # Вся очередь в миг просьбы — сыгранное и стоящее впереди, по порядку.
+    assert second["recent"] == page.evaluate("window.__radioQueue[1]")
+    assert second["recent"]
     assert page.evaluate("player.queueMode") == "radio"
 
 
@@ -3303,6 +3304,8 @@ def test_radio_survives_a_first_portion_that_did_not_come(page):
         "player.queue.length === 2 && player.queue[1].title === 'Quiet'", timeout=8000
     )
     assert page.evaluate("window.__radio") == 2
+    # Подпись о неудаче не остаётся, когда повтор пришёл.
+    assert page.locator("#playerNote").inner_text() == "Радио «Loud Band»"
 
 
 def test_plain_shuffle_is_refused_during_radio(page):
