@@ -33,6 +33,7 @@ from adder import (  # noqa: E402
     analysis,
     config,
     covers,
+    db,
     discography,
     enrich,
     ingest,
@@ -3259,16 +3260,58 @@ def test_radio_queue_refills(page):
     first, second = page.evaluate("window.__radio.slice(0, 2)")
     assert first == {"artist": "Loud Band", "recent": []}
     assert second["artist"] == "Loud Band"
-    assert second["recent"] == page.evaluate("player.queue.slice(0, -1).map(t => t.path)")
+    # Сыгранное и стоящее — по порядку, с начала очереди (до первой своей порции).
+    queue = page.evaluate("player.queue.map(t => t.path)")
+    assert second["recent"] and second["recent"] == queue[: len(second["recent"])]
     assert page.evaluate("player.queueMode") == "radio"
 
 
 def test_radio_from_a_track_plays_it_first(page):
+    # Журнал у модуля общий: пропуски из прежних тестов могли бы оставить
+    # трёхтрековую фонотеку без единого трека для радио.
+    db.db_exec("DELETE FROM plays")
     open_library(page)
     page.evaluate(f"startRadio({{path: {LOUD}.path}}, {LOUD})")
     page.wait_for_function("player.queueMode === 'radio' && player.queue.length > 1")
     assert page.evaluate("player.queue[0].path") == "Loud Band/Singles/Loud.opus"
     assert page.evaluate("player.queue.slice(1).every(t => t.path !== player.queue[0].path)")
+
+
+def test_radio_survives_a_first_portion_that_did_not_come(page):
+    """Ревью 4c.1: радио от трека умирало на одном треке, если первая порция
+    не пришла, — просьба со старта трека ждала её и больше не повторялась."""
+    page.evaluate("""() => {
+        const real = window.fetch;
+        window.__radio = 0;
+        window.fetch = (url, options = {}) => {
+            if (!String(url).startsWith('/api/radio')) return real(url, options);
+            window.__radio += 1;
+            // Отказ приходит, когда трек уже заиграл: так и терялось радио.
+            if (window.__radio === 1) {
+                return new Promise((resolve) => setTimeout(
+                    () => resolve(new Response('down', {status: 503})), 1500));
+            }
+            return Promise.resolve(new Response(JSON.stringify({artist: 'Loud Band', external: 0,
+                queue: [{path: 'Quiet/Singles/Quiet.m4a', artist: 'Quiet', title: 'Quiet', duration: 12}]}),
+                {status: 200, headers: {'Content-Type': 'application/json'}}));
+        };
+    }""")
+    open_library(page)
+    page.evaluate(f"startRadio({{path: {LOUD}.path}}, {LOUD})")
+    page.wait_for_function(
+        "player.queue.length === 2 && player.queue[1].title === 'Quiet'", timeout=8000
+    )
+    assert page.evaluate("window.__radio") == 2
+
+
+def test_plain_shuffle_is_refused_during_radio(page):
+    page.evaluate(RADIO_JS)
+    open_library(page)
+    page.evaluate(f"startRadio({{path: {LOUD}.path}}, {LOUD})")
+    page.wait_for_function("player.queueMode === 'radio'")
+    page.evaluate("setShuffle('plain')")
+    assert page.evaluate("player.shuffle") is False
+    assert "Радио само выбирает порядок" in page.locator("#playerNote").inner_text()
 
 
 def _tiny_png() -> bytes:

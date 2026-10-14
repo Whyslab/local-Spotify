@@ -534,6 +534,11 @@ async function setShuffle(mode) {
         const ok = await smartifyQueue();
         /* null — эту сборку уже сменила другая просьба: состояние не наше. */
         if (ok === false) player.shuffle = was;
+    } else if (mode === "plain" && player.queueMode === "radio") {
+        /* Радио идёт по порядку, который выбрал сервер, и не повторяет
+         * последние пятьдесят — перемешанный маршрут вернул бы сыгранное. */
+        setPlayerNote("Радио само выбирает порядок — перемешивать нечего");
+        return;
     } else {
         /* Сборка, которая ещё идёт, больше не нужна. */
         player.smartTicket += 1;
@@ -809,12 +814,16 @@ async function fetchRadio(seed, recent) {
 /* `track` — радио от трека: он играет сразу, а порция встаёт за ним, когда
  * придёт. От артиста играть нечего, пока не придёт порция. */
 async function startRadio(seed, track = null) {
-    /* Порядок радио задаёт сервер — перемешивание поверх его бы ломало. */
-    player.shuffle = false;
-    renderPlayerModes();
     const source = { kind: "radio", seed };
-    if (track) playQueue([track], 0, "radio", source);
-    else player.smartTicket += 1;
+    /* Порядок радио задаёт сервер — перемешивание поверх его бы ломало. Но
+     * выключаем его только вместе с новой очередью: не собралось радио
+     * артиста — прежняя очередь играет, как играла. */
+    if (track) {
+        offShuffleForRadio();
+        playQueue([track], 0, "radio", source);
+    } else {
+        player.smartTicket += 1;
+    }
     const ticket = player.smartTicket;
     setPlayerNote("Собираю радио…");
     const mine = {};
@@ -833,6 +842,7 @@ async function startRadio(seed, track = null) {
             renderQueuePanel();
             prefetchOutside();
         } else {
+            offShuffleForRadio();
             playQueue(queue, 0, "radio", source);
         }
         setPlayerNote(`Радио «${data.artist || seed.artist || ""}»`
@@ -842,7 +852,17 @@ async function startRadio(seed, track = null) {
         setPlayerNote(unreachableError(e) ? "Радио не собралось: нет связи с сервером" : e.message);
     } finally {
         if (radioLoading === mine) radioLoading = null;
+        /* Радио от трека: пока шла первая порция, его трек уже играл, и
+         * просьба о продолжении со старта трека ждала её. Не пришла — просим
+         * снова сейчас, иначе радио кончилось бы на одном треке. */
+        if (radioLoading === null) extendRadio();
     }
+}
+
+function offShuffleForRadio() {
+    if (player.shuffle === "smart") player.beforeSmart = null;
+    player.shuffle = false;
+    renderPlayerModes();
 }
 
 async function extendRadio() {
