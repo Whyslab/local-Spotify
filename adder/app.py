@@ -59,6 +59,7 @@ from . import (
     thumbs,
     transitions,
     webcovers,
+    weekly,
 )
 from . import queue as task_queue
 
@@ -1755,6 +1756,10 @@ def home(authenticated: bool = Depends(verify_token)):
     """
     rows = library.library_index()
     features = db.db_query("SELECT path, tempo, energy, brightness FROM audio_features")
+    picks = weekly.current()
+    # Подборка — сплошь треки со стороны: первые качаются заранее, чтобы
+    # «Слушать» было с чего начать (плеер не скачанное пропускает).
+    weekly.prefetch(picks["tracks"])
 
     by_path = {row["path"]: row for row in rows}
 
@@ -1784,6 +1789,8 @@ def home(authenticated: bool = Depends(verify_token)):
         "discover": shelves.discover(rows, seed=shelves.shelf_seed()),
         # Новые релизы артистов фонотеки — из файла ночного прохода, без сети.
         "releases": releases.shelf(),
+        # Подборка недели — из файла ночного прохода (adder/weekly.py).
+        "weekly": picks,
         "albums": [
             {
                 "artist": who,

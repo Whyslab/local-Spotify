@@ -12,7 +12,8 @@ Navidrome нашёл в фонотеке, а там подборка — это 
 анализа собрал бы их по вчерашним измерениям.
 
 Заодно — новые релизы артистов фонотеки (adder/releases.py): полка
-«Новые релизы» на главной и уведомление о впервые увиденном.
+«Новые релизы» на главной и уведомление о впервые увиденном. И раз в неделю —
+подборка недели (adder/weekly.py).
 
 Файлы перезаписываются целиком. Своя правка внутри `★ ...` не живёт — прежнее
 содержимое уходит в adder/playlist-history, но постоянной подборке лучше дать
@@ -33,7 +34,7 @@ def main() -> int:
     # ничего не слушается, поэтому значение любое.
     os.environ.setdefault("API_TOKEN", "shelves")
     try:
-        from adder import config, library, releases, shelves, thumbs
+        from adder import config, library, releases, shelves, thumbs, weekly
     except ModuleNotFoundError as exc:
         # Всё нужное стоит в виртуальном окружении проекта, а в системном
         # python этого нет. Трассировка про fastapi об этом не скажет —
@@ -66,6 +67,7 @@ def main() -> int:
     # службы, кэш, который почистили): первый показ их уже не ждёт.
     print(f"Миниатюры: просмотрено треков {thumbs.prepare_library(config.LIBRARY)}", flush=True)
     new_releases(library, releases)
+    weekly_selection(library, weekly)
     # Ни одной записанной полки — это уже неисправность, а не «просто нечего
     # показывать»: таймер должен пожаловаться в журнал, иначе подборки будут
     # молча стареть.
@@ -92,6 +94,24 @@ def new_releases(library, releases) -> None:
         + ("" if report["complete"] else " — Deezer перестал отвечать, проход неполный"),
         flush=True,
     )
+
+
+def weekly_selection(library, weekly) -> None:
+    """Подборка недели (adder/weekly.py) — когда наступила новая неделя.
+
+    Как и релизы, полки не роняет: не собралась — останется прошлая.
+    """
+    if not weekly.due():
+        return
+    try:
+        report = weekly.build(library.library_index())
+    except Exception as exc:  # noqa: BLE001 — сеть, диск
+        print(f"Подборка недели: не вышло ({exc})", flush=True)
+        return
+    if report["built"]:
+        print(f"Подборка недели {report['week']}: треков {report['count']}", flush=True)
+    else:
+        print("Подборка недели: Deezer ничего не дал, осталась прошлая", flush=True)
 
 
 if __name__ == "__main__":
