@@ -96,6 +96,7 @@ def server(tmp_path_factory):
         "WEB_COVERS_DIR": tmp / "web-covers",
         "ARTIST_PHOTOS_DIR": tmp / "artist-photos",
         "ARTIST_IMPORT_FILE": tmp / "artist-import.json",
+        "NEW_RELEASES_FILE": tmp / "new-releases.json",
     }.items():
         mp.setattr(runtime, name, value)
     mp.setattr(playlists, "HISTORY_DIR", tmp / "history")
@@ -3340,6 +3341,37 @@ def fake_deezer_artist(monkeypatch):
     yield
     discography.clear_finished()
     runtime.ARTIST_IMPORT_FILE.unlink(missing_ok=True)
+
+
+def test_new_releases_shelf_opens_the_artists_discography(page, fake_deezer_artist):
+    """Plan 4c.2: the night's finds stand on the home page; a card opens the
+    artist's discography with ticks, and a title from Deezer is only text."""
+    found = {
+        "id": "11",
+        "artist": "Quiet",
+        "title": XSS_TITLE,
+        "kind": "single",
+        "date": "2026-10-04",
+        "cover": "",
+        "seen": 1.0,
+    }
+    runtime.NEW_RELEASES_FILE.write_text(
+        json.dumps({"artists": {}, "releases": [found], "checked_at": 1.0}), encoding="utf-8"
+    )
+    try:
+        page.evaluate("homeCache = null; switchView('viewHome'); home()")
+        section = page.locator(".o-section").filter(has_text="Новые релизы")
+        section.wait_for()
+        card = section.locator(".o-card")
+        assert card.locator(".o-card-title").inner_text() == XSS_TITLE
+        assert page.evaluate("window.pwned") is None
+        assert card.locator(".o-card-sub").inner_text() == "Quiet · сингл, 04.10"
+        card.click()
+        page.wait_for_function("activeView === 'viewAdd'")
+        page.wait_for_selector(".disco-track")
+        assert page.locator("#artistQuery").input_value() == "Quiet"
+    finally:
+        runtime.NEW_RELEASES_FILE.unlink(missing_ok=True)
 
 
 def test_an_artist_is_downloaded_from_a_ticked_list(page, fake_deezer_artist):

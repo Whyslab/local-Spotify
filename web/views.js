@@ -535,6 +535,17 @@ function renderLabHome(data) {
         }), "is-moods")));
     }
 
+    /* Новые релизы артистов фонотеки — ночной проход (adder/releases.py).
+     * Нажатие открывает дискографию артиста с галочками: что из релиза
+     * брать, решает человек. */
+    const fresh = data.releases || [];
+    if (fresh.length) {
+        parts.push(labSection("Новые релизы", null,
+            el("p", "o-section-note", "Вышло у артистов фонотеки — нажмите, чтобы выбрать и скачать"),
+            labShelf(fresh.slice(0, 16).map((r) =>
+                labCard(findCoverBox(r), r.title || "", releaseLine(r), () => downloadArtistFromLibrary(r.artist))))));
+    }
+
     if (disc.length) {
         const picks = el("div", "o-picks");
         disc.slice(0, 16).forEach((t, i) => {
@@ -613,6 +624,14 @@ function showFinds(fresh) {
             labShelf(finds.slice(0, 12).map((f) =>
                 labCard(findCoverBox(f), f.title || "", f.artist || "", () => searchForFind(f))))));
     });
+}
+
+const RELEASE_KINDS = { album: "альбом", ep: "EP", single: "сингл" };
+
+/* «Артист · сингл, 04.10» — дата из Deezer, ГГГГ-ММ-ДД. */
+function releaseLine(r) {
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(r.date || "") ? `, ${r.date.slice(8, 10)}.${r.date.slice(5, 7)}` : "";
+    return `${r.artist || ""} · ${RELEASE_KINDS[r.kind] || "релиз"}${date}`;
 }
 
 /* Обложка находки: буква на цвете, пока картинка не пришла (или её нет). */

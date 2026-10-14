@@ -58,6 +58,7 @@ It is not built to be a public SaaS or to work around YouTube's restrictions —
 * **Play journal** — Navidrome keeps a play count and a last-played date, not a log. This one records track, time, how far it got and whether it was skipped.
 * **Shuffling that has a shape** — the library has no genre or BPM tags at all, so `scripts/analyze_audio.py` measures tempo, energy, brightness and key from the audio itself, and queues are walked rather than sampled: neighbours are close in tempo, the same artist does not follow itself, and a track heard recently is unlikely to come back. See `scripts/README.md`.
 * **Radio** — «Радио» in a track's or an artist's «⋯» starts an endless queue: the artist, the artists Deezer calls similar that are in the library, and about one track in three from outside it. It comes in portions of 20, the next one asked for when fewer than five are left; the last 50 tracks and anything recently skipped are left out. Downloads from outside are capped at 20 an hour and wait while the add queue is busy.
+* **New releases** — every night, for the 150 biggest library artists Deezer knows by the same name, albums, EPs and singles of the last 60 days that are not in the library yet go to a «Новые релизы» shelf on the home page, with a desktop notification for the ones seen for the first time. A card opens the artist's discography with ticks. Downloading them by itself is a setting, `NEW_RELEASES_AUTO`, off by default.
 * **Library audit tooling** — offline scripts for finding duplicates, checking metadata, and bulk-migrating a playlist from CSV.
 
 ---
@@ -296,7 +297,7 @@ Authorise with an `Authorization: Bearer <API_TOKEN>` header. `/health` without 
 | `POST` | `/api/covers` | A screen's thumbnails in one answer (`{"items": [{"path", "size"}]}`, up to 64); one still to be made is answered "later" |
 | `GET` `DELETE` | `/api/library` | The library (search, sort, paging) / move a track to `trash/` |
 | `POST` | `/api/replace` `/api/replace-file` | Replace a track by a better version, keeping its place in every playlist |
-| `GET` | `/api/home` | Home page shelves |
+| `GET` | `/api/home` | Home page shelves, the night's new releases among them |
 | `GET` | `/api/discover-external` | Tracks by similar artists that are not in the library; a new set on every call, with Deezer covers |
 | `GET` | `/api/web-cover` | A Deezer picture (`?url=` on `*.dzcdn.net` only), fetched once and kept in `adder/web-covers/` |
 | `GET` | `/api/artists/search` `/api/artists/find` | Deezer artists by name / the library artist on Deezer (exact name first) |
