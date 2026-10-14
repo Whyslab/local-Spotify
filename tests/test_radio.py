@@ -202,6 +202,27 @@ def test_an_artists_radio_starts_with_the_artist_even_if_skipped_lately(deezer):
     assert not {t.path for t in local[1:]} & skipped
 
 
+def test_a_skipped_artists_own_radio_keeps_to_the_artist(deezer):
+    """Review of 4c.4: the taste penalty for an artist skipped more than most
+    must not push that artist's own radio out to its neighbours."""
+    tracks = library_tracks()
+    for t in tracks:
+        if t.artist == "Seed":
+            t.artist_skip = 0.5  # exp(-3 * 0.5): a quarter of the weight
+    seed_share = sum(
+        sum(1 for t in radio.build(tracks, "Seed", [], size=12, seed=n)[0] if t.artist == "Seed")
+        for n in range(20)
+    )
+    neutral = library_tracks()
+    neutral_share = sum(
+        sum(1 for t in radio.build(neutral, "Seed", [], size=12, seed=n)[0] if t.artist == "Seed")
+        for n in range(20)
+    )
+    assert seed_share == neutral_share
+    # The caller's tracks are left as they were.
+    assert all(t.artist_skip == 0.5 for t in tracks if t.artist == "Seed")
+
+
 def test_nothing_from_the_last_fifty_comes_back(deezer):
     tracks = library_tracks()
     recent = [t.path for t in tracks if t.artist in ("Seed", "Near1")]

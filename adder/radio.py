@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import random
 import time
 
@@ -95,6 +96,16 @@ def build(
     ``outside.candidates``; ``None`` — со стороны не брать.
     """
     rng = random.Random(seed)
+    # Радио артиста включили нарочно: то, что его вообще пропускают чаще
+    # других, не должно уводить станцию к соседям. Его недавно пропущенные
+    # треки и так не играют (``skipped``).
+    seed_name = _name(seed_artist)
+    tracks = [
+        dataclasses.replace(t, artist_skip=0.0)
+        if t.artist_skip > 0 and _name(t.artist) == seed_name
+        else t
+        for t in tracks
+    ]
     banned = set(recent[-WINDOW:]) | (skipped or set())
     if previous:
         banned.add(previous)

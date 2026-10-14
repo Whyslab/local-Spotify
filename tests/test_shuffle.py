@@ -251,6 +251,13 @@ def test_no_skip_columns_means_neutral_taste():
         assert shuffle.taste_weight(t) == 1.0
 
 
+def test_heard_through_needs_a_known_length():
+    for duration in (None, 0, 0.0):
+        assert not shuffle._heard_through({"played_seconds": 200, "duration": duration})
+    assert not shuffle._heard_through({"played_seconds": None, "duration": 200})
+    assert shuffle._heard_through({"played_seconds": 181, "duration": 200})
+
+
 def _backtest_module():
     import importlib.util
     from pathlib import Path
@@ -306,6 +313,32 @@ def test_backtest_new_scoring_ranks_skips_lower():
     assert new["skipped"] < old["skipped"]
     assert new["heard"] > old["heard"]
     assert new["gap"] > old["gap"]
+
+
+def test_backtest_gain_has_an_interval_above_zero_when_taste_helps():
+    backtest = _backtest_module()
+    index, features, journal = _synthetic_journal()
+    gain = backtest.compare(index, features, journal, len(journal) // 2, resamples=300)
+    assert gain["n"] > 50
+    low, high = gain["ci95"]
+    assert 0 < low <= gain["gain"] <= high
+
+
+def test_backtest_a_long_pause_starts_a_new_session():
+    """After half an hour the queue does not continue the track before it:
+    the first track is then weighed on its own."""
+    backtest = _backtest_module()
+    index = [{"path": f"{i}.m4a", "artist": f"A{i}"} for i in range(3)]
+    features = [{"path": "0.m4a", "tempo": 100.0}, {"path": "1.m4a", "tempo": 160.0}]
+    play = {"hour": 9, "skipped": 0, "played_seconds": 200, "duration": 200}
+    near = [{**play, "path": "0.m4a", "at": 0}, {**play, "path": "1.m4a", "at": 300}]
+    far = [{**play, "path": "0.m4a", "at": 0}, {**play, "path": "1.m4a", "at": 7200}]
+    ranks = {
+        name: list(backtest._ranks(index, features, plays, 1, 2, False))[0][2]
+        for name, plays in (("near", near), ("far", far))
+    }
+    # 160 after 100 is a jump; alone it is just a measured track.
+    assert ranks["far"] > ranks["near"]
 
 
 def test_backtest_percentile_splits_ties():

@@ -69,10 +69,11 @@ OUTSIDE_SHARE = 0.3
 # без музыки не делает вчерашний пропуск старым — после него ничего и не слушали.
 #
 # Числа ниже подобраны бэктестом (scripts/backtest_shuffle.py --fit) на первой
-# половине журнала 14.10.2026 и проверены на второй: пропущенное встало ниже
-# (перцентиль 0.474 → 0.455), дослушанное выше (0.480 → 0.484). Сдвиг скромный:
-# в журнале 542 прослушивания, повторов у трека мало, и больше всего говорит
-# артист.
+# половине журнала 14.10.2026 и проверены на второй: новая оценка опускает
+# пропущенное и поднимает дослушанное в среднем на 0.015 перцентиля, 95 % —
+# от 0.007 до 0.025. Эффект слабый, но не шум. Сетку шире подбор тянет к краям
+# (штраф артисту 6, прибавка дослушанному 4), а интервал там задевает ноль:
+# 542 прослушиваний на четыре числа мало, и умеренные значения честнее.
 TASTE_HALF_LIFE = 50
 # Дослушанным считается трек, сыгранный хотя бы на столько от длины.
 HEARD_SHARE = 0.9
@@ -154,8 +155,12 @@ def candidate_weight(
     candidate: Track,
     use_moment: bool = True,
     use_taste: bool = True,
+    taste: float | None = None,
 ) -> float:
     """Вес кандидата за ``current`` (``None`` — первый трек очереди).
+
+    ``taste`` — уже посчитанный ``taste_weight(candidate)``: очередь считает
+    его раз на трек, а не на каждом шаге.
 
     Тот же, что в ``build_queue``, без поправки на повтор артиста: бэктест
     (``scripts/backtest_shuffle.py``) сравнивает им старую и новую оценку.
@@ -171,7 +176,7 @@ def candidate_weight(
     if use_moment:
         weight *= 1.0 + candidate.hour_affinity
     if use_taste:
-        weight *= taste_weight(candidate)
+        weight *= taste_weight(candidate) if taste is None else taste
     return weight
 
 
@@ -234,8 +239,12 @@ def build_queue(
 
     # The first track is chosen on standing alone -- coverage, the hour and
     # taste if there is a journal -- since there is nothing yet for it to follow.
+    taste = {t.path: taste_weight(t) for t in pool} if use_taste else {}
+
     def opening_weight(track: Track) -> float:
-        return max(candidate_weight(None, track, use_moment, use_taste), 1e-6)
+        return max(
+            candidate_weight(None, track, use_moment, use_taste, taste.get(track.path)), 1e-6
+        )
 
     # Начинать со своего. Включили подборку — первым должно заиграть то, что в
     # ней лежит, иначе это не «подборка с добавками», а чужая очередь.
@@ -296,7 +305,9 @@ def build_queue(
 
         weights = []
         for candidate in candidates:
-            weight = candidate_weight(current, candidate, use_moment, use_taste)
+            weight = candidate_weight(
+                current, candidate, use_moment, use_taste, taste.get(candidate.path)
+            )
             if candidate.artist and candidate.artist in recent_artists:
                 # Not forbidden outright -- in a library where one artist holds
                 # a tenth of the tracks, a hard ban distorts everything after

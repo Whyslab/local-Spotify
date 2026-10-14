@@ -23,7 +23,7 @@ import random
 import sqlite3
 from collections import Counter
 
-from . import db, library, moods, playlists, runtime, similar
+from . import db, library, moods, playlists, releases, runtime, similar
 
 logger = logging.getLogger(__name__)
 
@@ -74,24 +74,25 @@ def favourite_artists(rows: list[dict], top: int) -> list[str]:
         # Журнала не прочесть — полки всё равно нужны: по составу фонотеки.
         logger.warning("Любимые артисты: журнал не прочитан (%s)", exc)
         plays = []
+    # По ключу без регистра: в фонотеке есть и «LIZER/», и «Lizer/», и это один
+    # артист, а не два места из шести.
     heard: Counter[str] = Counter()
+    spelled: dict[str, str] = {}
     for play in plays:
-        name = similar.primary((by_path.get(play["path"]) or {}).get("artist") or "")
+        name = similar.primary((by_path.get(play["path"]) or {}).get("artist") or "").strip()
         if len(name) >= 2:
-            heard[name] += 1
-    names = [name for name, _ in heard.most_common(top)]
+            heard[releases._key(name)] += 1
+            spelled.setdefault(releases._key(name), name)
+    names = [spelled[key] for key, _ in heard.most_common(top)]
 
-    collected = Counter(
-        similar.primary(row.get("artist") or "") for row in rows if row.get("artist")
-    )
-    collected.pop("", None)
-    taken = {name.lower() for name in names}
-    for name, _ in collected.most_common():
+    # Тот же отбор, что у новых релизов: исполнитель альбома прежде артиста трека.
+    taken = {releases._key(name) for name in names}
+    for name in releases.library_artists(rows, top + len(names)):
         if len(names) >= top:
             break
-        if name.lower() not in taken:
+        if releases._key(name) not in taken:
             names.append(name)
-            taken.add(name.lower())
+            taken.add(releases._key(name))
     return names
 
 
@@ -107,9 +108,9 @@ def _neighbours(favourites: list[str]) -> set[str]:
 def discover(rows: list[dict], top: int = 6, want: int = 24, seed: int | None = None) -> dict:
     """Треки своей же фонотеки, о которых не думал.
 
-    Deezer называет похожих на самых собранных артистов, и из фонотеки
-    отбирается то, что этими похожими написано, — за вычетом самих любимцев:
-    их треки не открытие.
+    Deezer называет похожих на любимых артистов (``favourite_artists``), и
+    из фонотеки отбирается то, что этими похожими написано, — за вычетом
+    самих любимцев: их треки не открытие.
     """
     favourites = favourite_artists(rows, top)
     if not favourites:

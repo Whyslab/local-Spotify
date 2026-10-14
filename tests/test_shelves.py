@@ -6,6 +6,8 @@ Deezer похожих артистов, поэтому она подменяет
 ответил Deezer и что лежит в ~/Music.
 """
 
+import sqlite3
+
 import pytest
 
 from adder import config, db, library, playlists, shelves
@@ -260,3 +262,46 @@ def test_maybe_like_follows_listening(tmp_path, monkeypatch):
     assert {t["artist"] for t in found["tracks"]} == {"Kin of Heard"}
     # The fallback still fills the rest, without repeating anyone.
     assert shelves.favourite_artists(rows, top=3)[:2] == ["Heard", "Big"]
+
+
+def test_favourites_merge_letter_case_and_fall_back_like_new_releases(tmp_path, monkeypatch):
+    """Review of 4c.4: «LIZER» and «Lizer» are one artist, not two of six
+    places; the fallback prefers the album artist, as new releases do."""
+    from adder import runtime
+
+    monkeypatch.setattr(runtime, "DB_PATH", tmp_path / "shelves.db")
+    db.db_init()
+
+    def row(artist, n, albumartist=""):
+        return {
+            "path": f"{artist}/{n}.m4a",
+            "artist": artist,
+            "albumartist": albumartist,
+            "title": f"{artist} {n}",
+        }
+
+    rows = [row("LIZER", 0), row("Lizer", 1), row("lizer", 2)]
+    rows += [row("Big", i) for i in range(2)]
+    rows += [row(f"Guest {i}", i, albumartist="Compiler") for i in range(4)]
+    for path in ("LIZER/0.m4a", "Lizer/1.m4a"):
+        db.db_exec(
+            "INSERT INTO plays(path, played_at, skipped) "
+            "VALUES(?, datetime('now', 'localtime', '-1 days'), 0)",
+            (path,),
+        )
+
+    names = shelves.favourite_artists(rows, top=3)
+    assert names[0] == "LIZER"
+    assert [n.lower() for n in names].count("lizer") == 1
+    # Four tracks of one album artist outweigh two of Big.
+    assert names[1:] == ["Compiler", "Big"]
+
+
+def test_favourites_without_a_readable_journal_come_from_the_library(monkeypatch):
+    def broken(sql, params=()):
+        raise sqlite3.OperationalError("no such table: plays")
+
+    monkeypatch.setattr(db, "db_query", broken)
+    rows = [{"path": f"Big/{i}.m4a", "artist": "Big"} for i in range(3)]
+    rows += [{"path": "Small/0.m4a", "artist": "Small"}]
+    assert shelves.favourite_artists(rows, top=2) == ["Big", "Small"]
