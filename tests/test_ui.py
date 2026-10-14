@@ -800,6 +800,7 @@ def test_a_row_back_on_screen_does_not_hold_a_place_waiting(page):
     page.evaluate(FAKE_COVERS_JS, {"list": _fake_rows(200), "batchDelay": 600000})
     page.evaluate("switchView('viewLibrary')")
     page.wait_for_function("window.__covers.batches === 1")
+    sent = time.monotonic()
     scroll = f"(y) => {{ {_scroller_of('#library')}.scrollTop = y; }}"
     # The first rows leave (past the 200 px margin), the last of the batch
     # stay and keep it going.
@@ -810,13 +811,18 @@ def test_a_row_back_on_screen_does_not_hold_a_place_waiting(page):
     # The rows come back into the queue first: equal counts before that
     # prove nothing.
     page.wait_for_timeout(300)
-    # A row coming back may hold a place for a moment, until its job reaches
-    # the batch or sends its own request; a busy full run read that moment
-    # ((1, 0), 09.10). A place held for the batch stays held: the batch never
-    # answers and gives up only after COVERS_TIMEOUT_MS (6 s), past this wait.
+    # A busy full run once read (1, 0) here after a fixed 300 ms (09.10):
+    # most likely a place held a moment longer by a request the fake does not
+    # count (a home cover, an idle job) -- not confirmed. So wait for the
+    # counts to agree, but only while the batch can still be going: after
+    # COVERS_TIMEOUT_MS (6 s from sending) it gives up, and a place held for
+    # it would be let go as well.
     with contextlib.suppress(TimeoutError):
-        page.wait_for_function("coverBusy === window.__covers.inflight", timeout=4000)
+        left = 5000 - (time.monotonic() - sent) * 1000
+        page.wait_for_function("coverBusy === window.__covers.inflight", timeout=max(0, left))
     busy, inflight = page.evaluate("[coverBusy, window.__covers.inflight]")
+    if time.monotonic() - sent > 5.5:
+        pytest.skip("too slow to tell: the batch may have given up")
     assert busy == inflight, (busy, inflight)
 
 
@@ -3291,12 +3297,16 @@ def test_new_finds_on_every_visit_home(page, monkeypatch):
     page.wait_for_function(f"{titles}.length > 0")
     first = page.evaluate(titles)
     page.evaluate("switchView('viewLibrary')")
-    page.evaluate("switchView('viewHome')")
-    page.wait_for_function(f"{titles}[0] !== {first[0]!r}")
-    # Запросы находок закончились — дальше полку менять нечему, кроме ошибки.
-    page.evaluate("async () => { await findsNext; }")
-    # Фоновый опрос главной набор не меняет — под рукой полка не прыгает.
+    # Ждём именно набор этого захода: он нарисован раньше, чем ожидание
+    # вернётся, а заготовка следующего — ещё нет. Перерисуй её полку по
+    # приходу (полка «прыгнет»), второе чтение ниже это увидит.
+    page.evaluate("window.__shown = findsNext; switchView('viewHome')")
+    page.evaluate("async () => { await window.__shown; }")
     second = page.evaluate(titles)
+    assert second and second != first
+    # Фоновый опрос главной и пришедшая заготовка набор не меняют — под
+    # рукой полка не прыгает.
+    page.evaluate("async () => { await findsNext; }")
     page.evaluate("refresh(true)")
     page.wait_for_timeout(300)
     assert page.evaluate(titles) == second
