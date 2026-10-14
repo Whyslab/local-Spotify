@@ -146,7 +146,7 @@ function switchView(id) {
     for (const section of document.querySelectorAll(".view")) {
         section.hidden = section.id !== id;
     }
-    if (id === "viewService") libraryHealth();
+    if (id === "viewService") { libraryHealth(); blindScore(); }
     /* Вкладки и пункты левой панели подсвечивает views.js (syncNav): у
      * пункта «Артисты» это и фонотека в режиме артистов, и страница артиста. */
     if (typeof syncNav === "function") syncNav();
@@ -672,6 +672,94 @@ async function startLibraryFix(what) {
         return;
     }
     await libraryHealth();
+}
+
+/* ---------------- Слепое сравнение перемешиваний ---------------- */
+
+/* Начатое сравнение переживает перезагрузку страницы: обе очереди слушают
+ * долго, и потерять их на середине обидно. Какая умная — здесь не знают. */
+const BLIND_KEY = "blindTrial";
+
+function blindTrial() {
+    try { return JSON.parse(localStorage.getItem(BLIND_KEY) || "null"); } catch (e) { return null; }
+}
+
+function keepBlindTrial(trial) {
+    try {
+        if (trial) localStorage.setItem(BLIND_KEY, JSON.stringify(trial));
+        else localStorage.removeItem(BLIND_KEY);
+    } catch (e) { /* приватное окно: сравнение живёт до перезагрузки */ }
+    blindView(trial);
+}
+
+let blindInMemory = null;
+
+function blindView(trial) {
+    blindInMemory = trial;
+    document.getElementById("blindTrial").hidden = !trial;
+    document.getElementById("blindStart").textContent = trial ? "Начать заново" : "Начать сравнение";
+}
+
+async function blindScore() {
+    blindView(blindTrial() || blindInMemory);
+    const box = document.getElementById("blindScore");
+    try {
+        const r = await fetch("/api/shuffle/blind/results", { headers: headers() });
+        if (!r.ok) return;
+        const data = await r.json();
+        box.textContent = data.decided
+            ? `Сравнений: ${data.decided}, умную выбрали ${data.smart_chosen}`
+                + (data.decided >= 10 ? (data.passes ? " — умная лучше." : " — пока не лучше.") : ".")
+            : "Сравнений пока не было.";
+    } catch (e) { /* без сети счёт подождёт */ }
+}
+
+async function startBlind() {
+    const note = document.getElementById("blindNote");
+    note.textContent = "Собираю две очереди…";
+    try {
+        const r = await fetch("/api/shuffle/blind", { method: "POST", headers: headers() });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) { note.textContent = data.detail || ("Ошибка " + r.status); return; }
+        keepBlindTrial({ trial: data.trial, A: data.A || [], B: data.B || [] });
+        note.textContent = "Готово. Послушайте A и B, потом выберите.";
+    } catch (e) {
+        note.textContent = "Нет связи с сервером";
+    }
+}
+
+function playBlind(side) {
+    const trial = blindTrial() || blindInMemory;
+    if (!trial || !(trial[side] || []).length) return;
+    /* Порядок очереди и есть то, что сравнивают: перемешивание поверх него
+     * испортило бы сравнение. */
+    offShuffleForRadio();
+    playQueue(trial[side].map(t => ({ ...t })), 0, "blind", { kind: "blind", side });
+    document.getElementById("blindNote").textContent = `Играет очередь ${side}`;
+}
+
+async function chooseBlind(side) {
+    const trial = blindTrial() || blindInMemory;
+    const note = document.getElementById("blindNote");
+    if (!trial) return;
+    try {
+        const r = await fetch("/api/shuffle/blind/" + encodeURIComponent(trial.trial), {
+            method: "POST",
+            headers: { ...headers(), "Content-Type": "application/json" },
+            body: JSON.stringify({ choice: side }),
+        });
+        const data = await r.json().catch(() => ({}));
+        /* 409 — ответ уже записан (с другого устройства или второй щелчок). */
+        if (!r.ok && r.status !== 409 && r.status !== 404) {
+            note.textContent = data.detail || ("Ошибка " + r.status);
+            return;
+        }
+        keepBlindTrial(null);
+        note.textContent = r.ok ? `Записано: лучше ${side}` : "Это сравнение уже закрыто";
+        blindScore();
+    } catch (e) {
+        note.textContent = "Нет связи с сервером — выбор не записан";
+    }
 }
 
 function fact(label, value, bad) {

@@ -2411,6 +2411,58 @@ def test_whole_library_download_and_resume(page):
     page.evaluate("removeAllDownloads()")
 
 
+def test_blind_comparison_card_plays_both_sides_and_records_a_choice(page):
+    """Plan 4c.4 (Q6): the blind comparison has a way in from «Сервис». The test
+    library is too small for the service to build a trial, so the routes are
+    stubbed; the routes themselves are covered in test_shuffle.py."""
+    answers = []
+    side = [{"path": QUIET_PATH, "artist": "Quiet", "title": "Quiet", "duration": 1}]
+    other = [{"path": LOUD_PATH, "artist": "Loud", "title": "Loud", "duration": 1}]
+
+    def blind(route):
+        url, method = route.request.url, route.request.method
+        if url.endswith("/results"):
+            decided = len(answers)
+            body = {"decided": decided, "smart_chosen": decided, "share": None, "passes": False}
+        elif method == "POST" and url.endswith("/api/shuffle/blind"):
+            body = {"trial": 41, "A": side, "B": other}
+        else:
+            answers.append((url.rsplit("/", 1)[1], route.request.post_data_json["choice"]))
+            body = {"trial": 41, "recorded": answers[-1][1]}
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(body))
+
+    page.route("**/api/shuffle/blind**", blind)
+    try:
+        page.evaluate("switchView('viewService')")
+        card = page.locator("#blindCard")
+        page.wait_for_function(
+            "document.getElementById('blindScore').textContent.includes('не было')"
+        )
+        assert card.get_by_role("button", name="Лучше A").is_hidden()
+
+        card.get_by_role("button", name="Начать сравнение").click()
+        card.get_by_role("button", name="Слушать B").click()
+        assert page.evaluate("player.queueMode") == "blind"
+        assert page.evaluate("player.queue.map(t => t.path)") == [LOUD_PATH]
+        assert page.evaluate("player.shuffle") is False
+
+        # The trial outlives a reload: both queues take a while to hear.
+        page.reload()
+        page.evaluate("switchView('viewService')")
+        card.get_by_role("button", name="Лучше A").click()
+        page.wait_for_function(
+            "document.getElementById('blindNote').textContent.includes('Записано')"
+        )
+        assert answers == [("41", "A")]
+        assert card.get_by_role("button", name="Лучше A").is_hidden()
+        page.wait_for_function(
+            "document.getElementById('blindScore').textContent.includes('Сравнений: 1')"
+        )
+    finally:
+        page.evaluate("localStorage.removeItem('blindTrial')")
+        page.unroute("**/api/shuffle/blind**")
+
+
 def test_whole_library_needs_kept_storage(page):
     open_library(page)
     _controlled(page)
@@ -3600,6 +3652,8 @@ SWEEP_SKIP_SELECTORS = {
     "label.file-button, label.drop-zone, input[type=file]": "выбор файлов",
     ".handle, [role=separator]": "ручки перетаскивания (край рельсы и т. п.)",
     'a[target="_blank"]': "ссылки, уводящие со страницы",
+    '[onclick^="startBlind"]': "«Начать сравнение» — пишет строку в blind_trials, а для трёх треков"
+    " тестовой фонотеки служба честно отвечает 400; карточку проверяет свой тест",
 }
 # Строки и карточки одного списка (треки, полка главной, подборки в рельсе,
 # очередь) рисует один код: нажимаются кнопки первых SWEEP_ROWS строк каждого

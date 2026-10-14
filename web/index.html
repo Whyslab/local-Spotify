@@ -328,6 +328,25 @@
         </label>
       </div>
 
+      <!-- Слепое сравнение: честный ответ на «умное перемешивание правда
+           лучше?» (план, Q6). Какая очередь умная — знает только сервер. -->
+      <div id="blindCard" class="card">
+        <div class="card-head">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M16 3h5v5M4 20 21 3M21 16v5h-5M15 15l6 6M4 4l5 5"/></svg>
+          <h2>Какое перемешивание лучше</h2>
+        </div>
+        <p class="muted">Две очереди: одна умная, другая обычная, и какая из них какая, не сказано. Послушайте обе и выберите ту, что понравилась больше. Умная лучше, если её выбирают хотя бы 7 раз из 10.</p>
+        <p id="blindScore" class="muted"></p>
+        <div id="blindTrial" class="row wrap" hidden>
+          <button class="ghost" onclick="playBlind('A')">Слушать A</button>
+          <button class="ghost" onclick="playBlind('B')">Слушать B</button>
+          <button class="ghost" onclick="chooseBlind('A')">Лучше A</button>
+          <button class="ghost" onclick="chooseBlind('B')">Лучше B</button>
+        </div>
+        <p id="blindNote" class="muted" aria-live="polite"></p>
+        <button id="blindStart" class="ghost block" onclick="startBlind()">Начать сравнение</button>
+      </div>
+
       <div class="card">
         <div class="card-head">
           <svg class="icon accent" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg>
