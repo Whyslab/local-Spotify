@@ -186,7 +186,17 @@ def backfill(
                 logger.warning("%s: %s", path.relative_to(root), exc)
                 gain = None
             finally:
-                os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+                # Only after a write: setting the time back is a write of its
+                # own, and ctime is part of the stamp the phone checks its copy
+                # by -- silence or a failed measurement would otherwise be
+                # downloaded again after every night.
+                now = path.stat()
+                if (now.st_mtime_ns, now.st_size, now.st_ctime_ns) != (
+                    stat.st_mtime_ns,
+                    stat.st_size,
+                    stat.st_ctime_ns,
+                ):
+                    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
             if gain is None:
                 failed += 1
                 continue

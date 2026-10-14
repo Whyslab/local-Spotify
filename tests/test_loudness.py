@@ -5,6 +5,7 @@ import os
 import shutil
 import sqlite3
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -119,6 +120,22 @@ def test_backfill_without_an_analysis_database(tmp_path):
     shutil.copy(FIXTURE, root / "t.m4a")
 
     assert replaygain.backfill(root, tmp_path / "missing.db") == (1, 0, 0)
+
+
+def test_backfill_leaves_a_file_it_did_not_tag_alone(tmp_path, monkeypatch):
+    """Setting the time back is itself a write: it moves ctime, which is part of
+    the stamp the phone checks its copy by. A file nothing was written to
+    (silence, a failed measurement) was downloaded again after every night."""
+    root = tmp_path / "library"
+    root.mkdir()
+    track = root / "t.m4a"
+    shutil.copy(FIXTURE, track)
+    monkeypatch.setattr(loudness, "measure", lambda path, timeout=300: None)
+    before = track.stat()
+    time.sleep(0.01)
+
+    assert loudness.backfill(root, tmp_path / "missing.db") == (0, 0, 1)
+    assert track.stat().st_ctime_ns == before.st_ctime_ns
 
 
 def test_backfill_stops_when_the_service_does(tmp_path):
