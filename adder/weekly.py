@@ -10,10 +10,12 @@ Deezer, тем же подбором, что подмешивает новое �
 (``outside.candidates``). Не больше двух треков одного артиста: подборка —
 это разные новые имена, а не дискография одного.
 
-Чего в ней нет. Того, что уже есть в фонотеке, и того, что уже предлагалось
-за последние полгода и в фонотеку не попало: треки со стороны в журнал не
-пишутся, и «отвергнуто» здесь значит «показали и не взяли». Неделя, когда
-Deezer молчит, оставляет прошлую подборку: пустая полка хуже вчерашней.
+Чего в ней нет. Того, что уже есть в фонотеке, и — пока есть новое — того,
+что уже предлагалось за последние полгода и в фонотеку не попало: треки со
+стороны в журнал не пишутся, и «отвергнуто» здесь значит «показали и не
+взяли». Круг похожих у Deezer конечен, и когда новое кончилось, добирается
+предложенное давнее всего. Неделя, когда Deezer дал меньше ``MIN_SIZE``,
+оставляет прошлую подборку: полка в пять треков хуже вчерашней.
 
 Слушается подборка как треки со стороны (``outside:<ключ>``): скачиваются
 по просьбе плеера, с тем же потолком в час, что у радио, а понравившееся
@@ -26,10 +28,13 @@ from __future__ import annotations
 
 import datetime
 import json
+import logging
 import time
 from collections import Counter
 
 from . import ingest, outside, runtime, shelves, similar
+
+logger = logging.getLogger(__name__)
 
 SIZE = 25
 PER_ARTIST = 2
@@ -37,8 +42,10 @@ SEEDS = 12
 HISTORY_WEEKS = 26
 # Ночью спешить некуда: подбор может ждать Deezer дольше, чем перемешивание.
 BUDGET = 60.0
-# Сколько первых не скачанных треков главная просит скачать заранее.
+# Сколько треков подборки держать скачанными заранее.
 PREFETCH = 5
+# Меньше — прошлая подборка остаётся: полка в пять треков хуже вчерашней.
+MIN_SIZE = SIZE // 2
 
 
 def week_of(now: float) -> str:
@@ -76,21 +83,19 @@ def build(rows: list[dict], now: float | None = None, budget: float = BUDGET) ->
         week: keys for week, keys in (state.get("history") or {}).items() if isinstance(keys, list)
     }
     offered = {key for keys in history.values() for key in keys}
-    found = outside.candidates(
-        favourites(rows), outside.library_keys(rows), SIZE * 4, budget=budget
-    )
-
-    picks: list[dict] = []
-    per_artist: Counter[str] = Counter()
-    for item in found:
-        who = similar.primary(item["artist"]).lower()
-        if item["key"] in offered or per_artist[who] >= PER_ARTIST:
-            continue
-        per_artist[who] += 1
-        picks.append(item)
-        if len(picks) >= SIZE:
-            break
-    if not picks:
+    seeds, have = favourites(rows), outside.library_keys(rows)
+    found = outside.candidates(seeds, have, SIZE * 4, budget=budget, skip=offered)
+    picks = _pick(found, [])
+    if len(picks) < SIZE and offered:
+        # Новых не хватило: круг похожих у Deezer конечен, а ответы его
+        # кэшируются навсегда, и через три-четыре месяца всё из круга уже
+        # предлагалось. Тогда добираем тем, что предлагалось давнее всего, —
+        # полка из двадцати пяти лучше полки из пяти.
+        again = outside.candidates(seeds, have, SIZE * 8, budget=budget)
+        age = {key: n for n, week in enumerate(sorted(history)) for key in history[week]}
+        again.sort(key=lambda item: age.get(item["key"], -1))
+        picks = _pick(again, picks)
+    if len(picks) < MIN_SIZE:
         return {"built": False, "week": state.get("week"), "count": len(state.get("tracks") or [])}
 
     week = week_of(now)
@@ -101,13 +106,47 @@ def build(rows: list[dict], now: float | None = None, budget: float = BUDGET) ->
     return {"built": True, "week": week, "count": len(picks)}
 
 
+def _pick(found: list[dict], picks: list[dict]) -> list[dict]:
+    """Дописать к ``picks`` из ``found``: не больше ``PER_ARTIST`` на артиста,
+    до ``SIZE``, без повторов."""
+    picks = list(picks)
+    taken = {item["key"] for item in picks}
+    per_artist = Counter(similar.primary(item["artist"]).lower() for item in picks)
+    for item in found:
+        who = similar.primary(item["artist"]).lower()
+        if len(picks) >= SIZE:
+            break
+        if item["key"] in taken or per_artist[who] >= PER_ARTIST:
+            continue
+        per_artist[who] += 1
+        taken.add(item["key"])
+        picks.append(item)
+    return picks
+
+
+def _valid(item: object) -> bool:
+    """Строка подборки из файла: всё нужное на месте, ключ — тот, что
+    выдаёт outside (он становится именем файла в кэше)."""
+    return (
+        isinstance(item, dict)
+        and isinstance(item.get("key"), str)
+        and bool(outside._KEY.fullmatch(item["key"]))
+        and isinstance(item.get("artist"), str)
+        and isinstance(item.get("title"), str)
+    )
+
+
 def current() -> dict:
     """Подборка для главной: строки очереди и состояние скачивания каждой."""
     state = load()
-    picks = [p for p in state.get("tracks") or [] if isinstance(p, dict) and p.get("key")]
+    tracks = state.get("tracks")
+    picks = [p for p in tracks if _valid(p)] if isinstance(tracks, list) else []
     # Уборка кэша забывает кандидата, которого неделю не просили скачать, —
     # а подборка живёт неделю. Записанный заново снова можно попросить.
-    outside.remember(picks)
+    try:
+        outside.remember(picks)
+    except OSError as exc:
+        logger.warning("Подборка недели: кэш не записан (%s)", exc)
     tracks = [
         {
             **outside.entry(item),
@@ -120,11 +159,15 @@ def current() -> dict:
 
 
 def prefetch(tracks: list[dict]) -> None:
-    """Первые не скачанные — скачать заранее, чтобы «Слушать» было с чего начать."""
+    """Держать ``PREFETCH`` треков скачанными, чтобы «Слушать» было с чего
+    начать. Не больше: каждое открытие главной иначе просило бы следующие
+    пять, и за неделю скачалась бы вся подборка, даже не слушанная, — заодно
+    съев часовой потолок скачиваний у радио."""
+    ready = sum(1 for t in tracks if t.get("state") in ("ready", "pending"))
     keys = [
         outside.track_key(t["path"]) or ""
         for t in tracks
         if t.get("state") in ("wanted", "unknown")
     ]
-    if keys:
-        outside.request(keys[:PREFETCH])
+    if ready < PREFETCH and keys:
+        outside.request(keys[: PREFETCH - ready])

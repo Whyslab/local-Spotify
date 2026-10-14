@@ -9,7 +9,10 @@ import json
 
 import pytest
 
-from adder import db, outside, runtime, weekly
+from adder import db, outside, runtime, similar, weekly
+
+# Настоящий подбор: conftest подменяет его пустым для каждого теста.
+REAL_CANDIDATES = outside.candidates
 
 MONDAY = datetime.datetime(2026, 10, 12, 4, 30).timestamp()
 DAY = 86400
@@ -41,9 +44,10 @@ def finds(n, artists=20):
 def deezer(monkeypatch):
     asked = {}
 
-    def candidates(seed_artists, have, want, budget=0):
+    def candidates(seed_artists, have, want, budget=0, skip=None):
         asked.update(seeds=list(seed_artists), want=want, budget=budget)
-        return asked.get("answer", finds(100))[:want]
+        found = asked.get("answer", finds(100))
+        return [f for f in found if not skip or f["key"] not in skip][:want]
 
     monkeypatch.setattr(outside, "candidates", candidates)
     return asked
@@ -145,7 +149,83 @@ def test_the_first_tracks_not_downloaded_are_asked_for(deezer, journal, monkeypa
     tracks[0]["state"] = "ready"
     tracks[1]["state"] = "pending"
     weekly.prefetch(tracks)
-    assert asked == [[outside.track_key(t["path"]) for t in tracks[2:7]]]
+    # Two are there or on the way: three more make PREFETCH.
+    assert asked == [[outside.track_key(t["path"]) for t in tracks[2:5]]]
+
+
+def test_prefetch_stops_at_prefetch_tracks(deezer, journal, monkeypatch):
+    """Review: every home visit asked for five more, and a week of visits
+    downloaded the whole selection unheard — and ate the radio's hourly cap."""
+    asked = []
+    monkeypatch.setattr(outside, "request", lambda keys, keep=False: asked.append(keys))
+    weekly.build(LIBRARY, now=MONDAY)
+    tracks = weekly.current()["tracks"]
+    for t in tracks[: weekly.PREFETCH]:
+        t["state"] = "ready"
+    weekly.prefetch(tracks)
+    assert asked == []
+
+
+def test_twenty_weeks_from_one_fixed_circle_stay_full(journal, monkeypatch):
+    """Review: Deezer's answers are cached for good, so the circle of similar
+    artists is fixed; with «nothing offered for half a year» the selection ran
+    dry after about thirteen weeks. Now the fresh come first, and when there
+    are not enough, the ones offered longest ago."""
+    monkeypatch.setattr(outside, "candidates", REAL_CANDIDATES)
+    monkeypatch.setattr(
+        similar,
+        "similar_artists",
+        lambda name, cache, limit=12: [f"{name} kin {i}" for i in range(6)],
+    )
+    monkeypatch.setattr(
+        similar,
+        "top_tracks",
+        lambda name, cache, limit=5: [
+            {"artist": name, "title": f"{name} song {j}", "duration": 180} for j in range(5)
+        ],
+    )
+    weeks = []
+    for week in range(20):
+        report = weekly.build(LIBRARY, now=MONDAY + week * 7 * DAY)
+        assert report["built"] and report["count"] == weekly.SIZE, (week, report)
+        weeks.append({outside.track_key(t["path"]) for t in weekly.current()["tracks"]})
+    # A circle of 21 artists x 5 tracks: four weeks without any repeat...
+    for n in range(1, 4):
+        assert not weeks[n] & set().union(*weeks[:n]), n
+    # ...and never last week's tracks again.
+    for n in range(1, 20):
+        assert not weeks[n] & weeks[n - 1], n
+
+
+def test_a_thin_week_keeps_last_weeks_selection(deezer, journal):
+    weekly.build(LIBRARY, now=MONDAY)
+    deezer["answer"] = finds(weekly.MIN_SIZE - 1, artists=50)
+    report = weekly.build(LIBRARY, now=MONDAY + 7 * DAY)
+    assert report["built"] is False
+    assert len(weekly.current()["tracks"]) == 25
+
+
+def test_a_selection_file_of_the_wrong_shape_is_cleaned(deezer, journal):
+    """Review: a key reaches a file name in the outside cache, and a missing
+    title broke the home page."""
+    good = finds(1)[0]
+    runtime.WEEKLY_FILE.write_text(
+        json.dumps(
+            {
+                "week": "2026-W42",
+                "tracks": [
+                    good,
+                    {"key": "../../x", "artist": "a", "title": "b"},
+                    {"key": "a" * 16},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    tracks = weekly.current()["tracks"]
+    assert [outside.track_key(t["path"]) for t in tracks] == [good["key"]]
+    runtime.WEEKLY_FILE.write_text(json.dumps({"tracks": None}), encoding="utf-8")
+    assert weekly.current()["tracks"] == []
 
 
 def test_a_broken_file_is_no_selection():

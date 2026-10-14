@@ -294,12 +294,16 @@ def candidates(
     have: set[tuple[str, str]],
     want: int,
     budget: float = CANDIDATE_BUDGET,
+    skip: set[str] | None = None,
 ) -> list[dict]:
     """Треки, которых нет в фонотеке, но которые подходят к этим артистам.
 
     Сами артисты очереди тоже в деле: недостающий хит того, кого слушаешь, —
     ровно то, что подмешивает Spotify. Каждый кандидат помнит, к кому он
     подобран (``seed``), — по этому его и ставят рядом с нужным треком.
+
+    ``skip`` — ключи, которых не предлагать. Отсекаются до ``want``: иначе
+    уже предложенное занимало бы места, и новых доставалось бы меньше.
     """
     budget_end = time.monotonic() + budget
     cache = _similar_cache()
@@ -336,7 +340,7 @@ def candidates(
             key = key_for(artist, title)
             # Не нашедшийся на YouTube неделю не предлагается: иначе в каждой
             # очереди были бы места, заранее обречённые на пропуск.
-            if key in seen or status(key) == "failed":
+            if key in seen or (skip and key in skip) or status(key) == "failed":
                 continue
             seen.add(key)
             item = {
