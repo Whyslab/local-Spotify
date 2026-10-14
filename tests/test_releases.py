@@ -496,12 +496,24 @@ def test_turning_auto_download_on_does_not_fetch_the_backlog(deezer, monkeypatch
 
 
 def test_the_service_address_follows_host(monkeypatch):
+    monkeypatch.setattr(releases, "_is_mine", lambda host: True)
     monkeypatch.setattr(config, "HOST", "192.168.1.5")
     assert releases._service_url() == f"http://192.168.1.5:{config.PORT}/api/artists/import"
     monkeypatch.setattr(config, "HOST", "0.0.0.0")
     assert releases._service_url().startswith("http://127.0.0.1:")
     monkeypatch.setattr(config, "HOST", "::1")
     assert releases._service_url().startswith("http://[::1]:")
+
+
+def test_the_token_never_goes_to_an_address_that_is_not_this_machines(monkeypatch):
+    """Security review of 4c: a HOST from .env that DHCP gave to another
+    device would receive the bearer token in clear text."""
+    # TEST-NET-3: never assigned to a real interface.
+    monkeypatch.setattr(config, "HOST", "203.0.113.7")
+    assert releases._service_url().startswith("http://127.0.0.1:")
+    monkeypatch.setattr(config, "HOST", "not-an-address")
+    assert releases._service_url().startswith("http://127.0.0.1:")
+    assert releases._is_mine("127.0.0.1")
 
 
 def _export_script():

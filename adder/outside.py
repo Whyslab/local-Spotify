@@ -30,6 +30,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import queue
 import random
 import re
@@ -129,7 +130,9 @@ def read_meta(key: str) -> dict | None:
 def _write_meta(key: str, meta: dict) -> None:
     _dir().mkdir(parents=True, exist_ok=True)
     target = _meta_path(key)
-    temporary = target.with_suffix(".json.tmp")
+    # Своё имя на процесс и поток: ночной скрипт подборки пишет те же файлы,
+    # что и служба, а замок _META_LOCK — только внутри процесса.
+    temporary = target.with_suffix(f".{os.getpid()}.{threading.get_ident()}.tmp")
     temporary.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
     temporary.replace(target)
 
@@ -513,15 +516,20 @@ FETCHES_PER_HOUR = 20
 _fetch_times: deque[float] = deque()
 # Как часто проверять, не кончились ли свои задачи пользователя.
 USER_WAIT_STEP = 1.0
-# Ключи, которые попросил человек кнопкой «В фонотеку», — мимо потолка.
+# Ключи, которые попросил человек кнопкой «В фонотеку», — мимо потолка, но
+# со своим: кнопку можно нажимать и в цикле, а YouTube за это закроет всё.
 _asked_by_hand: set[str] = set()
+KEEPS_PER_HOUR = 10
+_keep_times: deque[float] = deque()
 
 
-def _hour_has_room() -> bool:
+def _hour_has_room(times: deque[float] | None = None, limit: int | None = None) -> bool:
+    times = _fetch_times if times is None else times
+    limit = FETCHES_PER_HOUR if limit is None else limit
     now = time.monotonic()
-    while _fetch_times and now - _fetch_times[0] > 3600:
-        _fetch_times.popleft()
-    return len(_fetch_times) < FETCHES_PER_HOUR
+    while times and now - times[0] > 3600:
+        times.popleft()
+    return len(times) < limit
 
 
 def _wait_for_users_downloads() -> None:
@@ -581,12 +589,16 @@ def _work() -> None:
                 _wait_for_users_downloads()
                 if runtime.shutdown_event.is_set():
                     return
-                if key not in _asked_by_hand and not _hour_has_room():
+                by_hand = key in _asked_by_hand
+                times, limit = (
+                    (_keep_times, KEEPS_PER_HOUR) if by_hand else (_fetch_times, FETCHES_PER_HOUR)
+                )
+                if not _hour_has_room(times, limit):
                     # Остаётся «wanted»: плеер этот трек пропустит, а просьба,
                     # пришедшая, когда час освободится, поставит его заново.
-                    logger.info("Трек со стороны %s отложен: за час уже %d", key, FETCHES_PER_HOUR)
+                    logger.info("Трек со стороны %s отложен: за час уже %d", key, limit)
                     continue
-                _fetch_times.append(time.monotonic())
+                times.append(time.monotonic())
                 fetch(key)
             except runtime.ShutdownRequested:
                 return

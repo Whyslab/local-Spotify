@@ -116,6 +116,22 @@ def test_a_keep_by_hand_does_not_wait_for_the_hour(monkeypatch, running):
     assert fetched == [KEY]
 
 
+def test_keeps_by_hand_have_their_own_hourly_limit(monkeypatch, running):
+    """Security review of 4c: «В фонотеку» in a loop must not become an
+    unthrottled stream of yt-dlp runs — YouTube would close the add queue too."""
+    fetched: list[str] = []
+    monkeypatch.setattr(outside, "fetch", fake_fetch(fetched))
+    monkeypatch.setattr(outside, "KEEPS_PER_HOUR", 2)
+    keys = [f"{i:016x}" for i in range(4)]
+    remember(*keys)
+
+    outside.request(keys, keep=True)
+    assert wait_for(lambda: not outside._pending)
+    assert len(fetched) == 2
+    # They do not eat the radio's hour.
+    assert len(outside._fetch_times) == 0
+
+
 def test_a_keep_of_a_failed_track_leaves_no_mark(monkeypatch, running):
     remember(KEY)
     outside._update_meta(KEY, status="failed", failed_at=time.time())

@@ -31,8 +31,10 @@ Deezer, что у них вышло за последние ``RECENT_DAYS`` дн
 from __future__ import annotations
 
 import datetime
+import ipaddress
 import json
 import logging
+import socket
 import time
 from collections import Counter
 from pathlib import Path
@@ -259,11 +261,29 @@ def _same_artist(
 
 def _service_url() -> str:
     """Куда стучаться к службе: она слушает HOST, а 0.0.0.0 и :: — это все
-    адреса, и тогда достаточно своего."""
+    адреса, и тогда достаточно своего.
+
+    С запросом уходит токен, поэтому адрес должен быть этой машины: HOST из
+    .env, переехавший по DHCP к соседнему устройству, получил бы токен
+    открытым текстом. Чужой — тогда 127.0.0.1."""
     host = config.HOST if config.HOST not in ("", "0.0.0.0", "::") else "127.0.0.1"
+    if not _is_mine(host):
+        host = "127.0.0.1"
     if ":" in host:
         host = f"[{host}]"
     return f"http://{host}:{config.PORT}/api/artists/import"
+
+
+def _is_mine(host: str) -> bool:
+    try:
+        if ipaddress.ip_address(host).is_loopback:
+            return True
+        family = socket.AF_INET6 if ":" in host else socket.AF_INET
+        with socket.socket(family, socket.SOCK_DGRAM) as probe:
+            probe.bind((host, 0))  # привязаться можно только к своему адресу
+        return True
+    except (ValueError, OSError):
+        return False
 
 
 def _service_token() -> str:

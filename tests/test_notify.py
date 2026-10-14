@@ -83,4 +83,16 @@ def test_notify_send_is_called_with_the_desktop_conventions(monkeypatch):
     assert cmd[0] == "/usr/bin/notify-send"
     assert cmd[cmd.index("--app-name") + 1] == "local-Spotify"
     assert cmd[cmd.index("--urgency") + 1] == "critical"
-    assert cmd[-2:] == ["Трек добавлен", "Adele — Hello"]
+    assert cmd[-3:] == ["--", "Трек добавлен", "Adele — Hello"]
+
+
+def test_a_title_is_neither_an_option_nor_markup(monkeypatch):
+    """Security review of 4c: names come from tags, YouTube and Deezer."""
+    calls = []
+    monkeypatch.setattr(notify.shutil, "which", lambda name: "/usr/bin/notify-send")
+    monkeypatch.setattr(notify.subprocess, "run", lambda cmd, **kw: calls.append(cmd))
+
+    notify._show("-M-", "Tom & Jerry <b>live</b>", urgent=False)
+
+    (cmd,) = calls
+    assert cmd[-3:] == ["--", "-M-", "Tom &amp; Jerry &lt;b&gt;live&lt;/b&gt;"]

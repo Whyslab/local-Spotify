@@ -14,6 +14,7 @@ a hung notification daemon are all logged at debug level and ignored.
 
 from __future__ import annotations
 
+import html
 import logging
 import os
 import shutil
@@ -60,8 +61,12 @@ def _show(summary: str, body: str, urgent: bool) -> None:
         ICON,
         "--urgency",
         "critical" if urgent else "normal",
+        # Названия — из тегов, YouTube и Deezer: «--» не даёт имени вида
+        # «-M-» стать ключом, а тело экранировано — демон читает его как
+        # разметку, и «<» или «&» в названии ломали бы текст.
+        "--",
         summary,
-        body,
+        html.escape(body, quote=False),
     ]
     try:
         subprocess.run(command, env=_environment(), timeout=5, capture_output=True, check=False)
