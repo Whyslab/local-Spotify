@@ -693,11 +693,36 @@ function keepBlindTrial(trial) {
 }
 
 let blindInMemory = null;
+/* Пока идёт запрос, кнопки карточки не нажимаются: второй щелчок по
+ * «Лучше A» получал 409 и затирал «Записано» словами «уже закрыто». */
+let blindBusy = false;
+/* «Начать заново» выбрасывает недослушанное сравнение — только со второго
+ * нажатия, пока не истекло это время. */
+let blindRestartUntil = 0;
+const BLIND_RESTART_MS = 5000;
 
 function blindView(trial) {
     blindInMemory = trial;
-    document.getElementById("blindTrial").hidden = !trial;
+    document.getElementById("blindTrialRow").hidden = !trial;
     document.getElementById("blindStart").textContent = trial ? "Начать заново" : "Начать сравнение";
+    for (const button of document.querySelectorAll("#blindCard button")) button.disabled = blindBusy;
+}
+
+function blindDetail(data, status) {
+    /* У 422 detail — список ошибок, а не строка. */
+    return typeof data.detail === "string" ? data.detail : ("Ошибка " + status);
+}
+
+async function blindRequest(work) {
+    if (blindBusy) return;
+    blindBusy = true;
+    blindView(blindTrial() || blindInMemory);
+    try {
+        await work();
+    } finally {
+        blindBusy = false;
+        blindView(blindTrial() || blindInMemory);
+    }
 }
 
 async function blindScore() {
@@ -716,16 +741,24 @@ async function blindScore() {
 
 async function startBlind() {
     const note = document.getElementById("blindNote");
-    note.textContent = "Собираю две очереди…";
-    try {
-        const r = await fetch("/api/shuffle/blind", { method: "POST", headers: headers() });
-        const data = await r.json().catch(() => ({}));
-        if (!r.ok) { note.textContent = data.detail || ("Ошибка " + r.status); return; }
-        keepBlindTrial({ trial: data.trial, A: data.A || [], B: data.B || [] });
-        note.textContent = "Готово. Послушайте A и B, потом выберите.";
-    } catch (e) {
-        note.textContent = "Нет связи с сервером";
+    if ((blindTrial() || blindInMemory) && Date.now() > blindRestartUntil) {
+        blindRestartUntil = Date.now() + BLIND_RESTART_MS;
+        note.textContent = "Начатое сравнение пропадёт без ответа. Нажмите «Начать заново» ещё раз.";
+        return;
     }
+    blindRestartUntil = 0;
+    await blindRequest(async () => {
+        note.textContent = "Собираю две очереди…";
+        try {
+            const r = await fetch("/api/shuffle/blind", { method: "POST", headers: headers() });
+            const data = await r.json().catch(() => ({}));
+            if (!r.ok) { note.textContent = blindDetail(data, r.status); return; }
+            keepBlindTrial({ trial: data.trial, A: data.A || [], B: data.B || [] });
+            note.textContent = "Готово. Послушайте A и B, потом выберите.";
+        } catch (e) {
+            note.textContent = "Нет связи с сервером";
+        }
+    });
 }
 
 function playBlind(side) {
@@ -740,8 +773,12 @@ function playBlind(side) {
 
 async function chooseBlind(side) {
     const trial = blindTrial() || blindInMemory;
-    const note = document.getElementById("blindNote");
     if (!trial) return;
+    await blindRequest(() => sendBlindChoice(trial, side));
+}
+
+async function sendBlindChoice(trial, side) {
+    const note = document.getElementById("blindNote");
     try {
         const r = await fetch("/api/shuffle/blind/" + encodeURIComponent(trial.trial), {
             method: "POST",
@@ -751,7 +788,7 @@ async function chooseBlind(side) {
         const data = await r.json().catch(() => ({}));
         /* 409 — ответ уже записан (с другого устройства или второй щелчок). */
         if (!r.ok && r.status !== 409 && r.status !== 404) {
-            note.textContent = data.detail || ("Ошибка " + r.status);
+            note.textContent = blindDetail(data, r.status);
             return;
         }
         keepBlindTrial(null);

@@ -2446,10 +2446,16 @@ def test_blind_comparison_card_plays_both_sides_and_records_a_choice(page):
         assert page.evaluate("player.queue.map(t => t.path)") == [LOUD_PATH]
         assert page.evaluate("player.shuffle") is False
 
+        # A started trial is not thrown away by one click on «Начать заново».
+        card.get_by_role("button", name="Начать заново").click()
+        assert "ещё раз" in page.locator("#blindNote").inner_text()
+        assert page.evaluate("JSON.parse(localStorage.getItem('blindTrial')).trial") == 41
+
         # The trial outlives a reload: both queues take a while to hear.
         page.reload()
         page.evaluate("switchView('viewService')")
-        card.get_by_role("button", name="Лучше A").click()
+        # A double click is one answer, and the note says it was recorded.
+        card.get_by_role("button", name="Лучше A").dblclick()
         page.wait_for_function(
             "document.getElementById('blindNote').textContent.includes('Записано')"
         )
