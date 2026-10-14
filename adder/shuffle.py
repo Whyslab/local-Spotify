@@ -132,6 +132,7 @@ def build_queue(
     tempo_tolerance: float = TEMPO_TOLERANCE,
     core: set[str] | None = None,
     outside_share: float = OUTSIDE_SHARE,
+    previous: Track | None = None,
 ) -> list[Track]:
     """Order tracks so that each one follows plausibly from the one before.
 
@@ -144,6 +145,10 @@ def build_queue(
     примерно ``outside_share`` мест достаётся трекам со стороны, подобранным по
     тем же правилам смежности. Без ``core`` всё как было — перемешивается то,
     что передали.
+
+    ``previous`` — трек, который уже играет (в очередь он не входит). Тогда
+    первый трек выбирается как следующий за ним, а не сам по себе: так
+    продолжается радио, и стык между порциями не слышен.
     """
     if not tracks:
         return []
@@ -171,15 +176,19 @@ def build_queue(
 
     # Начинать со своего. Включили подборку — первым должно заиграть то, что в
     # ней лежит, иначе это не «подборка с добавками», а чужая очередь.
-    opening = [t for t in pool if t.path in core_paths] if core_paths else pool
-    if not opening:
-        opening = pool
-    current = rng.choices(opening, weights=[opening_weight(t) for t in opening], k=1)[0]
-    pool.remove(current)
-    queue.append(current)
+    if previous is not None:
+        pool = [t for t in pool if t.path != previous.path]
+        current = previous
+    else:
+        opening = [t for t in pool if t.path in core_paths] if core_paths else pool
+        if not opening:
+            opening = pool
+        current = rng.choices(opening, weights=[opening_weight(t) for t in opening], k=1)[0]
+        pool.remove(current)
+        queue.append(current)
 
     while pool and len(queue) < size:
-        recent_artists = {t.artist for t in queue[-2:] if t.artist}
+        recent_artists = {t.artist for t in [current, *queue][-2:] if t.artist}
 
         # Решаем сначала, чьё это место, и только потом ищем трек. Иначе всё
         # чужое встанет в начало: фонотека в сто раз больше подборки, и по

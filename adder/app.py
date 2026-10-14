@@ -15,7 +15,7 @@ import threading
 import time
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 import httpx
 from fastapi import Depends, FastAPI, File, HTTPException, Request, Security, UploadFile, status
@@ -47,6 +47,7 @@ from . import (
     opusgain,
     outside,
     playlists,
+    radio,
     runtime,
     shelves,
     shuffle,
@@ -494,7 +495,7 @@ class PlayRequest(BaseModel):
     # Which kind of queue this track came out of. Criterion 26 is a comparison
     # of skip rates between the two, and that comparison needs the label at the
     # moment the track is played -- it cannot be reconstructed afterwards.
-    mode: Literal["manual", "smart", "plain"] = "manual"
+    mode: Literal["manual", "smart", "plain", "radio"] = "manual"
     # When listening started, by the client's clock (epoch seconds) -- the
     # same moment ListenBrainz calls listened_at. The phone sends plays heard
     # without network later, and the time of the request would be hours or
@@ -1995,6 +1996,63 @@ def smart_shuffle_of(req: SmartShuffleRequest, authenticated: bool = Depends(ver
     if core is not None:
         body["core"] = len(core)
     return body
+
+
+class RadioRequest(BaseModel):
+    """Радио от трека (``path``) или от артиста (``artist``) — одно из двух.
+
+    ``recent`` — последние треки очереди радио по порядку: их в порции не
+    будет, а последний из них — тот, за которым порция продолжает.
+    """
+
+    path: str = Field(default="", max_length=4096)
+    artist: str = Field(default="", max_length=300)
+    recent: list[Annotated[str, Field(max_length=4096)]] = Field(
+        default_factory=list, max_length=radio.WINDOW
+    )
+    size: int = Field(default=radio.PORTION, ge=1, le=50)
+
+
+@app.post("/api/radio")
+def radio_portion(req: RadioRequest, authenticated: bool = Depends(verify_token)):
+    """Следующая порция радио. Пустая очередь — играть больше нечего.
+
+    Без сети (Deezer молчит) радио всё равно собирается — из всей фонотеки
+    по темпу, без нового: как умное перемешивание.
+    """
+    if bool(req.path) == bool(req.artist):
+        raise HTTPException(status_code=400, detail="Нужен трек или артист — одно из двух")
+    tracks = _shuffle_tracks()
+    seed_artist = req.artist.strip()
+    if req.path:
+        if outside.is_outside(req.path):
+            key = outside.track_key(req.path)
+            meta = outside.read_meta(key) if key else None
+            if meta is None:
+                raise HTTPException(status_code=404, detail="Этого трека уже нет")
+            seed_artist = meta.get("artist") or ""
+        else:
+            track = next((t for t in tracks if t.path == req.path), None)
+            if track is None:
+                raise HTTPException(status_code=404, detail="Этого трека нет в фонотеке")
+            seed_artist = track.artist
+    outside.cleanup_now_and_then()
+    local, found = radio.build(
+        tracks,
+        seed_artist,
+        req.recent,
+        previous=req.recent[-1] if req.recent else None,
+        size=req.size,
+        have=outside.library_keys(library.library_index()),
+        skipped=radio.recently_skipped(),
+    )
+    outside.remember(found)
+    payload = outside.weave(_queue_payload(local), found, len(found))
+    return {
+        "artist": seed_artist,
+        "queue": payload,
+        "external": sum(1 for entry in payload if entry.get("external")),
+    }
 
 
 class OutsideKeysRequest(BaseModel):
