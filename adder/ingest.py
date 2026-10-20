@@ -1636,6 +1636,11 @@ def ingest_temp_file(tid: int, temp_path: Path, names: TrackNames, thumbnail: st
                 extra={"task_id": tid},
             )
             temp_path.unlink()
+            # Путь близнеца — результат задачи: без него готовая задача без
+            # пути навсегда отказывала той же ссылке, даже когда близнеца
+            # удалили (см. app._can_requeue).
+            with suppress(Exception):
+                db.task_update(tid, result_path=str(duplicate.relative_to(config.LIBRARY)))
             return "duplicate"
 
         # Same filename + different content is allowed.

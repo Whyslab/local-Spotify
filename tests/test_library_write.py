@@ -479,6 +479,30 @@ def test_a_duplicate_result_also_releases_the_link(app, monkeypatch):
     assert URL not in runtime.PROCESSING_URLS
 
 
+def test_a_link_that_ended_as_a_duplicate_can_be_added_again_once_its_twin_is_gone(
+    app, monkeypatch
+):
+    """«Дубликат» кончался готовой задачей без пути результата, и эту ссылку
+    больше нельзя было добавить никогда — даже после удаления оставленного
+    близнеца: ответ молча говорил «уже есть»."""
+    from adder import app as app_module
+
+    youtube(app, monkeypatch, {"title": "A - B", "uploader": "x"})
+    deezer(app, monkeypatch, None)
+    covers(app, monkeypatch)
+    # Без ссылки внутри файла — как у треков до 24.09 и у загрузок: иначе
+    # разные ссылки дают разные байты, и дубликатом не бывают.
+    monkeypatch.setattr(ingest, "write_source", lambda path, url: None)
+    run(app, "https://www.youtube.com/watch?v=first")
+    task = run(app)
+    assert library_files(app) == [Path("A/Singles/B.m4a")]
+
+    assert task["result_path"] == "A/Singles/B.m4a"
+    assert not app_module._can_requeue(task)  # the twin is still there
+    library.delete_track("A/Singles/B.m4a")
+    assert app_module._can_requeue(task)
+
+
 def test_second_disc_is_not_written_as_2_of_1(app, monkeypatch):
     youtube(app, monkeypatch, {"title": "A - B", "uploader": "x"})
     deezer(
