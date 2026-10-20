@@ -324,6 +324,9 @@ class SecurityHeaders:
                 headers.setdefault("X-Content-Type-Options", "nosniff")
                 if headers.get("content-type", "").startswith("text/html"):
                     headers.setdefault("Content-Security-Policy", CONTENT_SECURITY_POLICY)
+                    # A link out of the page (Deezer, YouTube) must not carry
+                    # the address of this service on the LAN with it.
+                    headers.setdefault("Referrer-Policy", "no-referrer")
             await send(message)
 
         await self.inner(scope, receive, with_headers)

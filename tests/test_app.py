@@ -1098,6 +1098,8 @@ def test_every_html_page_has_the_csp_and_every_answer_nosniff(client):
         response = client.get(path)
         assert response.status_code == 200, path
         assert "default-src 'self'" in response.headers.get("content-security-policy", ""), path
+        # Без этого переход по внешней ссылке уносил адрес страницы с собой.
+        assert response.headers.get("referrer-policy") == "no-referrer", path
     for path in ("/static/app.js", "/health", "/api/library"):
         assert client.get(path).headers.get("x-content-type-options") == "nosniff", path
 
