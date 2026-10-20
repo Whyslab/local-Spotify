@@ -106,3 +106,5 @@ adder/cache/
 adder/snapshots/
 # Связки перехода «как диджей» — кэш, собирается по просьбе плеера.
 adder/transitions/
+# Файлы, которые ReplayGain не смог измерить (scripts/replaygain.py) — состояние.
+adder/replaygain-failures.json

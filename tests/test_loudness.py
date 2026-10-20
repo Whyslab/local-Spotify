@@ -149,3 +149,36 @@ def test_backfill_stops_when_the_service_does(tmp_path):
 
     assert loudness.backfill(root, tmp_path / "missing.db", stop=stop) == (0, 0, 0)
     assert library.read_tags(root / "t.m4a").get("gain") is None
+
+
+def test_a_file_that_cannot_be_measured_fails_the_night_once(tmp_path, monkeypatch):
+    """Тишину не измерить: скрипт выходил с 1 каждую ночь (уведомление о сбое
+    каждое утро) и каждую ночь мерил её заново. Неудача запоминается по
+    размеру и mtime; изменённый файл меряется снова."""
+    root = tmp_path / "library"
+    root.mkdir()
+    track = root / "silence.m4a"
+    shutil.copy(FIXTURE, track)
+    failures = tmp_path / "failures.json"
+    tried: list[Path] = []
+
+    def silent(path, timeout=300):
+        tried.append(path)
+
+    monkeypatch.setattr(loudness, "measure", silent)
+    argv = ["replaygain.py", "--library", str(root), "--db", str(tmp_path / "x.db")]
+    monkeypatch.setattr("sys.argv", [*argv, "--failures", str(failures)])
+
+    assert replaygain.main() == 1  # new: the notice fires once
+    assert replaygain.main() == 0  # known and unchanged: skipped
+    assert len(tried) == 1
+
+    os.utime(track, (1_700_000_000, 1_700_000_000))
+    assert replaygain.main() == 1  # the file changed: measured again
+    assert len(tried) == 2
+
+    monkeypatch.setattr(loudness, "measure", lambda path, timeout=300: (-3.0, 0.5))
+    os.utime(track, (1_600_000_000, 1_600_000_000))
+    assert replaygain.main() == 0
+    assert library.read_tags(track)["gain"] == pytest.approx(-3.0)
+    assert "silence.m4a" not in failures.read_text()

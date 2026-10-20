@@ -147,12 +147,25 @@ def _analysis(db_path: Path) -> sqlite3.Connection | None:
     return con
 
 
+def _stamp(path: Path) -> list[int]:
+    stat = path.stat()
+    return [stat.st_size, stat.st_mtime_ns]
+
+
 def backfill(
-    root: Path, db_path: Path, limit: int | None = None, stop: threading.Event | None = None
+    root: Path,
+    db_path: Path,
+    limit: int | None = None,
+    stop: threading.Event | None = None,
+    failures: dict[str, list[int]] | None = None,
 ) -> tuple[int, int, int]:
     """Tag what is missing. Returns (measured, already tagged, failed).
 
     ``stop`` is the service's shutdown_event when it runs inside the service.
+    ``failures`` (library-relative path -> [size, mtime_ns]) is what failed
+    before: an unchanged file in it is skipped and not counted, a new failure
+    is added, a file that got its tag is taken out. Silence has no loudness,
+    and measuring it again every night only to fail again helps nobody.
     """
     from . import library
 
@@ -170,12 +183,23 @@ def backfill(
             # ждать незачем, недомеренное доберёт следующий запуск.
             if stop is not None and stop.is_set():
                 break
+            relative = str(path.relative_to(root))
+            try:
+                stamp = _stamp(path)
+            except OSError:
+                continue  # gone since the listing
+            if failures is not None and failures.get(relative) == stamp:
+                continue
             try:
                 if library.read_tags(path).get("gain") is not None:
                     tagged += 1
+                    if failures is not None:
+                        failures.pop(relative, None)
                     continue
             except Exception:
                 failed += 1
+                if failures is not None:
+                    failures[relative] = stamp
                 continue
 
             stat = path.stat()
@@ -199,8 +223,12 @@ def backfill(
                     os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
             if gain is None:
                 failed += 1
+                if failures is not None:
+                    failures[relative] = _stamp(path)
                 continue
             measured += 1
+            if failures is not None:
+                failures.pop(relative, None)
             if analysis is not None:
                 analysis.execute(
                     "UPDATE audio_features SET sha256 = ? WHERE path = ? AND sha256 = ?",
