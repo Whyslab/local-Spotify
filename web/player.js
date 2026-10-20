@@ -265,14 +265,19 @@ async function playAt(position, skipped = 0, direction = 1, options = {}) {
          * связи (Tailscale выключен, компьютер спит): navigator.onLine тогда
          * true, а на айфоне ему и вовсе нельзя верить. */
         const offlineMiss = (!navigator.onLine || e.unreachable) && !isDownloaded(track.path);
-        if ((isOutside(track) || offlineMiss) && skipped < player.queue.length) {
+        /* Файла больше нет (удалён или заменён на ноутбуке, пока трек ждал в
+         * очереди) — тоже пропуск: раньше на нём вставала вся очередь. */
+        const gone = e.status === 404;
+        if ((isOutside(track) || offlineMiss || gone) && skipped < player.queue.length) {
             if (isOutside(track)) requestOutside([outsideKey(track)]);
             const next = stepInOrder(direction);
             if (next >= 0 && next !== position) {
                 const played = await playAt(next, skipped + 1, direction);
                 if (played) {
-                    setPlayerNote(offlineMiss ? `Нет сети: «${track.title}» не скачан — пропущен`
-                        : `«${track.title}» пока недоступен — пропущен`);
+                    const name = trackNames(track).title;
+                    setPlayerNote(offlineMiss ? `Нет сети: «${name}» не скачан — пропущен`
+                        : gone ? `«${name}» нет в фонотеке — пропущен`
+                            : `«${name}» пока недоступен — пропущен`);
                 }
                 return played;
             }
@@ -314,7 +319,14 @@ async function playAt(position, skipped = 0, direction = 1, options = {}) {
             prefetchOutside();
             return false;
         }
-        setPlayerNote(e.message);
+        /* Айфон отказал в play() (NotAllowedError: от нажатия до запуска прошло
+         * слишком много — умное перемешивание, радио). Трек уже текущий, и
+         * полоса плеера с кнопкой «играть» должна появиться — иначе записка
+         * пишется в скрытый плеер, и не видно ничего. */
+        renderPlayer();
+        markPlayingRow();
+        renderQueuePanel();
+        setPlayerNote(e.name === "NotAllowedError" ? "Нажмите «играть» — телефон не дал включить само" : e.message);
         return false;
     }
     if (generation !== player.generation) return false;
@@ -941,6 +953,8 @@ function renderPlayerModes() {
         repeat.classList.toggle("is-on", player.repeat !== "off");
         repeat.title = player.repeat === "one" ? "Повтор одного трека"
             : player.repeat === "all" ? "Повтор всей очереди" : "Повтор выключен";
+        // Диктор читает подпись, а не title: без этого слышно только «Повтор».
+        repeat.setAttribute("aria-label", repeat.title);
     }
     if (one) one.hidden = player.repeat !== "one";
 }
@@ -1223,7 +1237,7 @@ async function loadShuffle(mode, playlist = "", noteId = "shuffleNote", paths = 
         } catch (e) { /* нет сети или нет ответа — ниже */ }
         if (ticket !== player.smartTicket) { say(""); return; }
         if (!r || unreachableStatus(r.status)) { await shuffleDownloads(playlist, paths, say, ticket); return; }
-        const data = await r.json();
+        const data = await r.json().catch(() => ({}));
         if (ticket !== player.smartTicket) { say(""); return; }
         if (!r.ok) { say(data.detail || ("Ошибка " + r.status)); return; }
         if (!data.queue.length) { say("Нечего играть."); return; }
@@ -1398,8 +1412,28 @@ function watchForStall() {
         if (stallTries >= STALL_RETRIES) { playerEvent("stall-giveup", `попыток ${stallTries}`); return; }
         stallTries += 1;
         playerEvent("stall-reload", `попытка ${stallTries}`);
-        reloadCurrentSource();
+        const generation = player.generation;
+        reloadCurrentSource().then((outcome) => {
+            if (outcome !== "unreachable" || generation !== player.generation) return;
+            leaveStalledTrack();
+        });
     }, STALL_MS);
+}
+
+/* Сеть пропала посреди трека, которого нет на устройстве. Safari при этом
+ * молча ждёт данных и ошибки не даёт, а новую ссылку взять негде — и плеер
+ * молчал до бесконечности. Дальше — как в playAt без сети: следующий
+ * скачанный. Скачанный трек сеть не держит: для него ждём ещё круг. */
+function leaveStalledTrack() {
+    const track = player.queue[player.index];
+    if (!track || (typeof isDownloaded === "function" && isDownloaded(track.path))) { watchForStall(); return; }
+    const position = player.index;
+    const next = stepInOrder(1);
+    const name = trackNames(track).title;
+    if (next < 0 || next === position) { setPlayerNote(`Нет сети: «${name}» не скачан`); return; }
+    playAt(next, 1, 1).then((played) => {
+        if (played) setPlayerNote(`Нет сети: «${name}» не скачан — пропущен`);
+    });
 }
 
 for (const name of ["waiting", "stalled"]) onAudio(name, watchForStall);
@@ -1470,11 +1504,16 @@ async function reloadCurrentSource() {
     const wasPlaying = !player.audio.paused;
     try {
         const { url } = await streamUrlFor(track.path, true);
-        if (generation !== player.generation) return;
+        if (generation !== player.generation) return "stale";
         player.audio.src = url;
         player.audio.currentTime = at;
         if (wasPlaying) await player.audio.play();
-    } catch (e) { /* дальше — обработчик error */ }
+        return "reloaded";
+    } catch (e) {
+        /* Дальше — обработчик error; сторож застревания смотрит, не пропала
+         * ли сеть (leaveStalledTrack). */
+        return e && e.unreachable ? "unreachable" : "failed";
+    }
 }
 
 /* ---------------- Player bar ---------------- */
@@ -1724,7 +1763,7 @@ function announceCover(url) {
  * помнится между вызовами: перебирать полсотни строк тридцать раз в секунду
  * незачем, когда почти всегда нужна следующая по счёту.
  */
-const lyrics = { path: null, lines: [], index: -1, box: null, follow: true };
+const lyrics = { path: null, lines: [], index: -1, box: null, follow: true, ticket: 0 };
 
 function loadLyrics(track, force = false) {
     const box = document.getElementById("lyricsBody");
@@ -1742,12 +1781,16 @@ function loadLyrics(track, force = false) {
     box.replaceChildren();
     box.classList.remove("has-lyrics", "is-synced", "is-empty");
 
+    /* Номер запроса, а не путь: два запроса одного трека подряд (сохранили
+     * свой текст) дописывали строки дважды. */
+    const ticket = ++lyrics.ticket;
+    const stale = () => ticket !== lyrics.ticket || !!box.querySelector(".lyrics-finder");
     fetch("/api/lyrics?path=" + encodeURIComponent(track.path), { headers: headers() })
-        .then(r => (r.ok ? r.json() : null))
+        .then(r => (r.ok ? r.json() : { found: false, reason: "Не удалось получить текст" }))
         .then(data => {
             /* Медленный ответ для трека, который уже не играет, не должен
-             * затирать тот, что играет сейчас. */
-            if (!data || lyrics.path !== track.path) return;
+             * затирать тот, что играет сейчас, — как и открытый «Найти текст». */
+            if (stale()) return;
             if (!data.found) { renderNoLyrics(box, data.reason); return; }
 
             if (data.synced && data.synced.length) {
@@ -1780,7 +1823,7 @@ function loadLyrics(track, force = false) {
                 renderNoLyrics(box, "");
             }
         })
-        .catch(() => renderNoLyrics(box, "Не удалось получить текст"));
+        .catch(() => { if (!stale()) renderNoLyrics(box, "Не удалось получить текст"); });
 }
 
 /* Текста нет — крупно, на месте самого текста: мелкая серая строчка
@@ -2064,6 +2107,20 @@ function commitSeek(value) {
     renderProgress();
 }
 
+/* Отпустили ползунок там же, где взяли: input был, а change — нет, и
+ * ползунок с временем застывали до следующей перемотки. change приходит сразу
+ * после отпускания; если за 300 мс его не было — перемотки не было. */
+(function releaseSeekWithoutChange() {
+    const slider = document.getElementById("playerSeek");
+    if (!slider) return;
+    const release = () => setTimeout(() => {
+        if (!seekDragging) return;
+        seekDragging = false;
+        renderProgress();
+    }, 300);
+    for (const name of ["pointerup", "pointercancel", "blur"]) slider.addEventListener(name, release);
+})();
+
 /* Стрелки — на пять секунд, а не на одну, как у ползунка по умолчанию:
  * секунда на слух не отличается от «ничего не произошло». */
 function seekByKey(event) {
@@ -2165,10 +2222,13 @@ function playlistFirstTrack(name) {
         return Promise.resolve(player.playlist.entries[0].path);
     }
     if (!firstTrackOf.has(name)) {
+        /* Сбой (нет сети, ноутбук спит) не запоминается: иначе буква вместо
+         * обложки стояла до перезагрузки, хотя сеть давно вернулась. */
+        const failed = () => { firstTrackOf.delete(name); return null; };
         firstTrackOf.set(name, fetch("/api/playlists/" + encodeURIComponent(name) + "/tracks", { headers: headers() })
-            .then(r => (r.ok ? r.json() : null))
-            .then(data => (data && data.entries && data.entries[0] ? data.entries[0].path : null))
-            .catch(() => null));
+            .then(r => (r.ok ? r.json().then(data => (data && data.entries && data.entries[0] ? data.entries[0].path : null))
+                : failed()))
+            .catch(failed));
     }
     return firstTrackOf.get(name);
 }
@@ -2666,7 +2726,7 @@ async function sendReplacement(path, url, file) {
                 body: JSON.stringify({ path, url }),
             });
         }
-        const data = await r.json();
+        const data = await r.json().catch(() => ({}));
         if (!r.ok) { setPlaylistNote(data.detail || "Не удалось заменить"); return; }
         setPlaylistNote("Версия качается. Когда доедет — встанет на это же место.");
     } catch (e) {

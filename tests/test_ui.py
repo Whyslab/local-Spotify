@@ -4181,3 +4181,88 @@ def test_an_old_joined_title_is_still_shown_apart(page):
         {"title": "A - B - C", "artist": "X"},
         {"title": "x/y.m4a", "artist": ""},
     ]
+
+
+def test_a_track_gone_from_the_library_is_skipped_not_a_dead_stop(page):
+    """Audit 20.10: a track deleted or replaced on the laptop while it waited
+    in the queue answered 404, and the whole queue stopped on it."""
+    open_library(page)
+    gone = "/api/stream-url?path=" + "Quiet%2FSingles%2FQuiet.m4a"
+    page.evaluate(
+        "(gone) => { const real = window.fetch; window.fetch = (u, o) => String(u).startsWith(gone)"
+        ' ? Promise.resolve(new Response(\'{"detail": "Not found"}\', {status: 404})) : real(u, o); }',
+        gone,
+    )
+    page.evaluate(f"playQueue([{QUIET}, {LOUD}], 0, 'manual')")
+    page.wait_for_function("player.started && player.queue[player.index].title === 'Loud'")
+    assert page.locator("#playerNote").text_content() == "«Quiet» нет в фонотеке — пропущен"
+    page.evaluate("player.audio.pause()")
+
+
+def test_a_refused_play_still_shows_the_bar(page):
+    """Audit 20.10: when the phone refuses play() (too long since the tap —
+    smart shuffle, radio) the bar stayed hidden and the note went nowhere."""
+    open_library(page)
+    page.evaluate(
+        "player.audio.play = () => Promise.reject(new DOMException('no', 'NotAllowedError')); true"
+    )
+    page.evaluate(f"playQueue([{LOUD}], 0, 'manual')")
+    page.wait_for_function("!document.getElementById('player').hidden")
+    assert "Нажмите «играть»" in page.locator("#playerNote").text_content()
+
+
+def test_a_late_lyrics_failure_does_not_wipe_the_next_tracks_lyrics(page):
+    """Audit 20.10: the lyrics request of a track already skipped failed late
+    and replaced what was on screen with «Не удалось получить текст»."""
+    open_library(page)
+    page.evaluate(
+        "window.__lyricsFail = null; const real = window.fetch;"
+        " window.fetch = (u, o) => String(u).includes('/api/lyrics?path=Quiet')"
+        "   ? new Promise((_, reject) => { window.__lyricsFail = reject; }) : real(u, o); true"
+    )
+    page.evaluate(f"loadLyrics({QUIET}, true)")
+    page.wait_for_function("window.__lyricsFail !== null")
+    page.evaluate(f"loadLyrics({LOUD}, true)")
+    page.wait_for_function("document.getElementById('lyricsBody').textContent.length > 0")
+    shown = page.evaluate("document.getElementById('lyricsBody').textContent")
+    page.evaluate("window.__lyricsFail(new TypeError('Failed to fetch'))")
+    page.wait_for_timeout(200)
+    assert page.evaluate("document.getElementById('lyricsBody').textContent") == shown
+    assert "Не удалось" not in shown
+
+
+def test_releasing_the_seek_slider_where_it_was_taken_unfreezes_it(page):
+    """Audit 20.10: input without change (released at the start value) left
+    the slider and the elapsed time frozen until the next seek."""
+    open_library(page)
+    page.evaluate(f"playQueue([{LOUD}], 0, 'manual')")
+    page.wait_for_function("player.started")
+    page.evaluate("previewSeek(document.getElementById('playerSeek').value)")
+    assert page.evaluate("seekDragging") is True
+    page.evaluate(
+        "document.getElementById('playerSeek').dispatchEvent(new PointerEvent('pointerup'))"
+    )
+    page.wait_for_function("seekDragging === false", timeout=2000)
+    page.evaluate("player.audio.pause()")
+
+
+def test_a_stalled_track_without_network_moves_on_to_a_downloaded_one(page):
+    """Audit 20.10: the phone leaving Wi-Fi mid-track: Safari waits silently,
+    the fresh link cannot be fetched, and the player stayed silent for good.
+    It now moves on as playAt does without network."""
+    open_library(page)
+    page.evaluate(f"playQueue([{LOUD}, {QUIET}], 0, 'manual')")
+    page.wait_for_function("player.started")
+    page.evaluate("player.audio.pause()")
+    # Quiet «скачан», Loud — нет; сеть пропала.
+    page.evaluate(
+        "offline.paths.add('Quiet/Singles/Quiet.m4a');"
+        " window.__playAt = []; const realPlayAt = playAt;"
+        " playAt = (i, ...rest) => { window.__playAt.push(i); return Promise.resolve(true); };"
+        " streamUrlFor = () => { const e = new Error('Сервер недоступен'); e.unreachable = true;"
+        "   return Promise.reject(e); }; true"
+    )
+    page.evaluate("leaveStalledTrack()")
+    page.wait_for_function("window.__playAt.length === 1")
+    assert page.evaluate("window.__playAt") == [1]
+    page.evaluate("offline.paths.delete('Quiet/Singles/Quiet.m4a')")

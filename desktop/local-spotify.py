@@ -195,17 +195,25 @@ class MprisService(dbus.service.Object):
     def PlayPause(self):
         self.window.call_js("togglePlay()")
 
+    # audioPaused(), not player.audio.paused: during a DJ-style bridge the
+    # finished track's element is paused while the next one plays, and Pause
+    # did nothing while Play paused.
     @dbus.service.method(PLAYER_IFACE)
     def Play(self):
-        self.window.call_js("if (player.audio.paused) togglePlay()")
+        self.window.call_js("if (audioPaused()) togglePlay()")
 
     @dbus.service.method(PLAYER_IFACE)
     def Pause(self):
-        self.window.call_js("if (!player.audio.paused) togglePlay()")
+        self.window.call_js(
+            "if (!audioPaused()) { player.pauseReason = 'кнопка системы'; togglePlay(); }"
+        )
 
     @dbus.service.method(PLAYER_IFACE)
     def Stop(self):
-        self.window.call_js("player.audio.pause(); player.audio.currentTime = 0")
+        self.window.call_js(
+            "if (!audioPaused()) { player.pauseReason = 'кнопка системы'; togglePlay(); }"
+            " player.audio.currentTime = 0"
+        )
 
     @dbus.service.method(PLAYER_IFACE)
     def Next(self):

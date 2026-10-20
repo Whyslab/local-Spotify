@@ -835,16 +835,23 @@ function artistHero(name, fallbackPath) {
 
 /* «⋯» артиста: радио от него; скачать недостающее из его дискографии;
  * своя шапка вместо фото из Deezer — и обратно. */
+/* Номер последнего открытия: пока ждём ответ о фото, могли нажать ещё раз
+ * или открыть другое меню — тогда это открытие устарело. Иначе выходило два
+ * меню, и первое не закрывалось ничем. */
+let artistMenuTicket = 0;
+
 async function openArtistMenu(anchor, name) {
     const wasMine = openMenu && openMenu.button === anchor;
     closeTrackMenu();
+    const ticket = ++artistMenuTicket;
     if (wasMine) return;
     let own = false;
     try {
         const r = await fetch("/api/artist-photo/info?name=" + encodeURIComponent(name), { headers: headers() });
         if (r.ok) own = !!(await r.json()).own;
     } catch (e) { /* не знаем — покажем только «Своя шапка…» */ }
-    if (!anchor.isConnected) return;
+    if (!anchor.isConnected || ticket !== artistMenuTicket) return;
+    closeTrackMenu();  // открытое за время ожидания
 
     const menu = el("div", "row-menu more-menu");
     menu.setAttribute("role", "menu");

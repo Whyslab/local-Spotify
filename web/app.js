@@ -45,8 +45,16 @@ function markAppReady() {
 
 /* ---------------- Token ---------------- */
 
+/* Ключ — в памяти тоже: Safari с запретом данных сайтов бросает исключение
+ * на любом обращении к localStorage, и страница падала при запуске. */
+let tokenInMemory = "";
+
 function token() {
-    return localStorage.getItem("token") || "";
+    try {
+        return localStorage.getItem("token") || tokenInMemory;
+    } catch (e) {
+        return tokenInMemory;
+    }
 }
 
 /* Ссылка из тега файла — чужая строка: загруженный файл приносит свои теги.
@@ -68,7 +76,8 @@ function headers() {
 function saveToken() {
     const value = document.getElementById("tokenInput").value.trim();
     if (!value) return;
-    localStorage.setItem("token", value);
+    tokenInMemory = value;
+    try { localStorage.setItem("token", value); } catch (e) { /* только до перезагрузки */ }
     document.getElementById("tokenInput").value = "";
     applyLoginState();
     refresh();
@@ -77,7 +86,12 @@ function saveToken() {
 }
 
 function logout() {
-    localStorage.removeItem("token");
+    tokenInMemory = "";
+    try { localStorage.removeItem("token"); } catch (e) { /* нечего стирать */ }
+    /* Списки, сохранённые на случай без сети (фонотека, подборки, тексты), —
+     * тоже: без ключа их на устройстве быть не должно. Скачанные треки —
+     * отдельное хранилище, они остаются. */
+    if (window.caches) caches.delete("api-v1").catch(() => {});
     applyLoginState();
     switchView("viewAdd");
 }
@@ -272,7 +286,7 @@ async function addTracks() {
             headers: { ...headers(), "Content-Type": "application/json" },
             body: JSON.stringify({ links }),
         });
-        const data = await r.json();
+        const data = await r.json().catch(() => ({}));
 
         if (!r.ok) {
             result.textContent = data.detail || ("Ошибка " + r.status);
@@ -661,11 +675,18 @@ async function libraryHealth() {
 }
 
 async function startLibraryFix(what) {
-    const r = await fetch("/api/library/health/fix", {
-        method: "POST",
-        headers: { ...headers(), "Content-Type": "application/json" },
-        body: JSON.stringify({ what }),
-    });
+    let r;
+    try {
+        r = await fetch("/api/library/health/fix", {
+            method: "POST",
+            headers: { ...headers(), "Content-Type": "application/json" },
+            body: JSON.stringify({ what }),
+        });
+    } catch (e) {
+        // Без сети кнопка молчала: ошибка уходила в никуда.
+        document.getElementById("libraryHealthJob").textContent = "Сервер недоступен";
+        return;
+    }
     if (!r.ok) {
         const err = await r.json().catch(() => ({}));
         document.getElementById("libraryHealthJob").textContent = err.detail || "Не удалось запустить";
@@ -1028,6 +1049,11 @@ function searchForFind(find) {
 }
 
 let homeCache = null;
+/* Когда главную взяли с сервера. Ярлык на айфоне живёт днями без
+ * перезагрузки, и «обновляется по понедельникам» не обновлялось никогда, а
+ * главная, открытая без сети, так и оставалась прошлой копией. */
+let homeCacheAt = 0;
+const HOME_FRESH_MS = 30 * 60 * 1000;
 /* Из каких данных собран экран. Главная перерисовывалась каждые три секунды
  * фоновым опросом — при одних и тех же данных, — и каждая перерисовка сбрасывала
  * листание полок вбок: пролистал ряд обложек, через пару секунд он снова в
@@ -1059,22 +1085,31 @@ function home() {
             homeRendered = homeCache;
         }
         markAppReady();
+        /* Устарела — перерисуется, когда придёт новая, если она другая. */
+        if (Date.now() - homeCacheAt > HOME_FRESH_MS && !homeLoading) {
+            homeLoading = loadHome(box, true).finally(() => { homeLoading = null; });
+        }
         return Promise.resolve();
     }
     if (!homeLoading) homeLoading = loadHome(box).finally(() => { homeLoading = null; });
     return homeLoading;
 }
 
-async function loadHome(box) {
+/* again — обновление уже показанной: сбой оставляет прежнюю на месте. */
+async function loadHome(box, again = false) {
     try {
         const r = await fetch("/api/home", { headers: headers() });
-        if (!r.ok) { homeNote(box, "Не собралось."); return; }
-        homeCache = await r.json();
+        if (!r.ok) { if (!again) homeNote(box, "Не собралось."); return; }
+        const data = await r.json();
+        homeCacheAt = Date.now();
+        if (again && JSON.stringify(data) === JSON.stringify(homeCache)) return;
+        homeCache = data;
+        if (again && activeView !== "viewHome") return;  // нарисуется при заходе
         renderHome(homeCache);
         homeRendered = homeCache;
         markAppReady();
     } catch (e) {
-        homeNote(box, "Не собралось.");
+        if (!again) homeNote(box, "Не собралось.");
     }
 }
 
@@ -1255,10 +1290,32 @@ function trimCovers() {
     }
 }
 
+/* Ответ сервера как JSON. Когда ноутбук спит, Tailscale отвечает 502
+ * страницей HTML, и человек читал «JSON.parse: unexpected character». */
+async function jsonOf(r) {
+    try {
+        return await r.json();
+    } catch (e) {
+        throw new Error(r.ok ? "Сервер ответил непонятно" : "Ошибка " + r.status);
+    }
+}
+
 function forgetCover(key) {
     const old = coverUrls.get(key);
     if (typeof old === "string") URL.revokeObjectURL(old);
     coverUrls.delete(key);
+}
+
+/* Обложку трека поменяли (теги → «Найти обложку заново»). Сервер отдаёт
+ * обложки с кэшем на сутки, и без этого старая картинка держалась и в
+ * памяти страницы, и в кэше браузера до завтра. cache: "reload" идёт на
+ * сервер мимо кэша и кладёт в него новую. */
+async function refreshTrackCover(path) {
+    await Promise.all([96, 300, 600].map(async (size) => {
+        await fetch("/api/cover?path=" + encodeURIComponent(path) + "&size=" + size,
+            { headers: headers(), cache: "reload" }).catch(() => null);
+        forgetCover(`track:${size}:${path}`);
+    }));
 }
 
 /* Обложку строки просим, только когда строка на экране.
@@ -1945,6 +2002,7 @@ function askEdit(card, t, rows) {
             });
             const data = await r.json().catch(() => ({}));
             if (!r.ok) throw new Error(data.detail || ("Не удалось сохранить: " + r.status));
+            if (body.refetch_cover && data.cover !== "not found") await refreshTrackCover(t.path);
             const updated = { ...t, ...data };
             const index = rows.indexOf(t);
             if (index >= 0) rows[index] = updated;
@@ -2074,7 +2132,7 @@ async function importPlaylists(links, result) {
                 headers: { ...headers(), "Content-Type": "application/json" },
                 body: JSON.stringify({ url }),
             });
-            const data = await r.json();
+            const data = await r.json().catch(() => ({}));
             if (!r.ok) { result.textContent = data.detail || ("Ошибка " + r.status); continue; }
 
             const parts = [`Прочитано ${data.read}, в очередь ${data.queued}`];
@@ -2110,7 +2168,7 @@ async function runAlbumSearch() {
     note.textContent = "Ищу альбомы…";
     try {
         const r = await fetch("/api/albums/search?q=" + encodeURIComponent(query), { headers: headers() });
-        const albums = await r.json();
+        const albums = await jsonOf(r);
         if (ticket !== searchTicket) return;
         if (!r.ok) { note.textContent = albums.detail || ("Ошибка " + r.status); return; }
         note.textContent = albums.length ? "" : "Альбомов не нашлось";
@@ -2156,7 +2214,7 @@ function albumRow(album, note) {
                 headers: { ...headers(), "Content-Type": "application/json" },
                 body: JSON.stringify({ id: album.id }),
             });
-            const data = await r.json();
+            const data = await r.json().catch(() => ({}));
             if (!r.ok) throw new Error(data.detail || ("Ошибка " + r.status));
             const parts = [`«${album.title}»: треков ${data.read}, в очередь ${data.queued}`];
             if (data.unmatched && data.unmatched.length) {
@@ -2195,7 +2253,7 @@ async function runArtistSearch() {
     artistSay("Ищу артиста…");
     try {
         const r = await fetch("/api/artists/search?q=" + encodeURIComponent(query), { headers: headers() });
-        const found = await r.json();
+        const found = await jsonOf(r);
         if (ticket !== artistTicket) return;
         if (!r.ok) { artistSay(found.detail || ("Ошибка " + r.status)); return; }
         artistSay(found.length ? "Какой из них?" : "Такого артиста Deezer не знает");
@@ -2242,7 +2300,7 @@ async function downloadArtistFromLibrary(name) {
     artistSay("Ищу артиста…");
     try {
         const r = await fetch("/api/artists/find?name=" + encodeURIComponent(name), { headers: headers() });
-        const data = await r.json();
+        const data = await jsonOf(r);
         if (ticket !== artistTicket) return;
         if (r.ok && data.artist) { openDiscography(data.artist.id, data.artist.name); return; }
     } catch (e) { /* дальше — обычный поиск */ }
@@ -2256,7 +2314,7 @@ async function openDiscography(id, name) {
     let data;
     try {
         const r = await fetch("/api/artists/" + encodeURIComponent(id) + "/discography", { headers: headers() });
-        data = await r.json();
+        data = await jsonOf(r);
         if (ticket !== artistTicket) return;
         if (!r.ok) { artistSay(data.detail || ("Ошибка " + r.status)); return; }
     } catch (e) {
@@ -2380,7 +2438,7 @@ function renderDiscography(data) {
                 headers: { ...headers(), "Content-Type": "application/json" },
                 body: JSON.stringify({ tracks: chosen }),
             });
-            const body = await r.json();
+            const body = await r.json().catch(() => ({}));
             if (!r.ok) throw new Error(typeof body.detail === "string" ? body.detail : ("Ошибка " + r.status));
             showArtistImport(body);
             /* Пока шёл ответ, могли начать новый поиск — его не стираем. */
@@ -2480,7 +2538,7 @@ async function runSearch() {
     note.textContent = "Ищу…";
     try {
         const r = await fetch("/api/search?q=" + encodeURIComponent(query), { headers: headers() });
-        const data = await r.json();
+        const data = await jsonOf(r);
         if (ticket !== searchTicket) return;
         if (!r.ok) { note.textContent = data.detail || ("Ошибка " + r.status); return; }
         note.textContent = data.results.length ? "" : "Ничего не нашлось.";
@@ -2547,7 +2605,7 @@ async function importFiles(fileList) {
 
     try {
         const r = await fetch("/api/import", { method: "POST", headers: headers(), body });
-        const data = await r.json();
+        const data = await r.json().catch(() => ({}));
         if (!r.ok) { note.textContent = data.detail || ("Ошибка " + r.status); return; }
 
         const parts = [`Принято: ${data.accepted.length}`];
@@ -2649,15 +2707,19 @@ function initPanels() {
                начинается там же, так что пересчитывать нечего. */
             applyRailWidth(e.clientX);
         };
+        /* pointercancel — то же отпускание: без него рамка оставалась
+         * «тянущейся», а обработчики копились к следующему разу. */
         const up = (e) => {
             grip.classList.remove("is-dragging");
-            grip.releasePointerCapture(event.pointerId);
+            if (grip.hasPointerCapture(event.pointerId)) grip.releasePointerCapture(event.pointerId);
             grip.removeEventListener("pointermove", move);
             grip.removeEventListener("pointerup", up);
+            grip.removeEventListener("pointercancel", up);
             saveRailWidth(applyRailWidth(e.clientX));
         };
         grip.addEventListener("pointermove", move);
         grip.addEventListener("pointerup", up);
+        grip.addEventListener("pointercancel", up);
     });
 
     /* Двойной щелчок по краю — свернуть или вернуть. Тянуть до упора мышью
