@@ -129,6 +129,16 @@ def test_lifetime_covers_the_whole_track(client):
     assert signing.lifetime_for(3600) == 3600 + signing.GRACE_SECONDS
 
 
+def test_a_link_never_lives_longer_than_six_hours():
+    """Длительность берётся из тегов файла, а файл может прислать кто угодно
+    (загрузка): «трек» длиной в год давал ссылку, живущую год."""
+    year = 365 * 24 * 3600.0
+    assert signing.lifetime_for(year) == signing.MAX_LIFETIME == 6 * 3600
+    assert signing.lifetime_for(float("inf")) == signing.MAX_LIFETIME
+    assert signing.lifetime_for(float("nan")) == signing.MIN_LIFETIME
+    assert signing.lifetime_for(5 * 3600) == 5 * 3600 + signing.GRACE_SECONDS
+
+
 def test_the_signed_path_is_the_decoded_one(client):
     """Percent-encoding belongs to the URL, not to the file."""
     expires_at = 4_000_000_000
