@@ -2242,6 +2242,12 @@ _EVENTS_WINDOW: list[float] = []
 EVENTS_PER_MINUTE = 60
 
 
+def _one_line(text: str) -> str:
+    """Text from the page, fit for the journal: control characters escaped, so
+    a "\n" in it cannot add a line that looks like the service's own."""
+    return "".join(ch if ch.isprintable() else repr(ch)[1:-1] for ch in text)
+
+
 @app.post("/api/player-event")
 def player_event(req: PlayerEvent, authenticated: bool = Depends(verify_token)):
     """One line in the journal per player event; nothing is stored."""
@@ -2252,14 +2258,14 @@ def player_event(req: PlayerEvent, authenticated: bool = Depends(verify_token)):
             raise HTTPException(status_code=429, detail="Too many player events")
         _EVENTS_WINDOW.append(now)
     at = f" at {req.at:.1f}s" if req.at is not None else ""
-    detail = f" ({req.detail})" if req.detail else ""
+    detail = f" ({_one_line(req.detail)})" if req.detail else ""
     level = logging.INFO if req.event in ("pause", "mix") else logging.WARNING
     logger.log(
         level,
         "Player: %s%s %s%s",
         req.event,
         at,
-        req.path,
+        _one_line(req.path),
         detail,
         extra={"task_id": "player"},
     )
@@ -2285,7 +2291,7 @@ def record_play(req: PlayRequest, authenticated: bool = Depends(verify_token)):
             # play is real -- it counts as of its arrival, as before heard_at.
             logger.warning(
                 "Play of %s: heard_at %.0f s ahead of this clock, counted as of now",
-                req.path,
+                _one_line(req.path),
                 req.heard_at - wall,
                 extra={"task_id": "player"},
             )

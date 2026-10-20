@@ -243,6 +243,31 @@ def test_player_events_go_to_the_journal_and_need_the_token(client, caplog):
     assert bad.status_code == 422
 
 
+def test_player_strings_cannot_forge_a_journal_line(client, caplog):
+    """path и detail приходят от страницы как есть: «\n» в них дописывал в
+    журнал службы строку, неотличимую от настоящей."""
+    import logging
+    import time
+
+    forged = "A/B.m4a\n2026-10-20 INFO Task finished: stored\x1b[2J"
+    with caplog.at_level(logging.INFO, logger="adder.app"):
+        client.post(
+            "/api/player-event",
+            json={"event": "stall", "path": forged, "detail": "x\ry"},
+            headers=AUTH,
+        )
+        client.post(
+            "/api/plays",
+            json={"path": forged, "played_seconds": 10, "heard_at": time.time() + 86400},
+            headers=AUTH,
+        )
+    messages = [r.getMessage() for r in caplog.records if forged[:7] in r.getMessage()]
+    assert len(messages) == 2
+    for message in messages:
+        assert "\n" not in message and "\r" not in message and "\x1b" not in message
+        assert "A/B.m4a\\n2026" in message  # escaped, still readable
+
+
 def test_backup_rotation_removes_wal_and_shm(tmp_path):
     """Old snapshots went, their -wal and -shm stayed behind for good."""
     import shutil
