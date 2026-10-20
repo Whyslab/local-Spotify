@@ -8,10 +8,18 @@
 
 import importlib.util
 import sqlite3
+import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 
+from adder import analysis
+
 REPO = Path(__file__).resolve().parents[1]
+
+# conftest подменяет analyse_track на каждый тест; настоящий берём до этого.
+real_analyse_track = analysis.analyse_track
 
 
 def _load_script():
@@ -86,3 +94,33 @@ def test_measured_track_is_stored_and_reported_ok(tmp_path, monkeypatch, capsys)
     rows = con.execute("SELECT path, tempo, music_key FROM audio_features").fetchall()
     con.close()
     assert rows == [("ok.m4a", 120.0, "C")]
+
+
+def test_new_tracks_are_measured_one_at_a_time(monkeypatch):
+    """Один разбор — около 376 МБ. Альбом из двадцати треков запускал двадцать
+    разборов разом, и на машине с 8 ГБ earlyoom убивал браузер."""
+    running = 0
+    most = 0
+    done: list[str] = []
+    lock = threading.Lock()
+
+    def fake_run(command, **kwargs):
+        nonlocal running, most
+        with lock:
+            running += 1
+            most = max(most, running)
+        time.sleep(0.05)
+        with lock:
+            running -= 1
+            done.append(command[command.index("--only") + 1])
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(analysis.subprocess, "run", fake_run)
+    for i in range(4):
+        real_analyse_track(f"A/Singles/{i}.m4a")
+
+    deadline = time.monotonic() + 5
+    while len(done) < 4 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert sorted(done) == [f"A/Singles/{i}.m4a" for i in range(4)]
+    assert most == 1
