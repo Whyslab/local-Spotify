@@ -347,6 +347,18 @@ function isOutside(track) {
     return !!track && typeof track.path === "string" && track.path.startsWith("outside:");
 }
 
+/* Название и исполнитель — порознь, как их показывают: название крупно,
+ * исполнитель под ним. Подборки до 20.10 отдавали одну строку «Артист -
+ * Название» без артиста, и она же хранится в скачанном на телефоне и в
+ * отложенных правках — её делим по первому « - ». */
+function trackNames(track) {
+    const title = (track && (track.title || track.path)) || "";
+    const artist = (track && track.artist) || "";
+    if (artist) return { title, artist };
+    const dash = title.indexOf(" - ");
+    return dash > 0 ? { title: title.slice(dash + 3), artist: title.slice(0, dash) } : { title, artist: "" };
+}
+
 function outsideKey(track) {
     return track.path.slice("outside:".length);
 }
@@ -954,6 +966,30 @@ function toggleQueuePanel() {
 
 const QUEUE_PANEL_ROWS = 60;
 
+/* Обложка строки очереди — как в списках: по ней трек узнаётся быстрее, чем
+ * по названию. У трека со стороны файла в фонотеке нет — картинка из Deezer,
+ * а без неё буква, как у находок на главной. */
+function queueCover(track) {
+    const cover = document.createElement("div");
+    cover.className = "cover";
+    if (!isOutside(track)) {
+        loadTrackCover(cover, track.path);
+        return cover;
+    }
+    const who = trackNames(track).artist || trackNames(track).title || "?";
+    cover.textContent = who.slice(0, 1).toUpperCase();
+    if (track.cover) {
+        findCover(track.cover).then((url) => {
+            if (!url) return;
+            const img = document.createElement("img");
+            img.alt = "";
+            img.src = url;
+            cover.replaceChildren(img);
+        }).catch(() => { /* остаётся буква */ });
+    }
+    return cover;
+}
+
 function renderQueuePanel() {
     const panel = document.getElementById("playQueue");
     if (!panel || panel.hidden) return;
@@ -1010,16 +1046,18 @@ function renderQueuePanel() {
         reveal.setAttribute("aria-label", "Показать, откуда играет");
         reveal.onclick = (event) => { event.stopPropagation(); revealTrack(track); };
 
+        row.appendChild(queueCover(track));
+        const names = trackNames(track);
         const info = document.createElement("div");
         info.className = "track-info";
         const title = document.createElement("div");
         title.className = "track-title";
-        title.textContent = track.title || track.path;
+        title.textContent = names.title;
         info.appendChild(title);
-        if (track.artist) {
+        if (names.artist) {
             const artist = document.createElement("div");
             artist.className = "track-artist";
-            artist.textContent = track.artist;
+            artist.textContent = names.artist;
             info.appendChild(artist);
         }
         row.appendChild(info);
@@ -1092,10 +1130,9 @@ async function revealTrack(track) {
      * двухсотой строкой и на экране его не будет вовсе. */
     switchView("viewLibrary");
     const field = document.getElementById("librarySearch");
-    /* У строки подборки title — «Артист - Название», а артиста отдельно нет;
-     * фонотека по такой строке не находила ничего. Ищем по названию. */
-    let words = track.title || track.artist || "";
-    if (!track.artist && words.includes(" - ")) words = words.split(" - ").slice(1).join(" - ");
+    /* По названию: строка «Артист - Название» из старой подборки не находила
+     * в фонотеке ничего. */
+    const words = track.title ? trackNames(track).title : track.artist || "";
     if (field) field.value = words;
     await library();
     flashTrackRow(track.path);
@@ -1473,8 +1510,9 @@ function renderPlayer() {
     renderNowPanel(track);
     renderKeepButton();
 
-    document.getElementById("playerTitle").textContent = track.title || track.path;
-    document.getElementById("playerArtist").textContent = track.artist || "";
+    const names = trackNames(track);
+    document.getElementById("playerTitle").textContent = names.title;
+    document.getElementById("playerArtist").textContent = names.artist;
     document.getElementById("playerToggle").setAttribute(
         "aria-label", audioPaused() ? "Играть" : "Пауза");
     document.getElementById("playerToggleIcon").setAttribute(
@@ -1505,7 +1543,7 @@ let announced = null;
 function announceTrack(track) {
     if (!("mediaSession" in navigator) || !window.MediaMetadata) return;
     announced = track;
-    const meta = { title: track.title || track.path, artist: track.artist || "", album: track.album || "" };
+    const meta = { ...trackNames(track), album: track.album || "" };
     navigator.mediaSession.metadata = new MediaMetadata(meta);
     if (isOutside(track)) return;
     // Три размера, как их хранит скачанное (offline.js): система берёт подходящий.
@@ -1579,7 +1617,21 @@ function seekBy(seconds) {
     onAudio("loadedmetadata", sharePosition);
     onAudio("seeked", sharePosition);
     onAudio("play", sharePosition);
+    onAudio("playing", offerMediaActions);
 })();
+
+/* Айфон забывает кнопки. Safari передаёт их системе через «пульт», а пульт
+ * создаётся, только когда страница начала грузить звук, и пересоздаётся пустым
+ * после сбоя загрузки (WebKit: NowPlayingManager::addSupportedCommand молча
+ * пропускает кнопку, пока пульта нет). Пустой пульт — кнопки по умолчанию,
+ * ±10/15 с вместо «назад/дальше» (20.10, IMG_1356). Поэтому те же кнопки
+ * отдаются заново на каждом старте трека: пульт к этому времени точно есть. */
+function offerMediaActions() {
+    if (!("mediaSession" in navigator)) return;
+    for (const [action, handler] of Object.entries(mediaHandlers)) {
+        try { navigator.mediaSession.setActionHandler(action, handler); } catch (e) { /* не поддерживается */ }
+    }
+}
 
 /* The right-hand panel. Everything here also exists somewhere else -- the bar
  * has the title, the list has the artist -- except the three measured numbers,
@@ -1596,8 +1648,9 @@ function renderNowPanel(track) {
     const panel = document.getElementById("nowPanel");
     if (!panel || panel.hidden) return;
 
-    document.getElementById("nowTitle").textContent = track.title || track.path;
-    document.getElementById("nowArtist").textContent = track.artist || "";
+    const names = trackNames(track);
+    document.getElementById("nowTitle").textContent = names.title;
+    document.getElementById("nowArtist").textContent = names.artist;
 
     if (nowRequested === track.path) return;
     nowRequested = track.path;
@@ -2301,17 +2354,16 @@ function playlistTrackRow(entry, position) {
     info.className = "track-info";
     info.onclick = () => playQueue(player.playlist.entries, position, "manual",
         { kind: "playlist", name: player.playlist.name });
-    /* В подборке строка — «Артист - Название» из .m3u. Показываем как в
-     * фонотеке: название, под ним артист, длительность справа. */
-    const dash = (entry.title || "").indexOf(" - ");
+    // Как в фонотеке: название, под ним артист, длительность справа.
+    const names = trackNames(entry);
     const title = document.createElement("div");
     title.className = "track-title";
-    title.textContent = dash > 0 ? entry.title.slice(dash + 3) : entry.title;
+    title.textContent = names.title;
     info.appendChild(title);
-    if (dash > 0) {
+    if (names.artist) {
         const who = document.createElement("div");
         who.className = "track-artist";
-        who.textContent = entry.title.slice(0, dash);
+        who.textContent = names.artist;
         info.appendChild(who);
     }
     if (entry.duration > 0) {

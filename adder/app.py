@@ -1612,6 +1612,8 @@ def _playlist_payload(playlist: playlists.Playlist) -> dict:
                 "index": entry.index,
                 "path": entry.path,
                 "title": entry.title,
+                "artist": entry.artist,
+                "album": entry.album,
                 "duration": entry.duration,
             }
             for entry in playlist.entries

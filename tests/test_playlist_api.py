@@ -50,6 +50,35 @@ def test_create_read_and_reorder(client):
     assert reordered.json()["revision"] != read["revision"]
 
 
+def test_entries_carry_title_and_artist_apart(client, monkeypatch):
+    """20.10: an entry's title was "Artist - Title" with no artist, so the
+    queue, the player bar and the iPhone lock screen showed one long line.
+    The .m3u keeps the joined label for other players; the API gives both."""
+    monkeypatch.setattr(
+        library,
+        "library_index",
+        lambda: [
+            {
+                "path": "A.m4a",
+                "artist": "GONE.Fludd • Cakeboy",
+                "title": "Каждый День",
+                "album": "Альбом",
+            }
+        ],
+    )
+    client.post("/api/playlists", json={"name": "Ночь", "paths": ["A.m4a", "Missing.m4a"]})
+
+    entries = client.get("/api/playlists/Ночь/tracks").json()["entries"]
+
+    assert entries[0]["title"] == "Каждый День"
+    assert entries[0]["artist"] == "GONE.Fludd • Cakeboy"
+    assert entries[0]["album"] == "Альбом"
+    # A file the index does not know: its name, and no artist to guess.
+    assert (entries[1]["title"], entries[1]["artist"]) == ("Missing", "")
+    text = playlists.playlist_path("Ночь").read_text(encoding="utf-8")
+    assert "GONE.Fludd • Cakeboy - Каждый День" in text
+
+
 def test_reorder_against_a_stale_revision_is_refused(client):
     client.post("/api/playlists", json={"name": "shared", "paths": ["A.m4a", "B.m4a"]})
     stale = client.get("/api/playlists/shared/tracks").json()["revision"]

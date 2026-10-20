@@ -358,18 +358,20 @@ button:disabled { opacity: .5; cursor: default; }
 
 /* Explicit line-heights: these lines are clipped to one line each, so they
    must not depend on the inherited leading to keep their descenders. */
+/* Как в Spotify (20.10): название крупнее, исполнитель под ним — мельче и
+   серым, чтобы глаз сначала читал песню, а не имя. */
 .track-title {
-    font-size: 16px;
-    line-height: 21px;
+    font-size: 17px;
+    line-height: 22px;
     font-weight: 500;
     letter-spacing: -0.01em;
 }
 
 .track-artist {
-    font-size: 14px;
-    line-height: 19px;
+    font-size: 13px;
+    line-height: 18px;
     color: var(--text-2);
-    margin-top: 1px;
+    margin-top: 2px;
 }
 
 .track-album {
@@ -934,11 +936,16 @@ button.danger {
 .lyric {
     margin: 0 0 .6em;
     color: rgba(255, 255, 255, 0.32);
-    transition: color .36s ease-out, filter .36s ease-out;
+    transition: color .36s ease-out, text-shadow .36s ease-out;
     cursor: pointer;
 }
-.lyrics-body.is-synced .lyric:not(.is-now) { filter: blur(0.8px); }
-@media (prefers-reduced-motion: reduce) { .lyrics-body.is-synced .lyric:not(.is-now) { filter: none; } }
+/* Размытие — тенью текста, а не filter: blur. Фильтр делал из каждой строки
+   отдельный слой, и айфон рисовал на краю слоя фиолетовую черту высотой в
+   абзац (20.10, IMG_1125). Тень того же радиуса выглядит так же, а слоя нет. */
+.lyrics-body.is-synced .lyric:not(.is-now) { color: transparent; text-shadow: 0 0 1.6px rgba(255, 255, 255, 0.36); }
+@media (prefers-reduced-motion: reduce) {
+    .lyrics-body.is-synced .lyric:not(.is-now) { color: rgba(255, 255, 255, 0.32); text-shadow: none; }
+}
 .lyric.plain { cursor: default; }
 /* Было var(--text-1) — такой переменной в палитре нет, и правило пропадало.
    Строка светилась белым только по случайности, от наследования. */
@@ -995,7 +1002,9 @@ button.danger {
 
 /* Кнопка «откуда играет» — только в строке очереди, и приглушена: она нужна
    изредка и не должна спорить с названием трека. */
-.queue-row { display: flex; align-items: center; gap: 8px; }
+.queue-row { display: flex; align-items: center; gap: 12px; }
+.queue-row .cover { width: 44px; height: 44px; border-radius: 5px; }
+.queue-row .track-title { font-size: 16px; line-height: 21px; }
 .queue-row .track-info { flex: 1 1 auto; min-width: 0; }
 .queue-reveal { opacity: .45; }
 .queue-row:hover .queue-reveal { opacity: 1; }
@@ -2277,8 +2286,8 @@ html.sheet-lock, html.sheet-lock body { overflow: hidden; }
 .o-list { display: flex; flex-direction: column; }
 .o-row-text { display: flex; flex-direction: column; min-width: 0; gap: 1px; }
 .o-row-title, .o-row-sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.o-row-title { font-size: 16px; }
-.o-row-sub { font-size: 14px; color: var(--text-2); }
+.o-row-title { font-size: 17px; }
+.o-row-sub { font-size: 13px; color: var(--text-2); }
 .o-artist-row { display: grid; grid-template-columns: 48px minmax(0, 1fr) auto; align-items: center; gap: 12px;
   padding: 8px 16px; min-height: 64px; color: var(--text);
   background-image: linear-gradient(var(--line-2), var(--line-2)); background-size: calc(100% - 76px) 0.5px;

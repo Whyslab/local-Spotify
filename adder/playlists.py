@@ -103,6 +103,10 @@ class Entry:
     path: str
     title: str
     duration: int
+    # Separate, as the library has them: the player shows the title large and
+    # the artist under it. The .m3u keeps "Artist - Title" for other players.
+    artist: str = ""
+    album: str = ""
 
 
 @dataclass(frozen=True)
@@ -169,13 +173,14 @@ def read(name: str) -> Playlist:
     entries = []
     for index, rel in enumerate(parse(text)):
         row = by_path.get(rel, {})
-        artist, title = row.get("artist") or "", row.get("title") or Path(rel).stem
         entries.append(
             Entry(
                 index=index,
                 path=rel,
-                title=f"{artist} - {title}" if artist else title,
+                title=row.get("title") or Path(rel).stem,
                 duration=int(row["duration"]) if row.get("duration") else -1,
+                artist=row.get("artist") or "",
+                album=row.get("album") or "",
             )
         )
     return Playlist(name=name, entries=entries, revision=revision_of(path))

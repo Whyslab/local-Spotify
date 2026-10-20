@@ -1741,6 +1741,34 @@ def test_a_phone_lock_screen_keeps_next_and_previous_track(server, browser):
         context.close()
 
 
+def test_lock_screen_buttons_are_given_again_when_a_track_starts(page):
+    """iPhone, 20.10: the lock screen showed ±10 s although only the track
+    buttons were registered. Safari hands them to a system remote that exists
+    only once audio has started loading and comes back empty after a load
+    error, and an empty remote means the default skip buttons. The buttons are
+    therefore given again every time a track starts playing."""
+    open_library(page)
+    page.evaluate(
+        "window.__offered = [];"
+        " window.__realSetAction = navigator.mediaSession.setActionHandler.bind(navigator.mediaSession);"
+        " navigator.mediaSession.setActionHandler = (action, handler) => {"
+        "   __offered.push(action); return __realSetAction(action, handler); };"
+        " true"  # not the function itself: evaluate would call it
+    )
+    try:
+        row_action(page, "Loud", "Играть")
+        page.wait_for_function("!player.audio.paused && player.started")
+        page.wait_for_function(
+            "__offered.includes('nexttrack') && __offered.includes('previoustrack')"
+        )
+        offered = page.evaluate("__offered")
+        assert set(offered) == set(page.evaluate("Object.keys(mediaHandlers)"))
+    finally:
+        page.evaluate(
+            "navigator.mediaSession.setActionHandler = __realSetAction; player.audio.pause()"
+        )
+
+
 def test_media_session_handlers_registered(page):
     """Plan 4a.3: on the laptop the lock screen and headphones have every
     control, ±10 s too."""
@@ -4108,3 +4136,48 @@ def test_every_control_on_every_screen_has_no_console_errors(page, server, size)
     # Обход, который ничего не нашёл, ничего и не проверил.
     empty = [s for s, c in clicked.items() if not c and not skipped[s]]
     assert empty == [], f"на этих экранах не нашлось ни одной кнопки: {empty}"
+
+
+def test_a_playlist_track_shows_title_and_artist_apart_with_a_cover_in_the_queue(page, server):
+    """20.10: a track played from a playlist was one line «Артист - Название»
+    everywhere — the queue, the player bar, the big player, the lock screen —
+    because the playlist gave no artist. Now as in Spotify: the title, the
+    artist under it, and a cover beside each queue row."""
+    _playlist(server, page, "Как Spotify", "Loud Band/Singles/Loud.opus", "Quiet/Singles/Quiet.m4a")
+    page.evaluate("openPlaylist('Как Spotify')")
+    page.locator(".playlist-track .track-info").first.click()
+    page.wait_for_function("player.started")
+    try:
+        page.wait_for_function("document.getElementById('playerTitle').textContent === 'Loud'")
+        assert page.locator("#playerArtist").text_content() == "Loud Band"
+        assert page.evaluate("navigator.mediaSession.metadata.title") == "Loud"
+        assert page.evaluate("navigator.mediaSession.metadata.artist") == "Loud Band"
+        page.evaluate("playerQueue()")
+        first = page.locator("#playQueue .queue-row").first
+        first.wait_for()
+        assert first.locator(".track-title").text_content() == "Loud"
+        assert first.locator(".track-artist").text_content() == "Loud Band"
+        assert first.locator(".cover").count() == 1
+        # The title reads larger than the artist under it.
+        sizes = first.evaluate(
+            "r => ['.track-title', '.track-artist'].map("
+            " s => parseFloat(getComputedStyle(r.querySelector(s)).fontSize))"
+        )
+        assert sizes[0] > sizes[1]
+    finally:
+        page.evaluate("player.audio.pause(); collapsePlayer()")
+
+
+def test_an_old_joined_title_is_still_shown_apart(page):
+    """A playlist downloaded to the phone before 20.10 (or an edit queued
+    offline) still holds «Артист - Название» with no artist."""
+    names = page.evaluate(
+        "[trackNames({title: 'Kai Angel - JUMP!'}), trackNames({title: 'JUMP!', artist: 'Kai Angel'}),"
+        " trackNames({title: 'A - B - C', artist: 'X'}), trackNames({path: 'x/y.m4a'})]"
+    )
+    assert names == [
+        {"title": "JUMP!", "artist": "Kai Angel"},
+        {"title": "JUMP!", "artist": "Kai Angel"},
+        {"title": "A - B - C", "artist": "X"},
+        {"title": "x/y.m4a", "artist": ""},
+    ]
