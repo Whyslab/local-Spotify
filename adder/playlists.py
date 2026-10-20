@@ -159,6 +159,9 @@ def render(paths: list[str]) -> str:
             # dropping the line, so a track that is temporarily missing does
             # not quietly disappear from the playlist.
             seconds, label = -1, Path(rel).stem
+        # Tags are untrusted: a line break in a title would start a new .m3u
+        # line, which Navidrome reads as one more track.
+        label = "".join(ch if ch.isprintable() else " " for ch in label)
         out.append(f"#EXTINF:{seconds},{label}")
         out.append(rel)
     return "\n".join(out) + "\n"

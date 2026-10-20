@@ -184,3 +184,22 @@ def test_listing_reports_counts_and_revisions(temp_library):
     assert listing["one"]["tracks"] == 1
     assert listing["two"]["tracks"] == 2
     assert listing["one"]["revision"] != listing["two"]["revision"]
+
+
+@pytest.mark.parametrize("breaker", ["\n", "\r", "\x85", " ", "\x0b"])
+def test_a_tag_cannot_add_a_line_to_the_playlist_file(monkeypatch, breaker):
+    """#EXTINF собирался из тегов как есть: название с переводом строки
+    дописывало в .m3u строку-путь, и Navidrome читал её как трек."""
+    row = {
+        "path": "A/B.m4a",
+        "artist": f"Evil{breaker}#EXTM3U",
+        "title": f"Song{breaker}C/Other.m4a",
+        "duration": 100,
+    }
+    monkeypatch.setattr(library, "library_index", lambda: [row])
+
+    text = playlists.render(["A/B.m4a"])
+
+    assert playlists.parse(text) == ["A/B.m4a"]
+    assert len(text.splitlines()) == 3
+    assert "C/Other.m4a" in text.splitlines()[1]  # still shown, on its own line
