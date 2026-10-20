@@ -107,21 +107,15 @@ async def lifespan(app: FastAPI):
     # Recover tasks left unfinished by a previous process.
     task_queue.recover_queued_tasks()
 
-    # Remove stale temporary files from previous runs.
-    ingest.cleanup_old_temp_files()
+    # Remove stale temporary files from previous runs and trim the play
+    # journal (again once a day, see _auto_requeue_loop).
+    _housekeeping()
     outside.cleanup_now_and_then()
 
-    # Trim the play journal, then settle up with Navidrome: deliver whatever
-    # was queued while it was unreachable, and look for playlists it is still
-    # showing after their .m3u went away. Neither is allowed to stop startup --
-    # the service has to come up with Navidrome switched off.
-    try:
-        removed = db.prune_play_history(config.PLAY_HISTORY_DAYS)
-        if removed:
-            logger.info("Pruned %d play journal entries", removed, extra={"task_id": "system"})
-    except Exception as exc:
-        logger.warning("Could not prune the play journal: %s", exc, extra={"task_id": "system"})
-
+    # Settle up with Navidrome: deliver whatever was queued while it was
+    # unreachable, and look for playlists it is still showing after their .m3u
+    # went away. Not allowed to stop startup -- the service has to come up
+    # with Navidrome switched off.
     if navidrome.configured():
         try:
             navidrome.drain()
@@ -641,12 +635,37 @@ def requeue_failed(auto: bool = False) -> list[int]:
     return queued
 
 
+# Уборка временных файлов и журнала прослушиваний: при запуске и раз в сутки.
+# Служба живёт неделями, и уборка только при запуске копила их всё это время.
+HOUSEKEEPING_SECONDS = 24 * 3600
+
+
+def _housekeeping() -> None:
+    ingest.cleanup_old_temp_files()
+    try:
+        removed = db.prune_play_history(config.PLAY_HISTORY_DAYS)
+        if removed:
+            logger.info("Pruned %d play journal entries", removed, extra={"task_id": "system"})
+    except Exception as exc:
+        logger.warning("Could not prune the play journal: %s", exc, extra={"task_id": "system"})
+
+
 def _auto_requeue_loop() -> None:
+    last_housekeeping = time.monotonic()  # lifespan has just done it
     while not runtime.shutdown_event.wait(AUTO_REQUEUE_CHECK_SECONDS):
         try:
             requeue_failed(auto=True)
         except Exception:
             logger.exception("Automatic requeue failed", extra={"task_id": "system"})
+        # Не посреди добавления: загрузка, долго ждавшая очереди, копируется в
+        # tmp со старым mtime (copy2) и выглядела бы просроченной, пока её тегают.
+        if time.monotonic() - last_housekeeping < HOUSEKEEPING_SECONDS or runtime.PROCESSING_URLS:
+            continue
+        last_housekeeping = time.monotonic()
+        try:
+            _housekeeping()
+        except Exception:
+            logger.exception("Daily housekeeping failed", extra={"task_id": "system"})
 
 
 @app.post("/api/tasks/retry-failed")

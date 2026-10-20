@@ -861,6 +861,55 @@ def test_a_manual_retry_resets_the_automatic_count(client, app_module):
     _drain()
 
 
+class _Ticks:
+    """shutdown_event for one loop: ``passes`` waits that time out, then stop."""
+
+    def __init__(self, passes):
+        self.left = passes
+
+    def wait(self, seconds):
+        self.left -= 1
+        return self.left < 0
+
+
+def _stale_temp_and_old_play():
+    db.db_init()
+    stale = runtime.TMP_DIR / "old_processing.m4a"
+    stale.write_bytes(b"x")
+    os.utime(stale, (1_000_000_000, 1_000_000_000))
+    db.db_exec(
+        "INSERT INTO plays(path, played_at) VALUES('A/B.m4a', datetime('now', 'localtime', ?))",
+        (f"-{config.PLAY_HISTORY_DAYS + 5} days",),
+    )
+    return stale
+
+
+def test_temp_files_and_old_plays_are_cleared_daily_not_only_at_start(app_module, monkeypatch):
+    """Служба живёт неделями; уборка только при запуске копила их всё это время."""
+    stale = _stale_temp_and_old_play()
+    monkeypatch.setattr(app_module, "HOUSEKEEPING_SECONDS", 0)
+    monkeypatch.setattr(app_module, "requeue_failed", lambda auto: [])
+    monkeypatch.setattr(runtime, "shutdown_event", _Ticks(1))
+    runtime.PROCESSING_URLS.clear()
+
+    app_module._auto_requeue_loop()
+
+    assert not stale.exists()
+    assert db.db_query("SELECT COUNT(*) AS n FROM plays")[0]["n"] == 0
+
+
+def test_the_daily_cleanup_waits_while_something_is_being_added(app_module, monkeypatch):
+    stale = _stale_temp_and_old_play()
+    monkeypatch.setattr(app_module, "HOUSEKEEPING_SECONDS", 0)
+    monkeypatch.setattr(app_module, "requeue_failed", lambda auto: [])
+    monkeypatch.setattr(runtime, "shutdown_event", _Ticks(1))
+    monkeypatch.setattr(runtime, "PROCESSING_URLS", {"https://www.youtube.com/watch?v=x"})
+
+    app_module._auto_requeue_loop()
+
+    assert stale.exists()  # an upload staged long ago may be the one being tagged
+
+
 def test_the_panel_offers_retry_only_for_failures():
     js = (Path(__file__).resolve().parents[1] / "web" / "app.js").read_text()
 
