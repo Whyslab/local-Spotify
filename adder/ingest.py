@@ -1540,6 +1540,9 @@ def _apply_replacement(tid: int, new_path: str) -> None:
         logger.warning(
             "Не удалось убрать заменённый файл %s: %s", old_path, exc, extra={"task_id": tid}
         )
+    else:
+        # Прослушивания и текст — туда же, куда подборки.
+        library.carry_history(old_path, new_path)
     logger.info(
         "Замена: %s → %s, подборок затронуто %d",
         old_path,

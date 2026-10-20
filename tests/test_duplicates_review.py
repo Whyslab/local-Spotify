@@ -144,3 +144,40 @@ def test_a_copy_an_unwritable_playlist_still_lists_is_not_removed(pair):
 
     assert (config.LIBRARY / "Artist/Singles/Song.m4a").exists()
     assert len(duplicates.pairs()) == 1  # still waiting for a decision
+
+
+def _history(path: str, sha: str) -> None:
+    from adder import lyrics
+
+    db.db_exec(
+        "INSERT INTO plays(path, played_at, played_seconds) VALUES(?, '2026-10-01 20:00:00', 90)",
+        (path,),
+    )
+    db.db_exec("INSERT INTO audio_features(path, sha256, tempo) VALUES(?, ?, 120)", (path, sha))
+    lyrics._write(path, {"found": True, "chosen": True, "plain": "la la", "at": 1.0})
+
+
+def test_the_removed_copy_hands_its_plays_and_lyrics_to_the_kept_one(pair):
+    """Иначе после выбора копии «давно не звучало» и выбранный руками текст
+    оставались у файла в корзине, а оставленный трек начинал с нуля."""
+    from adder import loudness, lyrics
+
+    old, new = "Artist/Singles/Song.m4a", "Artist/Singles/Song (1).m4a"
+    _history(old, loudness.file_hash(config.LIBRARY / new))
+
+    duplicates.resolve(pair, "new")
+
+    assert [r["path"] for r in db.db_query("SELECT path FROM plays")] == [new]
+    assert lyrics.for_track(new)["plain"] == "la la"
+    # Анализ — по содержимому: его хэш совпал с оставленным файлом, значит, его.
+    assert [r["path"] for r in db.db_query("SELECT path FROM audio_features")] == [new]
+
+
+def test_the_analysis_of_other_audio_stays_behind(pair):
+    old, new = "Artist/Singles/Song (1).m4a", "Artist/Singles/Song.m4a"
+    _history(old, "not-the-kept-file")
+
+    duplicates.resolve(pair, "existing")
+
+    assert [r["path"] for r in db.db_query("SELECT path FROM plays")] == [new]
+    assert [r["path"] for r in db.db_query("SELECT path FROM audio_features")] == [old]

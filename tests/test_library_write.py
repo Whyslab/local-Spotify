@@ -691,6 +691,31 @@ def _replace(app, monkeypatch, replace_of):
     return db.db_query("SELECT * FROM tasks WHERE id = ?", (tid,))[0]
 
 
+def test_a_replacement_carries_plays_and_lyrics_to_the_new_file(app, monkeypatch):
+    """Подборки переходили на новый файл, а прослушивания и выбранный руками
+    текст оставались у старого — в корзине."""
+    from adder import lyrics, playlists
+
+    monkeypatch.setattr(playlists, "HISTORY_DIR", config.LIBRARY.parent / "history")
+    monkeypatch.setattr(runtime, "guard_real_library", lambda *a, **k: None)
+    youtube(app, monkeypatch, {"title": "A - Old", "uploader": "x"})
+    deezer(app, monkeypatch, None)
+    covers(app, monkeypatch)
+    run(app)
+    old = "A/Singles/Old.m4a"
+    db.db_exec(
+        "INSERT INTO plays(path, played_at, played_seconds) VALUES(?, '2026-10-01 20:00:00', 90)",
+        (old,),
+    )
+    lyrics._write(old, {"found": True, "chosen": True, "plain": "la la", "at": 1.0})
+
+    task = _replace(app, monkeypatch, old)
+
+    assert task["status"] == "done", task["error"]
+    assert [r["path"] for r in db.db_query("SELECT path FROM plays")] == ["A/Singles/New.m4a"]
+    assert lyrics.for_track("A/Singles/New.m4a")["plain"] == "la la"
+
+
 def test_an_odd_playlist_file_does_not_fail_a_replacement(app, monkeypatch):
     from adder import playlists
 

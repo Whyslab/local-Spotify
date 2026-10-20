@@ -297,6 +297,30 @@ def delete_track(rel_path: str) -> dict:
     return {"deleted": rel_path, "trash": str(destination)}
 
 
+def carry_history(old: str, new: str) -> None:
+    """Hand a replaced track's plays, lyrics and analysis to the file that took its place.
+
+    Playlists move with the replacement; without this the play journal ("not
+    heard for a while", the stats) and a lyrics choice made by hand stayed with
+    the file in the trash. The analysis goes only when it describes these very
+    bytes: it is keyed by the file's hash. Never raises: the files have moved
+    already, and this is bookkeeping.
+    """
+    from . import db, lyrics
+
+    try:
+        # OR IGNORE: the same play recorded for both copies stays as it is.
+        db.db_exec("UPDATE OR IGNORE plays SET path = ? WHERE path = ?", (new, old))
+        lyrics.carry_over(old, new)
+        rows = db.db_query("SELECT sha256 FROM audio_features WHERE path = ?", (old,))
+        if rows and rows[0]["sha256"] == loudness.file_hash(library_track(new)):
+            db.db_exec("UPDATE OR IGNORE audio_features SET path = ? WHERE path = ?", (new, old))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "History of %s not moved to %s: %s", old, new, exc, extra={"task_id": "system"}
+        )
+
+
 # The media type of a picture comes from the file's own tags, which whoever
 # made the file wrote; only real image types go out as such.
 IMAGE_MIMES = {"image/jpeg", "image/png", "image/webp", "image/gif"}
