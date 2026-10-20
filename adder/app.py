@@ -23,6 +23,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.security.utils import get_authorization_scheme_param
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
@@ -234,6 +235,15 @@ def upload_limit(method: str, path: str) -> int | None:
     return None
 
 
+def _bearer(headers: dict[bytes, bytes]) -> HTTPAuthorizationCredentials | None:
+    """The bearer token from raw ASGI headers, parsed as HTTPBearer does."""
+    value = headers.get(b"authorization", b"").decode("latin-1")
+    scheme, credentials = get_authorization_scheme_param(value)
+    if scheme.lower() != "bearer" or not credentials:
+        return None
+    return HTTPAuthorizationCredentials(scheme=scheme, credentials=credentials)
+
+
 class _BodyTooLarge(HTTPException):
     """HTTPException: FastAPI turns any other error while reading a body into
     400, and this one must stay 413."""
@@ -253,7 +263,15 @@ class UploadSizeLimit:
         if scope["type"] != "http" or scope["method"] not in BODY_METHODS:
             return await self.inner(scope, receive, send)
         limit = upload_limit(scope["method"], scope["path"])
-        length = dict(scope["headers"]).get(b"content-length", b"")
+        headers = dict(scope["headers"])
+        length = headers.get(b"content-length", b"")
+        if limit is not None and not _token_matches(_bearer(headers)):
+            # FastAPI reads and spools the whole form before verify_token
+            # runs: without this, anyone on the network could make it take in
+            # 600 MB before answering 401. Every upload route needs the token
+            # (test_every_route_but_the_public_few_needs_the_token).
+            answer = JSONResponse({"detail": "Invalid or missing API token"}, status_code=401)
+            return await answer(scope, receive, send)
         if limit is not None and not length.isdigit():
             # Uploads say their size up front: refused before a byte is read.
             answer = JSONResponse({"detail": "Content-Length is required"}, status_code=411)

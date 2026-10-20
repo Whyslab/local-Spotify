@@ -152,8 +152,48 @@ def test_an_oversized_upload_is_refused_before_it_is_read(client, monkeypatch):
     from adder import app as app_module
 
     monkeypatch.setitem(app_module.BODY_LIMITS, "/api/import", 1000)
-    response = client.post("/api/import", files={"files": ("a.mp3", b"x" * 5000, "audio/mpeg")})
+    response = client.post(
+        "/api/import", files={"files": ("a.mp3", b"x" * 5000, "audio/mpeg")}, headers=AUTH
+    )
     assert response.status_code == 413
+
+
+@pytest.mark.parametrize(
+    "path", ["/api/import", "/api/replace-file", "/api/artist-photo", "/api/playlists/x/cover"]
+)
+@pytest.mark.parametrize("authorization", [None, b"Bearer wrong", b"Basic dGVzdA==", b"Bearer"])
+def test_an_upload_without_the_token_is_refused_before_a_byte_is_read(client, path, authorization):
+    """FastAPI parses the multipart form before verify_token runs: without a
+    token anyone on the network could make the service read and spool 600 MB
+    to /api/import before it answered 401."""
+    import asyncio
+
+    from adder import app as app_module
+
+    headers = [
+        (b"content-length", b"600000000"),
+        (b"content-type", b"multipart/form-data; boundary=x"),
+    ]
+    if authorization is not None:
+        headers.append((b"authorization", authorization))
+    scope = {
+        "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": "POST",
+        "scheme": "http", "path": path, "raw_path": path.encode(), "root_path": "",
+        "query_string": b"name=x", "headers": headers, "client": ("127.0.0.1", 1),
+        "server": ("127.0.0.1", 8787),
+    }  # fmt: skip
+    sent = []
+
+    async def receive():
+        raise AssertionError("the body was read before the token was checked")
+
+    async def send(message):
+        sent.append(message)
+
+    asyncio.run(app_module.app(scope, receive, send))
+
+    assert sent[0]["type"] == "http.response.start"
+    assert sent[0]["status"] == 401
 
 
 def test_a_playlist_cannot_point_outside_the_library():
@@ -402,6 +442,7 @@ def test_an_artist_photo_from_a_phone_is_not_refused_for_its_size(client):
         "/api/artist-photo",
         params={"name": "Nobody"},
         files={"image": ("photo.jpg", photo, "image/jpeg")},
+        headers=AUTH,
     )
     assert response.status_code != 413, response.text
 
