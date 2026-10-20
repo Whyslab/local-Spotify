@@ -107,3 +107,27 @@ def test_still_pointing_at_sees_every_m3u_including_hidden_ones(library):
     assert playlists.still_pointing_at("old.m4a") == [".conflict.m3u", "Mix.m3u"]
     playlists.swap_everywhere("old.m4a", "new.m4a")
     assert playlists.still_pointing_at("old.m4a") == [".conflict.m3u"]
+
+
+def test_a_line_differing_only_in_case_or_unicode_form_is_swapped_too(library):
+    """Navidrome сопоставляет строки .m3u с файлами без учёта регистра (см. B23),
+    так что «OLD.m4a» в подборке — это тот же трек. Точное сравнение строк
+    его не меняло, и замена либо отказывала, либо (если подборку переписали)
+    оставляла строку на файл в корзине."""
+    (library / "Ёлка.m4a").write_bytes(b"audio")
+    nfd = "Ёлка.m4a".replace("Ё", "Ё")
+    (library / "Mix.m3u").write_text(f"#EXTM3U\nOLD.m4a\n{nfd}\nother.m4a\n", encoding="utf-8")
+
+    assert playlists.still_pointing_at("old.m4a") == ["Mix.m3u"]
+    assert playlists.swap_everywhere("old.m4a", "new.m4a") == 1
+    assert playlists.swap_everywhere("Ёлка.m4a", "new.m4a") == 1
+    assert _paths("Mix") == ["new.m4a", "new.m4a", "other.m4a"]
+    assert playlists.still_pointing_at("old.m4a") == []
+
+
+def test_a_different_file_whose_name_differs_only_in_case_is_left_alone(library):
+    (library / "OLD.m4a").write_bytes(b"other audio")  # a real, separate file
+    (library / "Mix.m3u").write_text("#EXTM3U\nOLD.m4a\nold.m4a\n", encoding="utf-8")
+
+    assert playlists.swap_everywhere("old.m4a", "new.m4a") == 1
+    assert _paths("Mix") == ["OLD.m4a", "new.m4a"]
