@@ -29,7 +29,7 @@ import mutagen
 import requests
 from mutagen.mp4 import MP4, MP4Cover
 
-from . import config, db, enrich, library, loudness, runtime
+from . import config, db, enrich, library, loudness, navidrome, runtime
 
 logger = logging.getLogger(__name__)
 
@@ -1273,6 +1273,8 @@ def edit_track(
     write_tags(path, enrich.TrackInfo(album=album or title, artists=artists), title, cover, fmt)
     os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
     library.invalidate_library_index()
+    # The kept mtime hides the edit from Navidrome's quick scan.
+    navidrome.request_full_scan()
     return cover_result
 
 

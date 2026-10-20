@@ -212,4 +212,10 @@ def backfill(
         if analysis is not None:
             analysis.close()
     library.invalidate_library_index()
+    if measured:
+        # The kept mtime hides the new tags from Navidrome's quick scan. From
+        # scripts/replaygain.py too: the service's loop picks the request up.
+        from . import navidrome
+
+        navidrome.request_full_scan()
     return measured, tagged, failed

@@ -23,7 +23,7 @@ from mutagen.mp4 import MP4, MP4Cover
 if not __package__:
     sys.path[0] = str(Path(__file__).resolve().parent.parent)
 
-from adder import config, enrich, ingest  # noqa: E402
+from adder import config, enrich, ingest, navidrome  # noqa: E402
 
 
 def find_cover(artist: str, title: str):
@@ -124,6 +124,9 @@ def backfill(library: Path, delay: float, sleep=time.sleep) -> tuple[int, int]:
             break
 
     print(f"\nГотово: обложек добавлено {ok}, не найдено {miss}")
+    if ok:
+        # mtime возвращён — быстрое сканирование Navidrome новых обложек не увидит.
+        navidrome.request_full_scan()
     return ok, miss
 
 

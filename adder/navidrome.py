@@ -102,6 +102,67 @@ def full_scan() -> None:
         raise NavidromeUnavailable("Navidrome refused the scan (check NAVIDROME_USER/PASSWORD)")
 
 
+# A tag, cover or ReplayGain edit keeps the file's mtime (it is the track's
+# "added" date), so Navidrome's quick scan never reads it again. Each such edit
+# leaves a stamp in the database; the playlist-sync loop starts one full scan
+# once no edit has come for this long. In the database, not in memory: the
+# nightly scripts/replaygain.py is another process, and a restart in between
+# must not lose the scan.
+_SCAN_KEY = "navidrome_full_scan_requested"
+FULL_SCAN_QUIET_SECONDS = 60
+
+
+def request_full_scan() -> None:
+    """Ask for a full scan a minute from now; never raises, never calls Navidrome."""
+    if not configured():
+        return
+    try:
+        db.db_exec(
+            "INSERT OR REPLACE INTO settings(key, value) VALUES(?, ?)",
+            (_SCAN_KEY, repr(time.time())),
+        )
+    except Exception as exc:
+        logger.warning("Navidrome full scan not requested: %s", exc, extra={"task_id": "system"})
+
+
+def scan_if_due(now: float | None = None) -> bool:
+    """Start the full scan asked for, once edits have been quiet for a minute.
+
+    True if a scan was started. A failed one stays requested for the next pass.
+    """
+    if not configured():
+        return False
+    rows = db.db_query("SELECT value FROM settings WHERE key = ?", (_SCAN_KEY,))
+    if not rows:
+        return False
+    requested = rows[0]["value"]
+    now = time.time() if now is None else now
+    try:
+        quiet = now - float(requested)
+    except (TypeError, ValueError):
+        quiet = FULL_SCAN_QUIET_SECONDS  # an unreadable stamp: scan rather than keep it forever
+    # A stamp from the future (the clock moved back) counts as due, not as never.
+    if 0 <= quiet < FULL_SCAN_QUIET_SECONDS:
+        return False
+    # Claimed by its exact value: an edit made meanwhile replaced it, and then
+    # it is not quiet any more — that one waits for its own minute.
+    claimed = db.db_exec(
+        "DELETE FROM settings WHERE key = ? AND value = ?", (_SCAN_KEY, requested)
+    ).rowcount
+    if claimed != 1:
+        return False
+    try:
+        full_scan()
+    except Exception as exc:
+        db.db_exec(
+            "INSERT OR IGNORE INTO settings(key, value) VALUES(?, ?)", (_SCAN_KEY, requested)
+        )
+        logger.info("Navidrome full scan still pending: %s", exc, extra={"task_id": "system"})
+        return False
+    logger.info("Navidrome: full scan started for edited tags", extra={"task_id": "system"})
+    return True
+
+
 def playlists() -> list[dict]:
     try:
         response = requests.get(
