@@ -90,3 +90,30 @@ def test_the_sync_loop_starts_the_scan(nd, monkeypatch):
     monkeypatch.setattr(sync._stop, "wait", lambda seconds: next(waits))
     sync._loop()
     assert len(nd) == 1
+
+
+def test_a_failing_op_backs_off_and_is_given_up_once(monkeypatch, caplog):
+    """drain() is called every 30 s; an op Navidrome kept refusing used to be
+    retried every pass, forever, with a log line each time."""
+    db.db_init()
+    tried: list[float] = []
+
+    def refuse(op, name, payload):
+        tried.append(clock)
+        raise navidrome.NavidromeUnavailable("down")
+
+    monkeypatch.setattr(navidrome, "_run", refuse)
+    navidrome.enqueue("cover", "Gym")
+
+    clock = 1_000_000.0
+    for _ in range(100_000):  # one pass every 30 s, far longer than the give-up point
+        navidrome.drain(now=clock)
+        if navidrome.pending_count() == 0:
+            break
+        clock += 30
+    assert navidrome.pending_count() == 0
+    assert len(tried) == navidrome.DRAIN_MAX_ATTEMPTS
+    gaps = [b - a for a, b in zip(tried, tried[1:], strict=False)]
+    assert gaps == sorted(gaps) and gaps[0] < 60 and gaps[-1] >= 3600
+    dropped = [r for r in caplog.records if "gave up" in r.getMessage()]
+    assert len(dropped) == 1 and dropped[0].levelname == "WARNING"

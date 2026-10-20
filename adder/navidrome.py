@@ -271,19 +271,46 @@ def _run(op: str, name: str, payload: dict) -> bool:
     return True
 
 
-def drain() -> dict:
-    """Retry everything queued. Safe to call when Navidrome is down."""
-    pending = db.db_query("SELECT id, op, name, payload FROM navidrome_ops ORDER BY id LIMIT 200")
+# drain() runs every 30 s. An op that keeps failing waits twice as long after
+# each attempt, up to six hours, and is dropped after about three days of
+# failures: a cover upload for a playlist Navidrome never imports would
+# otherwise be retried, and logged, every half minute forever.
+DRAIN_BACKOFF_SECONDS = 30
+DRAIN_BACKOFF_MAX = 6 * 3600
+DRAIN_MAX_ATTEMPTS = 20
+
+
+def drain(now: float | None = None) -> dict:
+    """Retry everything queued that is due. Safe to call when Navidrome is down."""
+    now = time.time() if now is None else now
+    pending = db.db_query(
+        "SELECT id, op, name, payload, attempts FROM navidrome_ops "
+        "WHERE COALESCE(next_at, 0) <= ? ORDER BY id LIMIT 200",
+        (now,),
+    )
     if not pending:
-        return {"pending": 0, "done": 0}
+        return {"pending": pending_count(), "done": 0}
     done = 0
     for row in pending:
         try:
             _run(row["op"], row["name"], json.loads(row["payload"] or "{}"))
         except Exception as exc:
+            attempts = (row["attempts"] or 0) + 1
+            if attempts >= DRAIN_MAX_ATTEMPTS:
+                db.db_exec("DELETE FROM navidrome_ops WHERE id = ?", (row["id"],))
+                logger.warning(
+                    "Navidrome op %s for %r gave up after %d attempts: %s",
+                    row["op"],
+                    row["name"],
+                    attempts,
+                    exc,
+                    extra={"task_id": "system"},
+                )
+                continue
+            delay = min(DRAIN_BACKOFF_SECONDS * 2 ** (attempts - 1), DRAIN_BACKOFF_MAX)
             db.db_exec(
-                "UPDATE navidrome_ops SET attempts = attempts + 1, last_error = ? WHERE id = ?",
-                (str(exc)[:300], row["id"]),
+                "UPDATE navidrome_ops SET attempts = ?, last_error = ?, next_at = ? WHERE id = ?",
+                (attempts, str(exc)[:300], now + delay, row["id"]),
             )
             logger.info("Navidrome op %s for %r still pending: %s", row["op"], row["name"], exc)
             continue
