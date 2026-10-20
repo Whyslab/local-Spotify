@@ -186,7 +186,7 @@ def test_home_answers_over_http_with_moods_discover_and_albums(shelf_library, mo
 
     assert response.status_code == 200
     body = response.json()
-    assert set(body) == {"moods", "discover", "albums", "releases", "weekly"}
+    assert set(body) == {"moods", "discover", "albums", "releases", "weekly", "heard"}
     assert body["moods"] and all({"key", "name", "tracks"} <= set(m) for m in body["moods"])
     assert len(body["discover"]["tracks"]) == 10
 
