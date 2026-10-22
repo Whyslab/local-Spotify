@@ -208,6 +208,8 @@
     <section id="viewAlbum" class="view" hidden><div id="albumBody"></div></section>
     <section id="viewMood" class="view" hidden><div id="moodBody"></div></section>
     <section id="viewPlaylists" class="view" hidden><div id="playlistsBody"></div></section>
+    <!-- Статистика: сколько и что слушали. Рисует views.js (renderStats). -->
+    <section id="viewStats" class="view" hidden><div id="statsBody"></div></section>
     <section id="viewSearch" class="view" hidden>
       <label class="o-search">
         <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
@@ -540,6 +542,9 @@
     <button class="side-item" type="button" data-nav="viewLibrary:albums viewAlbum" onclick="openLibrary('albums')">
       <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="2.2"/></svg><span>Альбомы</span>
     </button>
+    <button class="side-item" type="button" data-nav="viewStats" onclick="switchView('viewStats')">
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20V12M10 20V5M15 20v-9M20 20V8"/></svg><span>Статистика</span>
+    </button>
     <div class="side-label-row">
       <p class="side-label">Подборки</p>
       <button id="railNewPlaylist" class="rail-add" type="button" onclick="askNewPlaylist(this)"
@@ -559,7 +564,7 @@
   </aside>
 
   <nav class="tabbar" aria-label="Разделы">
-    <button class="tab" type="button" data-view="viewHome" data-nav="viewHome viewMood viewAdd viewService" onclick="switchView('viewHome')">
+    <button class="tab" type="button" data-view="viewHome" data-nav="viewHome viewMood viewAdd viewService viewStats" onclick="switchView('viewHome')">
       <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10.5 12 4l8 6.5V20h-5.5v-6h-5v6H4z"/></svg>
       <span>Главная</span>
     </button>

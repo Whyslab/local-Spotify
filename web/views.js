@@ -410,6 +410,7 @@ function onViewShown(id) {
     if (id === "viewHome") showFinds(true);
     if (id === "viewPlaylists") renderPlaylistsGrid(true);
     if (id === "viewSearch") renderSearch(true);
+    if (id === "viewStats") renderStats();
     if (!LAB_PAGES.includes(id)) {
         /* Ушли в раздел — недогруженная страница артиста не вернёт сюда. */
         labTicket += 1;
@@ -533,6 +534,16 @@ function renderLabHome(data) {
             play.setAttribute("aria-label", "Слушать «" + m.name + "»");
             return el("div", "o-mood", "", open, play);
         }), "is-moods")));
+    }
+
+    /* Недавно слушали — из журнала прослушиваний (adder/stats.py): что
+     * звучало, а не что пропустили. Нажатие играет с этой карточки дальше
+     * по полке. Отсюда же «Статистика» — на телефоне другого пути к ней нет. */
+    const heard = data.heard || [];
+    if (heard.length) {
+        parts.push(labSection("Недавно слушали", { label: "Статистика", run: () => switchView("viewStats") },
+            labShelf(heard.map((t, i) => labCard(labCover(t.path, THUMB_LARGE, mainArtist(t)), t.title || t.path, t.artist,
+                () => playQueue(heard, i, "manual"))))));
     }
 
     /* Новые релизы артистов фонотеки — ночной проход (adder/releases.py).
@@ -681,6 +692,133 @@ function findCoverBox(f) {
         });
     }
     return cover;
+}
+
+/* ---------------- Статистика ----------------
+ *
+ * Из журнала прослушиваний (GET /api/stats): время, первые десять артистов и
+ * треков, столбики по дням или месяцам. Считается только то, что не
+ * пропущено. Период помнится до перезагрузки. */
+const STATS_PERIODS = [["month", "Месяц"], ["year", "Год"], ["all", "Всё время"]];
+const MONTHS_SHORT = ["янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"];
+let statsPeriod = "month";
+/* Быстро переключали период — рисуем только ответ на последний. */
+let statsTicket = 0;
+
+function listenTime(seconds) {
+    const minutes = Math.round((seconds || 0) / 60);
+    const h = Math.floor(minutes / 60), m = minutes % 60;
+    if (!h) return `${m} мин`;
+    return m ? `${h} ч ${m} мин` : `${h} ч`;
+}
+
+function timesWord(n) { return plural(n, "раз", "раза", "раз"); }
+
+/* «20 окт» для дня; для месяца «окт», «окт ’25» (подпись) или «окт 2025».
+ * Просто «окт 25» читалось как 25 октября. */
+function statsDate(key, unit, year) {
+    const month = MONTHS_SHORT[Number(key.slice(5, 7)) - 1] || "";
+    if (unit === "day") return `${Number(key.slice(8, 10))} ${month}`;
+    if (year === "full") return `${month} ${key.slice(0, 4)}`;
+    return year === "short" ? `${month} ’${key.slice(2, 4)}` : month;
+}
+
+function renderStats() {
+    const body = document.getElementById("statsBody");
+    if (!body) return;
+    const ticket = ++statsTicket;
+    const seg = el("div", "o-seg");
+    seg.setAttribute("role", "tablist");
+    seg.setAttribute("aria-label", "За какое время");
+    for (const [key, label] of STATS_PERIODS) {
+        const item = button("o-seg-item" + (key === statsPeriod ? " is-on" : ""), () => {
+            if (statsPeriod === key) return;
+            statsPeriod = key;
+            renderStats();
+        }, document.createTextNode(label));
+        item.setAttribute("role", "tab");
+        item.setAttribute("aria-selected", String(key === statsPeriod));
+        seg.appendChild(item);
+    }
+    /* Пока считается новый период, прежние цифры стоят: экран не мигает. */
+    const shown = body.querySelector(".stats-content") || el("div", "stats-content", "", el("p", "empty", "Считаю…"));
+    put(body, seg, shown);
+    fetch("/api/stats?period=" + statsPeriod, { headers: headers() })
+        .then((r) => (r.ok ? r.json() : null))
+        .catch(() => null)
+        .then((data) => {
+            if (ticket !== statsTicket || !body.isConnected) return;
+            put(body, seg, data ? statsContent(data) : el("div", "stats-content", "", el("p", "empty", "Не собралось.")));
+            if (typeof markPlayingRow === "function") markPlayingRow();
+        });
+}
+
+function statsContent(data) {
+    const box = el("div", "stats-content");
+    if (!data.plays) {
+        box.appendChild(el("div", "o-empty", "", el("p", "", "За это время ничего не слушали. Здесь будет то, что играет в этом плеере.")));
+        return box;
+    }
+    box.appendChild(el("div", "stats-total", "",
+        el("span", "stats-num", listenTime(data.seconds)),
+        el("span", "stats-sub", plural(data.plays, "прослушивание", "прослушивания", "прослушиваний"))));
+    box.appendChild(statsChart(data.chart));
+
+    const artists = data.artists || [];
+    if (artists.length) {
+        const list = el("div", "o-list");
+        for (const a of artists) {
+            list.appendChild(button("o-artist-row", () => openArtistPage(a.name),
+                labArtistCover(a.name, a.cover, THUMB_SMALL, true),
+                el("span", "o-row-text", "", el("span", "o-row-title", a.name),
+                    el("span", "o-row-sub", `${timesWord(a.plays)} · ${listenTime(a.seconds)}`)),
+                labIcon("chevron")));
+        }
+        box.appendChild(labSection("Артисты", null, list));
+    }
+
+    /* Строки трека — как в фонотеке; справа вместо длительности — сколько раз.
+     * Нажатие играет с этого трека дальше по списку первых. */
+    const tracks = data.tracks || [];
+    if (tracks.length) {
+        const list = el("div", "rows o-rows stats-tracks");
+        for (const t of tracks) {
+            const row = libraryRow(t, tracks);
+            row.querySelector(".track-time").textContent = timesWord(t.plays);
+            list.appendChild(row);
+        }
+        box.appendChild(labSection("Треки", null, list));
+    }
+    return box;
+}
+
+/* Столбики — блоками с высотой в процентах: цвет из токенов, ширина по
+ * экрану. Подписи — не под каждым: тридцать дат на телефоне не влезут. */
+function statsChart(chart) {
+    const bars = (chart && chart.bars) || [];
+    const unit = chart && chart.unit === "day" ? "day" : "month";
+    const max = Math.max(0, ...bars.map((b) => b.seconds || 0));
+    const tickYear = unit === "month" && bars.length > 12 ? "short" : "";
+    const ticks = unit === "day" ? 7 : Math.max(1, Math.ceil(bars.length / 6));
+    const grid = el("div", "stats-chart");
+    grid.style.setProperty("--n", String(Math.max(1, bars.length)));
+    let top = null;
+    bars.forEach((b, i) => {
+        const col = el("div", "stats-col");
+        const bar = el("div", "stats-bar" + (b.seconds ? "" : " is-zero"));
+        if (b.seconds) bar.style.height = Math.max(2, (b.seconds / max) * 100) + "%";
+        col.appendChild(bar);
+        col.title = `${statsDate(b.key, unit, "full")} — ${listenTime(b.seconds)}`;
+        /* Подписи — от сегодняшнего столбика назад, через равный шаг. */
+        if ((bars.length - 1 - i) % ticks === 0) col.appendChild(el("span", "stats-tick", statsDate(b.key, unit, tickYear)));
+        if (!top || b.seconds > top.seconds) top = b;
+        grid.appendChild(col);
+    });
+    const most = top && top.seconds ? `Больше всего — ${statsDate(top.key, unit, "full")}, ${listenTime(top.seconds)}` : "";
+    grid.setAttribute("role", "img");
+    grid.setAttribute("aria-label", (unit === "day" ? "Время по дням. " : "Время по месяцам. ") + most);
+    return labSection(unit === "day" ? "По дням" : "По месяцам", null,
+        most ? el("p", "o-section-note", most) : null, grid);
 }
 
 /* ---------------- Фонотека: артисты и альбомы ---------------- */
