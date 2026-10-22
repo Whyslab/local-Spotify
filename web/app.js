@@ -124,6 +124,7 @@ const VIEW_TITLES = {
     viewSearch: "Поиск",
     viewAdd: "Добавить",
     viewService: "Служба",
+    viewStats: "Статистика",
     viewLyrics: "Текст песни",
 };
 const VIEW_KEY = "lastView";

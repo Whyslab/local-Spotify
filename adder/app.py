@@ -5,6 +5,7 @@ of its own. The library lives in :mod:`adder.library`, the processing pipeline
 in :mod:`adder.ingest`, the queue and its retry policy in :mod:`adder.queue`.
 """
 
+import datetime
 import hashlib
 import json
 import logging
@@ -55,6 +56,7 @@ from . import (
     signing,
     similar,
     sources,
+    stats,
     sync,
     thumbs,
     transitions,
@@ -1795,6 +1797,8 @@ def home(authenticated: bool = Depends(verify_token)):
         "releases": releases.shelf(),
         # Подборка недели — из файла ночного прохода (adder/weekly.py).
         "weekly": picks,
+        # Недавно слушали — из журнала прослушиваний, только то, что ещё на диске.
+        "heard": as_tracks(stats.recently_heard(by_path)),
         "albums": [
             {
                 "artist": who,
@@ -2295,6 +2299,15 @@ def record_play(req: PlayRequest, authenticated: bool = Depends(verify_token)):
     with suppress(Exception):
         listenbrainz.queue_listen(req.path, req.played_seconds, req.duration, started)
     return {"recorded": req.path}
+
+
+@app.get("/api/stats")
+def listening_stats(period: stats.Period = "month", authenticated: bool = Depends(verify_token)):
+    """Экран «Статистика»: сколько слушали, кого и что чаще, по дням или месяцам.
+
+    Даты — по часам этой машины, как и played_at в журнале.
+    """
+    return stats.summary(period, library.library_index(), datetime.date.today())
 
 
 @app.get("/api/plays/stats")

@@ -4566,3 +4566,160 @@ def test_a_broken_saved_queue_is_ignored(page):
     page.wait_for_function("typeof restoreQueue === 'function'")
     page.wait_for_timeout(300)
     assert page.evaluate("player.queue.length") == 0
+
+
+# --- «Недавно слушали» и «Статистика» (20.10.2026) ----------------------------
+
+LOUD_PATH = "Loud Band/Singles/Loud.opus"
+QUIET_PATH = "Quiet/Singles/Quiet.m4a"
+EVIL_PATH = "Evil/Singles/evil.m4a"
+
+
+def _journal(*plays):
+    """Журнал ровно из этих прослушиваний: (путь, сколько дней назад, секунд)."""
+    import datetime
+
+    db.db_exec("DELETE FROM plays")
+    now = datetime.datetime.now().replace(microsecond=0)
+    for n, (path, days_ago, seconds) in enumerate(plays):
+        # Минута на каждое — порядок однозначен даже в один день; не позже «сейчас».
+        when = now - datetime.timedelta(days=days_ago, minutes=len(plays) - n)
+        db.db_exec(
+            "INSERT INTO plays(path, played_at, played_seconds, duration, skipped, source, mode) "
+            "VALUES(?, ?, ?, 12, 0, 'player', 'manual')",
+            (path, when.strftime("%Y-%m-%d %H:%M:%S"), seconds),
+        )
+
+
+def _fresh_home(page):
+    # Ответ на запрос, ушедший при загрузке, пришёл бы без новых данных.
+    page.wait_for_function("homeLoading === null")
+    page.evaluate("homeCache = null; switchView('viewHome'); home()")
+    page.wait_for_function("homeCache !== null && homeLoading === null")
+
+
+def _section(page, root, title):
+    return page.locator(f"{root} .o-section").filter(has=page.locator("h2", has_text=title))
+
+
+def test_recently_heard_shelf_plays_through_itself_and_hides_when_empty(page):
+    try:
+        _journal((QUIET_PATH, 3, 60), (EVIL_PATH, 2, 60), (QUIET_PATH, 1, 60), (LOUD_PATH, 0, 60))
+        _fresh_home(page)
+        shelf = _section(page, "#homeBody", "Недавно слушали")
+        shelf.wait_for()
+        # Первая или вторая полка главной — её видно сразу.
+        heads = page.locator("#homeBody .o-section-head h2").all_inner_texts()
+        assert heads.index("Недавно слушали") <= 1
+        # Свежие первыми, каждый трек по разу; название из тегов — только текст.
+        assert page.evaluate("homeCache.heard.map((t) => t.path)") == [
+            LOUD_PATH,
+            QUIET_PATH,
+            EVIL_PATH,
+        ]
+        assert shelf.locator(".o-card-title").nth(2).inner_text() == XSS_TITLE
+        assert page.evaluate("window.pwned") is None
+
+        shelf.locator(".o-card").nth(0).click()
+        page.wait_for_function("player.started")
+        page.evaluate("player.audio.pause()")
+        assert page.evaluate("player.queue.map((t) => t.path)") == [
+            LOUD_PATH,
+            QUIET_PATH,
+            EVIL_PATH,
+        ]
+        assert page.evaluate("player.queue[player.index].path") == LOUD_PATH
+
+        # «Статистика» — со стороны полки: на телефоне другого пути туда нет.
+        shelf.get_by_role("button", name="Статистика").click()
+        page.wait_for_function("activeView === 'viewStats'")
+    finally:
+        db.db_exec("DELETE FROM plays")
+    _fresh_home(page)
+    assert _section(page, "#homeBody", "Недавно слушали").count() == 0
+
+
+def test_stats_screen_shows_time_tops_and_bars_for_each_period(page):
+    page.set_viewport_size({"width": 1266, "height": 603})
+    try:
+        db.db_exec("DELETE FROM plays")
+        page.locator(".side-item", has_text="Статистика").click()
+        page.wait_for_function("activeView === 'viewStats'")
+        page.wait_for_selector("#statsBody .o-empty")
+
+        _journal(
+            (EVIL_PATH, 40, 120),
+            (QUIET_PATH, 2, 300),
+            (LOUD_PATH, 1, 600),
+            (LOUD_PATH, 0, 600),
+            (LOUD_PATH, 0, 600),
+        )
+        page.evaluate("switchView('viewHome'); switchView('viewStats')")
+        page.wait_for_selector("#statsBody .stats-num")
+        assert page.locator("#statsBody .stats-num").inner_text() == "35 мин"
+        assert page.locator("#statsBody .stats-sub").inner_text() == "4 прослушивания"
+        assert page.locator("#statsBody .stats-col").count() == 30
+        artists = page.locator("#statsBody .o-artist-row .o-row-title").all_inner_texts()
+        assert artists == ["Loud Band", "Quiet"]
+        assert page.locator("#statsBody .o-artist-row .o-row-sub").first.inner_text() == (
+            "3 раза · 30 мин"
+        )
+        rows = page.locator("#statsBody .stats-tracks .track")
+        assert [rows.nth(i).get_attribute("data-track-path") for i in range(rows.count())] == [
+            LOUD_PATH,
+            QUIET_PATH,
+        ]
+        assert rows.first.locator(".track-time").inner_text() == "3 раза"
+        assert rows.first.locator(".track-time").is_visible()
+
+        # Год: и то, что было 40 дней назад; столбик на месяц.
+        page.locator("#statsBody .o-seg-item", has_text="Год").click()
+        page.wait_for_function("document.querySelectorAll('#statsBody .stats-col').length === 12")
+        assert page.locator("#statsBody .stats-sub").inner_text() == "5 прослушиваний"
+        evil = page.locator("#statsBody .stats-tracks .track").filter(has_text="onerror")
+        assert evil.locator(".track-title").inner_text() == XSS_TITLE
+        assert page.evaluate("window.pwned") is None
+
+        # Трек играет с себя, по списку первых; артист открывает свою страницу.
+        rows.first.locator(".track-info").click()
+        page.wait_for_function("player.started")
+        page.evaluate("player.audio.pause()")
+        assert page.evaluate("player.queue[player.index].path") == LOUD_PATH
+        assert page.evaluate("player.queue.length") == 3
+        page.locator("#statsBody .o-artist-row", has_text="Quiet").click()
+        page.wait_for_function("activeView === 'viewArtist'")
+        assert page.locator("#artistBody h1").inner_text() == "Quiet"
+        page.go_back()
+        page.wait_for_function("activeView === 'viewStats'")
+    finally:
+        db.db_exec("DELETE FROM plays")
+
+
+def test_stats_fit_a_phone_and_their_buttons_are_not_grey(page):
+    page.set_viewport_size({"width": 390, "height": 844})
+    try:
+        _journal((LOUD_PATH, 0, 600), (QUIET_PATH, 5, 300), (EVIL_PATH, 9, 120))
+        page.evaluate("switchView('viewStats')")
+        page.wait_for_selector("#statsBody .stats-col")
+        # Главная вкладка горит: «Статистика» на телефоне — оттуда.
+        assert "is-active" in page.locator(".tab[data-view='viewHome']").get_attribute("class")
+        for period in ("Месяц", "Год", "Всё время"):
+            page.locator("#statsBody .o-seg-item", has_text=period).click()
+            page.wait_for_function(
+                "(p) => document.querySelector('#statsBody .o-seg-item.is-on').textContent === p",
+                arg=period,
+            )
+            page.wait_for_selector("#statsBody .stats-col")
+            wide = page.evaluate("document.documentElement.scrollWidth")
+            assert wide <= 390, f"{period}: страница шире экрана ({wide})"
+        grey = page.evaluate(
+            "(() => { const probe = document.createElement('button');"
+            " document.body.append(probe); const plain = getComputedStyle(probe).backgroundColor;"
+            " probe.remove(); return [...document.querySelectorAll('#viewStats button')]"
+            "   .filter((b) => b.getClientRects().length"
+            "     && getComputedStyle(b).backgroundColor === plain)"
+            "   .map((b) => b.textContent.trim()); })()"
+        )
+        assert grey == []
+    finally:
+        db.db_exec("DELETE FROM plays")

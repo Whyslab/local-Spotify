@@ -2760,3 +2760,23 @@ html.sheet-lock, html.sheet-lock body { overflow: hidden; }
 
 /* Без сети: нескачанное не сыграет — строка бледная (offline.js). */
 .no-network [data-track-path]:not(.is-offline) { opacity: 0.38; }
+
+/* ================= Статистика (20.10.2026) =================
+   Итог крупно, столбики по дням или месяцам, первые артисты и треки. Тело
+   выходит к краю, как у главной: заголовки и полки сами держат поля 16. */
+#statsBody { margin-inline: -16px; }
+.stats-total { display: flex; flex-direction: column; gap: 2px; padding: 4px 16px 0; }
+.stats-num { font-size: 34px; font-weight: 800; letter-spacing: -0.02em; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.stats-sub { color: var(--text-2); font-size: 15px; }
+/* Столбик на ячейку сетки: ширина делится поровну при любом их числе
+   (30 дней, 12 месяцев, годы помесячно), подписи висят под ячейкой. */
+.stats-chart { display: grid; grid-template-columns: repeat(var(--n, 30), minmax(0, 1fr)); gap: 2px;
+  height: 132px; margin: 0 16px; padding-bottom: 22px; }
+.stats-col { position: relative; display: flex; flex-direction: column; justify-content: flex-end; min-width: 0; }
+.stats-bar { width: 100%; border-radius: 3px 3px 1px 1px; background: var(--accent); }
+.stats-bar.is-zero { height: 2px; background: var(--fill); }
+.stats-tick { position: absolute; top: 100%; left: 50%; transform: translateX(-50%); margin-top: 6px;
+  font-size: 11px; color: var(--text-3); white-space: nowrap; pointer-events: none; }
+/* Сколько раз — видно и на телефоне, где длительность строки спрятана; в
+   одну строку: при длинном названии «27 раз» ломалось на две. */
+.stats-tracks .track-time { display: block; flex: none; white-space: nowrap; }
