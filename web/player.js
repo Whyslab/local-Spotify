@@ -982,6 +982,7 @@ async function extendRadio() {
 function cycleRepeat() {
     player.repeat = player.repeat === "off" ? "all" : player.repeat === "all" ? "one" : "off";
     renderPlayerModes();
+    saveQueueSoon();
 }
 
 function renderPlayerModes() {
@@ -1227,7 +1228,20 @@ function removeFromQueue(position) {
     const [gone] = player.order.splice(position, 1);
     player.dropped.add(gone);
     if (position < player.orderAt) player.orderAt -= 1;
+    forgetBeforeSmart(player.queue[gone]);
     renderQueuePanel();
+}
+
+/* Убранное из умной очереди убрать и из исходной: «Перемешать заново» и
+ * выключенное ✦ собирают очередь из неё, и трек вернулся бы. */
+function forgetBeforeSmart(track) {
+    const saved = player.beforeSmart;
+    if (!saved || !track || track.queued) return;
+    const at = saved.queue.findIndex((t, i) => i !== saved.index && t && t.path === track.path);
+    if (at < 0) return;
+    saved.queue = saved.queue.slice();
+    saved.queue.splice(at, 1);
+    if (at < saved.index) saved.index -= 1;
 }
 
 /* Только то, что после играющего: сыгранное в панели не видно, и двигать
@@ -1360,6 +1374,7 @@ function saveQueueSoon(changed = true) {
 }
 
 function forgetSavedQueue() {
+    clearTimeout(queueSaveTimer);
     try {
         localStorage.removeItem(QUEUE_KEY);
         localStorage.removeItem(QUEUE_AT_KEY);
@@ -1369,7 +1384,8 @@ function forgetSavedQueue() {
 function saveQueue() {
     clearTimeout(queueSaveTimer);
     queueSavedAt = Date.now();
-    if (!player.queue.length || player.index < 0) { forgetSavedQueue(); return; }
+    /* Вышли — без ключа очереди на устройстве не место, даже доигрывающей. */
+    if (!token() || !player.queue.length || player.index < 0) { forgetSavedQueue(); return; }
     const time = player.audio.getAttribute("src") && Number.isFinite(player.audio.currentTime)
         ? player.audio.currentTime : (player.resumeAt || 0);
     try {
@@ -1397,8 +1413,10 @@ function saveQueue() {
         }));
     } catch (e) {
         /* Места нет или хранилище закрыто. Старую очередь — стереть: иначе
-         * следующий запуск вернул бы её вместо нынешней. */
+         * следующий запуск вернул бы её вместо нынешней; при следующем
+         * сохранении — записать всю заново. */
         forgetSavedQueue();
+        queueChanged = true;
     }
 }
 
@@ -1432,16 +1450,22 @@ function restoreQueue() {
     player.queueSource = saved.queueSource || null;
     player.beforeSmart = saved.beforeSmart && Array.isArray(saved.beforeSmart.queue) ? saved.beforeSmart : null;
     const valid = i => Number.isInteger(i) && i >= 0 && i < n;
-    if (Array.isArray(saved.dropped)) player.dropped = new Set(saved.dropped.filter(valid));
     const order = Array.isArray(saved.order) ? saved.order : [];
-    if (order.includes(saved.index) && order.every(valid)) {
+    const orderValid = order.includes(saved.index) && order.every(valid);
+    if (Array.isArray(saved.dropped)) {
+        player.dropped = new Set(saved.dropped.filter(valid));
+    } else if (orderValid) {
+        /* Сохранено до того, как убранное стало помниться: убрано то, чего
+         * нет в маршруте. */
+        player.dropped = new Set(saved.queue.map((t, i) => i).filter(i => !order.includes(i)));
+    }
+    if (orderValid) {
         player.order = order;
         player.orderAt = order.indexOf(saved.index);
     } else {
         buildOrder(saved.index);
     }
     player.resumeAt = Number.isFinite(saved.at) && saved.at > 0 ? saved.at : 0;
-    queueChanged = false;
     renderPlayerModes();
     renderPlayer();
     markPlayingRow();
@@ -4365,7 +4389,10 @@ async function toggleFavourite(track = player.queue[player.index]) {
 /* «Вернуть» после снятого сердца: на те же места, что были, — в свежую
  * версию Monday, а не поверх неё старым списком. */
 async function restoreFavourite(track, positions) {
-    if (favouriteBusy) return;
+    if (favouriteBusy) {
+        sayFavourite("Ещё сохраняю — нажмите «Вернуть» ещё раз", () => restoreFavourite(track, positions));
+        return;
+    }
     favouriteBusy = true;
     try {
         const edit = await editFavourites(track, paths => {

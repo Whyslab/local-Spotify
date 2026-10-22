@@ -193,6 +193,7 @@ def test_recreating_a_playlist_cancels_its_queued_delete(client):
     """«delete» ищет подборку в Navidrome по файлу: пришёл бы он после
     пересоздания — снёс бы новую."""
     navidrome.enqueue("delete", "Gym")
+    navidrome.enqueue("delete", "Gym ")  # the same file
     navidrome.enqueue("delete", "Other")
     assert client.post("/api/playlists", json={"name": "Gym", "paths": []}).status_code == 200
     assert [r["name"] for r in db.db_query("SELECT name FROM navidrome_ops")] == ["Other"]

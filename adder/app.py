@@ -2254,9 +2254,11 @@ EVENTS_PER_MINUTE = 60
 
 
 def _one_line(text: str) -> str:
-    """Text from the page, fit for the journal: control characters escaped, so
-    a "\n" in it cannot add a line that looks like the service's own."""
-    return runtime.one_line(text)
+    """Text from the page, fit for the journal: everything unprintable escaped,
+    so a "\n" in it cannot add a line that looks like the service's own, and
+    bidi or zero-width characters cannot make a line read other than it is.
+    The journal formatter escapes only line breaks: tags keep their NBSP."""
+    return "".join(ch if ch.isprintable() else repr(ch)[1:-1] for ch in text)
 
 
 @app.post("/api/player-event")

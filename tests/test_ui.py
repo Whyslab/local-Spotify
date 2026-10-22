@@ -4482,6 +4482,32 @@ def test_queue_edits_survive_shuffle_on_and_off(page):
     assert "t2" not in route and len(route) == 7
 
 
+def test_a_track_removed_from_the_smart_queue_stays_removed(page):
+    """Убранное из умной очереди возвращалось после «Перемешать заново» и
+    после выключенного ✦: обе собирают очередь из исходной."""
+    open_library(page)
+    tracks = ", ".join(
+        f"{{path: 'x/{i}.m4a', title: 't{i}', artist: 'A', duration: 10}}" for i in range(6)
+    )
+    page.evaluate(f"playQueue([{LOUD}, {tracks}], 0, 'manual')")
+    page.wait_for_function("player.started")
+    page.evaluate("player.audio.pause()")
+    _smart_stub(page)
+    page.evaluate("setShuffle('smart')")
+    page.wait_for_function("player.queueMode === 'smart'")
+    page.evaluate(
+        "removeFromQueue(player.order.findIndex(i => player.queue[i].path === 'x/2.m4a'))"
+    )
+    epoch = page.evaluate("player.queueEpoch")
+    page.evaluate("reshuffleQueue(); true")
+    page.wait_for_function(f"player.queueEpoch !== {epoch} && player.queueMode === 'smart'")
+    assert "s:2.m4a" not in _route_titles(page)
+    assert len(_route_titles(page)) == 6
+    page.evaluate("setShuffle(false)")
+    route = _route_titles(page)
+    assert "t2" not in route and len(route) == 6
+
+
 def test_adding_while_the_smart_queue_builds_keeps_both(page):
     """Раньше «Играть следующим» в эти секунды бросало сборку, а ✦ горел
     над обычной очередью."""
@@ -4625,9 +4651,12 @@ def test_the_queue_comes_back_after_a_restart_paused_at_the_same_place(page):
     open_library(page)
     page.evaluate(f"playQueue([{QUIET}, {LOUD}, {EVIL_TRACK}], 1, 'manual')")
     page.wait_for_function("player.started")
-    page.evaluate("player.audio.currentTime = 4; player.repeat = 'all'; player.audio.pause()")
+    page.evaluate("player.audio.currentTime = 4; player.audio.pause()")
     page.evaluate(f"enqueue([{QUIET}], 'next')")
     page.evaluate("saveQueue()")
+    # Повтор включён после того, как очередь записана: он не правит очередь,
+    # но помниться должен (раньше писалось только место в треке).
+    page.evaluate("cycleRepeat(); saveQueue()")
     page.reload()
     page.wait_for_function("player.queue.length === 4")
     assert page.evaluate("player.queue[player.index].title") == "Loud"
@@ -4640,6 +4669,22 @@ def test_the_queue_comes_back_after_a_restart_paused_at_the_same_place(page):
     page.evaluate("togglePlay()")
     page.wait_for_function("player.started && player.audio.currentTime >= 3.5")
     page.evaluate("player.audio.pause()")
+
+
+def test_logging_out_leaves_no_queue_behind(page):
+    """Ключи стирались, а доигрывающая очередь через секунду записывалась
+    обратно — пути и названия треков на устройстве без ключа."""
+    open_library(page)
+    page.evaluate(f"playQueue([{QUIET}, {LOUD}], 0, 'manual')")
+    page.wait_for_function("player.started")
+    page.evaluate("player.audio.pause(); saveQueueSoon(); logout(); true")
+    page.evaluate("renderQueuePanel(); saveQueueSoon(); true")
+    page.wait_for_timeout(1200)
+    page.evaluate("saveQueue()")
+    stored = page.evaluate(
+        "[localStorage.getItem('playerQueue'), localStorage.getItem('playerQueueAt')]"
+    )
+    assert stored == [None, None]
 
 
 def test_a_broken_saved_queue_is_ignored(page):

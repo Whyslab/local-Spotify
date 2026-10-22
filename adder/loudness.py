@@ -164,7 +164,7 @@ def backfill(
     """Tag what is missing. Returns (measured, already tagged, failed).
 
     ``stop`` is the service's shutdown_event when it runs inside the service.
-    ``failures`` (library-relative path -> [size, mtime_ns]) is what failed
+    ``failures`` (library-relative path -> _stamp(): size, mtime, ctime, inode) is what failed
     before: an unchanged file in it is skipped and not counted, a new failure
     is added, a file that got its tag is taken out. Silence has no loudness,
     and measuring it again every night only to fail again helps nobody.

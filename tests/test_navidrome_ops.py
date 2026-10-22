@@ -144,3 +144,28 @@ def test_ops_waiting_out_a_backoff_run_as_soon_as_navidrome_answers(monkeypatch)
     assert ran == ["New"]
     navidrome.drain(now=clock + 30)
     assert ran == ["New", "Old"]
+
+
+def test_a_success_does_not_wipe_the_backoff_of_an_op_that_just_failed(monkeypatch):
+    """Успех в проходе снимал отсрочку со всех — и с упавшей минуту назад в том
+    же проходе: застрявшая обложка при живом Navidrome пробовалась каждые 30 с и
+    сдавалась за десять минут вместо трёх дней."""
+    db.db_init()
+    stuck: list[float] = []
+
+    def run(op, name, payload):
+        if name == "Stuck":
+            stuck.append(clock)
+            raise navidrome.NotImportedYet("not imported yet")
+        return True
+
+    monkeypatch.setattr(navidrome, "_run", run)
+    monkeypatch.setattr(navidrome, "_was_down", False)
+    navidrome.enqueue("cover", "Stuck")
+    clock = 1_000_000.0
+    for _ in range(40):  # 20 minutes, a fresh op succeeding every pass
+        navidrome.enqueue("cover", "Fresh")
+        navidrome.drain(now=clock)
+        clock += 30
+    assert navidrome.pending_count() == 1  # still waiting, not given up
+    assert len(stuck) <= 7

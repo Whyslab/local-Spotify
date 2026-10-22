@@ -257,8 +257,18 @@ def enqueue(op: str, name: str, payload: dict | None = None) -> None:
 
 def cancel(op: str, name: str) -> None:
     """Забыть отложенное: подборку с этим именем создали заново, и поздний
-    «delete» (он ищет по файлу) снёс бы в Navidrome уже новую."""
-    db.db_exec("DELETE FROM navidrome_ops WHERE op = ? AND name = ?", (op, name))
+    «delete» (он ищет по файлу) снёс бы в Navidrome уже новую. Имя — как у
+    файла: « Gym» и «Gym» — одна подборка. Сама подборка уже записана, и сбой
+    здесь не должен превращать её создание в ошибку."""
+    try:
+        rows = db.db_query("SELECT id, name FROM navidrome_ops WHERE op = ?", (op,))
+        for row in rows:
+            if (row["name"] or "").strip() == name.strip():
+                db.db_exec("DELETE FROM navidrome_ops WHERE id = ?", (row["id"],))
+    except Exception:
+        logger.exception(
+            "Could not cancel Navidrome op %s for %r", op, name, extra={"task_id": "system"}
+        )
 
 
 def _run(op: str, name: str, payload: dict) -> bool:
@@ -285,9 +295,13 @@ DRAIN_BACKOFF_SECONDS = 30
 DRAIN_BACKOFF_MAX = 6 * 3600
 DRAIN_MAX_ATTEMPTS = 20
 
+# Navidrome was unreachable at the last failure, and nothing has passed since.
+_was_down = False
+
 
 def drain(now: float | None = None) -> dict:
     """Retry everything queued that is due. Safe to call when Navidrome is down."""
+    global _was_down
     now = time.time() if now is None else now
     pending = db.db_query(
         "SELECT id, op, name, payload, attempts FROM navidrome_ops "
@@ -297,10 +311,14 @@ def drain(now: float | None = None) -> dict:
     if not pending:
         return {"pending": pending_count(), "done": 0}
     done = 0
+    failed: list[int] = []
     for row in pending:
         try:
             _run(row["op"], row["name"], json.loads(row["payload"] or "{}"))
         except Exception as exc:
+            failed.append(row["id"])
+            if isinstance(exc, (NavidromeUnavailable, requests.ConnectionError, requests.Timeout)):
+                _was_down = True
             attempts = (row["attempts"] or 0) + 1
             if attempts >= DRAIN_MAX_ATTEMPTS:
                 db.db_exec("DELETE FROM navidrome_ops WHERE id = ?", (row["id"],))
@@ -322,10 +340,17 @@ def drain(now: float | None = None) -> dict:
             continue
         db.db_exec("DELETE FROM navidrome_ops WHERE id = ?", (row["id"],))
         done += 1
-    if done:
-        # Navidrome снова отвечает: отложенное раньше ждать своего часа (до
-        # шести) незачем, а новое шло бы вперёд старого.
-        db.db_exec("UPDATE navidrome_ops SET next_at = NULL WHERE next_at > ?", (now,))
+    if done and _was_down:
+        # Navidrome снова отвечает после простоя: отложенное за простой ждать
+        # своего часа (до шести) незачем, а новое шло бы вперёд старого. Один
+        # раз на возврат и не для упавших в этом же проходе: обложка, которую
+        # Navidrome ещё не подхватил, иначе пробовалась бы каждые 30 с.
+        _was_down = False
+        db.db_exec(
+            "UPDATE navidrome_ops SET next_at = NULL WHERE next_at > ? "
+            f"AND id NOT IN ({','.join('?' * len(failed))})",
+            (now, *failed),
+        )
     remaining = db.db_query("SELECT COUNT(*) AS n FROM navidrome_ops")[0]["n"]
     return {"pending": remaining, "done": done}
 

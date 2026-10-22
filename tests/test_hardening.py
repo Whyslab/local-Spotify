@@ -254,7 +254,7 @@ def test_player_strings_cannot_forge_a_journal_line(client, caplog):
     with caplog.at_level(logging.INFO, logger="adder.app"):
         client.post(
             "/api/player-event",
-            json={"event": "stall", "path": forged, "detail": "x\ry"},
+            json={"event": "stall", "path": forged, "detail": "x\ry\u202e"},
             headers=AUTH,
         )
         client.post(
@@ -266,6 +266,7 @@ def test_player_strings_cannot_forge_a_journal_line(client, caplog):
     assert len(messages) == 2
     for message in messages:
         assert "\n" not in message and "\r" not in message and "\x1b" not in message
+        assert "\u202e" not in message  # bidi: the line would read reversed
         assert "A/B.m4a\\n2026" in message  # escaped, still readable
 
 
