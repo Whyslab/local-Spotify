@@ -4173,7 +4173,9 @@ async function toggleFavourite(track = player.queue[player.index]) {
         playlists();
     } catch (e) {
         favouritePaths = before;
-        sayFavourite(e.message || "Не получилось");
+        // Обрыв связи fetch сообщает по-английски («Failed to fetch»).
+        sayFavourite(e instanceof TypeError ? "Нет связи с сервером, а копии «" + FAVOURITES + "» здесь нет — попробуйте позже"
+            : (e.message || "Не получилось"));
     } finally {
         favouriteBusy = false;
         renderFavourite();
