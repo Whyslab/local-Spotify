@@ -738,8 +738,20 @@ function renderStats() {
         }, document.createTextNode(label));
         item.setAttribute("role", "tab");
         item.setAttribute("aria-selected", String(key === statsPeriod));
+        item.tabIndex = key === statsPeriod ? 0 : -1;
         seg.appendChild(item);
     }
+    /* Вкладки листаются стрелками, как положено tablist. */
+    seg.addEventListener("keydown", (event) => {
+        const step = { ArrowLeft: -1, ArrowRight: 1 }[event.key];
+        if (!step) return;
+        event.preventDefault();
+        const at = STATS_PERIODS.findIndex(([key]) => key === statsPeriod);
+        statsPeriod = STATS_PERIODS[(at + step + STATS_PERIODS.length) % STATS_PERIODS.length][0];
+        renderStats();
+        const on = document.querySelector("#statsBody .o-seg-item.is-on");
+        if (on) on.focus();
+    });
     /* Пока считается новый период, прежние цифры стоят: экран не мигает. */
     const shown = body.querySelector(".stats-content") || el("div", "stats-content", "", el("p", "empty", "Считаю…"));
     put(body, seg, shown);

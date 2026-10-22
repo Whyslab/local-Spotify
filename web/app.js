@@ -89,6 +89,10 @@ function saveToken() {
 function logout() {
     tokenInMemory = "";
     try { localStorage.removeItem("token"); } catch (e) { /* нечего стирать */ }
+    /* Очередь и вид подборок — названия и пути треков; без ключа им на
+     * устройстве не место, как и спискам в api-v1. */
+    forgetSavedQueue();
+    try { localStorage.removeItem(PLAYLIST_VIEW_KEY); } catch (e) { /* нечего стирать */ }
     /* Списки, сохранённые на случай без сети (фонотека, подборки, тексты), —
      * тоже: без ключа их на устройстве быть не должно. Скачанные треки —
      * отдельное хранилище, они остаются. */

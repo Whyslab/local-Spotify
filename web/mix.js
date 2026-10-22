@@ -578,7 +578,7 @@ function mixAdopt(run, docked, delta) {
     player.index = next;
     player.reported = false;
     player.started = true;
-    player.playingMode = player.queueMode;
+    player.playingMode = player.queue[next] && player.queue[next].queued ? "manual" : player.queueMode;
     player.trackGain = stream.gain;
     player.fadeLevel = Math.min(1, sleepLevel());
     player.mixAdopted = true;

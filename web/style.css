@@ -2780,3 +2780,22 @@ html.sheet-lock, html.sheet-lock body { overflow: hidden; }
 /* Сколько раз — видно и на телефоне, где длительность строки спрятана; в
    одну строку: при длинном названии «27 раз» ломалось на две. */
 .stats-tracks .track-time { display: block; flex: none; white-space: nowrap; }
+
+/* «Вернуть» в пояснении под названием (♥ снято) — ссылкой, а не плашкой:
+   строка в мини-плеере одна. 44 px по высоте — под палец. */
+.player-note-action {
+    min-height: 0;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--text);
+    font: inherit;
+    font-weight: 650;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    cursor: pointer;
+}
+@media (pointer: coarse) {
+    .player-note-action { position: relative; }
+    .player-note-action::after { content: ""; position: absolute; inset: -14px -10px; }
+}

@@ -29,6 +29,12 @@ const player = {
      * Выключил перемешивание — маршрут снова прямой, и ничего не потеряно. */
     order: [],
     orderAt: -1,
+    /* Убранные из маршрута руками (номера в очереди) и номер самой очереди:
+     * он меняется, только когда очередь заменили целиком (новая подборка,
+     * умная сборка, возврат), а не когда в неё добавили. По нему ответ
+     * сервера понимает, что пришёл про другую очередь. */
+    dropped: new Set(),
+    queueEpoch: 0,
     shuffle: false,      // false | "plain" | "smart"
     beforeSmart: null,   // очередь до умного перемешивания — вернуть при выключении
     smartTicket: 0,      // номер последней сборки умной очереди — см. smartifyQueue
@@ -130,12 +136,17 @@ function reportPlay(finished) {
 /* ---------------- Playback ---------------- */
 
 /* Ссылка и поправка громкости трека (ReplayGain) приходят вместе. */
+const STREAM_URL_TIMEOUT_MS = 15000;
+
 async function streamUrlFor(path, fresh = false) {
     let r;
     try {
         /* fresh — мимо скачанной копии (sw.js): спросить сам сервер. */
-        r = await fetch("/api/stream-url?path=" + encodeURIComponent(path) + (fresh ? "&fresh=1" : ""),
-            { headers: headers() });
+        /* Повторная ссылка (сторож застревания) — с пределом: туннель к
+         * спящему компьютеру может молчать минутами. */
+        const url = "/api/stream-url?path=" + encodeURIComponent(path) + (fresh ? "&fresh=1" : "");
+        r = fresh ? await fetchWithin(url, { headers: headers() }, STREAM_URL_TIMEOUT_MS)
+            : await fetch(url, { headers: headers() });
     } catch (e) {
         const error = new Error("Сервер недоступен");
         error.unreachable = true;
@@ -230,6 +241,9 @@ function takePrefetched(track) {
 /* options.startAt — с какого места (с), options.paused — не запускать: так
  * переход «как диджей», прерванный кнопкой, оставляет следующий трек там, куда
  * дошёл (mix.js). */
+/* Сколько треков подряд «нет в фонотеке» пропускать, прежде чем сдаться. */
+const GONE_SKIPS_MAX = 20;
+
 async function playAt(position, skipped = 0, direction = 1, options = {}) {
     if (position < 0 || position >= player.queue.length) return false;
     if (typeof mixCancel === "function") mixCancel(null, false);
@@ -246,8 +260,10 @@ async function playAt(position, skipped = 0, direction = 1, options = {}) {
     player.mixAdopted = false;
     /* Метка для журнала — какой была очередь, когда трек включили: иначе
      * переключение режима посреди трека приписывало его не той очереди. */
-    player.playingMode = player.queueMode;
     const track = player.queue[position];
+    /* Добавленное руками — «manual» в любой очереди: такое пропускают реже,
+     * и оно приукрасило бы умную или обычную. */
+    player.playingMode = track && track.queued ? "manual" : player.queueMode;
 
     let url;
     let gain;
@@ -269,7 +285,10 @@ async function playAt(position, skipped = 0, direction = 1, options = {}) {
         /* Файла больше нет (удалён или заменён на ноутбуке, пока трек ждал в
          * очереди) — тоже пропуск: раньше на нём вставала вся очередь. */
         const gone = e.status === 404;
-        if ((isOutside(track) || offlineMiss || gone) && skipped < player.queue.length) {
+        /* Нет ничего подряд — значит, нет фонотеки (диск не подключён), а не
+         * треков: не перебирать всю подборку по одному запросу. */
+        const tooManyGone = gone && skipped >= GONE_SKIPS_MAX;
+        if ((isOutside(track) || offlineMiss || gone) && !tooManyGone && skipped < player.queue.length) {
             if (isOutside(track)) requestOutside([outsideKey(track)]);
             const next = stepInOrder(direction);
             if (next >= 0 && next !== position) {
@@ -290,7 +309,7 @@ async function playAt(position, skipped = 0, direction = 1, options = {}) {
         player.audio.removeAttribute("src");
         player.audio.load();
         renderPlayer();
-        setPlayerNote(e.message);
+        setPlayerNote(tooManyGone ? `Подряд ${skipped + 1} ${tracksWord(skipped + 1)} нет в фонотеке — остановлено` : e.message);
         return false;
     }
     if (generation !== player.generation) return false;
@@ -457,14 +476,38 @@ function keepCurrent() {
 
 /* ---------------- Порядок обхода, перемешивание и повтор ---------------- */
 
+/* Очередь заменили целиком: маршрут, убранное и номер — про прежнюю. */
+function newQueue(queue) {
+    player.queue = queue;
+    player.order = [];
+    player.orderAt = -1;
+    player.dropped = new Set();
+    player.queueEpoch += 1;
+}
+
+/* Добавленные руками («Играть следующим», «В очередь»), ещё не сыгранные, —
+ * в том порядке, в каком стоят в маршруте. */
+function queuedAhead() {
+    const at = player.order.indexOf(player.index);
+    if (at < 0) return [];
+    return player.order.slice(at + 1).filter(i => player.queue[i] && player.queue[i].queued);
+}
+
+/* Маршрут заново. Убранное руками в него не возвращается, добавленное
+ * руками и ещё не сыгранное идёт сразу за играющим — включить или выключить
+ * перемешивание не значит отменить свои правки очереди. */
 function buildOrder(startIndex) {
     const n = player.queue.length;
-    const straight = Array.from({ length: n }, (_, i) => i);
+    const ahead = queuedAhead().filter(i => i !== startIndex);
+    const aside = new Set(ahead);
+    const straight = Array.from({ length: n }, (_, i) => i)
+        .filter(i => i === startIndex || (!player.dropped.has(i) && !aside.has(i)));
     /* Умное перемешивание переставляет саму очередь (на сервере), а маршрут
      * по ней прямой; тасуется маршрут только при обычном. */
     if (player.shuffle !== "plain") {
-        player.order = straight;
-        player.orderAt = startIndex >= 0 ? startIndex : -1;
+        const at = straight.indexOf(startIndex);
+        player.order = at >= 0 ? [...straight.slice(0, at + 1), ...ahead, ...straight.slice(at + 1)] : [...ahead, ...straight];
+        player.orderAt = at >= 0 ? at : -1;
         return;
     }
     /* Играющий трек остаётся первым: включать перемешивание не значит
@@ -474,7 +517,7 @@ function buildOrder(startIndex) {
         const j = Math.floor(Math.random() * (i + 1));
         [rest[i], rest[j]] = [rest[j], rest[i]];
     }
-    player.order = startIndex >= 0 ? [startIndex, ...rest] : rest;
+    player.order = startIndex >= 0 ? [startIndex, ...ahead, ...rest] : [...ahead, ...rest];
     player.orderAt = startIndex >= 0 ? 0 : -1;
 }
 
@@ -585,10 +628,11 @@ async function setShuffle(mode) {
  *
  * Возвращает true — готово, false — не вышло (и режим надо вернуть), null —
  * пока ждали сервер, попросили другое, и этот ответ уже никому не нужен. */
-async function smartifyQueue() {
+async function smartifyQueue(base = null) {
     const ticket = ++player.smartTicket;
-    const queueAtStart = player.queue;
-    const own = queueAtStart.filter(t => !isOutside(t));
+    const queueAtStart = base || player.queue;
+    const epoch = player.queueEpoch;
+    const own = queueAtStart.filter((t, i) => !isOutside(t) && !t.queued && (base || !player.dropped.has(i)));
     const paths = [...new Set(own.map(t => t.path))];
     if (!paths.length) {
         setPlayerNote("В очереди нет треков из фонотеки — перемешивать нечего");
@@ -600,32 +644,27 @@ async function smartifyQueue() {
         data = await fetchSmartQueue(paths);
     } catch (e) {
         if (ticket !== player.smartTicket) return null;
-        if (unreachableError(e)) return smartifyFromDownloads(ticket, queueAtStart, paths);
+        if (unreachableError(e)) return smartifyFromDownloads(ticket, epoch, paths);
         setPlayerNote(e.message);
         return false;
     }
     /* Пока ждали, могли выключить, выбрать другое или включить другую
      * подборку. Нажатый «дальше» — не повод: берём то, что играет теперь. */
-    if (ticket !== player.smartTicket || player.shuffle !== "smart" || player.queue !== queueAtStart) {
+    if (ticket !== player.smartTicket || player.shuffle !== "smart" || player.queueEpoch !== epoch) {
         return null;
     }
     const current = player.queue[player.index];
-    if (!player.beforeSmart) {
-        player.beforeSmart = {
-            queue: player.queue,
-            index: player.index,
-            mode: player.queueMode,
-            source: player.queueSource,
-        };
-    }
+    const queued = queuedAhead().map(i => player.queue[i]);
+    rememberBeforeSmart();
     const rest = (data.queue || []).filter(t => !current || t.path !== current.path);
-    player.queue = current ? [current, ...rest] : rest;
+    newQueue(current ? [current, ...rest] : rest);
     player.index = current ? 0 : -1;
     player.queueMode = "smart";
     /* Источник остаётся прежним: умная очередь — это та же подборка плюс
      * подмешанное. Свои треки «показать, откуда играет» ищет в подборке,
      * подмешанные из фонотеки (у них есть пометка outside) — в фонотеке. */
     buildOrder(player.index);
+    insertQueued(queued, "queue");
     markPlayingRow();
     renderQueuePanel();
     prefetchOutside();
@@ -673,14 +712,14 @@ function shuffled(list) {
  * Режим очереди «manual»: статистика сравнивает пропуски умного и обычного
  * перемешивания, а набор, выбранный руками (скачанное), пропускают реже — он
  * приукрасил бы любое из них. Выключение ✦ возвращает прежнюю очередь. */
-async function smartifyFromDownloads(ticket, queueAtStart, paths) {
+async function smartifyFromDownloads(ticket, epoch, paths) {
     let tracks;
     try {
         tracks = await downloadedTracks(new Set(paths));
     } catch (e) {
         tracks = [];
     }
-    if (ticket !== player.smartTicket || player.shuffle !== "smart" || player.queue !== queueAtStart) {
+    if (ticket !== player.smartTicket || player.shuffle !== "smart" || player.queueEpoch !== epoch) {
         return null;
     }
     if (!tracks.length) {
@@ -688,19 +727,14 @@ async function smartifyFromDownloads(ticket, queueAtStart, paths) {
         return false;
     }
     const current = player.queue[player.index];
-    if (!player.beforeSmart) {
-        player.beforeSmart = {
-            queue: player.queue,
-            index: player.index,
-            mode: player.queueMode,
-            source: player.queueSource,
-        };
-    }
+    const queued = queuedAhead().map(i => player.queue[i]);
+    rememberBeforeSmart();
     const rest = shuffled(tracks.filter(t => !current || t.path !== current.path));
-    player.queue = current ? [current, ...rest] : rest;
+    newQueue(current ? [current, ...rest] : rest);
     player.index = current ? 0 : -1;
     player.queueMode = "manual";
     buildOrder(player.index);
+    insertQueued(queued, "queue");
     markPlayingRow();
     renderQueuePanel();
     setPlayerNote(`Без сети — перемешал скачанное из очереди: ${player.queue.length}, новых нет`);
@@ -751,11 +785,11 @@ async function extendSmartQueue() {
     const paths = [...new Set(saved.queue.filter(t => !isOutside(t) && !have.has(t.path)).map(t => t.path))];
     if (!paths.length) return;
     const ticket = player.smartTicket;
-    const queueAtStart = player.queue;
+    const epoch = player.queueEpoch;
     extendingSmart = true;
     try {
         const data = await fetchSmartQueue(paths);
-        if (ticket !== player.smartTicket || player.queue !== queueAtStart) return;
+        if (ticket !== player.smartTicket || player.queueEpoch !== epoch) return;
         const more = (data.queue || []).filter(t => !have.has(t.path));
         if (!more.length) return;
         /* В конец маршрута, а не buildOrder: тот стёр бы убранное и
@@ -776,6 +810,20 @@ async function extendSmartQueue() {
  * были. Играющий трек не прерывается: был в прежней очереди — продолжаем с
  * него; это новый или подмешанный — он встаёт туда, где мы были, а после
  * него очередь идёт дальше. */
+/* Очередь до умной сборки — без добавленного руками: оно переезжает
+ * отдельно (insertQueued) и иначе вернулось бы дважды. */
+function rememberBeforeSmart() {
+    if (player.beforeSmart) return;
+    const current = player.queue[player.index];
+    const queue = player.queue.filter((t, i) => i === player.index || (!t.queued && !player.dropped.has(i)));
+    player.beforeSmart = {
+        queue,
+        index: queue.indexOf(current),
+        mode: player.queueMode,
+        source: player.queueSource,
+    };
+}
+
 function restoreBeforeSmart() {
     const saved = player.beforeSmart;
     player.beforeSmart = null;
@@ -784,6 +832,7 @@ function restoreBeforeSmart() {
         return;
     }
     const current = player.queue[player.index];
+    const queued = queuedAhead().map(i => player.queue[i]);
     let queue = saved.queue;
     let index = saved.index;
     if (current) {
@@ -802,11 +851,12 @@ function restoreBeforeSmart() {
             queue.splice(index, 0, current);
         }
     }
-    player.queue = queue;
+    newQueue(queue);
     player.index = index;
     player.queueMode = saved.mode;
     player.queueSource = saved.source;
     buildOrder(index);
+    insertQueued(queued, "queue");
     markPlayingRow();
     renderQueuePanel();
 }
@@ -904,12 +954,12 @@ async function extendRadio() {
     const at = route.indexOf(player.index);
     if (at < 0 || route.length - at - 1 >= RADIO_AHEAD) return;
     const ticket = player.smartTicket;
-    const queueAtStart = player.queue;
+    const epoch = player.queueEpoch;
     const mine = {};
     radioLoading = mine;
     try {
         const data = await fetchRadio(source.seed, route.map(i => player.queue[i].path));
-        if (ticket !== player.smartTicket || player.queue !== queueAtStart) return;
+        if (ticket !== player.smartTicket || player.queueEpoch !== epoch) return;
         const more = data.queue || [];
         if (!more.length) return;
         /* В конец маршрута, а не buildOrder: тот стёр бы убранное и
@@ -1150,6 +1200,15 @@ function enqueue(tracks, where) {
         playQueue(list.map(t => queueCopy(t, false)), 0, "manual");
         return;
     }
+    insertQueued(list, where);
+    const name = list.length === 1 ? `«${trackNames(list[0]).title}»` : `${list.length} ${tracksWord(list.length)}`;
+    setPlayerNote(where === "next" ? `${name} — следующим` : `${name} — в очереди`);
+}
+
+/* То же без пояснения: добавленное руками переезжает в новую очередь
+ * (умная сборка, возврат прежней). */
+function insertQueued(list, where) {
+    if (!list.length) return;
     const first = player.queue.length;
     player.queue = [...player.queue, ...list];
     const added = list.map((_, i) => first + i);
@@ -1161,13 +1220,12 @@ function enqueue(tracks, where) {
     }
     player.order.splice(place, 0, ...added);
     renderQueuePanel();
-    const name = list.length === 1 ? `«${trackNames(list[0]).title}»` : `${list.length} ${tracksWord(list.length)}`;
-    setPlayerNote(where === "next" ? `${name} — следующим` : `${name} — в очереди`);
 }
 
 function removeFromQueue(position) {
     if (position < 0 || position >= player.order.length || player.order[position] === player.index) return;
-    player.order.splice(position, 1);
+    const [gone] = player.order.splice(position, 1);
+    player.dropped.add(gone);
     if (position < player.orderAt) player.orderAt -= 1;
     renderQueuePanel();
 }
@@ -1192,46 +1250,20 @@ function reshuffleQueue() {
         setPlayerNote("Радио само выбирает порядок — перемешивать нечего");
         return;
     }
-    const at = player.order.indexOf(player.index);
-    const queued = at < 0 ? [] : player.order.slice(at + 1).filter(i => player.queue[i] && player.queue[i].queued)
-        .map(i => player.queue[i]);
     if (player.shuffle === "smart") {
-        const saved = player.beforeSmart;
-        const current = player.queue[player.index];
-        if (saved) {
-            let base = saved.queue;
-            let index = current ? base.findIndex(t => t.path === current.path) : -1;
-            if (current && index < 0) { base = [current, ...base]; index = 0; }
-            player.queue = base;
-            player.index = index;
-            player.queueMode = saved.mode;
-        }
-        buildOrder(player.index);
-        smartifyQueue().then((ok) => {
-            /* Не собралась — очередь уже исходная, по порядку: ✦ не горит. */
-            if (ok === false) { player.shuffle = false; renderPlayerModes(); renderQueuePanel(); }
-            if (ok && queued.length) enqueue(queued, "queue");
-        });
+        /* Собирается из исходной подборки, а нынешняя очередь стоит, пока
+         * новая не пришла: не собралась — играет прежняя умная, ✦ горит по
+         * праву. Добавленное руками переезжает в новую (smartifyQueue). */
+        smartifyQueue(player.beforeSmart ? player.beforeSmart.queue : null);
         return;
     }
     if (player.shuffle !== "plain") {
-        setShuffle("plain").then(() => keepQueuedAhead(queued));
+        setShuffle("plain");
         return;
     }
     buildOrder(player.index);
-    keepQueuedAhead(queued);
-    setPlayerNote("Перемешано заново");
-}
-
-/* Добавленное руками — снова сразу за играющим, в прежнем порядке. */
-function keepQueuedAhead(queued) {
-    if (!queued.length) { renderQueuePanel(); return; }
-    const ids = new Set(queued.map(t => player.queue.indexOf(t)).filter(i => i >= 0));
-    const rest = player.order.filter(i => !ids.has(i));
-    const at = rest.indexOf(player.index);
-    player.order = [...rest.slice(0, at + 1), ...[...ids], ...rest.slice(at + 1)];
-    player.orderAt = at;
     renderQueuePanel();
+    setPlayerNote("Перемешано заново");
 }
 
 /* Кнопки строки очереди: убрать и ручка, за которую тащат. Ручка работает и
@@ -1257,7 +1289,10 @@ function queueRowTools(row, position, track) {
         event.preventDefault();
         event.stopPropagation();
         moveInQueue(position, position + step);
-        const moved = document.querySelector(`#playQueueRows .queue-row[data-position="${position + step}"] .queue-handle`);
+        /* Список перерисован: фокус — на ручку того же трека, а у края, где
+         * двигать некуда, — на ту же строку; иначе он терялся. */
+        const find = (at) => document.querySelector(`#playQueueRows .queue-row[data-position="${at}"] .queue-handle`);
+        const moved = find(position + step) || find(position);
         if (moved) moved.focus();
     };
     handle.addEventListener("pointerdown", (event) => dragQueueRow(event, row, handle, position));
@@ -1307,70 +1342,114 @@ function dragQueueRow(event, row, handle, from) {
  * трек и место пропадали. Теперь они в localStorage: открыл — всё на месте,
  * на паузе, «играть» продолжает с того же места. Месяц, потом забывается. */
 const QUEUE_KEY = "playerQueue";
+/* Место в треке — отдельной маленькой записью: оно меняется каждые
+ * несколько секунд, а очередь (бывает вся фонотека, полмегабайта) — только
+ * когда её правят или сменился трек. */
+const QUEUE_AT_KEY = "playerQueueAt";
 const QUEUE_KEEP_MS = 30 * 24 * 3600 * 1000;
 let queueSaveTimer = 0;
 let queueSavedAt = 0;
+let queueChanged = true;
+let queueStamp = 0;
 
-function saveQueueSoon() {
+/* changed: false — сдвинулось только место в треке. */
+function saveQueueSoon(changed = true) {
+    if (changed) queueChanged = true;
     clearTimeout(queueSaveTimer);
     queueSaveTimer = setTimeout(saveQueue, 800);
+}
+
+function forgetSavedQueue() {
+    try {
+        localStorage.removeItem(QUEUE_KEY);
+        localStorage.removeItem(QUEUE_AT_KEY);
+    } catch (e) { /* хранилище закрыто — и помнить нечего */ }
 }
 
 function saveQueue() {
     clearTimeout(queueSaveTimer);
     queueSavedAt = Date.now();
+    if (!player.queue.length || player.index < 0) { forgetSavedQueue(); return; }
+    const time = player.audio.getAttribute("src") && Number.isFinite(player.audio.currentTime)
+        ? player.audio.currentTime : (player.resumeAt || 0);
     try {
-        if (!player.queue.length || player.index < 0) { localStorage.removeItem(QUEUE_KEY); return; }
-        const time = player.audio.getAttribute("src") && Number.isFinite(player.audio.currentTime)
-            ? player.audio.currentTime : (player.resumeAt || 0);
-        localStorage.setItem(QUEUE_KEY, JSON.stringify({
-            v: 1,
-            savedAt: Date.now(),
-            queue: player.queue,
-            index: player.index,
-            order: player.order,
-            orderAt: player.orderAt,
-            at: time,
-            shuffle: player.shuffle,
-            repeat: player.repeat,
-            queueMode: player.queueMode,
-            queueSource: player.queueSource,
-            beforeSmart: player.beforeSmart,
+        if (queueChanged) {
+            queueStamp = Date.now();
+            localStorage.setItem(QUEUE_KEY, JSON.stringify({
+                v: 1,
+                stamp: queueStamp,
+                savedAt: Date.now(),
+                queue: player.queue,
+                index: player.index,
+                order: player.order,
+                dropped: [...player.dropped],
+                at: time,
+                shuffle: player.shuffle,
+                repeat: player.repeat,
+                queueMode: player.queueMode,
+                queueSource: player.queueSource,
+                beforeSmart: player.beforeSmart,
+            }));
+            queueChanged = false;
+        }
+        localStorage.setItem(QUEUE_AT_KEY, JSON.stringify({
+            stamp: queueStamp, index: player.index, at: time, savedAt: Date.now(),
         }));
-    } catch (e) { /* места нет или хранилище закрыто — очередь не переживёт перезапуск, и только */ }
+    } catch (e) {
+        /* Места нет или хранилище закрыто. Старую очередь — стереть: иначе
+         * следующий запуск вернул бы её вместо нынешней. */
+        forgetSavedQueue();
+    }
 }
 
 function restoreQueue() {
     if (player.queue.length) return;
     let saved = null;
-    try { saved = JSON.parse(localStorage.getItem(QUEUE_KEY) || "null"); } catch (e) { return; }
+    let at = null;
+    try {
+        saved = JSON.parse(localStorage.getItem(QUEUE_KEY) || "null");
+        at = JSON.parse(localStorage.getItem(QUEUE_AT_KEY) || "null");
+    } catch (e) { return; }
     if (!saved || saved.v !== 1 || !Array.isArray(saved.queue) || !saved.queue.length) return;
-    if (!(Date.now() - saved.savedAt < QUEUE_KEEP_MS)) return;
     const n = saved.queue.length;
+    /* Свежее место — из маленькой записи, если она про эту же очередь. */
+    if (at && at.stamp === saved.stamp && Number.isInteger(at.index) && at.index >= 0 && at.index < n) {
+        saved.index = at.index;
+        saved.at = at.at;
+        saved.savedAt = Math.max(saved.savedAt || 0, at.savedAt || 0);
+    }
+    if (!(Date.now() - saved.savedAt < QUEUE_KEEP_MS)) return;
     if (!(Number.isInteger(saved.index) && saved.index >= 0 && saved.index < n)) return;
-    player.queue = saved.queue;
+    /* «Добавляю в фонотеку», прерванное закрытием, уже не идёт: кнопка
+     * осталась бы выключенной навсегда. */
+    for (const t of saved.queue) if (t && t.kept && t.kept !== "queued") delete t.kept;
+    newQueue(saved.queue);
+    queueStamp = saved.stamp || 0;
     player.index = saved.index;
     player.shuffle = ["plain", "smart"].includes(saved.shuffle) ? saved.shuffle : false;
     player.repeat = ["all", "one"].includes(saved.repeat) ? saved.repeat : "off";
     player.queueMode = saved.queueMode || "manual";
     player.queueSource = saved.queueSource || null;
     player.beforeSmart = saved.beforeSmart && Array.isArray(saved.beforeSmart.queue) ? saved.beforeSmart : null;
+    const valid = i => Number.isInteger(i) && i >= 0 && i < n;
+    if (Array.isArray(saved.dropped)) player.dropped = new Set(saved.dropped.filter(valid));
     const order = Array.isArray(saved.order) ? saved.order : [];
-    if (order.includes(saved.index) && order.every(i => Number.isInteger(i) && i >= 0 && i < n)) {
+    if (order.includes(saved.index) && order.every(valid)) {
         player.order = order;
         player.orderAt = order.indexOf(saved.index);
     } else {
         buildOrder(saved.index);
     }
     player.resumeAt = Number.isFinite(saved.at) && saved.at > 0 ? saved.at : 0;
+    queueChanged = false;
     renderPlayerModes();
     renderPlayer();
     markPlayingRow();
     renderQueuePanel();
 }
 
-onAudio("timeupdate", () => { if (Date.now() - queueSavedAt > 5000) saveQueueSoon(); });
-onAudio("pause", saveQueueSoon);
+onAudio("timeupdate", () => { if (Date.now() - queueSavedAt > 5000) saveQueueSoon(false); });
+onAudio("pause", () => saveQueueSoon(false));
 window.addEventListener("pagehide", saveQueue);
 document.addEventListener("visibilitychange", () => { if (document.hidden) saveQueue(); });
 document.addEventListener("DOMContentLoaded", restoreQueue);
@@ -1425,6 +1504,11 @@ function flashTrackRow(path, index) {
     const exact = Number.isInteger(index) ? scope.querySelector(`[data-index="${index}"]${byPath}`) : null;
     const selector = exact ? `[data-index="${index}"]${byPath}` : byPath;
     let row = exact || scope.querySelector(byPath);
+    /* «Только скачанное» спрятало строку — показать трек важнее вида. */
+    if (row && row.classList.contains("is-filtered-out") && typeof toggleOnlyDownloaded === "function") {
+        toggleOnlyDownloaded();
+        row = scope.querySelector(selector);
+    }
     /* Поиск по подборке мог спрятать эту строку — сбрасываем его. */
     if (row && row.hidden) {
         const field = document.getElementById("librarySearch");
@@ -1434,7 +1518,7 @@ function flashTrackRow(path, index) {
         }
         row = scope.querySelector(selector);
     }
-    if (!row || row.hidden) return false;
+    if (!row || row.hidden || row.classList.contains("is-filtered-out")) return false;
     /* Строки вне экрана браузер не раскладывает (content-visibility) и
      * считает их высоту на глаз; в подборке на тысячу треков прыжок к
      * четырёхсотой мимо цели на тысячи точек. Поэтому подводим несколько
@@ -1451,7 +1535,7 @@ function flashTrackRow(path, index) {
 }
 
 function playQueue(tracks, startAt = 0, mode = "manual", source = null) {
-    player.queue = tracks;
+    newQueue(tracks);
     player.queueMode = mode;
     player.queueSource = source;
     player.beforeSmart = null;
@@ -1679,6 +1763,8 @@ function watchForStall() {
         const generation = player.generation;
         reloadCurrentSource().then((outcome) => {
             if (outcome !== "unreachable" || generation !== player.generation) return;
+            // Пока ждали ответа, человек поставил паузу — следующий не включать.
+            if (player.audio.paused) return;
             leaveStalledTrack();
         });
     }, STALL_MS);
@@ -1784,6 +1870,23 @@ async function reloadCurrentSource() {
 
 function setPlayerNote(text) {
     document.getElementById("playerNote").textContent = text || "";
+}
+
+/* Пояснение с кнопкой («Убрано из «Monday». Вернуть»). Нажатие — только
+ * кнопка: строка под названием раскрывает плеер, и без stopPropagation
+ * «Вернуть» заодно открывало бы его. Сменился трек — пояснение стирается,
+ * как обычное. */
+function setPlayerNoteAction(text, label, action) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "player-note-action";
+    button.textContent = label;
+    button.onclick = (event) => {
+        event.stopPropagation();
+        button.disabled = true;
+        action();
+    };
+    document.getElementById("playerNote").replaceChildren(document.createTextNode(text + " "), button);
 }
 
 function formatTime(seconds) {
@@ -2350,9 +2453,14 @@ function paintSeek(done, total) {
 }
 
 function renderProgress() {
-    const done = player.audio.currentTime || 0;
+    /* Очередь вернулась после перезапуска, звука ещё нет: показать место, с
+     * которого «играть» продолжит, а не 0:00. */
+    const waiting = !player.audio.getAttribute("src") && player.resumeAt > 0;
+    const track = player.queue[player.index];
+    const done = waiting ? player.resumeAt : (player.audio.currentTime || 0);
     /* Длина бывает Infinity (поток без заголовка длины) — перематывать нечего. */
-    const total = Number.isFinite(player.audio.duration) ? player.audio.duration : 0;
+    const total = Number.isFinite(player.audio.duration) ? player.audio.duration
+        : (waiting && track && track.duration > 0 ? track.duration : 0);
     paintSeek(done, total);
     if (!seekDragging) document.getElementById("playerElapsed").textContent = formatTime(done);
     document.getElementById("playerTotal").textContent = formatTime(total);
@@ -2415,6 +2523,7 @@ async function playlists() {
         if (!r.ok) return;
         knownPlaylists = await r.json();
         renderRail(knownPlaylists);
+        favouritesListed(knownPlaylists);
     } catch (e) { /* the next poll retries */ }
 }
 
@@ -3291,6 +3400,20 @@ async function settleClash(name) {
 
 function playlistIsOpen(name) { return Boolean(player.playlist && player.playlist.name === name); }
 
+/* player.playlist остаётся и после ухода с экрана подборки — «открыта» не
+ * значит «видна». */
+function playlistOnScreen(name) { return activeView === "viewPlaylist" && playlistIsOpen(name); }
+
+/* Подборку поправили не из неё самой (♥, «В подборку…»): на экране —
+ * показать новой, не уводя человека с места. Не на экране — ничего:
+ * открытие и «назад» читают её заново. saved — ответ сервера; без него —
+ * своя отложенная правка поверх прежней. */
+function showWrittenPlaylist(name, saved) {
+    if (!playlistOnScreen(name)) return;
+    player.playlist = withPendingEdit(saved && Array.isArray(saved.entries) ? saved : player.playlist);
+    renderPlaylist();
+}
+
 /* Повтор по таймеру, а не только по «online»: компьютер спит — туннель
  * отвечает 502, а события «online» не будет. Как у прослушиваний: минута,
  * вдвое дольше после каждой неудачи, до 16 минут. Без сети таймер не нужен —
@@ -3623,6 +3746,16 @@ function playlistView(name) {
     };
 }
 
+/* Переименовали — вид едет следом; удалили (to = null) — забывается, иначе
+ * новая подборка с тем же именем унаследовала бы чужой порядок. */
+function moveViewSettings(from, to) {
+    const all = readPlaylistViews();
+    if (!Object.prototype.hasOwnProperty.call(all, from)) return;
+    if (to) all[to] = all[from];
+    delete all[from];
+    try { localStorage.setItem(PLAYLIST_VIEW_KEY, JSON.stringify(all)); } catch (e) { /* до перезагрузки */ }
+}
+
 function savePlaylistView(name, view) {
     const all = readPlaylistViews();
     if (view.sort === "own" && !view.only) delete all[name];
@@ -3806,6 +3939,7 @@ async function renamePlaylist() {
         if (r.status === 409) { setPlaylistNote("Подборка с таким названием уже есть."); return; }
         if (!r.ok) { setPlaylistNote("Не удалось переименовать"); return; }
         movePendingEdit(pl.name, next);
+        moveViewSettings(pl.name, next);
         player.playlist = withPendingEdit(await r.json());
     } catch (e) {
         setPlaylistNote("Не удалось переименовать: " + e.message);
@@ -3884,6 +4018,7 @@ async function deletePlaylist(name) {
         return;
     }
     dropPendingEdit(name);
+    moveViewSettings(name, null);
     player.playlist = null;
     leavePlaylist();
     playlists();
@@ -4006,7 +4141,7 @@ async function addToPlaylist(box, card, note, cancel, name, track) {
         const result = await writePlaylistPaths(pl, paths, [track]);
         if (result.later) {
             note.textContent = "Без сети — добавлю в «" + name + "», когда сеть вернётся";
-            if (playlistIsOpen(name)) await openPlaylist(name);
+            showWrittenPlaylist(name);
             setTimeout(() => box.replaceWith(card), 1600);
             return;
         }
@@ -4014,12 +4149,11 @@ async function addToPlaylist(box, card, note, cancel, name, track) {
             note.textContent = result.problem;
             cancel.disabled = false;
             cancel.textContent = "Закрыть";
-            if (result.reopen && playlistIsOpen(name)) await openPlaylist(name);
+            if (result.reopen && playlistOnScreen(name)) await openPlaylist(name);
             return;
         }
         note.textContent = "Добавлено в «" + name + "»";
-        /* Если эта же подборка открыта рядом — показать её новой. */
-        if (player.playlist && player.playlist.name === name) await openPlaylist(name);
+        showWrittenPlaylist(name, result.saved);
         playlists();
         setTimeout(() => box.replaceWith(card), 1200);
     } catch (e) {
@@ -4032,8 +4166,9 @@ async function addToPlaylist(box, card, note, cancel, name, track) {
 /* Записать новый список подборки так же бережно, как «В подборку…»: нет сети
  * или туннель молчит — правка откладывается до сети; 409 — сверка со свежей
  * версией (settleClash). Ответ: { done, saved } — записано; { later } —
- * отложено; { problem, reopen } — не записано, problem — что сказать
- * человеку, reopen — открытую подборку стоит перечитать. Отложить негде или
+ * отложено; { problem, reopen, queued } — не записано, problem — что сказать
+ * человеку, reopen — открытую подборку стоит перечитать, queued — правка
+ * отложена до выбора версии. Отложить негде или
  * сервер отказал — исключение. extra — записи добавляемых треков: без сети
  * подборка показывается из них. */
 async function writePlaylistPaths(pl, paths, extra = []) {
@@ -4065,6 +4200,8 @@ async function writePlaylistPaths(pl, paths, extra = []) {
                     ? "Подборку изменили с другого устройства — открой её и выбери версию."
                     : "Подборки «" + name + "» больше нет.",
                 reopen: true,
+                // При выборе «Оставить мою» правка ещё дойдёт.
+                queued: outcome === "clash",
             };
         }
         // Отложенная уже дошла — правка ложится поверх неё.
@@ -4096,25 +4233,42 @@ async function writePlaylistPaths(pl, paths, extra = []) {
  */
 const FAVOURITES = "Monday";
 let favouritePaths = null;  // Set путей Monday; null — ещё не знаем или её нет
+let favouritesRevision = null;  // версия, с которой они прочитаны
 let favouriteBusy = false;
 
 async function loadFavourites() {
+    if (favouriteBusy) return;  // запись сама скажет, что вышло
     try {
         const r = await fetch("/api/playlists/" + encodeURIComponent(FAVOURITES) + "/tracks", { headers: headers() });
-        if (r.status === 404) favouritePaths = null;
-        else if (r.ok) favouritePaths = new Set(withPendingEdit(await r.json()).entries.map(e => e.path));
+        if (favouriteBusy) return;
+        if (r.status === 404) {
+            favouritePaths = null;
+        } else if (r.ok) {
+            const data = await r.json();
+            favouritesRevision = data.revision || null;
+            favouritePaths = new Set(withPendingEdit(data).entries.map(e => e.path));
+        }
     } catch (e) { /* без сети и без копии — сердце подождёт */ }
     renderFavourite();
 }
 
+/* Список подборок обновился (опрос, возврат в приложение): Monday
+ * перечитывается, только если её версия другая, — на каждое
+ * разблокирование айфона все её строки не качаются. */
+function favouritesListed(list) {
+    const monday = list.find(p => p.name === FAVOURITES);
+    if (!monday) {
+        if (favouritePaths) { favouritePaths = null; renderFavourite(); }
+        return;
+    }
+    if (monday.revision !== favouritesRevision || !favouritePaths) loadFavourites();
+}
+
 function syncFavourites(pl) {
+    if (favouriteBusy) return;
     favouritePaths = new Set(pl.entries.map(e => e.path));
     renderFavourite();
 }
-
-/* Monday могли поправить на другом устройстве или в Amperfy — вернулся в
- * приложение, сердце сверилось. */
-document.addEventListener("visibilitychange", () => { if (!document.hidden) loadFavourites(); });
 
 function isFavourite(track) {
     return Boolean(track && favouritePaths && favouritePaths.has(track.path));
@@ -4127,55 +4281,106 @@ function renderFavourite() {
     button.hidden = !track || !favouritePaths || isOutside(track);
     const on = isFavourite(track);
     button.classList.toggle("is-on", on);
+    // Состояние — в aria-pressed, подпись постоянная: иначе диктор говорит его дважды.
     button.setAttribute("aria-pressed", String(on));
-    const label = on ? "Убрать из «" + FAVOURITES + "»" : "В любимое — «" + FAVOURITES + "»";
-    button.setAttribute("aria-label", label);
-    button.title = label;
+    button.setAttribute("aria-label", "Любимое — «" + FAVOURITES + "»");
+    button.title = on ? "Убрать из «" + FAVOURITES + "»" : "В любимое — «" + FAVOURITES + "»";
 }
 
 /* Сказать, что вышло: под плеером, а если ничего не играет (сердце
- * нажали из меню строки) — в заметке открытой подборки. */
-function sayFavourite(text) {
-    if (!document.getElementById("player").hidden) setPlayerNote(text);
-    else if (activeView === "viewPlaylist") setPlaylistNote(text);
+ * нажали из меню строки) — в заметке открытой подборки. undo — кнопка
+ * «Вернуть» (только под плеером). */
+function sayFavourite(text, undo) {
+    if (!document.getElementById("player").hidden) {
+        if (undo) setPlayerNoteAction(text, "Вернуть", undo);
+        else setPlayerNote(text);
+    } else if (activeView === "viewPlaylist") {
+        setPlaylistNote(text);
+    }
+}
+
+/* Прочитать Monday, поправить список change(paths) → новый список и
+ * записать. Сердце меняется сразу, не дожидаясь сервера; отказ вернёт как
+ * было. Возвращает { result, before } или null, если Monday нет. */
+async function editFavourites(track, change) {
+    await flushSettled();  // иначе отложенная правка и эта обгоняют друг друга
+    const got = await fetch("/api/playlists/" + encodeURIComponent(FAVOURITES) + "/tracks", { headers: headers() });
+    if (got.status === 404) { favouritePaths = null; return null; }
+    if (!got.ok) throw new Error("Ошибка " + got.status);
+    const pl = withPendingEdit(await got.json());
+    const paths = pl.entries.map(e => e.path);
+    const next = change(paths);
+    favouritePaths = new Set(next);
+    renderFavourite();
+    const result = await writePlaylistPaths(pl, next, [track]);
+    if (result.problem && !result.queued) favouritePaths = new Set(paths);
+    if (result.saved) favouritesRevision = result.saved.revision || favouritesRevision;
+    if (result.later || result.done) showWrittenPlaylist(FAVOURITES, result.saved);
+    else if (result.reopen && playlistOnScreen(FAVOURITES)) await openPlaylist(FAVOURITES);
+    return { result, paths };
+}
+
+function favouriteFailed(e) {
+    // Обрыв связи fetch сообщает по-английски («Failed to fetch»).
+    sayFavourite(e instanceof TypeError ? "Нет связи с сервером, а копии «" + FAVOURITES + "» здесь нет — попробуйте позже"
+        : (e.message || "Не получилось"));
 }
 
 async function toggleFavourite(track = player.queue[player.index]) {
     if (!track || isOutside(track) || favouriteBusy) return;
     favouriteBusy = true;
-    let before = favouritePaths;
+    const before = favouritePaths;
+    let removedAt = [];
+    let liked = false;
     try {
-        await flushSettled();  // иначе отложенная правка и эта обгоняют друг друга
-        const got = await fetch("/api/playlists/" + encodeURIComponent(FAVOURITES) + "/tracks", { headers: headers() });
-        if (got.status === 404) { favouritePaths = null; return; }
-        if (!got.ok) throw new Error("Ошибка " + got.status);
-        const pl = withPendingEdit(await got.json());
-        const paths = pl.entries.map(e => e.path);
-        before = new Set(paths);
-        const liked = before.has(track.path);
-        const next = liked ? paths.filter(p => p !== track.path) : [track.path, ...paths];
-        // Сердце меняется сразу, не дожидаясь сервера; отказ вернёт как было.
-        favouritePaths = new Set(next);
-        renderFavourite();
-        const result = await writePlaylistPaths(pl, next, [track]);
-        if (result.problem) {
-            favouritePaths = before;
-            sayFavourite(result.problem);
-            return;
-        }
+        const edit = await editFavourites(track, paths => {
+            liked = paths.includes(track.path);
+            if (!liked) return [track.path, ...paths];
+            /* Убираются все копии строки — иначе сердце осталось бы залитым;
+             * где они стояли — для «Вернуть». */
+            removedAt = paths.flatMap((p, i) => (p === track.path ? [i] : []));
+            return paths.filter(p => p !== track.path);
+        });
+        if (!edit) return;
+        const { result } = edit;
+        if (result.problem) { sayFavourite(result.problem); return; }
+        const where = "«" + FAVOURITES + "»";
+        const undo = liked ? () => restoreFavourite(track, removedAt) : null;
         if (result.later) {
-            sayFavourite(liked ? "Без сети — уберу из «" + FAVOURITES + "», когда сеть вернётся"
-                : "Без сети — добавлю в «" + FAVOURITES + "», когда сеть вернётся");
+            sayFavourite(liked ? "Без сети — уберу из " + where + ", когда сеть вернётся"
+                : "Без сети — добавлю в " + where + ", когда сеть вернётся", undo);
         } else {
-            sayFavourite(liked ? "Убрано из «" + FAVOURITES + "»" : "Добавлено в «" + FAVOURITES + "»");
+            sayFavourite(liked ? "Убрано из " + where + "." : "Добавлено в " + where, undo);
         }
-        if (playlistIsOpen(FAVOURITES)) await openPlaylist(FAVOURITES);
         playlists();
     } catch (e) {
         favouritePaths = before;
-        // Обрыв связи fetch сообщает по-английски («Failed to fetch»).
-        sayFavourite(e instanceof TypeError ? "Нет связи с сервером, а копии «" + FAVOURITES + "» здесь нет — попробуйте позже"
-            : (e.message || "Не получилось"));
+        favouriteFailed(e);
+    } finally {
+        favouriteBusy = false;
+        renderFavourite();
+    }
+}
+
+/* «Вернуть» после снятого сердца: на те же места, что были, — в свежую
+ * версию Monday, а не поверх неё старым списком. */
+async function restoreFavourite(track, positions) {
+    if (favouriteBusy) return;
+    favouriteBusy = true;
+    try {
+        const edit = await editFavourites(track, paths => {
+            if (paths.includes(track.path)) return paths;
+            const next = paths.slice();
+            for (const at of positions) next.splice(Math.min(at, next.length), 0, track.path);
+            return next;
+        });
+        if (!edit) return;
+        const { result } = edit;
+        if (result.problem) sayFavourite(result.problem);
+        else sayFavourite(result.later ? "Без сети — верну, когда сеть вернётся" : "Вернули в «" + FAVOURITES + "»");
+        playlists();
+    } catch (e) {
+        favouriteFailed(e);
     } finally {
         favouriteBusy = false;
         renderFavourite();
