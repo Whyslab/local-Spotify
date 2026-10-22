@@ -1008,6 +1008,24 @@ button.danger {
 .queue-row .track-info { flex: 1 1 auto; min-width: 0; }
 .queue-reveal { opacity: .45; }
 .queue-row:hover .queue-reveal { opacity: 1; }
+/* Убрать и перетащить — тише названия, как «откуда играет». Ручка
+   забирает жест себе целиком: иначе палец на телефоне прокручивал список. */
+.queue-remove, .queue-handle { opacity: .45; flex: none; }
+.queue-row:hover .queue-remove, .queue-row:hover .queue-handle,
+.queue-remove:focus-visible, .queue-handle:focus-visible { opacity: 1; }
+.queue-handle { cursor: grab; touch-action: none; font-size: 18px; }
+.queue-row.is-dragging { position: relative; z-index: 2; background: var(--fill); box-shadow: 0 8px 24px rgba(0, 0, 0, .45); }
+.queue-row.is-dragging .queue-handle { cursor: grabbing; }
+.queue-row.is-drop { box-shadow: inset 0 2px 0 var(--accent); }
+.play-queue-head .queue-reshuffle { min-height: 30px; padding: 0 12px; font-size: 12px; white-space: nowrap; flex: none; }
+.play-queue-head .muted { white-space: nowrap; }
+.queue-row .queue-remove, .queue-row .queue-handle, .queue-row .queue-reveal { width: 32px; min-width: 32px; padding: 0; }
+/* Телефон: места мало, название важнее. «Откуда играет» — у играющего
+   трека, у остальных — убрать и ручка. */
+@media (max-width: 699.98px) {
+    .queue-row:not(.is-playing) .queue-reveal { display: none; }
+    .queue-row { gap: 10px; }
+}
 
 /* Куда нас привели: строка светится две секунды, чтобы глаз её нашёл. */
 .is-found {
@@ -1052,8 +1070,8 @@ button.ghost.is-on { color: var(--accent-ink); background: var(--accent); font-w
     bottom: calc(var(--tabbar) + env(safe-area-inset-bottom, 0px) + 8px);
     z-index: 3;
     display: grid;
-    grid-template-columns: 46px minmax(0, 1fr) auto;
-    grid-template-areas: "art track controls";
+    grid-template-columns: 46px minmax(0, 1fr) auto auto;
+    grid-template-areas: "art track love controls";
     gap: 0 12px;
     align-items: center;
     max-width: 664px;
@@ -1089,6 +1107,13 @@ button.ghost.is-on { color: var(--accent-ink); background: var(--accent); font-w
 }
 
 .player-track { grid-area: track; min-width: 0; cursor: pointer; }
+/* ♥ — в любимое (подборка Monday). Залитое — трек уже там. */
+.player-love { grid-area: love; color: var(--text-2); }
+.player-love[hidden] { display: none; }
+.player-love.is-on { color: var(--accent); }
+.player-love.is-on .icon { fill: currentColor; }
+.player-love:active .icon { transform: scale(0.86); }
+.player-love .icon { transition: transform .15s ease-out; }
 .player-title {
     font-size: 15px;
     font-weight: 600;
@@ -1270,12 +1295,15 @@ html.sheet-lock, html.sheet-lock body { overflow: hidden; }
 .app.player-open .player.is-queue .player-art { display: none; }
 
 .app.player-open .player-track { padding: 18px 0 0; cursor: grab; }
+.app.player-open .player-love { grid-area: more; justify-self: start; align-self: end; width: 44px; height: 44px; min-height: 0; margin-right: 46px; }
+.app.player-open .player-love .icon { width: 26px; height: 26px; }
 .app.player-open .player-title { font-size: 22px; font-weight: 700; letter-spacing: -0.01em; }
 .app.player-open .player-artist { font-size: 19px; color: rgba(255, 255, 255, 0.66); }
 .app.player-open .player-note { font-size: 13px; margin-top: 4px; }
 .app.player-open .player-more {
     grid-area: more;
     display: flex;
+    justify-self: end;  /* слева в той же ячейке — ♥ */
     align-self: end;
     width: 44px;
     height: 44px;
@@ -1879,8 +1907,8 @@ html.sheet-lock, html.sheet-lock body { overflow: hidden; }
         margin: 0;
         padding: 10px 18px;
         border-radius: 0;
-        grid-template-columns: 56px minmax(0, 240px) auto auto minmax(0, 1fr);
-        grid-template-areas: "art track more controls progress";
+        grid-template-columns: 56px minmax(0, 240px) auto auto auto minmax(0, 1fr);
+        grid-template-areas: "art track love more controls progress";
         gap: 14px;
         background: rgba(18, 18, 20, 0.92);
         box-shadow: inset 0 0.5px 0 var(--line-2);
@@ -1889,6 +1917,7 @@ html.sheet-lock, html.sheet-lock body { overflow: hidden; }
     .player-title { font-size: 14px; }
     .player-artist { font-size: 13px; }
     .player-more { display: flex; grid-area: more; width: 32px; height: 32px; min-height: 0; }
+    .player-love { width: 32px; height: 32px; min-height: 0; }
     .player-controls .icon-button:not(.primary-round) .icon { width: 22px; height: 22px; }
     /* На компьютере у «играть» круг остаётся: среди мелких значков полосы
        иначе главную кнопку не найти. */
@@ -2535,6 +2564,7 @@ html.sheet-lock, html.sheet-lock body { overflow: hidden; }
     .app.player-open .player-panel { grid-area: panel; display: flex; flex-direction: column; margin: 0; }
     .app.player-open .player-track { grid-area: track; }
     .app.player-open .player-more { grid-area: track; justify-self: end; align-self: end; }
+    .app.player-open .player-love { grid-area: track; justify-self: end; margin-right: 48px; }
     .app.player-open #playerSeek { grid-area: seek; }
     .app.player-open #playerElapsed { grid-area: times; }
     .app.player-open #playerTotal { grid-area: times; justify-self: end; }
@@ -2574,7 +2604,7 @@ html.sheet-lock, html.sheet-lock body { overflow: hidden; }
 }
 @media (min-width: 1100px) {
     /* «⋯» стоит в одной ячейке с названием — название уступает ему место. */
-    .app.player-open .player-track { padding-right: 54px; }
+    .app.player-open .player-track { padding-right: 104px; }
 }
 
 /* Длительность строки подборки — справа, как в фонотеке (на телефоне её нет). */
@@ -2690,3 +2720,43 @@ html.sheet-lock, html.sheet-lock body { overflow: hidden; }
 .disco-track-artist { flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .disco-status { margin-top: 12px; padding-top: 12px; border-top: 0.5px solid var(--line-2); }
 .disco-status-line { margin: 0 0 6px; font-weight: 600; }
+
+/* Мини-плеер на телефоне: горизонтальный жест — свайп по трекам (look.js),
+   браузер не должен забирать его себе и отменять pointercancel'ом. */
+@media (max-width: 1099.98px) {
+    /* Выделенное название браузер при втором свайпе тащит как текст и
+       отменяет жест (pointercancel) — выделять в мини-плеере нечего. */
+    .app:not(.player-open) .player { touch-action: pan-y; -webkit-user-select: none; user-select: none; }
+    .app:not(.player-open) .player.is-swiping { touch-action: none; }
+}
+
+/* Вид подборки: «только скачанное» и порядок (player.js). */
+.playlist-tools { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; padding: 0 16px 6px; }
+.playlist-only { min-height: 32px; padding: 0 14px; border-radius: 999px; font-size: 14px; }
+.playlist-sort { position: relative; display: inline-flex; align-items: center; gap: 2px; color: var(--text-2); }
+.playlist-sort .icon { width: 18px; height: 18px; }
+/* Своя стрелка вместо системной рамки: родной вид на телефоне растягивал
+   список на всю строку. 16 px — меньше айфон при нажатии увеличивает страницу. */
+.playlist-sort select {
+    -webkit-appearance: none;
+    appearance: none;
+    width: auto;
+    field-sizing: content;  /* по выбранному слову, а не по самому длинному */
+    min-height: 32px;
+    padding: 0 22px 0 6px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23999' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") right 4px center / 14px no-repeat;
+    color: var(--text);
+    font: inherit;
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+}
+.playlist-sort select option { background: #1c1c1e; color: #fff; }
+.playlist-sort select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.playlist-track.is-filtered-out { display: none; }
+#playlistTracks.is-sorted .playlist-track { cursor: default; }
+
+/* Без сети: нескачанное не сыграет — строка бледная (offline.js). */
+.no-network [data-track-path]:not(.is-offline) { opacity: 0.38; }

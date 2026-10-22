@@ -287,6 +287,22 @@
         <button id="playlistDelete" class="danger block" onclick="askDeletePlaylist(this)">Удалить подборку</button>
       </div>
 
+      <!-- Вид подборки: порядок и «только скачанное». Файл подборки не
+           меняется — это то, как она показана и в каком порядке играет. -->
+      <div class="playlist-tools">
+        <button id="playlistOnlyDownloaded" class="ghost playlist-only" type="button" aria-pressed="false"
+                onclick="toggleOnlyDownloaded()" hidden>Только скачанное</button>
+        <label class="playlist-sort" title="Порядок треков — только здесь, файл подборки не меняется">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4v16M3 16l4 4 4-4M17 20V4M13 8l4-4 4 4"/></svg>
+          <select id="playlistSort" aria-label="Порядок треков" onchange="setPlaylistSort(this.value)">
+            <option value="own">свой</option>
+            <option value="title">название</option>
+            <option value="artist">исполнитель</option>
+            <option value="album">альбом</option>
+            <option value="duration">длительность</option>
+          </select>
+        </label>
+      </div>
       <p id="playlistNote" class="note"></p>
       <div id="playlistTracks" class="rows"></div>
       <!-- Поиск спрятал все строки — сказать об этом и дать сбросить: иначе
@@ -383,6 +399,8 @@
     <div class="play-queue-head">
       <h3>Очередь</h3>
       <span id="playQueueCount" class="muted"></span>
+      <button id="playQueueReshuffle" class="ghost queue-reshuffle" onclick="reshuffleQueue()"
+              title="Тот же список в новом порядке; играющий трек не прерывается">Перемешать заново</button>
       <button class="icon-button small" onclick="toggleQueuePanel()" aria-label="Закрыть">×</button>
     </div>
     <div id="playQueueRows" class="rows"></div>
@@ -403,6 +421,11 @@
       <div id="playerArtist" class="player-artist"></div>
       <div id="playerNote" class="player-note"></div>
     </div>
+    <!-- ♥ — подборка Monday (player.js, «Любимое»). -->
+    <button id="playerLove" class="icon-button player-love" type="button" onclick="toggleFavourite()"
+            aria-label="В любимое" aria-pressed="false" hidden>
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20.3 4.6 13a4.7 4.7 0 0 1 6.6-6.7l.8.8.8-.8a4.7 4.7 0 0 1 6.6 6.7z"/></svg>
+    </button>
     <!-- Темп, тональность, энергия — в большом плеере на компьютере (узел
          #nowFacts переезжает сюда, его заполняет player.js). -->
     <div id="playerFacts" class="player-facts"></div>

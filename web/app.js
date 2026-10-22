@@ -83,6 +83,7 @@ function saveToken() {
     refresh();
     flushPendingPlays();  /* прослушивания, отвергнутые со старым токеном */
     flushPlaylistEdits();  /* правки подборок — тоже */
+    loadFavourites();  /* без токена Monday было не прочесть — сердце пряталось */
 }
 
 function logout() {
@@ -568,6 +569,7 @@ async function health() {
 
         pill.className = "pill " + (ok ? "pill-ok" : "pill-error");
         text.textContent = ok ? "онлайн" : "проблема";
+        setServerDown(false);
 
         if (typeof data.tracks === "number") {
             const albums = typeof data.albums === "number" ? ` · ${plural(data.albums, "альбом", "альбома", "альбомов")}` : "";
@@ -600,6 +602,7 @@ async function health() {
     } catch (e) {
         pill.className = "pill pill-error";
         text.textContent = "нет связи";
+        setServerDown(true);
     }
 }
 
@@ -974,6 +977,7 @@ function filterOpenPlaylist() {
     let shown = 0, total = 0;
     for (const row of document.querySelectorAll("#playlistTracks .playlist-track")) {
         row.hidden = !rowMatches(row, needle);
+        if (row.classList.contains("is-filtered-out")) continue;  // «только скачанное»
         total += 1;
         if (!row.hidden) shown += 1;
     }
@@ -1911,6 +1915,9 @@ function openLibraryMenu(button, card, t, rows) {
         return b;
     };
     item("Играть", () => playFromLibrary(t, rows));
+    item("Играть следующим", () => enqueue([t], "next"));
+    item("В очередь", () => enqueue([t], "queue"));
+    if (favouritePaths) item(isFavourite(t) ? "Убрать из любимого" : "В любимое", () => toggleFavourite(t));
     item("Радио", () => startRadio({ path: t.path }, t));
     item("В подборку…", () => askAddToPlaylist(card, t));
     item("Изменить теги…", () => askEdit(card, t, rows));

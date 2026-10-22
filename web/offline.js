@@ -62,9 +62,28 @@ function refreshOfflineMarks() {
     for (const row of document.querySelectorAll("[data-track-path]")) {
         row.classList.toggle("is-offline", offline.paths.has(row.dataset.trackPath));
     }
+    if (typeof applyPlaylistView === "function") applyPlaylistView();
     renderPlaylistOffline();
     renderOfflineCard();
 }
+
+/* Без сети нескачанные строки бледнеют: видно, что сыграет, а что нет.
+ * Сигнала два: браузер знает про сеть, health() — про сервер (Tailscale
+ * выключен, компьютер спит, а сеть у телефона есть). */
+let serverDown = false;
+
+function setServerDown(down) {
+    serverDown = down;
+    renderNetworkState();
+}
+
+function renderNetworkState() {
+    const down = navigator.onLine === false || serverDown;
+    document.documentElement.classList.toggle("no-network", down && offline.supported);
+}
+
+window.addEventListener("online", renderNetworkState);
+window.addEventListener("offline", renderNetworkState);
 
 /* Один трек. Сначала звук, потом запись о нём: запись — признак того, что
  * трек скачан целиком. Удаление — в обратном порядке. */

@@ -218,7 +218,7 @@ def row(page, title):
 def row_action(page, title, action):
     """Действия строки фонотеки живут в меню «⋯» (с 30.09.2026)."""
     row(page, title).get_by_role("button", name="Что сделать с треком").click()
-    page.get_by_role("menuitem", name=action).click()
+    page.get_by_role("menuitem", name=action, exact=True).click()
 
 
 # ---------------------------------------------------------------------------
@@ -2792,13 +2792,21 @@ def test_all_playlists_are_a_tab_with_a_grid(page, server):
     page.wait_for_function("activeView === 'viewPlaylists'")
 
 
-def test_a_library_row_has_one_menu_button_with_five_actions(page):
+def test_a_library_row_has_one_menu_button_with_seven_actions(page):
     open_library(page)
     buttons = row(page, "Quiet").get_by_role("button")
     assert buttons.count() == 1
     buttons.first.click()
     items = page.get_by_role("menuitem").all_inner_texts()
-    assert items == ["Играть", "Радио", "В подборку…", "Изменить теги…", "Удалить…"]
+    assert items == [
+        "Играть",
+        "Играть следующим",
+        "В очередь",
+        "Радио",
+        "В подборку…",
+        "Изменить теги…",
+        "Удалить…",
+    ]
     page.keyboard.press("Escape")
     assert page.get_by_role("menuitem").count() == 0
 
@@ -4266,3 +4274,295 @@ def test_a_stalled_track_without_network_moves_on_to_a_downloaded_one(page):
     page.wait_for_function("window.__playAt.length === 1")
     assert page.evaluate("window.__playAt") == [1]
     page.evaluate("offline.paths.delete('Quiet/Singles/Quiet.m4a')")
+
+
+# --- Своя очередь (20.10) -----------------------------------------------------
+
+EVIL_TRACK = "{path: 'Evil/Singles/evil.m4a', title: 'evil', artist: 'Evil', duration: 2}"
+
+
+def _route_titles(page):
+    return page.evaluate("player.order.map(i => player.queue[i].title)")
+
+
+def test_play_next_and_add_to_queue_go_where_spotify_puts_them(page):
+    """«Играть следующим» — сразу за играющим; «В очередь» — за уже
+    добавленными, первым добавлен — первым заиграет. The playlist's own list
+    is not touched."""
+    open_library(page)
+    page.evaluate(f"playQueue([{LOUD}, {QUIET}], 0, 'manual')")
+    page.wait_for_function("player.started")
+    page.evaluate(f"enqueue([{EVIL_TRACK}], 'queue')")
+    page.evaluate(f"enqueue([{QUIET}], 'queue')")
+    page.evaluate(f"enqueue([{LOUD}], 'next')")
+    assert _route_titles(page) == ["Loud", "Loud", "evil", "Quiet", "Quiet"]
+    assert "следующим" in page.locator("#playerNote").text_content()
+    # Убрать: играющий не убирается, остальное — по месту в маршруте.
+    page.evaluate("removeFromQueue(0); removeFromQueue(2)")
+    assert _route_titles(page) == ["Loud", "Loud", "Quiet", "Quiet"]
+    page.evaluate("moveInQueue(3, 1)")
+    assert _route_titles(page) == ["Loud", "Quiet", "Loud", "Quiet"]
+    page.evaluate("player.audio.pause()")
+
+
+def test_queue_rows_can_be_removed_and_dragged(page):
+    page.set_viewport_size({"width": 1300, "height": 800})
+    open_library(page)
+    page.evaluate(f"playQueue([{LOUD}, {QUIET}, {EVIL_TRACK}], 0, 'manual')")
+    page.wait_for_function("player.started")
+    page.evaluate("player.audio.pause(); toggleQueuePanel()")
+    rows = page.locator("#playQueueRows .queue-row")
+    rows.nth(2).wait_for()
+    assert rows.nth(0).locator(".queue-remove").count() == 0  # играющий
+    # Тащим «evil» за ручку выше «Quiet».
+    handle = rows.nth(2).locator(".queue-handle").bounding_box()
+    target = rows.nth(1).bounding_box()
+    page.mouse.move(handle["x"] + handle["width"] / 2, handle["y"] + handle["height"] / 2)
+    page.mouse.down()
+    page.mouse.move(handle["x"] + 5, target["y"] + 4, steps=8)
+    page.mouse.up()
+    assert _route_titles(page) == ["Loud", "evil", "Quiet"]
+    page.locator("#playQueueRows .queue-row").nth(2).locator(".queue-remove").click()
+    assert _route_titles(page) == ["Loud", "evil"]
+    # Стрелками с клавиатуры — тоже.
+    page.evaluate(f"enqueue([{QUIET}], 'queue')")
+    assert _route_titles(page) == ["Loud", "Quiet", "evil"]
+    page.locator("#playQueueRows .queue-row").nth(1).locator(".queue-handle").press("ArrowDown")
+    assert _route_titles(page) == ["Loud", "evil", "Quiet"]
+
+
+def test_swiping_the_phone_mini_player_changes_the_track(page):
+    """Влево — следующий, вправо — предыдущий; короткий сдвиг — нажатие,
+    оно раскрывает плеер, а свайп — нет."""
+    page.set_viewport_size({"width": 390, "height": 844})
+    open_library(page)
+    page.evaluate(f"playQueue([{LOUD}, {QUIET}], 0, 'manual')")
+    page.wait_for_function("player.started")
+    # Тестовые m4a в Chromium не играют и сами перескакивают — считаем сам жест.
+    page.evaluate(
+        "player.audio.pause(); window.skips = [];"
+        " nextTrack = () => skips.push('next'); prevTrack = () => skips.push('prev'); true"
+    )
+    box = page.locator("#player .player-track").bounding_box()
+    y = box["y"] + box["height"] / 2
+
+    def swipe(dx):
+        x = box["x"] + box["width"] / 2
+        page.mouse.move(x, y)
+        page.mouse.down()
+        page.mouse.move(x + dx, y + 3, steps=10)
+        page.mouse.up()
+
+    swipe(-120)
+    page.wait_for_function("skips.length === 1")
+    swipe(120)
+    page.wait_for_function("skips.length === 2")
+    assert page.evaluate("skips") == ["next", "prev"]
+    assert not page.evaluate("sheetOpen()")
+    # Недотянул — трек тот же, плеер не раскрылся, название на месте.
+    swipe(-30)
+    page.wait_for_timeout(100)
+    assert page.evaluate("skips.length") == 2
+    assert not page.evaluate("sheetOpen()")
+    assert page.evaluate("document.querySelector('#player .player-track').style.transform") == ""
+    # Простое нажатие по-прежнему раскрывает.
+    page.locator("#player .player-track").click()
+    page.wait_for_function("sheetOpen()")
+
+
+def _playlist_paths(page, name):
+    return page.evaluate(
+        "async name => (await (await fetch('/api/playlists/' + encodeURIComponent(name)"
+        " + '/tracks?fresh=1', {headers: headers(), cache: 'no-store'})).json())"
+        ".entries.map(e => e.path)",
+        name,
+    )
+
+
+def test_add_to_playlist_puts_the_track_first(page, server):
+    (server["root"] / "Сверху.m3u").write_text(QUIET_PATH + "\n", encoding="utf-8")
+    page.evaluate("playlists()")
+    page.wait_for_function("knownPlaylists.some(p => p.name === 'Сверху')")
+    open_library(page)
+    row_action(page, "Loud", "В подборку…")
+    page.get_by_role("button", name="Сверху · 1").click()
+    page.get_by_text("Добавлено в «Сверху»").wait_for()
+    assert _playlist_paths(page, "Сверху") == [LOUD_PATH, QUIET_PATH]
+    # Второй раз — «уже там», без дубля.
+    page.get_by_text("Добавлено в «Сверху»").wait_for(state="detached")
+    row_action(page, "Loud", "В подборку…")
+    page.get_by_role("button", name="Сверху · 2").click()
+    page.get_by_text("Уже в «Сверху»").wait_for()
+    assert _playlist_paths(page, "Сверху") == [LOUD_PATH, QUIET_PATH]
+
+
+def test_the_heart_puts_the_playing_track_into_monday_and_takes_it_out(page, server):
+    """♥ — это подборка Monday: решение пользователя 20.10.2026."""
+    monday = server["root"] / "Monday.m3u"
+    monday.write_text(QUIET_PATH + "\n", encoding="utf-8")
+    try:
+        page.evaluate("loadFavourites()")
+        open_library(page)
+        page.evaluate(f"playQueue([{LOUD}], 0, 'manual')")
+        page.wait_for_function("player.started")
+        page.evaluate("player.audio.pause()")
+        love = page.locator("#playerLove")
+        love.wait_for(state="visible")
+        assert love.get_attribute("aria-pressed") == "false"
+        love.click()
+        page.wait_for_function("playerNote.textContent === 'Добавлено в «Monday»'")
+        assert love.get_attribute("aria-pressed") == "true"
+        assert _playlist_paths(page, "Monday") == [LOUD_PATH, QUIET_PATH]
+        love.click()
+        page.wait_for_function("playerNote.textContent === 'Убрано из «Monday»'")
+        assert love.get_attribute("aria-pressed") == "false"
+        assert _playlist_paths(page, "Monday") == [QUIET_PATH]
+        # Из меню строки — тоже, и не только играющий трек.
+        page.evaluate("setPlayerNote('')")
+        row_action(page, "Quiet", "Убрать из любимого")
+        page.wait_for_function("playerNote.textContent === 'Убрано из «Monday»'")
+        assert _playlist_paths(page, "Monday") == []
+        row_action(page, "Quiet", "В любимое")
+        page.wait_for_function("playerNote.textContent === 'Добавлено в «Monday»'")
+        assert _playlist_paths(page, "Monday") == [QUIET_PATH]
+        # Monday поправили в ней самой — сердце узнаёт и без перезагрузки.
+        page.evaluate("openPlaylist('Monday')")
+        page.wait_for_function("activeView === 'viewPlaylist'")
+        page.evaluate(f"syncFavourites({{entries: [{LOUD}]}}); true")
+        assert love.get_attribute("aria-pressed") == "true"
+    finally:
+        monday.unlink()
+    # Нет подборки — нет и сердца.
+    page.evaluate("loadFavourites()")
+    love.wait_for(state="hidden")
+
+
+def _open_two_track_playlist(page, server, name):
+    (server["root"] / f"{name}.m3u").write_text(f"{QUIET_PATH}\n{LOUD_PATH}\n", encoding="utf-8")
+    page.evaluate("playlists()")
+    page.wait_for_function(f"knownPlaylists.some(p => p.name === '{name}')")
+    page.evaluate(f"openPlaylist('{name}')")
+    page.wait_for_function("activeView === 'viewPlaylist'")
+    page.locator("#playlistTracks .playlist-track").nth(1).wait_for()
+
+
+def _shown_titles(page):
+    return page.evaluate(
+        "[...document.querySelectorAll('#playlistTracks .playlist-track')]"
+        ".filter(r => r.offsetParent).map(r => r.querySelector('.track-title').textContent)"
+    )
+
+
+def test_playlist_sort_is_a_view_and_playing_follows_it(page, server):
+    _open_two_track_playlist(page, server, "Порядок")
+    assert _shown_titles(page) == ["Quiet", "Loud"]
+    page.locator("#playlistSort").select_option("title")
+    assert _shown_titles(page) == ["Loud", "Quiet"]
+    # Файл не тронут: это вид.
+    assert _playlist_paths(page, "Порядок") == [QUIET_PATH, LOUD_PATH]
+    # Играет в том порядке, как видно.
+    page.locator("#playlistTracks .playlist-track .track-info").first.click()
+    page.wait_for_function("player.queue.length === 2")
+    assert page.evaluate("player.queue.map(t => trackNames(t).title)") == ["Loud", "Quiet"]
+    page.evaluate("player.audio.pause()")
+    # В чужом порядке перемещать нечего: ни перетаскивания, ни пунктов меню.
+    assert (
+        page.evaluate("document.querySelector('#playlistTracks .playlist-track').draggable")
+        is False
+    )
+    page.locator("#playlistTracks .playlist-track").first.get_by_role("button").last.click()
+    assert page.get_by_role("menuitem", name="Выше на один").count() == 0
+    page.keyboard.press("Escape")
+    # Выбор помнится для этой подборки.
+    page.reload()
+    page.evaluate("openPlaylist('Порядок')")
+    page.wait_for_function("activeView === 'viewPlaylist'")
+    page.locator("#playlistTracks .playlist-track").nth(1).wait_for()
+    assert _shown_titles(page) == ["Loud", "Quiet"]
+    assert page.locator("#playlistSort").input_value() == "title"
+    page.locator("#playlistSort").select_option("own")
+    assert _shown_titles(page) == ["Quiet", "Loud"]
+    assert (
+        page.evaluate("document.querySelector('#playlistTracks .playlist-track').draggable") is True
+    )
+
+
+def test_only_downloaded_hides_the_rest_and_no_network_greys_it(page, server):
+    _open_two_track_playlist(page, server, "Скачанное")
+    if not page.evaluate("offline.supported"):
+        pytest.skip("no Cache Storage in this browser")
+    only = page.locator("#playlistOnlyDownloaded")
+    assert only.is_hidden()  # скачанного нет — и кнопки нет
+    page.evaluate(f"offline.paths = new Set(['{LOUD_PATH}']); refreshOfflineMarks(); true")
+    only.click()
+    assert only.get_attribute("aria-pressed") == "true"
+    assert _shown_titles(page) == ["Loud"]
+    page.locator("#playlistTracks .playlist-track .track-info").locator(
+        "visible=true"
+    ).first.click()
+    page.wait_for_function("player.queue.length === 1")
+    page.evaluate("player.audio.pause()")
+    only.click()
+    assert _shown_titles(page) == ["Quiet", "Loud"]
+    # Сервер не отвечает — нескачанное бледнеет, скачанное нет.
+    page.evaluate("setServerDown(true)")
+    rows = page.locator("#playlistTracks .playlist-track")
+    opacity = "el => getComputedStyle(el).opacity"
+    assert rows.nth(0).evaluate(opacity) == "0.38"
+    assert rows.nth(1).evaluate(opacity) == "1"
+    page.evaluate("setServerDown(false)")
+    assert rows.nth(0).evaluate(opacity) == "1"
+    page.evaluate("offline.paths = new Set(); refreshOfflineMarks(); true")
+
+
+def test_reshuffle_keeps_the_playing_track_and_the_hand_added_ones_ahead(page):
+    open_library(page)
+    tracks = ", ".join(
+        f"{{path: 'x/{i}.m4a', title: 't{i}', artist: 'A', duration: 10}}" for i in range(30)
+    )
+    page.evaluate(f"playQueue([{LOUD}, {tracks}], 0, 'manual')")
+    page.wait_for_function("player.started")
+    page.evaluate("player.audio.pause()")
+    page.evaluate(f"enqueue([{QUIET}], 'queue')")
+    page.evaluate("reshuffleQueue()")
+    page.wait_for_function("player.shuffle === 'plain'")
+    first = _route_titles(page)
+    assert first[:2] == ["Loud", "Quiet"]
+    assert sorted(first[2:]) == sorted(f"t{i}" for i in range(30))
+    page.evaluate("reshuffleQueue()")
+    second = _route_titles(page)
+    assert second[:2] == ["Loud", "Quiet"] and second != first  # 1 из 30! совпадёт случайно
+    assert page.evaluate("player.queue[player.index].title") == "Loud"
+
+
+def test_the_queue_comes_back_after_a_restart_paused_at_the_same_place(page):
+    """The iPhone drops the Home Screen app from memory; the queue, the track
+    and the place were lost every time."""
+    open_library(page)
+    page.evaluate(f"playQueue([{QUIET}, {LOUD}, {EVIL_TRACK}], 1, 'manual')")
+    page.wait_for_function("player.started")
+    page.evaluate("player.audio.currentTime = 4; player.repeat = 'all'; player.audio.pause()")
+    page.evaluate(f"enqueue([{QUIET}], 'next')")
+    page.evaluate("saveQueue()")
+    page.reload()
+    page.wait_for_function("player.queue.length === 4")
+    assert page.evaluate("player.queue[player.index].title") == "Loud"
+    assert page.evaluate("player.audio.paused") is True
+    assert page.evaluate("player.repeat") == "all"
+    assert _route_titles(page) == ["Quiet", "Loud", "Quiet", "evil"]
+    assert not page.locator("#player").is_hidden()
+    assert page.locator("#playerTitle").text_content() == "Loud"
+    page.evaluate("togglePlay()")
+    page.wait_for_function("player.started && player.audio.currentTime >= 3.5")
+    page.evaluate("player.audio.pause()")
+
+
+def test_a_broken_saved_queue_is_ignored(page):
+    page.evaluate(
+        "localStorage.setItem('playerQueue', JSON.stringify({v: 1, savedAt: Date.now(),"
+        " queue: [{path: 'a'}], index: 7}))"
+    )
+    page.reload()
+    page.wait_for_function("typeof restoreQueue === 'function'")
+    page.wait_for_timeout(300)
+    assert page.evaluate("player.queue.length") == 0

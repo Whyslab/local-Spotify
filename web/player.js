@@ -239,6 +239,7 @@ async function playAt(position, skipped = 0, direction = 1, options = {}) {
      * «дальше» ещё раз — тогда этот запуск устарел и не должен ни играть,
      * ни пропускать, ни рисовать. */
     const generation = ++player.generation;
+    player.resumeAt = 0;  // место из прошлого запуска — только для того трека
     player.index = position;
     player.reported = false;
     player.started = false;
@@ -757,8 +758,11 @@ async function extendSmartQueue() {
         if (ticket !== player.smartTicket || player.queue !== queueAtStart) return;
         const more = (data.queue || []).filter(t => !have.has(t.path));
         if (!more.length) return;
+        /* В конец маршрута, а не buildOrder: тот стёр бы убранное и
+         * переставленное руками. */
+        const first = player.queue.length;
         player.queue = [...player.queue, ...more];
-        buildOrder(player.index);
+        player.order.push(...more.map((_, i) => first + i));
         renderQueuePanel();
         prefetchOutside();
     } catch (e) {
@@ -908,8 +912,11 @@ async function extendRadio() {
         if (ticket !== player.smartTicket || player.queue !== queueAtStart) return;
         const more = data.queue || [];
         if (!more.length) return;
+        /* В конец маршрута, а не buildOrder: тот стёр бы убранное и
+         * переставленное руками. */
+        const first = player.queue.length;
         player.queue = [...player.queue, ...more];
-        buildOrder(player.index);
+        player.order.push(...more.map((_, i) => first + i));
         renderQueuePanel();
         prefetchOutside();
         /* Первая порция не пришла, а повтор пришёл — подпись о неудаче уже неправда. */
@@ -1005,6 +1012,7 @@ function queueCover(track) {
 }
 
 function renderQueuePanel() {
+    saveQueueSoon();  // сюда приходит каждая перемена очереди
     const panel = document.getElementById("playQueue");
     if (!panel || panel.hidden) return;
     const box = document.getElementById("playQueueRows");
@@ -1049,6 +1057,7 @@ function renderQueuePanel() {
             row.click();
         };
         if (queueIndex === player.index) row.classList.add("is-playing");
+        row.dataset.position = String(position);
         row.onclick = () => { player.orderAt = position; playAt(queueIndex); renderQueuePanel(); };
 
         /* «Откуда это» — в очереди все треки на одно лицо, а списком их видно
@@ -1089,6 +1098,8 @@ function renderQueuePanel() {
         } else {
             row.appendChild(reveal);
         }
+        /* Убрать и перетащить — всё, кроме играющего: он не «дальше». */
+        if (queueIndex !== player.index) row.append(...queueRowTools(row, position, track));
         /* Видно, что трек пришёл со стороны, а не из подборки. Иначе
          * непонятно, откуда он взялся, и это выглядит ошибкой. */
         if (isOutside(track)) {
@@ -1114,6 +1125,255 @@ function renderQueuePanel() {
         box.appendChild(more);
     }
 }
+
+/* ---------------- Своя очередь ----------------
+ *
+ * «Играть следующим» и «В очередь» из меню трека, «убрать» и «перетащить» в
+ * панели очереди, «перемешать заново». Правится маршрут (player.order), а
+ * не сама очередь: номера треков в ней не сдвигаются, и всё, что их помнит
+ * (играющий трек, умная сборка, отложенные ссылки), остаётся верным. */
+
+/* Копия, а не тот же объект: очередь подборки — это её список, и пометка
+ * «добавлен» иначе появилась бы в самой подборке. */
+function queueCopy(track, queued) {
+    const copy = { ...track };
+    if (queued) copy.queued = true; else delete copy.queued;
+    return copy;
+}
+
+/* where: "next" — сразу за играющим, «В очередь» — за уже добавленными, как
+ * очередь в Spotify: первым добавлен — первым и заиграет. */
+function enqueue(tracks, where) {
+    const list = tracks.filter(t => t && t.path).map(t => queueCopy(t, true));
+    if (!list.length) return;
+    if (!player.queue.length || player.index < 0) {
+        playQueue(list.map(t => queueCopy(t, false)), 0, "manual");
+        return;
+    }
+    const first = player.queue.length;
+    player.queue = [...player.queue, ...list];
+    const added = list.map((_, i) => first + i);
+    let at = player.order.indexOf(player.index);
+    if (at < 0) { buildOrder(player.index); at = player.order.indexOf(player.index); }
+    let place = at + 1;
+    if (where !== "next") {
+        while (place < player.order.length && player.queue[player.order[place]].queued) place += 1;
+    }
+    player.order.splice(place, 0, ...added);
+    renderQueuePanel();
+    const name = list.length === 1 ? `«${trackNames(list[0]).title}»` : `${list.length} ${tracksWord(list.length)}`;
+    setPlayerNote(where === "next" ? `${name} — следующим` : `${name} — в очереди`);
+}
+
+function removeFromQueue(position) {
+    if (position < 0 || position >= player.order.length || player.order[position] === player.index) return;
+    player.order.splice(position, 1);
+    if (position < player.orderAt) player.orderAt -= 1;
+    renderQueuePanel();
+}
+
+/* Только то, что после играющего: сыгранное в панели не видно, и двигать
+ * его туда незачем. */
+function moveInQueue(from, to) {
+    const at = player.order.indexOf(player.index);
+    if (from <= at || to <= at || from >= player.order.length) return;
+    const [item] = player.order.splice(from, 1);
+    player.order.splice(Math.min(to, player.order.length), 0, item);
+    renderQueuePanel();
+}
+
+/* «Перемешать заново»: тот же источник, новый порядок. Играющий трек не
+ * прерывается, добавленное руками остаётся сразу за ним. Умное собирается
+ * заново из исходной подборки, обычное тасуется ещё раз, выключенное —
+ * включается обычным. */
+function reshuffleQueue() {
+    if (!player.queue.length) return;
+    if (player.queueMode === "radio") {
+        setPlayerNote("Радио само выбирает порядок — перемешивать нечего");
+        return;
+    }
+    const at = player.order.indexOf(player.index);
+    const queued = at < 0 ? [] : player.order.slice(at + 1).filter(i => player.queue[i] && player.queue[i].queued)
+        .map(i => player.queue[i]);
+    if (player.shuffle === "smart") {
+        const saved = player.beforeSmart;
+        const current = player.queue[player.index];
+        if (saved) {
+            let base = saved.queue;
+            let index = current ? base.findIndex(t => t.path === current.path) : -1;
+            if (current && index < 0) { base = [current, ...base]; index = 0; }
+            player.queue = base;
+            player.index = index;
+            player.queueMode = saved.mode;
+        }
+        buildOrder(player.index);
+        smartifyQueue().then((ok) => {
+            /* Не собралась — очередь уже исходная, по порядку: ✦ не горит. */
+            if (ok === false) { player.shuffle = false; renderPlayerModes(); renderQueuePanel(); }
+            if (ok && queued.length) enqueue(queued, "queue");
+        });
+        return;
+    }
+    if (player.shuffle !== "plain") {
+        setShuffle("plain").then(() => keepQueuedAhead(queued));
+        return;
+    }
+    buildOrder(player.index);
+    keepQueuedAhead(queued);
+    setPlayerNote("Перемешано заново");
+}
+
+/* Добавленное руками — снова сразу за играющим, в прежнем порядке. */
+function keepQueuedAhead(queued) {
+    if (!queued.length) { renderQueuePanel(); return; }
+    const ids = new Set(queued.map(t => player.queue.indexOf(t)).filter(i => i >= 0));
+    const rest = player.order.filter(i => !ids.has(i));
+    const at = rest.indexOf(player.index);
+    player.order = [...rest.slice(0, at + 1), ...[...ids], ...rest.slice(at + 1)];
+    player.orderAt = at;
+    renderQueuePanel();
+}
+
+/* Кнопки строки очереди: убрать и ручка, за которую тащат. Ручка работает и
+ * пальцем, и мышью (pointer-события, touch-action: none — иначе телефон
+ * отдал бы жест прокрутке), а стрелками с клавиатуры — на строку. */
+function queueRowTools(row, position, track) {
+    const remove = document.createElement("button");
+    remove.className = "icon-button small queue-remove";
+    remove.textContent = "×";
+    remove.title = "Убрать из очереди";
+    remove.setAttribute("aria-label", `Убрать из очереди: «${trackNames(track).title}»`);
+    remove.onclick = (event) => { event.stopPropagation(); removeFromQueue(position); };
+
+    const handle = document.createElement("button");
+    handle.className = "icon-button small queue-handle";
+    handle.textContent = "≡";
+    handle.title = "Перетащить";
+    handle.setAttribute("aria-label", `Переставить «${trackNames(track).title}»: стрелки вверх и вниз`);
+    handle.onclick = (event) => event.stopPropagation();
+    handle.onkeydown = (event) => {
+        const step = { ArrowUp: -1, ArrowDown: 1 }[event.key];
+        if (!step) return;
+        event.preventDefault();
+        event.stopPropagation();
+        moveInQueue(position, position + step);
+        const moved = document.querySelector(`#playQueueRows .queue-row[data-position="${position + step}"] .queue-handle`);
+        if (moved) moved.focus();
+    };
+    handle.addEventListener("pointerdown", (event) => dragQueueRow(event, row, handle, position));
+    return [remove, handle];
+}
+
+function dragQueueRow(event, row, handle, from) {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const box = row.parentElement;
+    handle.setPointerCapture(event.pointerId);
+    row.classList.add("is-dragging");
+    const startY = event.clientY;
+    const rows = () => [...box.querySelectorAll(".queue-row")];
+    let target = from;
+    const move = (e) => {
+        row.style.transform = `translateY(${e.clientY - startY}px)`;
+        /* Куда встанет: первая строка (кроме играющей), чья середина ниже пальца. */
+        target = from;
+        for (const other of rows()) {
+            if (other === row || other.classList.contains("is-playing")) continue;
+            const rect = other.getBoundingClientRect();
+            const p = Number(other.dataset.position);
+            if (p > from && e.clientY > rect.top + rect.height / 2) target = Math.max(target, p);
+            if (p < from && e.clientY < rect.top + rect.height / 2) target = Math.min(target, p);
+        }
+        for (const other of rows()) other.classList.toggle("is-drop", other !== row && Number(other.dataset.position) === target);
+    };
+    const up = () => {
+        handle.removeEventListener("pointermove", move);
+        handle.removeEventListener("pointerup", up);
+        handle.removeEventListener("pointercancel", up);
+        row.classList.remove("is-dragging");
+        row.style.transform = "";
+        if (target !== from) moveInQueue(from, target);
+        else renderQueuePanel();
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", up);
+    handle.addEventListener("pointercancel", up);
+}
+
+/* ---------------- Очередь между запусками ----------------
+ *
+ * Айфон выгружает ярлык из памяти, стоит ему постоять в фоне, — и очередь,
+ * трек и место пропадали. Теперь они в localStorage: открыл — всё на месте,
+ * на паузе, «играть» продолжает с того же места. Месяц, потом забывается. */
+const QUEUE_KEY = "playerQueue";
+const QUEUE_KEEP_MS = 30 * 24 * 3600 * 1000;
+let queueSaveTimer = 0;
+let queueSavedAt = 0;
+
+function saveQueueSoon() {
+    clearTimeout(queueSaveTimer);
+    queueSaveTimer = setTimeout(saveQueue, 800);
+}
+
+function saveQueue() {
+    clearTimeout(queueSaveTimer);
+    queueSavedAt = Date.now();
+    try {
+        if (!player.queue.length || player.index < 0) { localStorage.removeItem(QUEUE_KEY); return; }
+        const time = player.audio.getAttribute("src") && Number.isFinite(player.audio.currentTime)
+            ? player.audio.currentTime : (player.resumeAt || 0);
+        localStorage.setItem(QUEUE_KEY, JSON.stringify({
+            v: 1,
+            savedAt: Date.now(),
+            queue: player.queue,
+            index: player.index,
+            order: player.order,
+            orderAt: player.orderAt,
+            at: time,
+            shuffle: player.shuffle,
+            repeat: player.repeat,
+            queueMode: player.queueMode,
+            queueSource: player.queueSource,
+            beforeSmart: player.beforeSmart,
+        }));
+    } catch (e) { /* места нет или хранилище закрыто — очередь не переживёт перезапуск, и только */ }
+}
+
+function restoreQueue() {
+    if (player.queue.length) return;
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem(QUEUE_KEY) || "null"); } catch (e) { return; }
+    if (!saved || saved.v !== 1 || !Array.isArray(saved.queue) || !saved.queue.length) return;
+    if (!(Date.now() - saved.savedAt < QUEUE_KEEP_MS)) return;
+    const n = saved.queue.length;
+    if (!(Number.isInteger(saved.index) && saved.index >= 0 && saved.index < n)) return;
+    player.queue = saved.queue;
+    player.index = saved.index;
+    player.shuffle = ["plain", "smart"].includes(saved.shuffle) ? saved.shuffle : false;
+    player.repeat = ["all", "one"].includes(saved.repeat) ? saved.repeat : "off";
+    player.queueMode = saved.queueMode || "manual";
+    player.queueSource = saved.queueSource || null;
+    player.beforeSmart = saved.beforeSmart && Array.isArray(saved.beforeSmart.queue) ? saved.beforeSmart : null;
+    const order = Array.isArray(saved.order) ? saved.order : [];
+    if (order.includes(saved.index) && order.every(i => Number.isInteger(i) && i >= 0 && i < n)) {
+        player.order = order;
+        player.orderAt = order.indexOf(saved.index);
+    } else {
+        buildOrder(saved.index);
+    }
+    player.resumeAt = Number.isFinite(saved.at) && saved.at > 0 ? saved.at : 0;
+    renderPlayerModes();
+    renderPlayer();
+    markPlayingRow();
+    renderQueuePanel();
+}
+
+onAudio("timeupdate", () => { if (Date.now() - queueSavedAt > 5000) saveQueueSoon(); });
+onAudio("pause", saveQueueSoon);
+window.addEventListener("pagehide", saveQueue);
+document.addEventListener("visibilitychange", () => { if (document.hidden) saveQueue(); });
+document.addEventListener("DOMContentLoaded", restoreQueue);
 
 /* `source` — откуда эта очередь: подборка с именем или фонотека. Нужен для
  * кнопки «показать, откуда играет»: из самой очереди этого не видно, треки в
@@ -1299,7 +1559,11 @@ function togglePlay() {
         return;
     }
     if (player.audio.paused && !player.audio.getAttribute("src") && player.index >= 0) {
-        playAt(player.index);  // источник сброшен неудачной загрузкой — ещё попытка
+        /* Источника нет: сброшен неудачной загрузкой — ещё попытка — или очередь
+         * вернулась после перезапуска (restoreQueue) — с того же места. */
+        const startAt = player.resumeAt || 0;
+        player.resumeAt = 0;
+        playAt(player.index, 0, 1, startAt > 0 ? { startAt } : {});
         return;
     }
     if (player.audio.paused) {
@@ -1548,6 +1812,7 @@ function renderPlayer() {
 
     renderNowPanel(track);
     renderKeepButton();
+    renderFavourite();
 
     const names = trackNames(track);
     document.getElementById("playerTitle").textContent = names.title;
@@ -2340,6 +2605,8 @@ function togglePlaylistEdit(force) {
 function renderPlaylist() {
     const pl = player.playlist;
     if (!pl) return;
+    // Monday открыта и, может, поправлена в ней же — сердце в плеере с ней заодно.
+    if (pl.name === FAVOURITES) syncFavourites(pl);
 
     document.getElementById("playlistName").textContent = pl.name;
     const seconds = pl.entries.reduce((sum, e) => sum + (e.duration > 0 ? e.duration : 0), 0);
@@ -2355,6 +2622,7 @@ function renderPlaylist() {
     const box = document.getElementById("playlistTracks");
     box.replaceChildren();
     pl.entries.forEach((entry, position) => box.appendChild(playlistTrackRow(entry, position)));
+    applyPlaylistView();
     filterOpenPlaylist();
     markPlayingRow();
     renderPlaylistOffline();
@@ -2412,8 +2680,7 @@ function playlistTrackRow(entry, position) {
 
     const info = document.createElement("div");
     info.className = "track-info";
-    info.onclick = () => playQueue(player.playlist.entries, position, "manual",
-        { kind: "playlist", name: player.playlist.name });
+    info.onclick = () => playFromPlaylist(position);
     // Как в фонотеке: название, под ним артист, длительность справа.
     const names = trackNames(entry);
     const title = document.createElement("div");
@@ -2556,20 +2823,31 @@ function openTrackMenu(button, position) {
         return b;
     };
 
-    menu.append(
-        item("В начало подборки", "", () => moveTrack(position, 0), position === 0),
-        item("Выше на один", "", () => moveTrack(position, position - 1), position === 0),
-        item("Ниже на один", "", () => moveTrack(position, position + 1), position === total - 1),
-        item("В конец подборки", "", () => moveTrack(position, total - 1), position === total - 1),
-        /* Прыжок на номер: в подборке на тысячу треков «выше на один» бесполезно,
-         * а тащить мышью через весь список — тем более. */
-        item("Переместить на место…", "", () => askForPosition(button, position, total)),
-    );
-
-    const separator = document.createElement("div");
-    separator.className = "row-menu-line";
-    menu.appendChild(separator);
+    /* В чужом порядке «выше на один» двигало бы не туда, куда видно, —
+     * перемещения только в своём порядке подборки. */
+    if (playlistView(player.playlist.name).sort === "own") {
+        menu.append(
+            item("В начало подборки", "", () => moveTrack(position, 0), position === 0),
+            item("Выше на один", "", () => moveTrack(position, position - 1), position === 0),
+            item("Ниже на один", "", () => moveTrack(position, position + 1), position === total - 1),
+            item("В конец подборки", "", () => moveTrack(position, total - 1), position === total - 1),
+            /* Прыжок на номер: в подборке на тысячу треков «выше на один» бесполезно,
+             * а тащить мышью через весь список — тем более. */
+            item("Переместить на место…", "", () => askForPosition(button, position, total)),
+        );
+        const separator = document.createElement("div");
+        separator.className = "row-menu-line";
+        menu.appendChild(separator);
+    }
     const entry = player.playlist.entries[position];
+    if (entry) {
+        menu.appendChild(item("Играть следующим", "", () => enqueue([entry], "next")));
+        menu.appendChild(item("В очередь", "", () => enqueue([entry], "queue")));
+        if (favouritePaths && !isOutside(entry) && player.playlist.name !== FAVOURITES) {
+            menu.appendChild(item(isFavourite(entry) ? "Убрать из любимого" : "В любимое", "",
+                () => toggleFavourite(entry)));
+        }
+    }
     if (entry && !isOutside(entry)) menu.appendChild(item("Радио", "", () => startRadio({ path: entry.path }, entry)));
     menu.appendChild(item("Заменить другой версией…", "", () => askForReplacement(button, position)));
     if (offline.supported && entry && !isOutside(entry)) {
@@ -2953,6 +3231,7 @@ function putPlaylistTracks(name, paths, revision) {
 const writtenRevisions = new Map();  // имя → версия из последнего ответа сервера
 
 async function rememberPlaylist(data) {
+    if (data && data.name === FAVOURITES && Array.isArray(data.entries)) syncFavourites(data);
     if (data && data.name && data.revision) writtenRevisions.set(data.name, data.revision);
     if (!data || !data.name || typeof caches === "undefined") return;
     try {
@@ -3308,10 +3587,131 @@ function setPlaylistNote(text) {
 }
 
 function playPlaylist() {
-    if (player.playlist && player.playlist.entries.length) {
-        playQueue(player.playlist.entries, 0, "manual",
-            { kind: "playlist", name: player.playlist.name });
+    if (player.playlist && player.playlist.entries.length) playFromPlaylist(null);
+}
+
+/* ---------------- Вид подборки: порядок и «только скачанное» ----------------
+ *
+ * Это вид, а не правка: файл подборки не меняется. Строки переставляются и
+ * прячутся, а не пересобираются — номер строки в подборке (data-index) на
+ * месте, на нём держатся перемещения и меню. Играет то, что видно, и в том
+ * порядке, как видно. Выбор помнится для каждой подборки на этом устройстве.
+ */
+const PLAYLIST_VIEW_KEY = "playlistView";
+const PLAYLIST_SORTS = {
+    title: e => trackNames(e).title,
+    artist: e => trackNames(e).artist,
+    album: e => e.album || "",
+    duration: e => (e.duration > 0 ? e.duration : 0),
+};
+const sortCollator = new Intl.Collator("ru", { sensitivity: "base", numeric: true });
+
+function readPlaylistViews() {
+    try {
+        const all = JSON.parse(localStorage.getItem(PLAYLIST_VIEW_KEY) || "{}");
+        return all && typeof all === "object" ? all : {};
+    } catch (e) {
+        return {};
     }
+}
+
+function playlistView(name) {
+    const saved = readPlaylistViews()[name] || {};
+    return {
+        sort: Object.prototype.hasOwnProperty.call(PLAYLIST_SORTS, saved.sort) ? saved.sort : "own",
+        only: saved.only === true,
+    };
+}
+
+function savePlaylistView(name, view) {
+    const all = readPlaylistViews();
+    if (view.sort === "own" && !view.only) delete all[name];
+    else all[name] = { sort: view.sort, only: view.only };
+    try { localStorage.setItem(PLAYLIST_VIEW_KEY, JSON.stringify(all)); } catch (e) { /* до перезагрузки не вспомнит */ }
+}
+
+/* «Только скачанное» включено и что-то скачано — иначе фильтр спрятал бы
+ * всё, а кнопки для него нет. */
+function onlyDownloadedActive(pl, view) {
+    return view.only && offline.supported && pl.entries.some(e => isDownloaded(e.path));
+}
+
+/* Номера строк подборки в порядке вида; hidden — без спрятанных фильтром. */
+function playlistViewPositions(hidden = false) {
+    const pl = player.playlist;
+    if (!pl) return [];
+    const view = playlistView(pl.name);
+    let positions = pl.entries.map((_, i) => i);
+    if (!hidden && onlyDownloadedActive(pl, view)) positions = positions.filter(i => isDownloaded(pl.entries[i].path));
+    const key = PLAYLIST_SORTS[view.sort];
+    if (key) {
+        positions.sort((a, b) => {
+            const x = key(pl.entries[a]), y = key(pl.entries[b]);
+            const order = typeof x === "number" ? x - y : sortCollator.compare(x, y);
+            return order || a - b;
+        });
+    }
+    return positions;
+}
+
+function applyPlaylistView() {
+    const pl = player.playlist;
+    if (!pl) return;
+    const view = playlistView(pl.name);
+    const sorted = view.sort !== "own";
+    const only = onlyDownloadedActive(pl, view);
+    const box = document.getElementById("playlistTracks");
+    const rows = new Map();
+    for (const row of box.querySelectorAll(".playlist-track")) rows.set(Number(row.dataset.index), row);
+    const order = playlistViewPositions(true);
+    // Переставлять только если порядок и правда другой: строк бывает тысяча.
+    const current = [...rows.keys()];
+    if (order.some((position, i) => current[i] !== position)) {
+        box.append(...order.map(position => rows.get(position)).filter(Boolean));
+    }
+    for (const [position, row] of rows) {
+        // В чужом порядке тащить строку некуда: её место — в своём порядке.
+        row.draggable = !sorted;
+        row.classList.toggle("is-filtered-out", only && !isDownloaded(pl.entries[position].path));
+    }
+    box.classList.toggle("is-sorted", sorted);
+
+    const select = document.getElementById("playlistSort");
+    if (select) select.value = view.sort;
+    const button = document.getElementById("playlistOnlyDownloaded");
+    if (button) {
+        button.hidden = !offline.supported || !pl.entries.some(e => isDownloaded(e.path));
+        button.classList.toggle("is-on", only);
+        button.setAttribute("aria-pressed", String(only));
+    }
+}
+
+function setPlaylistSort(sort) {
+    const pl = player.playlist;
+    if (!pl) return;
+    savePlaylistView(pl.name, { ...playlistView(pl.name), sort });
+    applyPlaylistView();
+    filterOpenPlaylist();
+}
+
+function toggleOnlyDownloaded() {
+    const pl = player.playlist;
+    if (!pl) return;
+    const view = playlistView(pl.name);
+    savePlaylistView(pl.name, { ...view, only: !view.only });
+    applyPlaylistView();
+    filterOpenPlaylist();
+}
+
+/* position — строка, с которой начать; null — с первой видимой. Нажатая
+ * строка спрятана фильтром (так не бывает, но вдруг) — играет вся подборка. */
+function playFromPlaylist(position) {
+    const pl = player.playlist;
+    if (!pl || !pl.entries.length) return;
+    let positions = playlistViewPositions();
+    if (!positions.length || (position !== null && !positions.includes(position))) positions = playlistViewPositions(true);
+    const at = position === null ? 0 : Math.max(0, positions.indexOf(position));
+    playQueue(positions.map(i => pl.entries[i]), at, "manual", { kind: "playlist", name: pl.name });
 }
 
 /* Новая подборка: «+» у заголовка рельсы или пункт в меню «Ещё» на телефоне.
@@ -3603,64 +4003,20 @@ async function addToPlaylist(box, card, note, cancel, name, track) {
          * хочется услышать сейчас, а не через тысячу треков. */
         paths.unshift(track.path);
 
-        const waiting = pendingEdit(name);
-        const keepForLater = async () => {
-            if (!queuePlaylistEdit(pl, paths, [track])) throw new Error("Нет сети, и отложить правку негде");
-            scheduleEditFlush();
+        const result = await writePlaylistPaths(pl, paths, [track]);
+        if (result.later) {
             note.textContent = "Без сети — добавлю в «" + name + "», когда сеть вернётся";
             if (playlistIsOpen(name)) await openPlaylist(name);
             setTimeout(() => box.replaceWith(card), 1600);
-        };
-        let put;
-        try {
-            put = await putPlaylistTracks(name, paths, pl.revision);
-        } catch (e) {
-            put = null;
-        }
-        if (!put || unreachableStatus(put.status)) return await keepForLater();
-        if (put.status === 409 && pendingEdit(name)) {
-            /* Как в savePlaylist: при отложенной правке «открой ещё раз»
-             * наложило бы её снова, и 409 повторялось бы без конца. */
-            const { outcome, now, matched } = await settleClash(name);
-            if (outcome === null) return await keepForLater();
-            if (outcome === "same" && !matched) {
-                note.textContent = "Подборку изменили с другого устройства. Открой ещё раз.";
-                cancel.disabled = false;
-                cancel.textContent = "Закрыть";
-                return;
-            }
-            if (outcome !== "same") {
-                if (outcome === "clash") queuePlaylistEdit(pl, paths, [track]);
-                note.textContent = outcome === "clash"
-                    ? "Подборку изменили с другого устройства — открой её и выбери версию."
-                    : "Подборки «" + name + "» больше нет.";
-                cancel.disabled = false;
-                cancel.textContent = "Закрыть";
-                if (playlistIsOpen(name)) await openPlaylist(name);
-                return;
-            }
-            // Отложенная уже дошла — добавленное ложится поверх неё.
-            try {
-                put = await putPlaylistTracks(name, paths, now.revision);
-            } catch (e) {
-                put = null;
-            }
-            if (!put || unreachableStatus(put.status)) return await keepForLater();
-        }
-        if (put.status === 409) {
-            note.textContent = "Подборку изменили с другого устройства. Открой ещё раз.";
-            cancel.disabled = false;
-            cancel.textContent = "Закрыть";
             return;
         }
-        if (!put.ok) {
-            const data = await put.json().catch(() => ({}));
-            throw new Error(data.detail || ("Ошибка " + put.status));
+        if (result.problem) {
+            note.textContent = result.problem;
+            cancel.disabled = false;
+            cancel.textContent = "Закрыть";
+            if (result.reopen && playlistIsOpen(name)) await openPlaylist(name);
+            return;
         }
-
-        if (waiting) dropPendingEdit(name, waiting.seq);
-        rememberPlaylist(await put.json().catch(() => null));
-        editRetryFailures = 0;
         note.textContent = "Добавлено в «" + name + "»";
         /* Если эта же подборка открыта рядом — показать её новой. */
         if (player.playlist && player.playlist.name === name) await openPlaylist(name);
@@ -3672,6 +4028,159 @@ async function addToPlaylist(box, card, note, cancel, name, track) {
         cancel.textContent = "Закрыть";
     }
 }
+
+/* Записать новый список подборки так же бережно, как «В подборку…»: нет сети
+ * или туннель молчит — правка откладывается до сети; 409 — сверка со свежей
+ * версией (settleClash). Ответ: { done, saved } — записано; { later } —
+ * отложено; { problem, reopen } — не записано, problem — что сказать
+ * человеку, reopen — открытую подборку стоит перечитать. Отложить негде или
+ * сервер отказал — исключение. extra — записи добавляемых треков: без сети
+ * подборка показывается из них. */
+async function writePlaylistPaths(pl, paths, extra = []) {
+    const name = pl.name;
+    const waiting = pendingEdit(name);
+    const keepForLater = () => {
+        if (!queuePlaylistEdit(pl, paths, extra)) throw new Error("Нет сети, и отложить правку негде");
+        scheduleEditFlush();
+        return { later: true };
+    };
+    const elsewhere = "Подборку изменили с другого устройства. Открой ещё раз.";
+    let put;
+    try {
+        put = await putPlaylistTracks(name, paths, pl.revision);
+    } catch (e) {
+        put = null;
+    }
+    if (!put || unreachableStatus(put.status)) return keepForLater();
+    if (put.status === 409 && pendingEdit(name)) {
+        /* Как в savePlaylist: при отложенной правке «открой ещё раз»
+         * наложило бы её снова, и 409 повторялось бы без конца. */
+        const { outcome, now, matched } = await settleClash(name);
+        if (outcome === null) return keepForLater();
+        if (outcome === "same" && !matched) return { problem: elsewhere };
+        if (outcome !== "same") {
+            if (outcome === "clash") queuePlaylistEdit(pl, paths, extra);
+            return {
+                problem: outcome === "clash"
+                    ? "Подборку изменили с другого устройства — открой её и выбери версию."
+                    : "Подборки «" + name + "» больше нет.",
+                reopen: true,
+            };
+        }
+        // Отложенная уже дошла — правка ложится поверх неё.
+        try {
+            put = await putPlaylistTracks(name, paths, now.revision);
+        } catch (e) {
+            put = null;
+        }
+        if (!put || unreachableStatus(put.status)) return keepForLater();
+    }
+    if (put.status === 409) return { problem: elsewhere };
+    if (!put.ok) {
+        const data = await put.json().catch(() => ({}));
+        throw new Error(data.detail || ("Ошибка " + put.status));
+    }
+    if (waiting) dropPendingEdit(name, waiting.seq);
+    const saved = await put.json().catch(() => null);
+    rememberPlaylist(saved);
+    editRetryFailures = 0;
+    return { done: true, saved };
+}
+
+/* ---------------- ♥ Любимое ----------------
+ *
+ * «Любимое» — это подборка Monday (решение 20.10.2026): сердце в плеере
+ * кладёт играющий трек в её начало или убирает оттуда. Отдельного списка
+ * нет — Monday видят и Navidrome, и Amperfy, и скачанная копия на телефоне.
+ * Подборки нет — сердца нет.
+ */
+const FAVOURITES = "Monday";
+let favouritePaths = null;  // Set путей Monday; null — ещё не знаем или её нет
+let favouriteBusy = false;
+
+async function loadFavourites() {
+    try {
+        const r = await fetch("/api/playlists/" + encodeURIComponent(FAVOURITES) + "/tracks", { headers: headers() });
+        if (r.status === 404) favouritePaths = null;
+        else if (r.ok) favouritePaths = new Set(withPendingEdit(await r.json()).entries.map(e => e.path));
+    } catch (e) { /* без сети и без копии — сердце подождёт */ }
+    renderFavourite();
+}
+
+function syncFavourites(pl) {
+    favouritePaths = new Set(pl.entries.map(e => e.path));
+    renderFavourite();
+}
+
+/* Monday могли поправить на другом устройстве или в Amperfy — вернулся в
+ * приложение, сердце сверилось. */
+document.addEventListener("visibilitychange", () => { if (!document.hidden) loadFavourites(); });
+
+function isFavourite(track) {
+    return Boolean(track && favouritePaths && favouritePaths.has(track.path));
+}
+
+function renderFavourite() {
+    const button = document.getElementById("playerLove");
+    if (!button) return;
+    const track = player.queue[player.index];
+    button.hidden = !track || !favouritePaths || isOutside(track);
+    const on = isFavourite(track);
+    button.classList.toggle("is-on", on);
+    button.setAttribute("aria-pressed", String(on));
+    const label = on ? "Убрать из «" + FAVOURITES + "»" : "В любимое — «" + FAVOURITES + "»";
+    button.setAttribute("aria-label", label);
+    button.title = label;
+}
+
+/* Сказать, что вышло: под плеером, а если ничего не играет (сердце
+ * нажали из меню строки) — в заметке открытой подборки. */
+function sayFavourite(text) {
+    if (!document.getElementById("player").hidden) setPlayerNote(text);
+    else if (activeView === "viewPlaylist") setPlaylistNote(text);
+}
+
+async function toggleFavourite(track = player.queue[player.index]) {
+    if (!track || isOutside(track) || favouriteBusy) return;
+    favouriteBusy = true;
+    let before = favouritePaths;
+    try {
+        await flushSettled();  // иначе отложенная правка и эта обгоняют друг друга
+        const got = await fetch("/api/playlists/" + encodeURIComponent(FAVOURITES) + "/tracks", { headers: headers() });
+        if (got.status === 404) { favouritePaths = null; return; }
+        if (!got.ok) throw new Error("Ошибка " + got.status);
+        const pl = withPendingEdit(await got.json());
+        const paths = pl.entries.map(e => e.path);
+        before = new Set(paths);
+        const liked = before.has(track.path);
+        const next = liked ? paths.filter(p => p !== track.path) : [track.path, ...paths];
+        // Сердце меняется сразу, не дожидаясь сервера; отказ вернёт как было.
+        favouritePaths = new Set(next);
+        renderFavourite();
+        const result = await writePlaylistPaths(pl, next, [track]);
+        if (result.problem) {
+            favouritePaths = before;
+            sayFavourite(result.problem);
+            return;
+        }
+        if (result.later) {
+            sayFavourite(liked ? "Без сети — уберу из «" + FAVOURITES + "», когда сеть вернётся"
+                : "Без сети — добавлю в «" + FAVOURITES + "», когда сеть вернётся");
+        } else {
+            sayFavourite(liked ? "Убрано из «" + FAVOURITES + "»" : "Добавлено в «" + FAVOURITES + "»");
+        }
+        if (playlistIsOpen(FAVOURITES)) await openPlaylist(FAVOURITES);
+        playlists();
+    } catch (e) {
+        favouritePaths = before;
+        sayFavourite(e.message || "Не получилось");
+    } finally {
+        favouriteBusy = false;
+        renderFavourite();
+    }
+}
+
+document.addEventListener("DOMContentLoaded", loadFavourites);
 
 function playFromLibrary(track, rows) {
     playQueue(rows, rows.findIndex(r => r.path === track.path), "manual", { kind: "library" });

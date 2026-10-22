@@ -351,6 +351,83 @@ new MutationObserver(() => {
     }, true);
 })();
 
+/* Мини-плеер на телефоне: провёл по нему влево — следующий трек, вправо —
+ * предыдущий, как в Spotify. Название едет за пальцем; отпустил дальше
+ * SKIP_SWIPE_PX — уезжает, а следующее въезжает с другой стороны. Жест
+ * вертикальный или короткий — это не он: нажатие раскрывает плеер, как и
+ * раньше. */
+const SKIP_SWIPE_PX = 70;
+
+(function swipeToSkip() {
+    const bar = document.getElementById("player");
+    const info = bar && bar.querySelector(".player-track");
+    if (!bar || !info) return;
+    let startX = 0, startY = 0, dx = 0, active = false, horizontal = null, swallowClick = false;
+    const calm = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const reset = () => { info.style.transform = ""; info.style.opacity = ""; };
+    bar.addEventListener("pointerdown", (e) => {
+        if (sheetOpen() || WIDE.matches || e.button !== 0) return;
+        /* Вся полоса, кроме кнопок: название, пока въезжает после прошлого
+         * свайпа, стоит не на месте, и быстрый второй свайп мимо него
+         * терялся бы. */
+        if (e.target.closest("button:not(.player-art), input, a")) return;
+        active = true;
+        horizontal = null;
+        startX = e.clientX;
+        startY = e.clientY;
+        dx = 0;
+    });
+    bar.addEventListener("pointermove", (e) => {
+        if (!active) return;
+        const mx = e.clientX - startX, my = e.clientY - startY;
+        if (horizontal === null) {
+            if (Math.abs(mx) < 8 && Math.abs(my) < 8) return;
+            horizontal = Math.abs(mx) > Math.abs(my);
+            if (!horizontal) { active = false; return; }
+            bar.setPointerCapture(e.pointerId);
+            bar.classList.add("is-swiping");
+        }
+        dx = mx;
+        info.style.transform = `translateX(${dx}px)`;
+        info.style.opacity = String(1 - Math.min(Math.abs(dx) / 240, 0.6));
+    });
+    const release = () => {
+        if (!active) return;
+        active = false;
+        if (!horizontal) return;
+        bar.classList.remove("is-swiping");
+        swallowClick = true;
+        setTimeout(() => { swallowClick = false; }, 0);
+        const way = Math.abs(dx) > SKIP_SWIPE_PX ? Math.sign(dx) : 0;
+        if (!way) { reset(); return; }
+        const skip = () => { if (way < 0) nextTrack(); else prevTrack(); };
+        if (calm() || !info.animate) { reset(); skip(); return; }
+        const width = info.offsetWidth || 300;
+        info.animate(
+            [{ transform: `translateX(${dx}px)`, opacity: info.style.opacity || 1 },
+                { transform: `translateX(${way * width}px)`, opacity: 0 }],
+            { duration: 150, easing: "ease-in" },
+        ).finished.then(() => {
+            reset();
+            skip();
+            info.animate(
+                [{ transform: `translateX(${-way * width * 0.5}px)`, opacity: 0 },
+                    { transform: "none", opacity: 1 }],
+                { duration: 220, easing: "ease-out" },
+            );
+        }).catch(() => { reset(); skip(); });
+    };
+    bar.addEventListener("pointerup", release);
+    bar.addEventListener("pointercancel", () => { if (active && horizontal) { active = false; reset(); bar.classList.remove("is-swiping"); } active = false; });
+    // Провёл — не нажатие: иначе отпускание раскрывало бы большой плеер.
+    bar.addEventListener("click", (e) => {
+        if (!swallowClick) return;
+        swallowClick = false;
+        e.stopPropagation();
+        e.preventDefault();
+    }, true);
+})();
+
 /* Esc сворачивает плеер, только если закрывать больше нечего. Слушаем на
  * перехвате и раньше меню (их обработчики добавляются позже): иначе меню
  * успевало закрыться само, и тот же Esc сворачивал ещё и плеер. */
