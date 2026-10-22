@@ -674,7 +674,9 @@ def _housekeeping() -> None:
 
 
 def _auto_requeue_loop() -> None:
-    last_housekeeping = time.monotonic()  # lifespan has just done it
+    # По часам, а не monotonic: тот на Linux стоит, пока ноутбук спит, и
+    # «раз в сутки» растягивалось на несколько дней.
+    last_housekeeping = time.time()  # lifespan has just done it
     while not runtime.shutdown_event.wait(AUTO_REQUEUE_CHECK_SECONDS):
         try:
             requeue_failed(auto=True)
@@ -682,9 +684,9 @@ def _auto_requeue_loop() -> None:
             logger.exception("Automatic requeue failed", extra={"task_id": "system"})
         # Не посреди добавления: загрузка, долго ждавшая очереди, копируется в
         # tmp со старым mtime (copy2) и выглядела бы просроченной, пока её тегают.
-        if time.monotonic() - last_housekeeping < HOUSEKEEPING_SECONDS or runtime.PROCESSING_URLS:
+        if abs(time.time() - last_housekeeping) < HOUSEKEEPING_SECONDS or runtime.PROCESSING_URLS:
             continue
-        last_housekeeping = time.monotonic()
+        last_housekeeping = time.time()
         try:
             _housekeeping()
         except Exception:
@@ -1592,6 +1594,7 @@ def get_playlists(authenticated: bool = Depends(verify_token)):
 @app.post("/api/playlists")
 def create_playlist(req: PlaylistCreateRequest, authenticated: bool = Depends(verify_token)):
     playlist = playlists.create(req.name, req.paths)
+    navidrome.cancel("delete", playlist.name)
     return _playlist_payload(playlist)
 
 
@@ -1624,6 +1627,7 @@ def rename_playlist(
     through its API and the cover is re-uploaded onto the new one.
     """
     playlist = playlists.rename(name, req.name)
+    navidrome.cancel("delete", playlist.name)
     covers.rename(name, req.name)
     _sync_navidrome("delete", name)
     if covers.cover_file(req.name) is not None:
@@ -2252,7 +2256,7 @@ EVENTS_PER_MINUTE = 60
 def _one_line(text: str) -> str:
     """Text from the page, fit for the journal: control characters escaped, so
     a "\n" in it cannot add a line that looks like the service's own."""
-    return "".join(ch if ch.isprintable() else repr(ch)[1:-1] for ch in text)
+    return runtime.one_line(text)
 
 
 @app.post("/api/player-event")

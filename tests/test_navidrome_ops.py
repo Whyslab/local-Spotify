@@ -117,3 +117,30 @@ def test_a_failing_op_backs_off_and_is_given_up_once(monkeypatch, caplog):
     assert gaps == sorted(gaps) and gaps[0] < 60 and gaps[-1] >= 3600
     dropped = [r for r in caplog.records if "gave up" in r.getMessage()]
     assert len(dropped) == 1 and dropped[0].levelname == "WARNING"
+
+
+def test_ops_waiting_out_a_backoff_run_as_soon_as_navidrome_answers(monkeypatch):
+    """После долгого простоя старое ждало своего часа (до шести), а новое
+    шло сразу — поздний «delete» мог снести пересозданную подборку."""
+    db.db_init()
+    up = {"ok": False}
+    ran: list[str] = []
+
+    def run(op, name, payload):
+        if not up["ok"]:
+            raise navidrome.NavidromeUnavailable("down")
+        ran.append(name)
+        return True
+
+    monkeypatch.setattr(navidrome, "_run", run)
+    navidrome.enqueue("cover", "Old")
+    clock = 1_000_000.0
+    for _ in range(12):  # back-off grows to over an hour
+        navidrome.drain(now=clock)
+        clock += 30
+    up["ok"] = True
+    navidrome.enqueue("cover", "New")
+    navidrome.drain(now=clock)
+    assert ran == ["New"]
+    navidrome.drain(now=clock + 30)
+    assert ran == ["New", "Old"]

@@ -10,6 +10,7 @@ rest of the project follows: the file is the truth, the database is a view.
 """
 
 import logging
+import threading
 from pathlib import Path
 
 from fastapi import HTTPException
@@ -57,6 +58,17 @@ def _file(name: str, extension: str) -> Path:
     return COVERS_DIR / f"{playlists.safe_name(name)}.{extension}"
 
 
+_STORE_LOCKS: dict[str, threading.Lock] = {}
+_STORE_LOCKS_GUARD = threading.Lock()
+
+
+def _store_lock(name: str) -> threading.Lock:
+    from . import playlists
+
+    with _STORE_LOCKS_GUARD:
+        return _STORE_LOCKS.setdefault(playlists.safe_name(name), threading.Lock())
+
+
 def store(name: str, data: bytes) -> str:
     """Save a cover locally. Returns the media type it was recognised as."""
     if len(data) > config.MAX_COVER_BYTES:
@@ -72,10 +84,13 @@ def store(name: str, data: bytes) -> str:
     # до записи, сбой записи оставлял подборку без обложки вовсе.
     from . import ingest
 
-    ingest.write_atomic(_file(name, extension), data)
-    for other in EXTENSIONS:
-        if other != extension:
-            _file(name, other).unlink(missing_ok=True)
+    # Две загрузки разом (jpg и png) иначе стирали каждая чужую — и
+    # подборка оставалась без обложки вовсе.
+    with _store_lock(name):
+        ingest.write_atomic(_file(name, extension), data)
+        for other in EXTENSIONS:
+            if other != extension:
+                _file(name, other).unlink(missing_ok=True)
     logger.info("Cover stored for playlist %r (%s, %d bytes)", name, media_type, len(data))
     return media_type
 

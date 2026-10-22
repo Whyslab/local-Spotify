@@ -80,7 +80,13 @@ def verify(path: str, expires_at: str | int, signature: str, now: float | None =
         expiry = int(expires_at)
     except (TypeError, ValueError):
         return False
-    if expiry < (now if now is not None else time.time()):
+    moment = now if now is not None else time.time()
+    if expiry < moment:
+        return False
+    # Ссылки, подписанные до потолка MAX_LIFETIME (до 22.10 «трек» в год
+    # длиной получал ссылку на год), так и жили бы: срок дальше потолка —
+    # не наш.
+    if expiry > moment + MAX_LIFETIME + 60:
         return False
     # compare_digest, not ==, so a wrong signature cannot be discovered one
     # character at a time by timing the answer.

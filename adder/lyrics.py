@@ -385,25 +385,27 @@ def _store(rel_path: str, result: dict) -> dict:
 
 
 def carry_over(old: str, new: str) -> None:
-    """Текст трека, который заменили другим файлом, переходит к новому.
+    """Текст, выбранный руками для трека, который заменили другим файлом,
+    переходит к новому — если у нового нет своего выбранного.
 
-    Только если у нового нет своего не хуже: выбранный руками главнее
-    найденного, найденный — промаха. Свой найденный текст новой версии
-    остаётся — он под её длительность.
+    Только выбранный руками: найденный сам и «не найдено» остаются со
+    старым файлом. Замена переносит до того, как новый файл ищет свой текст,
+    и перенесённый найденный (он не устаревает) навсегда закрыл бы новой
+    версии её собственный — с её длиной и таймингами, а промах на 14 дней
+    закрыл бы поиск по её исправленным тегам.
     """
     with _store_lock:
         try:
             cached = json.loads(_key(old).read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return
+        if not cached.get("chosen"):
+            return
         try:
             own = json.loads(_key(new).read_text(encoding="utf-8"))
         except (OSError, ValueError):
             own = None
-        if own is not None and not (
-            (cached.get("chosen") and not own.get("chosen"))
-            or (cached.get("found") and not own.get("found") and not own.get("chosen"))
-        ):
+        if own is not None and own.get("chosen"):
             return
         try:
             _key(old).replace(_key(new))

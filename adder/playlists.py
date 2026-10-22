@@ -64,6 +64,9 @@ def _clean_paths(paths: list[str]) -> list[str]:
     """
     for path in paths:
         text = str(path)
+        # Только \n и \r: по ним строку режут и Navidrome, и parse(). Файл,
+        # в чьём имени остался U+2028 (до 22.10 sanitize_filename его
+        # пропускал), — одна строка для обоих, и добавить его можно.
         if not text.strip() or "\n" in text or "\r" in text or text.lstrip().startswith("#"):
             raise HTTPException(status_code=400, detail=f"Недопустимый путь в подборке: {text!r}")
         # Только пути внутри фонотеки: «/etc/shadow» или «../..» в .m3u сейчас
@@ -135,7 +138,9 @@ def parse(text: str) -> list[str]:
     repeated path is a repeated entry rather than a mistake to collapse.
     """
     paths = []
-    for raw in text.splitlines():
+    # Только по \n, как Navidrome: splitlines() резал и по U+2028 и \x85 из
+    # названия, и путь с таким символом становился двумя несуществующими.
+    for raw in text.split("\n"):
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
@@ -161,7 +166,7 @@ def render(paths: list[str]) -> str:
             seconds, label = -1, Path(rel).stem
         # Tags are untrusted: a line break in a title would start a new .m3u
         # line, which Navidrome reads as one more track.
-        label = "".join(ch if ch.isprintable() else " " for ch in label)
+        label = "".join(" " if runtime.breaks_lines(ch) else ch for ch in label)
         out.append(f"#EXTINF:{seconds},{label}")
         out.append(rel)
     return "\n".join(out) + "\n"

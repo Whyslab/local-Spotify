@@ -148,8 +148,10 @@ def _analysis(db_path: Path) -> sqlite3.Connection | None:
 
 
 def _stamp(path: Path) -> list[int]:
+    """Чем файл отличается от прежнего. Правка тегов в панели сохраняет
+    mtime (а размер часто тот же) — её выдаёт ctime; замена файла — inode."""
     stat = path.stat()
-    return [stat.st_size, stat.st_mtime_ns]
+    return [stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_ino]
 
 
 def backfill(

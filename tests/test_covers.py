@@ -490,3 +490,11 @@ def test_one_bad_path_does_not_fail_the_batch(client):
     assert answers[0] == "missing" and answers[1][0] == "image/jpeg"
     long_path = {"items": [{"path": "a" * 5000, "size": 96}]}
     assert client.post("/api/covers", json=long_path).status_code == 422
+
+
+def test_a_long_cyrillic_playlist_name_still_gets_its_cover(temp_env):
+    """Временный файл звался полным именем плюс 27 байт — у названия из
+    сотни с лишним кириллических букв это переваливало за 255."""
+    name = "Ж" * 118  # 236 байт: подборка с таким именем создаётся
+    covers.store(name, JPEG)
+    assert covers.cover_file(name) is not None

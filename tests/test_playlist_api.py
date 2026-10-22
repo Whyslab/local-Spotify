@@ -3,7 +3,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from adder import config, covers, library, navidrome, playlists, runtime
+from adder import config, covers, db, library, navidrome, playlists, runtime
 
 
 @pytest.fixture()
@@ -187,3 +187,12 @@ def test_play_journal_is_rate_limited(client, monkeypatch):
     assert refused.status_code == 429
     # The phone's queue waits exactly until a slot frees up, not a blind minute.
     assert 1 <= int(refused.headers["Retry-After"]) <= 60
+
+
+def test_recreating_a_playlist_cancels_its_queued_delete(client):
+    """«delete» ищет подборку в Navidrome по файлу: пришёл бы он после
+    пересоздания — снёс бы новую."""
+    navidrome.enqueue("delete", "Gym")
+    navidrome.enqueue("delete", "Other")
+    assert client.post("/api/playlists", json={"name": "Gym", "paths": []}).status_code == 200
+    assert [r["name"] for r in db.db_query("SELECT name FROM navidrome_ops")] == ["Other"]

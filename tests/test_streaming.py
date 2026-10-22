@@ -149,7 +149,7 @@ def test_the_signed_path_is_the_decoded_one(client):
         "Артист/Трек, часть 2.m4a",
         expires_at,
         signing.sign("Артист/Трек, часть 2.m4a", expires_at),
-        now=0,
+        now=expires_at - 3600,
     )
 
 
@@ -274,3 +274,13 @@ def test_stream_is_never_compressed(client):
     assert whole.status_code == 200 and part.status_code == 206
     for response in (whole, part):
         assert "content-encoding" not in response.headers
+
+
+def test_a_link_signed_for_longer_than_the_cap_is_refused():
+    """Ссылки, выданные до потолка в шесть часов, жили бы, сколько им
+    подписали, — хоть год."""
+    now = 1_800_000_000.0
+    far = int(now + 365 * 24 * 3600)
+    assert not signing.verify("A/B.m4a", far, signing.sign("A/B.m4a", far), now=now)
+    fine = int(now + signing.MAX_LIFETIME)
+    assert signing.verify("A/B.m4a", fine, signing.sign("A/B.m4a", fine), now=now)

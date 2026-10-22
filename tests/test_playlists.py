@@ -203,3 +203,23 @@ def test_a_tag_cannot_add_a_line_to_the_playlist_file(monkeypatch, breaker):
     assert playlists.parse(text) == ["A/B.m4a"]
     assert len(text.splitlines()) == 3
     assert "C/Other.m4a" in text.splitlines()[1]  # still shown, on its own line
+
+
+def test_a_unicode_line_break_in_a_file_name_stays_one_entry(temp_library):
+    """Navidrome режет .m3u только по \n, а parse() резал и по U+2028 и
+    \x85: путь с таким символом становился двумя несуществующими, подборка
+    росла на каждой синхронизации, а проверка замены файл не видела."""
+    odd = "A/Singles/Foo\u2028Bar\x85Baz.m4a"
+    text = "#EXTM3U\r\n#EXTINF:-1,Foo\r\n" + odd + "\r\nB/Singles/X.m4a\n"
+    assert playlists.parse(text) == [odd, "B/Singles/X.m4a"]
+
+
+def test_the_label_keeps_nbsp_and_joined_emoji(monkeypatch):
+    """isprintable() менял на пробел и неразрывный пробел, и склейку эмодзи."""
+    title = "Семья\u00a0👨\u200d👩\u200d👧"
+    monkeypatch.setattr(
+        library,
+        "library_index",
+        lambda: [{"path": "A/B.m4a", "artist": "", "title": title, "duration": 1}],
+    )
+    assert title in playlists.render(["A/B.m4a"])

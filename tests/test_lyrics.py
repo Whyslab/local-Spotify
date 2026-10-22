@@ -521,3 +521,26 @@ def test_choosing_for_a_path_outside_the_library_is_refused(client, monkeypatch)
     monkeypatch.setattr(lyrics, "_get", lambda *a, **k: _Answer(data={"plainLyrics": "x"}))
     response = client.post("/api/lyrics/choose", json={"path": "../../etc/passwd", "id": 1})
     assert response.status_code in (400, 404)
+
+
+@pytest.mark.parametrize(
+    "old, carried",
+    [
+        ({"found": True, "chosen": True, "plain": "руками"}, True),
+        ({"found": True, "plain": "сам нашёл"}, False),
+        ({"found": False, "at": 1.0}, False),
+    ],
+)
+def test_a_replacement_carries_only_hand_picked_lyrics(old, carried):
+    """Найденный сам текст старой версии (а он не устаревает) навсегда
+    закрывал новой версии её собственный — с её длиной и таймингами."""
+    lyrics._write("A/Old.m4a", old)
+    lyrics.carry_over("A/Old.m4a", "A/New.m4a")
+    assert lyrics._key("A/New.m4a").exists() is carried
+
+
+def test_a_replacement_does_not_override_the_new_files_own_choice():
+    lyrics._write("A/Old.m4a", {"found": True, "chosen": True, "plain": "старый"})
+    lyrics._write("A/New.m4a", {"found": True, "chosen": True, "plain": "новый"})
+    lyrics.carry_over("A/Old.m4a", "A/New.m4a")
+    assert json.loads(lyrics._key("A/New.m4a").read_text(encoding="utf-8"))["plain"] == "новый"

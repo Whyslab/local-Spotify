@@ -255,6 +255,12 @@ def enqueue(op: str, name: str, payload: dict | None = None) -> None:
     logger.info("Queued Navidrome op %s for %r", op, name)
 
 
+def cancel(op: str, name: str) -> None:
+    """Забыть отложенное: подборку с этим именем создали заново, и поздний
+    «delete» (он ищет по файлу) снёс бы в Navidrome уже новую."""
+    db.db_exec("DELETE FROM navidrome_ops WHERE op = ? AND name = ?", (op, name))
+
+
 def _run(op: str, name: str, payload: dict) -> bool:
     if op == "delete":
         delete_playlist(name)
@@ -316,6 +322,10 @@ def drain(now: float | None = None) -> dict:
             continue
         db.db_exec("DELETE FROM navidrome_ops WHERE id = ?", (row["id"],))
         done += 1
+    if done:
+        # Navidrome снова отвечает: отложенное раньше ждать своего часа (до
+        # шести) незачем, а новое шло бы вперёд старого.
+        db.db_exec("UPDATE navidrome_ops SET next_at = NULL WHERE next_at > ?", (now,))
     remaining = db.db_query("SELECT COUNT(*) AS n FROM navidrome_ops")[0]["n"]
     return {"pending": remaining, "done": done}
 

@@ -4,6 +4,7 @@
 без ключа и что происходит с кривым вводом.
 """
 
+import time
 from pathlib import Path
 
 import pytest
@@ -104,7 +105,7 @@ def test_an_mp3_is_streamed_as_mp3(client, tmp_path):
     track = config.LIBRARY / "A" / "Singles" / "t.mp3"
     track.parent.mkdir(parents=True)
     track.write_bytes(b"ID3" + b"\x00" * 100)
-    expires = 9999999999
+    expires = int(time.time()) + 3600
     response = client.get(
         "/api/stream",
         params={
@@ -499,3 +500,33 @@ def test_every_upload_route_has_its_own_body_limit():
     # import, replace-file, a playlist's cover, an artist's photo: a check that
     # found none (string annotations, say) would pass for nothing.
     assert len(found) >= 4, found
+
+
+def test_a_unicode_line_break_never_reaches_a_file_name():
+    from adder import ingest
+
+    assert ingest.sanitize_filename("Foo\u2028Bar\x85Baz\u2029") == "FooBarBaz"
+    assert ingest.sanitize_filename("Семья\u00a0👨\u200d👩") == "Семья\u00a0👨\u200d👩"
+
+
+def test_every_journal_message_stays_on_one_line():
+    """Названия из тегов попадают в журнал во многих местах (тексты песен,
+    треки со стороны); экранировать каждое — пропустить какое-то."""
+    import logging
+
+    from adder import runtime
+
+    formatter = runtime.TaskIdFormatter("%(message)s")
+    record = logging.LogRecord(
+        "adder.lyrics",
+        logging.WARNING,
+        __file__,
+        1,
+        "LRCLIB failed for %s",
+        ("Song\n[x] fake\u2028line",),
+        None,
+    )
+    out = formatter.format(record)
+    assert out == "LRCLIB failed for Song\\n[x] fake\\u2028line"
+    plain = logging.LogRecord("adder.app", logging.INFO, __file__, 1, "Ок\u00a0тут", None, None)
+    assert formatter.format(plain) == "Ок\u00a0тут"

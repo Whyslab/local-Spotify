@@ -91,8 +91,15 @@ def db_init():
         op TEXT NOT NULL, name TEXT NOT NULL, payload TEXT,
         created_at TEXT, attempts INTEGER DEFAULT 0, last_error TEXT)""")
     # When a failed op may be tried again (epoch seconds): see navidrome.drain.
-    with suppress(sqlite3.OperationalError):
+    try:
         db_exec("ALTER TABLE navidrome_ops ADD COLUMN next_at REAL")
+    except sqlite3.OperationalError:
+        pass  # колонка уже есть
+    else:
+        # Прежний код прибавлял попытку каждые 30 с: операция, ждавшая дольше
+        # десяти минут, уже «исчерпала» двадцать и была бы выброшена на
+        # первой же неудаче. Отсчёт — заново, по новым правилам.
+        db_exec("UPDATE navidrome_ops SET attempts = 0")
 
     # The play journal. Navidrome keeps a play count and the date of the last
     # play, not a log, so "what was playing on Wednesday evenings" cannot be

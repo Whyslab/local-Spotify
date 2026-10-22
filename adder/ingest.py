@@ -45,7 +45,8 @@ def sanitize_filename(name: str) -> str:
     name = re.sub(r'[\\/*?:"<>|]', "", name)
     # Управляющие символы из тегов и ведущие точки: «..» уводил бы из папки,
     # «.m4a» становился скрытым файлом без имени.
-    name = re.sub(r"[\x00-\x1f\x7f]", "", name).strip().lstrip(".").strip()
+    name = "".join(ch for ch in name if not runtime.breaks_lines(ch))
+    name = name.strip().lstrip(".").strip()
     # Длинное имя из эмодзи или кириллицы не влезало в 255 байт и роняло
     # задачу с «File name too long». Режем по границе символа.
     encoded = name.encode("utf-8")
@@ -1006,6 +1007,9 @@ def cleanup_old_temp_files():
         logger.info(f"Cleaned {cleaned} old temp files", extra={"task_id": "system"})
 
 
+FAILED_UPLOAD_TTL_SECONDS = 7 * 24 * 3600
+
+
 def _cleanup_stale_uploads(now: float) -> int:
     """Загруженные файлы, которые уже никто не обработает.
 
@@ -1024,13 +1028,22 @@ def _cleanup_stale_uploads(now: float) -> int:
                 "AND status IN ('queued', 'downloading', 'tagging')"
             )
         }
+        # Упавшую загрузку (и замену — её сами не повторяют) повторяют
+        # руками, и не обязательно в тот же день: её файл живёт неделю.
+        failed = {
+            row["url"].removeprefix("file:")
+            for row in db.db_query(
+                "SELECT url FROM tasks WHERE url LIKE 'file:%' AND status = 'error'"
+            )
+        }
     except Exception:  # noqa: BLE001 — без базы лучше ничего не трогать
         return 0
     removed = 0
     for path in folder.iterdir():
         digest = path.name.split(".", 1)[0]
         try:
-            if digest in waiting or now - path.stat().st_mtime <= runtime.TMP_TTL_SECONDS:
+            ttl = FAILED_UPLOAD_TTL_SECONDS if digest in failed else runtime.TMP_TTL_SECONDS
+            if digest in waiting or now - path.stat().st_mtime <= ttl:
                 continue
             path.unlink()
             removed += 1
@@ -1377,7 +1390,9 @@ def write_atomic(target: Path, data: bytes) -> None:
     0600 would travel with the upload into the library (copy2 keeps the mode),
     and Navidrome, another user, could not read the track.
     """
-    name = target.with_name(f".{target.name}.{secrets.token_hex(8)}.part")
+    # Начало имени — только для глаз: полное имя + 27 байт хвоста не влезало
+    # в 255 у обложки подборки с длинным кириллическим названием.
+    name = target.with_name(f".{target.stem[:32]}.{secrets.token_hex(8)}.part")
     fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
     try:
         with os.fdopen(fd, "wb") as handle:

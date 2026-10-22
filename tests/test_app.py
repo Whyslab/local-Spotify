@@ -1137,3 +1137,27 @@ def test_library_rows_have_size_and_stamp(client):
     os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
     after = the_row()
     assert after["stamp"] != before["stamp"]
+
+
+def test_a_failed_uploads_file_waits_a_week_for_a_manual_retry(app_module):
+    """Уборка раз в сутки стирала файл упавшей загрузки через день, и
+    «повторить» отвечало «файла больше нет»; замену сама служба не повторяет."""
+    import time
+
+    db.db_init()
+    folder = runtime.TMP_DIR / ingest.IMPORT_DIR_NAME
+    folder.mkdir(parents=True, exist_ok=True)
+    failed, done = folder / "aaaa.m4a", folder / "bbbb.m4a"
+    for path in (failed, done):
+        path.write_bytes(b"x")
+        old = time.time() - runtime.TMP_TTL_SECONDS - 3600
+        os.utime(path, (old, old))
+    db.db_exec("INSERT INTO tasks(url, status) VALUES('file:aaaa', 'error')")
+
+    ingest.cleanup_old_temp_files()
+    assert failed.exists() and not done.exists()
+
+    week = time.time() - ingest.FAILED_UPLOAD_TTL_SECONDS - 3600
+    os.utime(failed, (week, week))
+    ingest.cleanup_old_temp_files()
+    assert not failed.exists()

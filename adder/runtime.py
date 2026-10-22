@@ -12,6 +12,7 @@ import os
 import queue
 import threading
 import time
+import unicodedata
 from pathlib import Path
 
 from .config import TMP_TTL_HOURS
@@ -84,12 +85,39 @@ class ShutdownRequested(Exception):
     """Raised when a task is interrupted because the service is shutting down."""
 
 
+# Всё, на чём текст разрывается на строки: управляющие символы (Cc — в их
+# числе \n, \r, \x85) и разделители строк и абзацев Юникода (U+2028,
+# U+2029). str.splitlines() режет по каждому из них, а Navidrome — только
+# по \n, и одна строка .m3u превращалась у нас в две. Неразрывный пробел,
+# склейки эмодзи и новые эмодзи — не из них: их не трогаем.
+_BREAKING = ("Cc", "Zl", "Zp")
+
+
+def breaks_lines(ch: str) -> bool:
+    return unicodedata.category(ch) in _BREAKING
+
+
+def one_line(text: str) -> str:
+    """Текст для журнала: такие символы — экранированными (\n, \u2028),
+    чтобы строка из тегов или со страницы не дописала в журнал строку,
+    похожую на строку самой службы."""
+    return "".join(repr(ch)[1:-1] if breaks_lines(ch) else ch for ch in text)
+
+
 class TaskIdFormatter(logging.Formatter):
-    """Formatter that tolerates log records without task_id."""
+    """Formatter that tolerates log records without task_id, and keeps every
+    message on one line: titles from tags reach the journal in many places
+    (lyrics, outside tracks), and escaping each call site missed some. The
+    traceback, appended after the message, keeps its own lines."""
 
     def format(self, record):
         if not hasattr(record, "task_id"):
             record.task_id = "-"
+        message = record.getMessage()
+        safe = one_line(message)
+        if safe != message:
+            record = logging.makeLogRecord(record.__dict__)
+            record.msg, record.args = safe, None
         return super().format(record)
 
 
