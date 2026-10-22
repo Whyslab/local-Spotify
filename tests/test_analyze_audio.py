@@ -116,6 +116,8 @@ def test_new_tracks_are_measured_one_at_a_time(monkeypatch):
         return subprocess.CompletedProcess(command, 0, "", "")
 
     monkeypatch.setattr(analysis.subprocess, "run", fake_run)
+    # Без .venv в папке проекта (так на CI) разбор молча не запускается.
+    monkeypatch.setattr(analysis, "PYTHON", Path(sys.executable))
     for i in range(4):
         real_analyse_track(f"A/Singles/{i}.m4a")
 
