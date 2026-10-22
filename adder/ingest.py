@@ -29,7 +29,7 @@ import mutagen
 import requests
 from mutagen.mp4 import MP4, MP4Cover
 
-from . import config, db, enrich, library, loudness, runtime
+from . import config, db, enrich, library, loudness, navidrome, runtime
 
 logger = logging.getLogger(__name__)
 
@@ -1273,6 +1273,8 @@ def edit_track(
     write_tags(path, enrich.TrackInfo(album=album or title, artists=artists), title, cover, fmt)
     os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
     library.invalidate_library_index()
+    # The kept mtime hides the edit from Navidrome's quick scan.
+    navidrome.request_full_scan()
     return cover_result
 
 
@@ -1538,6 +1540,9 @@ def _apply_replacement(tid: int, new_path: str) -> None:
         logger.warning(
             "Не удалось убрать заменённый файл %s: %s", old_path, exc, extra={"task_id": tid}
         )
+    else:
+        # Прослушивания и текст — туда же, куда подборки.
+        library.carry_history(old_path, new_path)
     logger.info(
         "Замена: %s → %s, подборок затронуто %d",
         old_path,
@@ -1631,6 +1636,11 @@ def ingest_temp_file(tid: int, temp_path: Path, names: TrackNames, thumbnail: st
                 extra={"task_id": tid},
             )
             temp_path.unlink()
+            # Путь близнеца — результат задачи: без него готовая задача без
+            # пути навсегда отказывала той же ссылке, даже когда близнеца
+            # удалили (см. app._can_requeue).
+            with suppress(Exception):
+                db.task_update(tid, result_path=str(duplicate.relative_to(config.LIBRARY)))
             return "duplicate"
 
         # Same filename + different content is allowed.

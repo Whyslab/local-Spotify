@@ -159,6 +159,9 @@ def render(paths: list[str]) -> str:
             # dropping the line, so a track that is temporarily missing does
             # not quietly disappear from the playlist.
             seconds, label = -1, Path(rel).stem
+        # Tags are untrusted: a line break in a title would start a new .m3u
+        # line, which Navidrome reads as one more track.
+        label = "".join(ch if ch.isprintable() else " " for ch in label)
         out.append(f"#EXTINF:{seconds},{label}")
         out.append(rel)
     return "\n".join(out) + "\n"
@@ -248,6 +251,26 @@ def write(name: str, paths: list[str], expected_revision: str | None) -> Playlis
     return read(name)
 
 
+def _same_track(line: str, old_path: str) -> bool:
+    """Does this .m3u line name ``old_path``, the way Navidrome reads it?
+
+    Navidrome matches lines to files ignoring case and Unicode form (see
+    sync._path_key), so "OLD.m4a" in a playlist is old.m4a. Unless a file of
+    exactly that name exists apart from it: then the line is that other track.
+    """
+    from .sync import _path_key
+
+    if line == old_path:
+        return True
+    if _path_key(line) != _path_key(old_path):
+        return False
+    candidate = config.LIBRARY / line
+    try:
+        return not candidate.exists() or candidate.samefile(config.LIBRARY / old_path)
+    except OSError:
+        return False
+
+
 def swap_everywhere(old_path: str, new_path: str) -> int:
     """Поставить `new_path` на все места, где стоит `old_path`.
 
@@ -268,10 +291,11 @@ def swap_everywhere(old_path: str, new_path: str) -> int:
             with _lock_for(name):
                 path = playlist_path(name)
                 paths = parse(path.read_text(encoding="utf-8")) if path.exists() else []
-                if old_path not in paths:
+                swapped = [new_path if _same_track(p, old_path) else p for p in paths]
+                if swapped == paths:
                     continue
                 _archive(path)
-                _atomic_write(path, render([new_path if p == old_path else p for p in paths]))
+                _atomic_write(path, render(swapped))
         except Exception as exc:  # noqa: BLE001
             logger.warning("Playlist %r: замена %s не записана: %s", name, old_path, exc)
             continue
@@ -294,7 +318,7 @@ def still_pointing_at(old_path: str) -> list[str]:
     left = []
     for path in sorted(root.glob(f"*{SUFFIX}")):
         try:
-            if old_path in parse(path.read_text(encoding="utf-8")):
+            if any(_same_track(p, old_path) for p in parse(path.read_text(encoding="utf-8"))):
                 left.append(path.name)
         except (OSError, UnicodeDecodeError):
             left.append(path.name)

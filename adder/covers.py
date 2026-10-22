@@ -68,9 +68,14 @@ def store(name: str, data: bytes) -> str:
         )
     extension, media_type = detect(data)
     COVERS_DIR.mkdir(parents=True, exist_ok=True)
+    # Сначала новая, целиком, и только потом прочь прежние: стерев старую
+    # до записи, сбой записи оставлял подборку без обложки вовсе.
+    from . import ingest
+
+    ingest.write_atomic(_file(name, extension), data)
     for other in EXTENSIONS:
-        _file(name, other).unlink(missing_ok=True)
-    _file(name, extension).write_bytes(data)
+        if other != extension:
+            _file(name, other).unlink(missing_ok=True)
     logger.info("Cover stored for playlist %r (%s, %d bytes)", name, media_type, len(data))
     return media_type
 

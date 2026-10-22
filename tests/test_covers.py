@@ -69,6 +69,24 @@ def test_storing_again_replaces_the_previous_cover(temp_env):
     assert files[0].suffix == ".jpg"
 
 
+def test_a_failed_write_keeps_the_previous_cover(temp_env, monkeypatch):
+    """Старая обложка стиралась до записи новой: сбой записи (диск полон)
+    оставлял подборку вовсе без обложки."""
+    from adder import ingest
+
+    covers.store("mix", PNG)
+
+    def full(*args, **kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(ingest, "write_atomic", full)
+    monkeypatch.setattr(Path, "write_bytes", full)
+    with pytest.raises(OSError):
+        covers.store("mix", JPEG)
+
+    assert covers.read_cover("mix")[0] == PNG
+
+
 def test_rename_carries_the_cover_across(temp_env):
     """Navidrome loses the cover on a rename; the local copy is what restores it."""
     covers.store("old", PNG)

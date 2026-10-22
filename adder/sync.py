@@ -306,6 +306,8 @@ def _loop() -> None:
             # Deletes and renames that failed while Navidrome was down: retried
             # here, not only at the next service start.
             navidrome.drain()
+            # Tag edits keep the mtime, so only a full scan shows them.
+            navidrome.scan_if_due()
             with _CHECK_LOCK:
                 check(apply=True)
         except Exception as exc:  # noqa: BLE001 -- a down Navidrome must not kill the thread

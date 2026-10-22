@@ -90,6 +90,9 @@ def db_init():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         op TEXT NOT NULL, name TEXT NOT NULL, payload TEXT,
         created_at TEXT, attempts INTEGER DEFAULT 0, last_error TEXT)""")
+    # When a failed op may be tried again (epoch seconds): see navidrome.drain.
+    with suppress(sqlite3.OperationalError):
+        db_exec("ALTER TABLE navidrome_ops ADD COLUMN next_at REAL")
 
     # The play journal. Navidrome keeps a play count and the date of the last
     # play, not a log, so "what was playing on Wednesday evenings" cannot be

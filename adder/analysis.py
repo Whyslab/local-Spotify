@@ -12,6 +12,7 @@ gets forgotten.
 """
 
 import logging
+import queue
 import shutil
 import subprocess
 import threading
@@ -25,6 +26,13 @@ NICE = "10"
 
 SCRIPT = runtime.PROJECT.parent / "scripts" / "analyze_audio.py"
 PYTHON = runtime.PROJECT.parent / ".venv" / "bin" / "python"
+
+# Новые треки меряются по одному, одним потоком. Каждый разбор — около 376 МБ;
+# альбом, добавленный целиком, раньше запускал их все разом, и потолок
+# MemoryMax был у каждого свой, а не общий.
+_pending: queue.Queue[str] = queue.Queue()
+_worker: threading.Thread | None = None
+_worker_lock = threading.Lock()
 
 
 def _command(args: list[str]) -> list[str]:
@@ -64,39 +72,49 @@ def analyse_track(path: str) -> None:
     measured is still a track, it just will not be placed by tempo until the
     next full pass picks it up.
     """
+    global _worker
     if not SCRIPT.exists() or not PYTHON.exists():
         return
+    _pending.put(path)
+    with _worker_lock:
+        if _worker is None or not _worker.is_alive():
+            _worker = threading.Thread(target=_work, name="analyse-track", daemon=True)
+            _worker.start()
 
-    def run() -> None:
-        try:
-            result = subprocess.run(
-                # База и фонотека — те же, что у службы, а не значения по
-                # умолчанию скрипта: иначе копия службы (или тест) писала
-                # измерения в настоящую adder.db.
-                _command(
-                    [
-                        "--only",
-                        path,
-                        "--db",
-                        str(runtime.DB_PATH),
-                        "--library",
-                        str(config.LIBRARY),
-                    ]
-                ),
-                capture_output=True,
-                text=True,
-                timeout=600,
-            )
-            if result.returncode != 0:
-                # The reason lands on stdout -- the script prints "✗ <track>:
-                # <error>" there and writes nothing to stderr -- so logging
-                # stderr alone produced "failed:" with an empty tail. And at
-                # info level it would sit among a few hundred thousand access
-                # log lines a week: a failure nobody can find is the silence
-                # this was meant to end.
-                detail = (result.stdout.strip() or result.stderr.strip())[-200:]
-                logger.warning("Analysis of %s failed: %s", path, detail)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Analysis of %s could not start: %s", path, exc)
 
-    threading.Thread(target=run, name="analyse-track", daemon=True).start()
+def _work() -> None:
+    while True:
+        _run(_pending.get())
+
+
+def _run(path: str) -> None:
+    try:
+        result = subprocess.run(
+            # База и фонотека — те же, что у службы, а не значения по
+            # умолчанию скрипта: иначе копия службы (или тест) писала
+            # измерения в настоящую adder.db.
+            _command(
+                [
+                    "--only",
+                    path,
+                    "--db",
+                    str(runtime.DB_PATH),
+                    "--library",
+                    str(config.LIBRARY),
+                ]
+            ),
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        if result.returncode != 0:
+            # The reason lands on stdout -- the script prints "✗ <track>:
+            # <error>" there and writes nothing to stderr -- so logging
+            # stderr alone produced "failed:" with an empty tail. And at
+            # info level it would sit among a few hundred thousand access
+            # log lines a week: a failure nobody can find is the silence
+            # this was meant to end.
+            detail = (result.stdout.strip() or result.stderr.strip())[-200:]
+            logger.warning("Analysis of %s failed: %s", path, detail)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Analysis of %s could not start: %s", path, exc)

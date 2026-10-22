@@ -16,6 +16,7 @@ API_TOKEN.
 
 import hashlib
 import hmac
+import math
 import time
 from urllib.parse import quote
 
@@ -29,6 +30,10 @@ _INFO = b"local-Spotify/stream-url/v1"
 # than a minute -- which is everything.
 GRACE_SECONDS = 300
 MIN_LIFETIME = 600
+# The duration comes from the file's tags, and an uploaded file says whatever
+# it likes: without a ceiling a "track" a year long got a link living a year.
+# Six hours is above any real track or mix in the library.
+MAX_LIFETIME = 6 * 3600
 
 
 def _key() -> bytes:
@@ -53,8 +58,11 @@ def sign(path: str, expires_at: int) -> str:
 
 
 def lifetime_for(duration: float | None) -> int:
-    seconds = int(duration or 0) + GRACE_SECONDS
-    return max(seconds, MIN_LIFETIME)
+    length = float(duration or 0)
+    if math.isnan(length):
+        length = 0.0
+    seconds = min(length, MAX_LIFETIME) + GRACE_SECONDS
+    return int(max(min(seconds, MAX_LIFETIME), MIN_LIFETIME))
 
 
 def stream_url(path: str, duration: float | None = None, now: float | None = None) -> dict:

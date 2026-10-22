@@ -479,6 +479,30 @@ def test_a_duplicate_result_also_releases_the_link(app, monkeypatch):
     assert URL not in runtime.PROCESSING_URLS
 
 
+def test_a_link_that_ended_as_a_duplicate_can_be_added_again_once_its_twin_is_gone(
+    app, monkeypatch
+):
+    """«Дубликат» кончался готовой задачей без пути результата, и эту ссылку
+    больше нельзя было добавить никогда — даже после удаления оставленного
+    близнеца: ответ молча говорил «уже есть»."""
+    from adder import app as app_module
+
+    youtube(app, monkeypatch, {"title": "A - B", "uploader": "x"})
+    deezer(app, monkeypatch, None)
+    covers(app, monkeypatch)
+    # Без ссылки внутри файла — как у треков до 24.09 и у загрузок: иначе
+    # разные ссылки дают разные байты, и дубликатом не бывают.
+    monkeypatch.setattr(ingest, "write_source", lambda path, url: None)
+    run(app, "https://www.youtube.com/watch?v=first")
+    task = run(app)
+    assert library_files(app) == [Path("A/Singles/B.m4a")]
+
+    assert task["result_path"] == "A/Singles/B.m4a"
+    assert not app_module._can_requeue(task)  # the twin is still there
+    library.delete_track("A/Singles/B.m4a")
+    assert app_module._can_requeue(task)
+
+
 def test_second_disc_is_not_written_as_2_of_1(app, monkeypatch):
     youtube(app, monkeypatch, {"title": "A - B", "uploader": "x"})
     deezer(
@@ -689,6 +713,31 @@ def _replace(app, monkeypatch, replace_of):
     ).lastrowid
     adder_queue.process(tid, url)
     return db.db_query("SELECT * FROM tasks WHERE id = ?", (tid,))[0]
+
+
+def test_a_replacement_carries_plays_and_lyrics_to_the_new_file(app, monkeypatch):
+    """Подборки переходили на новый файл, а прослушивания и выбранный руками
+    текст оставались у старого — в корзине."""
+    from adder import lyrics, playlists
+
+    monkeypatch.setattr(playlists, "HISTORY_DIR", config.LIBRARY.parent / "history")
+    monkeypatch.setattr(runtime, "guard_real_library", lambda *a, **k: None)
+    youtube(app, monkeypatch, {"title": "A - Old", "uploader": "x"})
+    deezer(app, monkeypatch, None)
+    covers(app, monkeypatch)
+    run(app)
+    old = "A/Singles/Old.m4a"
+    db.db_exec(
+        "INSERT INTO plays(path, played_at, played_seconds) VALUES(?, '2026-10-01 20:00:00', 90)",
+        (old,),
+    )
+    lyrics._write(old, {"found": True, "chosen": True, "plain": "la la", "at": 1.0})
+
+    task = _replace(app, monkeypatch, old)
+
+    assert task["status"] == "done", task["error"]
+    assert [r["path"] for r in db.db_query("SELECT path FROM plays")] == ["A/Singles/New.m4a"]
+    assert lyrics.for_track("A/Singles/New.m4a")["plain"] == "la la"
 
 
 def test_an_odd_playlist_file_does_not_fail_a_replacement(app, monkeypatch):

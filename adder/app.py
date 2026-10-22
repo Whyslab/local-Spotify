@@ -24,6 +24,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.security.utils import get_authorization_scheme_param
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
@@ -109,21 +110,15 @@ async def lifespan(app: FastAPI):
     # Recover tasks left unfinished by a previous process.
     task_queue.recover_queued_tasks()
 
-    # Remove stale temporary files from previous runs.
-    ingest.cleanup_old_temp_files()
+    # Remove stale temporary files from previous runs and trim the play
+    # journal (again once a day, see _auto_requeue_loop).
+    _housekeeping()
     outside.cleanup_now_and_then()
 
-    # Trim the play journal, then settle up with Navidrome: deliver whatever
-    # was queued while it was unreachable, and look for playlists it is still
-    # showing after their .m3u went away. Neither is allowed to stop startup --
-    # the service has to come up with Navidrome switched off.
-    try:
-        removed = db.prune_play_history(config.PLAY_HISTORY_DAYS)
-        if removed:
-            logger.info("Pruned %d play journal entries", removed, extra={"task_id": "system"})
-    except Exception as exc:
-        logger.warning("Could not prune the play journal: %s", exc, extra={"task_id": "system"})
-
+    # Settle up with Navidrome: deliver whatever was queued while it was
+    # unreachable, and look for playlists it is still showing after their .m3u
+    # went away. Not allowed to stop startup -- the service has to come up
+    # with Navidrome switched off.
     if navidrome.configured():
         try:
             navidrome.drain()
@@ -242,6 +237,15 @@ def upload_limit(method: str, path: str) -> int | None:
     return None
 
 
+def _bearer(headers: dict[bytes, bytes]) -> HTTPAuthorizationCredentials | None:
+    """The bearer token from raw ASGI headers, parsed as HTTPBearer does."""
+    value = headers.get(b"authorization", b"").decode("latin-1")
+    scheme, credentials = get_authorization_scheme_param(value)
+    if scheme.lower() != "bearer" or not credentials:
+        return None
+    return HTTPAuthorizationCredentials(scheme=scheme, credentials=credentials)
+
+
 class _BodyTooLarge(HTTPException):
     """HTTPException: FastAPI turns any other error while reading a body into
     400, and this one must stay 413."""
@@ -261,7 +265,15 @@ class UploadSizeLimit:
         if scope["type"] != "http" or scope["method"] not in BODY_METHODS:
             return await self.inner(scope, receive, send)
         limit = upload_limit(scope["method"], scope["path"])
-        length = dict(scope["headers"]).get(b"content-length", b"")
+        headers = dict(scope["headers"])
+        length = headers.get(b"content-length", b"")
+        if limit is not None and not _token_matches(_bearer(headers)):
+            # FastAPI reads and spools the whole form before verify_token
+            # runs: without this, anyone on the network could make it take in
+            # 600 MB before answering 401. Every upload route needs the token
+            # (test_every_route_but_the_public_few_needs_the_token).
+            answer = JSONResponse({"detail": "Invalid or missing API token"}, status_code=401)
+            return await answer(scope, receive, send)
         if limit is not None and not length.isdigit():
             # Uploads say their size up front: refused before a byte is read.
             answer = JSONResponse({"detail": "Content-Length is required"}, status_code=411)
@@ -314,6 +326,9 @@ class SecurityHeaders:
                 headers.setdefault("X-Content-Type-Options", "nosniff")
                 if headers.get("content-type", "").startswith("text/html"):
                     headers.setdefault("Content-Security-Policy", CONTENT_SECURITY_POLICY)
+                    # A link out of the page (Deezer, YouTube) must not carry
+                    # the address of this service on the LAN with it.
+                    headers.setdefault("Referrer-Policy", "no-referrer")
             await send(message)
 
         await self.inner(scope, receive, with_headers)
@@ -643,12 +658,37 @@ def requeue_failed(auto: bool = False) -> list[int]:
     return queued
 
 
+# Уборка временных файлов и журнала прослушиваний: при запуске и раз в сутки.
+# Служба живёт неделями, и уборка только при запуске копила их всё это время.
+HOUSEKEEPING_SECONDS = 24 * 3600
+
+
+def _housekeeping() -> None:
+    ingest.cleanup_old_temp_files()
+    try:
+        removed = db.prune_play_history(config.PLAY_HISTORY_DAYS)
+        if removed:
+            logger.info("Pruned %d play journal entries", removed, extra={"task_id": "system"})
+    except Exception as exc:
+        logger.warning("Could not prune the play journal: %s", exc, extra={"task_id": "system"})
+
+
 def _auto_requeue_loop() -> None:
+    last_housekeeping = time.monotonic()  # lifespan has just done it
     while not runtime.shutdown_event.wait(AUTO_REQUEUE_CHECK_SECONDS):
         try:
             requeue_failed(auto=True)
         except Exception:
             logger.exception("Automatic requeue failed", extra={"task_id": "system"})
+        # Не посреди добавления: загрузка, долго ждавшая очереди, копируется в
+        # tmp со старым mtime (copy2) и выглядела бы просроченной, пока её тегают.
+        if time.monotonic() - last_housekeeping < HOUSEKEEPING_SECONDS or runtime.PROCESSING_URLS:
+            continue
+        last_housekeeping = time.monotonic()
+        try:
+            _housekeeping()
+        except Exception:
+            logger.exception("Daily housekeeping failed", extra={"task_id": "system"})
 
 
 @app.post("/api/tasks/retry-failed")
@@ -2209,6 +2249,12 @@ _EVENTS_WINDOW: list[float] = []
 EVENTS_PER_MINUTE = 60
 
 
+def _one_line(text: str) -> str:
+    """Text from the page, fit for the journal: control characters escaped, so
+    a "\n" in it cannot add a line that looks like the service's own."""
+    return "".join(ch if ch.isprintable() else repr(ch)[1:-1] for ch in text)
+
+
 @app.post("/api/player-event")
 def player_event(req: PlayerEvent, authenticated: bool = Depends(verify_token)):
     """One line in the journal per player event; nothing is stored."""
@@ -2219,14 +2265,14 @@ def player_event(req: PlayerEvent, authenticated: bool = Depends(verify_token)):
             raise HTTPException(status_code=429, detail="Too many player events")
         _EVENTS_WINDOW.append(now)
     at = f" at {req.at:.1f}s" if req.at is not None else ""
-    detail = f" ({req.detail})" if req.detail else ""
+    detail = f" ({_one_line(req.detail)})" if req.detail else ""
     level = logging.INFO if req.event in ("pause", "mix") else logging.WARNING
     logger.log(
         level,
         "Player: %s%s %s%s",
         req.event,
         at,
-        req.path,
+        _one_line(req.path),
         detail,
         extra={"task_id": "player"},
     )
@@ -2252,7 +2298,7 @@ def record_play(req: PlayRequest, authenticated: bool = Depends(verify_token)):
             # play is real -- it counts as of its arrival, as before heard_at.
             logger.warning(
                 "Play of %s: heard_at %.0f s ahead of this clock, counted as of now",
-                req.path,
+                _one_line(req.path),
                 req.heard_at - wall,
                 extra={"task_id": "player"},
             )

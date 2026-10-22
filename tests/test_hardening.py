@@ -152,8 +152,48 @@ def test_an_oversized_upload_is_refused_before_it_is_read(client, monkeypatch):
     from adder import app as app_module
 
     monkeypatch.setitem(app_module.BODY_LIMITS, "/api/import", 1000)
-    response = client.post("/api/import", files={"files": ("a.mp3", b"x" * 5000, "audio/mpeg")})
+    response = client.post(
+        "/api/import", files={"files": ("a.mp3", b"x" * 5000, "audio/mpeg")}, headers=AUTH
+    )
     assert response.status_code == 413
+
+
+@pytest.mark.parametrize(
+    "path", ["/api/import", "/api/replace-file", "/api/artist-photo", "/api/playlists/x/cover"]
+)
+@pytest.mark.parametrize("authorization", [None, b"Bearer wrong", b"Basic dGVzdA==", b"Bearer"])
+def test_an_upload_without_the_token_is_refused_before_a_byte_is_read(client, path, authorization):
+    """FastAPI parses the multipart form before verify_token runs: without a
+    token anyone on the network could make the service read and spool 600 MB
+    to /api/import before it answered 401."""
+    import asyncio
+
+    from adder import app as app_module
+
+    headers = [
+        (b"content-length", b"600000000"),
+        (b"content-type", b"multipart/form-data; boundary=x"),
+    ]
+    if authorization is not None:
+        headers.append((b"authorization", authorization))
+    scope = {
+        "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": "POST",
+        "scheme": "http", "path": path, "raw_path": path.encode(), "root_path": "",
+        "query_string": b"name=x", "headers": headers, "client": ("127.0.0.1", 1),
+        "server": ("127.0.0.1", 8787),
+    }  # fmt: skip
+    sent = []
+
+    async def receive():
+        raise AssertionError("the body was read before the token was checked")
+
+    async def send(message):
+        sent.append(message)
+
+    asyncio.run(app_module.app(scope, receive, send))
+
+    assert sent[0]["type"] == "http.response.start"
+    assert sent[0]["status"] == 401
 
 
 def test_a_playlist_cannot_point_outside_the_library():
@@ -201,6 +241,31 @@ def test_player_events_go_to_the_journal_and_need_the_token(client, caplog):
     assert "Player: stall-reload at 12.5s A/B.m4a (попытка 1)" in caplog.text
     bad = client.post("/api/player-event", json={"event": "rm -rf"}, headers=AUTH)
     assert bad.status_code == 422
+
+
+def test_player_strings_cannot_forge_a_journal_line(client, caplog):
+    """path и detail приходят от страницы как есть: «\n» в них дописывал в
+    журнал службы строку, неотличимую от настоящей."""
+    import logging
+    import time
+
+    forged = "A/B.m4a\n2026-10-20 INFO Task finished: stored\x1b[2J"
+    with caplog.at_level(logging.INFO, logger="adder.app"):
+        client.post(
+            "/api/player-event",
+            json={"event": "stall", "path": forged, "detail": "x\ry"},
+            headers=AUTH,
+        )
+        client.post(
+            "/api/plays",
+            json={"path": forged, "played_seconds": 10, "heard_at": time.time() + 86400},
+            headers=AUTH,
+        )
+    messages = [r.getMessage() for r in caplog.records if forged[:7] in r.getMessage()]
+    assert len(messages) == 2
+    for message in messages:
+        assert "\n" not in message and "\r" not in message and "\x1b" not in message
+        assert "A/B.m4a\\n2026" in message  # escaped, still readable
 
 
 def test_backup_rotation_removes_wal_and_shm(tmp_path):
@@ -402,6 +467,7 @@ def test_an_artist_photo_from_a_phone_is_not_refused_for_its_size(client):
         "/api/artist-photo",
         params={"name": "Nobody"},
         files={"image": ("photo.jpg", photo, "image/jpeg")},
+        headers=AUTH,
     )
     assert response.status_code != 413, response.text
 

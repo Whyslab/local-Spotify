@@ -384,6 +384,33 @@ def _store(rel_path: str, result: dict) -> dict:
         return _write(rel_path, result)
 
 
+def carry_over(old: str, new: str) -> None:
+    """Текст трека, который заменили другим файлом, переходит к новому.
+
+    Только если у нового нет своего не хуже: выбранный руками главнее
+    найденного, найденный — промаха. Свой найденный текст новой версии
+    остаётся — он под её длительность.
+    """
+    with _store_lock:
+        try:
+            cached = json.loads(_key(old).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        try:
+            own = json.loads(_key(new).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            own = None
+        if own is not None and not (
+            (cached.get("chosen") and not own.get("chosen"))
+            or (cached.get("found") and not own.get("found") and not own.get("chosen"))
+        ):
+            return
+        try:
+            _key(old).replace(_key(new))
+        except OSError as exc:
+            logger.warning("lyrics: не смог перенести кэш: %s", exc)
+
+
 def _write(rel_path: str, result: dict) -> dict:
     try:
         CACHE_DIR.mkdir(parents=True, exist_ok=True)

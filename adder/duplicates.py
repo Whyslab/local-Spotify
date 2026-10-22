@@ -107,6 +107,7 @@ def resolve(tid: int, keep: str) -> dict:
         # Не удалять то, на что ещё ссылается подборка (см. ingest._apply_replacement).
         raise RuntimeError(f"Подборки {', '.join(left)} не обновились — дубликат оставлен")
     library.delete_track(removed)
+    library.carry_history(removed, kept)
     if keep == "existing":
         db.task_update(tid, result_path=kept)
     _clear(tid)
