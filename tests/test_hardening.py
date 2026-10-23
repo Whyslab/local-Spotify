@@ -41,6 +41,8 @@ def test_health_without_a_token_says_only_whether_it_is_alive(client):
     assert short == {"status": "healthy"}
     full = client.get("/health", headers=AUTH).json()
     assert "library_path" in full and "active_tasks" in full
+    # Страница узнаёт отвергнутый ключ по короткой форме: ровно {status}.
+    assert len(full) > 1
 
 
 def test_the_api_map_is_not_published(client):

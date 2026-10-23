@@ -4875,6 +4875,53 @@ def _fresh_page(server, browser, storage: dict, route=None):
     return context, page
 
 
+def test_a_wrong_key_brings_the_key_form_back_and_says_so(server, browser):
+    # Видео, 0:55: с неверным ключом — «Не собралось», «Подборок пока нет»,
+    # и ни слова о ключе; поле ключа было уже не вернуть.
+    context, page = _fresh_page(server, browser, {"token": "not-the-key"})
+    try:
+        page.wait_for_function("!document.getElementById('loginBox').hidden")
+        assert "не подошёл" in page.locator("#loginNote").text_content()
+        assert page.evaluate("localStorage.getItem('token')") is None
+        # Верный ключ — снова всё на месте.
+        page.fill("#tokenInput", TOKEN)
+        # Страница собирается заново сразу, а не через полминуты опроса.
+        with (
+            page.expect_request("**/health", timeout=5000),
+            page.expect_request("**/api/home*", timeout=5000),
+        ):
+            page.get_by_role("button", name="Подключиться").click()
+        page.wait_for_function("document.getElementById('loginBox').hidden")
+        assert page.locator("#loginNote").text_content() == ""
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize(
+    "typed, says",
+    [
+        ("", "Вставьте ключ"),
+        ("\u200b", "Вставьте ключ"),
+        ("ключ-на-русской-раскладке", "латиниц"),
+        ("key-with-emoji-🎵", "лишние символы"),
+    ],
+)
+def test_a_key_that_cannot_be_right_is_refused_at_the_form(server, browser, typed, says):
+    # Видео, 0:44 и 0:55: пустое поле молча ничего не делало, а ключ на
+    # кирилице не мог уйти в заголовок — fetch падал, и шапка писала «нет связи».
+    context, page = _fresh_page(server, browser, {})
+    try:
+        page.wait_for_function("!document.getElementById('loginBox').hidden")
+        page.fill("#tokenInput", typed)
+        page.get_by_role("button", name="Подключиться").click()
+        page.wait_for_function("document.getElementById('loginNote').textContent !== ''")
+        assert says in page.locator("#loginNote").text_content()
+        assert not page.locator("#loginBox").is_hidden()
+        assert page.evaluate("localStorage.getItem('token')") is None
+    finally:
+        context.close()
+
+
 def test_the_library_does_not_say_nothing_found_while_it_loads(server, browser):
     # Видео, 3:01: «Ничего не нашлось.» три секунды, пока фонотека грузилась.
     context, page = _fresh_page(

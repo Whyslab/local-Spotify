@@ -73,14 +73,33 @@ function headers() {
     return { "Authorization": "Bearer " + token() };
 }
 
+/* Ключ уходит в заголовок, а там только Latin-1: с кириллицей fetch падал до
+ * отправки, и шапка писала «нет связи» вместо «ключ не тот». */
+function keyCanBeSent(value) {
+    return !/[^\x20-\x7e]/.test(value);
+}
+
+function loginNote(text) {
+    document.getElementById("loginNote").textContent = text;
+}
+
 function saveToken() {
-    const value = document.getElementById("tokenInput").value.trim();
-    if (!value) return;
+    /* Невидимые пробелы приходят с ключом, вставленным из мессенджера или
+     * заметок, и trim() их не снимает. */
+    const value = document.getElementById("tokenInput").value.replace(/[\u200b-\u200d\ufeff]/g, "").trim();
+    if (!value) return loginNote("Вставьте ключ — значение API_TOKEN.");
+    if (/[а-яё]/i.test(value)) {
+        return loginNote("В ключе только латиница, цифры и знаки — похоже, включена русская раскладка.");
+    }
+    if (!keyCanBeSent(value)) return loginNote("В ключе лишние символы — скопируйте его заново из adder/.env.");
+    loginNote("");
     tokenInMemory = value;
     try { localStorage.setItem("token", value); } catch (e) { /* только до перезагрузки */ }
     document.getElementById("tokenInput").value = "";
     applyLoginState();
-    refresh();
+    /* С пометкой «сейчас»: после отказа в ключе опрос только что был, и
+     * обычный refresh() ждал бы полминуты — страница стояла «Не собралось». */
+    refresh(true);
     flushPendingPlays();  /* прослушивания, отвергнутые со старым токеном */
     flushPlaylistEdits();  /* правки подборок — тоже */
     loadFavourites();  /* без токена Monday было не прочесть — сердце пряталось */
@@ -99,6 +118,19 @@ function logout() {
     if (window.caches) caches.delete("api-v1").catch(() => {});
     applyLoginState();
     switchView("viewAdd");
+}
+
+/* Сервер ключ не принял (сменили API_TOKEN, опечатка) — снова поле ключа и
+ * почему. Раньше шапка писала «онлайн», списки молча получали 401, а
+ * вернуться к полю можно было только через «Службу». Очередь и скачанное не
+ * трогаем, как logout(): ключ поправят — всё на месте. */
+function keyRejected() {
+    tokenInMemory = "";
+    try { localStorage.removeItem("token"); } catch (e) { /* нечего стирать */ }
+    /* Большой плеер закрывает всё остальное (inert) — поле ключа под ним не нажать. */
+    if (typeof sheetOpen === "function" && sheetOpen()) collapsePlayer();
+    applyLoginState();
+    loginNote("Ключ не подошёл — сверьте с API_TOKEN в adder/.env.");
 }
 
 /* The token prompt is a one-time step, so it only takes up the screen while
@@ -566,6 +598,8 @@ async function health() {
     const text = document.getElementById("statusText");
     const stats = document.getElementById("libraryStats");
 
+    const sent = token();
+    if (sent && !keyCanBeSent(sent)) return keyRejected();
     try {
         /* Подробности сервер отдаёт только с ключом; без него — одно состояние. */
         const r = await fetch("/health", { headers: headers() });
@@ -575,6 +609,14 @@ async function health() {
         pill.className = "pill " + (ok ? "pill-ok" : "pill-error");
         text.textContent = ok ? "онлайн" : "проблема";
         setServerDown(false);
+        /* Короткий ответ — ровно {status} — значит, ключ не принят. Сверяем
+         * именно форму, а не одно поле: переименуют поле в полном ответе —
+         * верный ключ не сотрётся. Ключ, введённый, пока шёл запрос, этот
+         * ответ не судит. */
+        const short = typeof data.status === "string" && Object.keys(data).length === 1;
+        if (sent && sent === token() && short) {
+            return keyRejected();
+        }
 
         if (typeof data.tracks === "number") {
             const albums = typeof data.albums === "number" ? ` · ${plural(data.albums, "альбом", "альбома", "альбомов")}` : "";
