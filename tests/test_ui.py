@@ -4853,3 +4853,36 @@ def test_stats_fit_a_phone_and_their_buttons_are_not_grey(page):
         assert grey == []
     finally:
         db.db_exec("DELETE FROM plays")
+
+
+def _fresh_page(server, browser, storage: dict, route=None):
+    """Страница со своим localStorage до первого скрипта — запуск «как с иконки»."""
+    context = browser.new_context()
+    setup = "".join(
+        f"localStorage.setItem({json.dumps(k)}, {json.dumps(v)});" for k, v in storage.items()
+    )
+    context.add_init_script(
+        f"if (!sessionStorage.getItem('seeded')) {{ {setup}"
+        " sessionStorage.setItem('seeded', '1'); }"
+        " window.__startLength = history.length;"
+    )
+    page = context.new_page()
+    page.wait_for_function = csp_safe_wait(page)
+    if route:
+        page.route(*route)
+    page.goto(server["url"] + "/")
+    page.wait_for_function("typeof switchView === 'function'")
+    return context, page
+
+
+def test_the_library_does_not_say_nothing_found_while_it_loads(server, browser):
+    # Видео, 3:01: «Ничего не нашлось.» три секунды, пока фонотека грузилась.
+    context, page = _fresh_page(
+        server, browser, {"token": TOKEN}, route=("**/api/library?**", lambda route: None)
+    )
+    try:
+        page.evaluate("switchView('viewLibrary')")
+        page.wait_for_timeout(300)
+        assert page.locator("#libraryEmpty").is_hidden()
+    finally:
+        context.close()
