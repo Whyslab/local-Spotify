@@ -5166,3 +5166,22 @@ def test_a_cold_start_on_a_slow_network_opens_the_saved_page_at_once(page):
         assert time.monotonic() - started < 4
     finally:
         app_module.static_stamp = real
+
+
+@pytest.mark.parametrize("size", [(844, 390), (932, 430), (667, 375)])
+def test_the_big_player_cover_fits_a_phone_on_its_side(page, size):
+    # Видео 23.10: телефон боком — квадрат обложки уходил за низ экрана. В
+    # Chromium процент высоты в ячейке grid считается, и старое правило
+    # здесь проходило; тест держит то, что видно: квадрат целиком в окне.
+    _play_on_phone(page)
+    page.locator("#playerArt").click()
+    page.wait_for_function("document.querySelector('.app').classList.contains('player-open')")
+    page.set_viewport_size({"width": size[0], "height": size[1]})
+    page.wait_for_timeout(700)  # пружина обложки
+    art = page.evaluate(
+        "(() => { const a = document.querySelector('.player-art');"
+        " return [a.offsetWidth, a.offsetHeight, a.getBoundingClientRect().top,"
+        " a.getBoundingClientRect().top + a.offsetHeight]; })()"
+    )
+    assert abs(art[0] - art[1]) <= 1 and art[0] > 200, art
+    assert art[2] >= 0 and art[3] <= size[1], art

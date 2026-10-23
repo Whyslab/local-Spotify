@@ -2213,11 +2213,16 @@ html.sheet-lock, html.sheet-lock body { overflow: hidden; }
         padding-top: calc(env(safe-area-inset-top, 0px) + 2px);
     }
     .app.player-open .player-grab { height: 22px; }
+    /* Размер — от ширины колонки и высоты окна, а не «100 % высоты ячейки»:
+       Safari считает процент высоты в ячейке grid неопределённым и брал
+       квадрат по ширине колонки — обложка уходила за низ экрана (видео
+       23.10). Высота — из aspect-ratio, как и стоя. */
     .app.player-open .player-art {
         grid-row: 2 / 9;
         align-self: center;
-        width: auto;
-        height: min(100%, 78vh);
+        width: min(100%, 78vh);
+        width: min(100%, 78dvh);
+        height: auto;
         max-width: 100%;
     }
     .app.player-open .player-panel { grid-row: 2 / 9; margin: 0; }
