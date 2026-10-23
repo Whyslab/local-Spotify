@@ -5129,6 +5129,9 @@ def test_a_smart_playlist_without_a_cover_costs_no_404_and_shows_no_star(page, s
         page.evaluate("switchView('viewPlaylists')")
         card = page.locator("#playlistsBody .o-card").filter(has_text="★ Звезда")
         card.wait_for()
+        # Обложку первого трека карточка просит, только показавшись на экране,
+        # а подборок от других тестов к этому времени бывает много.
+        card.scroll_into_view_if_needed()
         page.wait_for_function(
             "[...document.querySelectorAll('#playlistsBody .o-card')]"
             ".find(c => c.textContent.includes('★ Звезда'))"
