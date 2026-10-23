@@ -156,6 +156,11 @@ async function streamUrlFor(path, fresh = false) {
         const error = new Error(r.status === 404 ? "Трека нет в фонотеке" : "Не удалось получить ссылку на трек");
         error.status = r.status;
         error.unreachable = r.status >= 500;  // 502 от Tailscale, когда компьютер спит
+        /* Трек заменили по ссылке — новая версия лежит под другим именем. */
+        if (r.status === 404) {
+            const body = await r.json().catch(() => null);
+            if (body && typeof body.replaced_by === "string") error.replacedBy = body.replaced_by;
+        }
         throw error;
     }
     const data = await r.json();
@@ -273,6 +278,15 @@ async function playAt(position, skipped = 0, direction = 1, options = {}) {
         gain = stream.gain;
     } catch (e) {
         if (generation !== player.generation) return false;
+        /* Трек заменили, пока он ждал в очереди (сохранённой на телефоне — хоть
+         * неделю назад): тот же трек под новым путём во всей очереди, и играем
+         * его, а не пропускаем как пропавший. */
+        if (e.replacedBy && e.replacedBy !== track.path) {
+            const old = track.path;
+            for (const entry of player.queue) if (entry.path === old) entry.path = e.replacedBy;
+            saveQueueSoon();
+            return playAt(position, skipped, direction, options);
+        }
         /* Трек со стороны не успел или не смог скачаться. Тишина вместо
          * музыки хуже, чем пропуск: играем соседний, а этот просим докачать
          * — вдруг к нему ещё вернутся. Счётчик не даёт кружить по очереди,

@@ -284,3 +284,40 @@ def test_a_link_signed_for_longer_than_the_cap_is_refused():
     assert not signing.verify("A/B.m4a", far, signing.sign("A/B.m4a", far), now=now)
     fine = int(now + signing.MAX_LIFETIME)
     assert signing.verify("A/B.m4a", fine, signing.sign("A/B.m4a", fine), now=now)
+
+
+def test_a_replaced_track_says_where_it_went(client):
+    # Телефон три дня держал в очереди путь трека, заменённого по ссылке:
+    # «нет в фонотеке» и пропуск, хотя новая версия лежала рядом как «… (1)».
+    from adder import db
+
+    old = "Артист/Singles/Старое.m4a"
+    db.db_exec(
+        "INSERT INTO tasks(url, status, replace_of, result_path) VALUES(?, 'done', ?, ?)",
+        ("https://www.youtube.com/watch?v=a", old, "Артист/Singles/Промежуточное.m4a"),
+    )
+    db.db_exec(
+        "INSERT INTO tasks(url, status, replace_of, result_path) VALUES(?, 'done', ?, ?)",
+        ("https://www.youtube.com/watch?v=b", "Артист/Singles/Промежуточное.m4a", TRACK),
+    )
+    r = client.get("/api/stream-url", params={"path": old})
+    assert r.status_code == 404
+    assert r.json()["replaced_by"] == TRACK  # через цепочку замен — к тому, что есть
+
+
+def test_a_missing_track_without_a_replacement_is_a_plain_404(client):
+    from adder import db
+
+    # Неудачная замена и замена, чей результат тоже пропал, никуда не ведут.
+    db.db_exec(
+        "INSERT INTO tasks(url, status, replace_of, result_path) VALUES(?, 'error', ?, ?)",
+        ("https://www.youtube.com/watch?v=c", "A/Singles/Нет.m4a", TRACK),
+    )
+    db.db_exec(
+        "INSERT INTO tasks(url, status, replace_of, result_path) VALUES(?, 'done', ?, ?)",
+        ("https://www.youtube.com/watch?v=d", "A/Singles/Тоже нет.m4a", "A/Singles/Пропал.m4a"),
+    )
+    for path in ("A/Singles/Нет.m4a", "A/Singles/Тоже нет.m4a"):
+        r = client.get("/api/stream-url", params={"path": path})
+        assert r.status_code == 404
+        assert "replaced_by" not in r.json()

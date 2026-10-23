@@ -1525,7 +1525,15 @@ def get_stream_url(path: str, authenticated: bool = Depends(verify_token)):
         _audio_file(path)
         meta = outside.read_meta(outside.track_key(path) or "") or {}
         return signing.stream_url(path, meta.get("duration"))
-    track = library.library_track(path)
+    try:
+        track = library.library_track(path)
+    except HTTPException as exc:
+        # Заменённый по ссылке трек лежит под другим именем — страница
+        # поправит у себя путь и сыграет новую версию, а не пропустит его.
+        new = library.replaced_by(path) if exc.status_code == 404 else None
+        if new is None:
+            raise
+        return JSONResponse(status_code=404, content={"detail": exc.detail, "replaced_by": new})
     duration = None
     gain = None
     for row in library.library_index():

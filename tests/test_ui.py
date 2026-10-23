@@ -5065,3 +5065,27 @@ def test_a_shelf_menu_closes_when_the_page_scrolls_under_it(page):
     page.mouse.move(640, 600)
     page.mouse.wheel(0, 300)
     page.wait_for_function("!document.querySelector('.row-menu')")
+
+
+def test_a_track_replaced_while_it_waited_in_the_queue_plays_its_new_version(page):
+    # Видео 23.10: очередь на телефоне хранила путь трека, заменённого по
+    # ссылке три дня назад, — 404 и пропуск, хотя новая версия была рядом.
+    from adder import db
+
+    old = "Loud Band/Singles/Loud (старая).opus"
+    db.db_exec(
+        "INSERT INTO tasks(url, status, replace_of, result_path) VALUES(?, 'done', ?, ?)",
+        ("https://www.youtube.com/watch?v=replaced", old, LOUD_PATH),
+    )
+    try:
+        open_library(page)
+        page.evaluate(
+            f"playQueue([{{path: {old!r}, title: 'Loud', artist: 'Loud Band', duration: 12}}],"
+            " 0, 'manual')"
+        )
+        page.wait_for_function("player.started")
+        assert page.evaluate("player.queue[0].path") == LOUD_PATH
+        assert "пропущен" not in (page.locator("#playerNote").text_content() or "")
+        page.evaluate("player.audio.pause()")
+    finally:
+        db.db_exec("DELETE FROM tasks WHERE url = 'https://www.youtube.com/watch?v=replaced'")

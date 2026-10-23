@@ -8,6 +8,7 @@ import logging
 import shutil
 import threading
 import time
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -128,6 +129,37 @@ def library_track(rel_path: str) -> Path:
     if not candidate.is_file() or candidate.suffix.lower() not in AUDIO_SUFFIXES:
         raise HTTPException(status_code=404, detail="Track not found")
     return candidate
+
+
+def replaced_by(rel_path: str) -> str | None:
+    """Where a track replaced by a link went: the file that took its place.
+
+    A replacement files the new track under its own name («… (1)» when the old
+    one was still there), so a path kept elsewhere — a phone's saved queue, an
+    old page — points at the trash. Follows a chain of replacements to a file
+    that exists; None when there is none. Never raises.
+    """
+    from . import db
+
+    seen = {rel_path}
+    current = rel_path
+    try:
+        for _ in range(10):
+            rows = db.db_query(
+                "SELECT result_path FROM tasks WHERE replace_of = ? AND status = 'done'"
+                " AND result_path IS NOT NULL ORDER BY id DESC LIMIT 1",
+                (current,),
+            )
+            if not rows or rows[0]["result_path"] in seen:
+                return None
+            current = rows[0]["result_path"]
+            seen.add(current)
+            with suppress(HTTPException):
+                library_track(current)
+                return current
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Replacement of %s not looked up: %s", rel_path, exc)
+    return None
 
 
 def library_relative(rel_path: str) -> str:
