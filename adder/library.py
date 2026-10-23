@@ -293,6 +293,21 @@ def library_counts() -> tuple[int, int]:
     return len(rows), len(albums)
 
 
+def move_to_trash(file: Path, relative: Path) -> Path:
+    """Move ``file`` into the trash as ``relative`` and return where it went.
+
+    The caller holds runtime.FILE_LOCK. A name already in the trash gets a
+    time stamp rather than overwriting the earlier copy.
+    """
+    destination = runtime.TRASH_DIR / relative
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists():
+        stamped = f"{destination.stem}-{time.time_ns()}{destination.suffix}"
+        destination = destination.with_name(stamped)
+    shutil.move(str(file), str(destination))
+    return destination
+
+
 def delete_track(rel_path: str) -> dict:
     """Remove a track from the library.
 
@@ -305,13 +320,8 @@ def delete_track(rel_path: str) -> dict:
     # От проверенного пути, а не от присланной строки: «A/../../x» или
     # абсолютный путь внутри фонотеки уводили файл мимо корзины.
     relative = target.relative_to(config.LIBRARY.resolve())
-    destination = runtime.TRASH_DIR / relative
     with runtime.FILE_LOCK:
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        if destination.exists():
-            stamped = f"{destination.stem}-{time.time_ns()}{destination.suffix}"
-            destination = destination.with_name(stamped)
-        shutil.move(str(target), str(destination))
+        destination = move_to_trash(target, relative)
 
         # Leave no empty artist/album folders behind. Under the same lock as
         # the move into the library, so a track being added for this artist

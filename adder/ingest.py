@@ -27,6 +27,7 @@ from urllib.parse import urlparse
 
 import mutagen
 import requests
+from fastapi import HTTPException
 from mutagen.mp4 import MP4, MP4Cover
 
 from . import config, db, enrich, library, loudness, navidrome, runtime
@@ -1512,13 +1513,58 @@ def import_local_file(tid: int, source: Path, original_name: str) -> Downloaded:
     return Downloaded(temp_path=staged, names=names, thumbnail=None)
 
 
+def _replace_of(tid: int) -> str | None:
+    """The library path a task replaces, if it is a replacement."""
+    rows = db.db_query("SELECT replace_of FROM tasks WHERE id = ?", (tid,))
+    return (rows[0]["replace_of"] if rows else None) or None
+
+
+def _names_the_same_file(rel_path: str, target: Path) -> bool:
+    """Whether ``target`` is the very file ``rel_path`` names (and it exists)."""
+    try:
+        return library.library_track(rel_path) == target.resolve()
+    except HTTPException:
+        return False
+
+
+def _take_its_place(temp_path: Path, target: Path, tid: int) -> None:
+    """Put a replacement where the track it replaces is, under the same name.
+
+    The caller holds runtime.FILE_LOCK. The old file steps aside under a
+    hidden name first, so a failed move puts it back as it was; only then
+    does it go to the trash, as a deletion would send it.
+    """
+    runtime.guard_real_library(config.LIBRARY, "replace a track in place")
+    relative = target.relative_to(config.LIBRARY)
+    hold = target.with_name(f".{target.name}.replaced")
+    os.replace(target, hold)
+    try:
+        shutil.move(str(temp_path), str(target))
+    except BaseException:
+        os.replace(hold, target)
+        raise
+    try:
+        library.move_to_trash(hold, relative)
+    except Exception as exc:  # noqa: BLE001 — новая версия уже на месте
+        logger.warning(
+            "Старая версия %s не ушла в корзину (лежит как %s): %s",
+            relative,
+            hold.name,
+            exc,
+            extra={"task_id": tid},
+        )
+    logger.info("Замена на месте: %s", relative, extra={"task_id": tid})
+
+
 def _apply_replacement(tid: int, new_path: str) -> None:
     """Поставить свежескачанный трек на место того, который он заменяет.
 
     Заменяем не байты файла, а ссылку: новый трек проходит обычный конвейер со
     своими тегами и своим именем, а потом занимает место старого во всех
     подборках. Перезапись байтов сохранила бы путь, но развела бы имя файла с
-    содержимым — и расширение могло не совпасть.
+    содержимым — и расширение могло не совпасть. Совпали имя и расширение —
+    новый файл уже лёг на место старого (_take_its_place), и здесь делать
+    нечего.
 
     Старый файл уезжает в корзину, а не стирается: «загрузилась не та версия» —
     это ровно тот случай, когда через день выясняется, что та.
@@ -1636,6 +1682,11 @@ def ingest_temp_file(tid: int, temp_path: Path, names: TrackNames, thumbnail: st
     # Outside the lock: the library index may read every file's tags, and a
     # race here costs at most a missed warning, never a wrong file.
     similar = find_similar_library_track(info.artists, names.meta_title, audio_duration(temp_path))
+    replace_of = _replace_of(tid)
+    # «Похоже на уже имеющийся» про трек, который эта задача и заменяет, —
+    # не предупреждение, а суть замены.
+    if similar is not None and similar == replace_of:
+        similar = None
 
     # Content-based duplicate detection must happen while holding the same
     # lock as the final move. This prevents concurrent workers from both
@@ -1658,10 +1709,17 @@ def ingest_temp_file(tid: int, temp_path: Path, names: TrackNames, thumbnail: st
                 db.task_update(tid, result_path=str(duplicate.relative_to(config.LIBRARY)))
             return "duplicate"
 
-        # Same filename + different content is allowed.
-        # Preserve the existing collision-safe naming behavior.
-        final_target = unique_path(base_target)
-        shutil.move(str(temp_path), str(final_target))
+        if replace_of is not None and _names_the_same_file(replace_of, base_target):
+            # Замена с тем же именем и расширением — на место старой: путь не
+            # меняется ни у подборок, ни у очереди на телефоне, ни у
+            # скачанного, ни у звёзд в Navidrome. Раньше — «… (1)» рядом.
+            final_target = base_target
+            _take_its_place(temp_path, base_target, tid)
+        else:
+            # Same filename + different content is allowed.
+            # Preserve the existing collision-safe naming behavior.
+            final_target = unique_path(base_target)
+            shutil.move(str(temp_path), str(final_target))
 
     # Файл уже в фонотеке. Всё, что дальше, — довесок: упавший шаг только
     # пишется в журнал. Ошибка задачи здесь значила бы повтор и второй файл

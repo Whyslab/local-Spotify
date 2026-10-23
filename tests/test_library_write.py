@@ -870,3 +870,60 @@ def test_thumbnails_pregenerated_on_ingest(app, monkeypatch):
     for size in (96, 300):
         key = hashlib.sha1(bytes(art) + f"|{size}".encode()).hexdigest()
         assert (runtime.THUMB_DIR / f"{key}.jpg").is_file(), size
+
+
+def test_a_replacement_under_the_same_name_takes_the_old_path(app, monkeypatch):
+    """23.10: новая версия с тем же именем ложилась рядом как «… (1)», и путь
+    менялся у всего, что его помнило: очередь на телефоне, скачанное, звёзды
+    в Navidrome. Теперь она встаёт на место старой, а та уезжает в корзину."""
+    from adder import playlists
+
+    monkeypatch.setattr(playlists, "HISTORY_DIR", config.LIBRARY.parent / "history")
+    monkeypatch.setattr(runtime, "guard_real_library", lambda *a, **k: None)
+    youtube(app, monkeypatch, {"title": "A - New", "uploader": "x"})
+    deezer(app, monkeypatch, None)
+    covers(app, monkeypatch)
+    run(app)
+    path = "A/Singles/New.m4a"
+    before = (config.LIBRARY / path).read_bytes()
+    playlists.create("Вечер", [path])
+    db.db_exec(
+        "INSERT INTO plays(path, played_at, played_seconds) VALUES(?, '2026-10-01 20:00:00', 90)",
+        (path,),
+    )
+
+    task = _replace(app, monkeypatch, path)
+
+    assert task["status"] == "done", task["error"]
+    assert task["result_path"] == path
+    assert (config.LIBRARY / path).read_bytes() != before
+    assert (runtime.TRASH_DIR / path).read_bytes() == before
+    assert sorted(p.name for p in (config.LIBRARY / "A/Singles").iterdir()) == ["New.m4a"]
+    assert [e.path for e in playlists.read("Вечер").entries] == [path]
+    assert [r["path"] for r in db.db_query("SELECT path FROM plays")] == [path]
+    # «Похоже на уже имеющийся трек» — это же он и есть, заменённый.
+    assert not task["warning"]
+
+
+def test_a_failed_move_in_place_puts_the_old_file_back(app, monkeypatch):
+    monkeypatch.setattr(runtime, "guard_real_library", lambda *a, **k: None)
+    monkeypatch.setattr(config, "MAX_RETRIES", 0)
+    youtube(app, monkeypatch, {"title": "A - New", "uploader": "x"})
+    deezer(app, monkeypatch, None)
+    covers(app, monkeypatch)
+    run(app)
+    path = config.LIBRARY / "A/Singles/New.m4a"
+    before = path.read_bytes()
+    real_move = shutil.move
+
+    def failing(src, dst, *args, **kwargs):
+        if Path(dst) == path:
+            raise OSError("disk full")
+        return real_move(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(ingest.shutil, "move", failing)
+    task = _replace(app, monkeypatch, "A/Singles/New.m4a")
+
+    assert task["status"] == "error"
+    assert path.read_bytes() == before
+    assert sorted(p.name for p in path.parent.iterdir()) == ["New.m4a"]
