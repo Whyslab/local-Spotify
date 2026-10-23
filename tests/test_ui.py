@@ -5185,3 +5185,31 @@ def test_the_big_player_cover_fits_a_phone_on_its_side(page, size):
     )
     assert abs(art[0] - art[1]) <= 1 and art[0] > 200, art
     assert art[2] >= 0 and art[3] <= size[1], art
+
+
+def test_a_long_playlist_is_drawn_whole_on_a_touch_phone(server, browser, page):
+    # Видео 23.10: быстрая прокрутка Monday на айфоне — пустые полосы: строки,
+    # которые браузер пропускал (content-visibility), iOS дорисовывала уже на
+    # лету. На сенсорном экране строки рисуются все; на компьютере — как было.
+    (server["root"] / "Длинная.m3u").write_text("Quiet/Singles/Quiet.m4a\n" * 30, encoding="utf-8")
+    skipped = "[...document.querySelectorAll('#playlistTracks .track')].filter((r) => getComputedStyle(r).contentVisibility === 'auto').length"
+    context = browser.new_context(
+        viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True
+    )
+    try:
+        page.evaluate("openPlaylist('Длинная')")
+        page.wait_for_function("document.querySelectorAll('#playlistTracks .track').length === 30")
+        assert page.evaluate(skipped) == 30
+
+        context.add_init_script(f"localStorage.setItem('token', '{TOKEN}');")
+        phone = context.new_page()
+        phone.wait_for_function = csp_safe_wait(phone)
+        phone.goto(server["url"] + "/")
+        phone.wait_for_function("typeof openPlaylist === 'function'")
+        assert phone.evaluate("matchMedia('(hover: none) and (pointer: coarse)').matches")
+        phone.evaluate("openPlaylist('Длинная')")
+        phone.wait_for_function("document.querySelectorAll('#playlistTracks .track').length === 30")
+        assert phone.evaluate(skipped) == 0
+    finally:
+        context.close()
+        (server["root"] / "Длинная.m3u").unlink()

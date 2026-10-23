@@ -2136,6 +2136,13 @@ html.sheet-lock, html.sheet-lock body { overflow: hidden; }
     content-visibility: auto;
     contain-intrinsic-size: auto 64px;
 }
+/* Подборка на сенсорном экране рисуется вся: iOS дорисовывала пропущенные
+   строки уже на лету, и быстрая прокрутка Monday (1113 треков) шла пустыми
+   полосами (видео 23.10). Дороже открытие — один раз, зато листается уже
+   нарисованное. Фонотека — пачками (выше), её это не касается. */
+@media (hover: none) and (pointer: coarse) {
+    #playlistTracks.rows > .track { content-visibility: visible; }
+}
 
 /* ---------------- Оформление: переключатель ----------------
    Флажок, нарисованный как переключатель iOS. Это <input type=checkbox
