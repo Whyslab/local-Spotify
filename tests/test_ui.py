@@ -5089,3 +5089,30 @@ def test_a_track_replaced_while_it_waited_in_the_queue_plays_its_new_version(pag
         page.evaluate("player.audio.pause()")
     finally:
         db.db_exec("DELETE FROM tasks WHERE url = 'https://www.youtube.com/watch?v=replaced'")
+
+
+@pytest.mark.parametrize("item", ["Заменить другой версией…", "Переместить на место…"])
+def test_a_row_form_at_the_bottom_stays_above_the_player(page, server, item):
+    # Видео 23.10, 2:29: окно «заменить по ссылке» у нижней строки открылось
+    # под мини-плеером — поле ссылки было не видно.
+    page.set_viewport_size({"width": 390, "height": 844})
+    _playlist(server, page, "Форма", *["Quiet/Singles/Quiet.m4a"] * 12)
+    page.evaluate("openPlaylist('Форма')")
+    page.wait_for_selector("#viewPlaylist .track")
+    page.locator("#viewPlaylist .track .track-info").first.click()
+    page.wait_for_function("!document.getElementById('player').hidden")
+    last = page.locator("#viewPlaylist .track").last
+    last.scroll_into_view_if_needed()
+    last.get_by_role("button", name="Что сделать с треком").click()
+    # Как тап на телефоне: Playwright перед .click() прокручивает пункт к
+    # середине окна, и строка уезжала за край ещё до того, как форма открылась.
+    page.get_by_role("menuitem", name=item).dispatch_event("click")
+    box = page.evaluate(
+        "(() => { const b = document.querySelector('.row-menu-form').getBoundingClientRect();"
+        " const floor = Math.min(...[...document.querySelectorAll('#player, .tabbar')]"
+        "   .map(n => n.getBoundingClientRect()).filter(r => r.height).map(r => r.top));"
+        " return [b.top, b.bottom, floor]; })()"
+    )
+    assert box[0] >= 0 and box[1] <= box[2], box
+    page.keyboard.press("Escape")
+    (server["root"] / "Форма.m3u").unlink()

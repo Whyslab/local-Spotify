@@ -2942,9 +2942,10 @@ function placeMenuBy(menu, button) {
     const box = button.getBoundingClientRect();
     const floor = menuFloor() - 8;
     const height = menu.offsetHeight;
+    const ceiling = menuCeiling();
     let top = box.bottom + 6;
     if (top + height > floor) top = box.top - 6 - height;
-    if (top < 8) top = Math.max(8, floor - height);
+    if (top < ceiling) top = Math.max(ceiling, floor - height);
     menu.style.left = Math.round(Math.max(8, Math.min(box.right - menu.offsetWidth, window.innerWidth - menu.offsetWidth - 8))) + "px";
     menu.style.top = Math.round(top) + "px";
     /* Колесо мыши прокручивает страницу без pointerdown — меню осталось бы
@@ -2956,26 +2957,46 @@ function menuScrolled(event) {
     if (openMenu && !openMenu.menu.contains(event.target)) closeTrackMenu();
 }
 
+/* Верх, выше которого меню не встаёт: под «чёлкой» и часами пункты не нажать. */
+function menuCeiling() {
+    const probe = document.createElement("div");
+    probe.style.cssText = "position:fixed;top:env(safe-area-inset-top,0px);visibility:hidden";
+    document.body.appendChild(probe);
+    const top = probe.getBoundingClientRect().top;
+    probe.remove();
+    return top + 8;
+}
+
 /* Меню у нижней строки уходило за край экрана: открываем его вверх, если
  * снизу не помещается. Только для меню, стоящих у своей строки (absolute).
  *
  * Под полосой плеера и вкладками меню не видно — низ там, а не у края окна.
- * Вверх — только если сверху оно помещается целиком: в низком окне (браузер
- * в масштабе 150 %) меню вверх от первых строк уходило под край окна, и
- * верхние пункты было не нажать. Не помещается ни туда, ни туда — остаётся
- * под строкой, а страница сама прокручивается, чтобы его было видно. */
+ * Не помещается ни снизу, ни сверху (низкое окно, браузер в масштабе 150 %) —
+ * туда, где места больше, а меню прокручивается внутри себя. Раньше страница
+ * прокручивалась сама (scrollIntoView), но меню, чей низ под плеером, браузер
+ * считает видимым и не двигает.
+ *
+ * Высота — по разметке (offsetHeight), а не по рамке: меню появляется из
+ * scale(.96), и замер на первом кадре давал его на 4 % ниже настоящего —
+ * «помещается», а потом низ уходил под плеер. Верх анимация не двигает
+ * (transform-origin: top). */
 function keepMenuOnScreen(menu) {
-    const bottomLimit = menuFloor() - 8;
     const box = menu.getBoundingClientRect();
-    if (box.bottom <= bottomLimit) return;
+    const height = menu.offsetHeight;
+    const below = menuFloor() - 8 - box.top;
+    if (height <= below) return;
     const anchor = (menu.offsetParent || menu.parentElement).getBoundingClientRect();
-    if (anchor.top - box.height >= 8) {
+    // Вверх меню встаёт низом на 6 точек ниже верха строки (calc(100% - 6px)).
+    const above = anchor.top + 6 - menuCeiling();
+    if (height <= above || above > below) {
         menu.style.top = "auto";
         menu.style.bottom = "calc(100% - 6px)";
-        return;
     }
-    menu.style.scrollMarginBottom = (window.innerHeight - bottomLimit) + "px";
-    menu.scrollIntoView({ block: "nearest" });
+    const room = Math.max(above, below);
+    if (height > room) {
+        menu.style.maxHeight = Math.max(room, 120) + "px";
+        menu.style.overflowY = "auto";
+    }
 }
 
 function openTrackMenu(button, position) {
@@ -3154,6 +3175,8 @@ function askForReplacement(button, position) {
 
     form.append(label, field, go, or);
     button.insertAdjacentElement("afterend", form);
+    /* Как и меню: у нижней строки форма уходила под мини-плеер. */
+    keepMenuOnScreen(form);
     button.setAttribute("aria-expanded", "true");
     openMenu = { menu: form, button };
     document.addEventListener("keydown", menuKeydown, true);
@@ -3221,6 +3244,7 @@ function askForPosition(button, from, total) {
 
     form.append(label, field, go);
     button.insertAdjacentElement("afterend", form);
+    keepMenuOnScreen(form);
     button.setAttribute("aria-expanded", "true");
     openMenu = { menu: form, button };
     document.addEventListener("keydown", menuKeydown, true);
