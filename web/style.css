@@ -833,8 +833,13 @@ button.danger {
     overflow-y: auto;
 }
 
-/* Меню «⋯» строки фонотеки встаёт под своей строкой. */
-#library .track { position: relative; }
+/* Меню «⋯» строки фонотеки встаёт под своей строкой — и на страницах
+   артиста, альбома, статистики: там строка не держала его, и меню
+   отсчитывалось от всего приложения. */
+#library .track, .o-rows > .track { position: relative; }
+
+/* Пустая заметка под полем ключа места не занимает. */
+#loginNote:empty { display: none; }
 
 .row-menu-item {
     min-height: 44px;

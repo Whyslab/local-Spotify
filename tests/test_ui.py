@@ -4855,6 +4855,9 @@ def test_stats_fit_a_phone_and_their_buttons_are_not_grey(page):
         db.db_exec("DELETE FROM plays")
 
 
+# --- Проверка на iPhone 23.10 (видео IMG_1426) -------------------------------
+
+
 def _fresh_page(server, browser, storage: dict, route=None):
     """Страница со своим localStorage до первого скрипта — запуск «как с иконки»."""
     context = browser.new_context()
@@ -4972,6 +4975,60 @@ def test_a_playlist_reopened_at_launch_does_not_add_a_history_entry(server, brow
         (server["root"] / "Запуск.m3u").unlink()
 
 
+def test_a_track_menu_on_the_home_page_stays_above_the_player(page):
+    # Видео, 2:15: «⋯» у трека на главной уходило под мини-плеер и вкладки,
+    # «Удалить…» было не нажать.
+    _play_on_phone(page)
+    page.evaluate("""async () => {
+        const r = await fetch('/api/library?limit=50', { headers: headers() });
+        const all = await r.json();
+        // Как на полке: 16 треков в 4 ряда (в тестовой фонотеке их меньше).
+        const tracks = Array.from({ length: 16 }, (_, i) => all[i % all.length]);
+        const picks = el('div', 'o-picks');
+        tracks.forEach((t) => picks.appendChild(libraryRow(t, tracks)));
+        switchView('viewHome');
+        const body = document.getElementById('homeBody');
+        body.replaceChildren(el('div', '', '', ), labSection('Похоже на любимое', null, picks));
+        body.firstChild.style.height = '1200px';
+        body.appendChild(el('div', '')).style.height = '40px';
+    }""")
+    # Нижняя строка первого столбца — над самым мини-плеером.
+    last = page.locator("#homeBody .o-picks .track").nth(3)
+    page.evaluate("""() => {
+        const rows = document.querySelectorAll('#homeBody .o-picks .track');
+        const row = rows[3].getBoundingClientRect();
+        const floor = document.getElementById('player').getBoundingClientRect().top;
+        window.scrollBy(0, row.bottom - floor + 4);
+    }""")
+    last.get_by_role("button", name="Что сделать с треком").click()
+    page.wait_for_timeout(400)
+    hit = page.evaluate("""() => {
+        const items = document.querySelectorAll('.row-menu .row-menu-item');
+        const end = items[items.length - 1].getBoundingClientRect();
+        const floor = document.getElementById('player').getBoundingClientRect().top;
+        const top = document.elementFromPoint(end.left + end.width / 2, end.top + end.height / 2);
+        return { below: end.bottom > floor, reachable: !!top && top.closest('.row-menu') !== null };
+    }""")
+    assert hit == {"below": False, "reachable": True}
+
+
+def test_a_track_menu_on_an_artist_page_opens_at_its_row(page):
+    # Та же беда, что на главной: строка страницы артиста не держала меню, и
+    # оно отсчитывалось от всего приложения — уезжало под вкладки.
+    page.set_viewport_size({"width": 390, "height": 844})
+    page.evaluate("renderArtistPage('Quiet')")
+    page.wait_for_selector("#viewArtist .track")
+    page.locator("#viewArtist .track").first.get_by_role(
+        "button", name="Что сделать с треком"
+    ).click()
+    gap = page.evaluate("""() => {
+        const m = document.querySelector('.row-menu').getBoundingClientRect();
+        const r = document.querySelector('#viewArtist .track').getBoundingClientRect();
+        return Math.min(Math.abs(m.top - r.bottom), Math.abs(r.top - m.bottom));
+    }""")
+    assert gap < 12
+
+
 def test_a_missing_playlist_at_launch_leaves_no_dead_history_entry(server, browser):
     # Подборку удалили, а запуск помнит её: запись о ней оставалась, и
     # «назад» со следующей страницы вёл в никуда.
@@ -4984,3 +5041,27 @@ def test_a_missing_playlist_at_launch_leaves_no_dead_history_entry(server, brows
         page.wait_for_function("!history.state || history.state.view !== 'viewPlaylist'")
     finally:
         context.close()
+
+
+def test_a_shelf_menu_closes_when_the_page_scrolls_under_it(page):
+    # Меню полосы висит поверх страницы; колесо мыши не даёт pointerdown, и
+    # оно оставалось над чужими строками.
+    page.set_viewport_size({"width": 1280, "height": 800})
+    page.evaluate("""async () => {
+        const r = await fetch('/api/library?limit=50', { headers: headers() });
+        const all = await r.json();
+        const tracks = Array.from({ length: 16 }, (_, i) => all[i % all.length]);
+        const picks = el('div', 'o-picks');
+        tracks.forEach((t) => picks.appendChild(libraryRow(t, tracks)));
+        switchView('viewHome');
+        const body = document.getElementById('homeBody');
+        body.replaceChildren(labSection('Похоже на любимое', null, picks));
+        body.appendChild(el('div', '')).style.height = '2000px';
+    }""")
+    page.locator("#homeBody .o-picks .track").first.get_by_role(
+        "button", name="Что сделать с треком"
+    ).click()
+    assert page.locator(".row-menu").count() == 1
+    page.mouse.move(640, 600)
+    page.mouse.wheel(0, 300)
+    page.wait_for_function("!document.querySelector('.row-menu')")

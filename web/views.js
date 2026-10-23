@@ -542,6 +542,9 @@ let homeDataForMoods = null;
 function renderLabHome(data) {
     const box = document.getElementById("homeBody");
     if (!box) return;
+    /* Меню полосы висит на body, а строка, к которой оно, сейчас исчезнет —
+     * его пункты правили бы строку, которой на странице уже нет. */
+    if (openMenu && box.contains(openMenu.button)) closeTrackMenu();
     homeDataForMoods = data;
     const moods = (data.moods || []).filter((m) => (m.tracks || []).length);
     const disc = (data.discover && data.discover.tracks) || [];

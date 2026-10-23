@@ -1973,8 +1973,11 @@ function openLibraryMenu(button, card, t, rows) {
     menu.appendChild(line);
     item("Удалить…", () => askRemove(card, t)).classList.add("is-danger");
 
-    button.insertAdjacentElement("afterend", menu);
-    keepMenuOnScreen(menu);
+    if (button.closest(".o-picks")) placeMenuBy(menu, button);
+    else {
+        button.insertAdjacentElement("afterend", menu);
+        keepMenuOnScreen(menu);
+    }
     button.setAttribute("aria-expanded", "true");
     openMenu = { menu, button };
     document.addEventListener("keydown", menuKeydown, true);

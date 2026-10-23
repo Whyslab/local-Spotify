@@ -2866,6 +2866,7 @@ function closeTrackMenu() {
     openMenu = null;
     document.removeEventListener("keydown", menuKeydown, true);
     document.removeEventListener("pointerdown", menuPointerDown, true);
+    document.removeEventListener("scroll", menuScrolled, true);
 }
 
 /* Меню с role=menu ждут стрелок: вверх/вниз по пунктам, Home/End — к краям.
@@ -2904,6 +2905,43 @@ function menuPointerDown(event) {
     }
 }
 
+/* Низ — верх того, что прижато к низу окна: полосы плеера и, на телефоне,
+ * вкладок. Меряем сами элементы: --tabbar — это calc() с отступом под
+ * «чёлку», числом его не прочесть. Большой плеер на весь экран начинается
+ * сверху — он не «низ». */
+function menuFloor() {
+    let floor = window.innerHeight;
+    for (const node of document.querySelectorAll("#player, .tabbar")) {
+        const rect = node.getBoundingClientRect();
+        if (rect.height && rect.top > window.innerHeight / 2) floor = Math.min(floor, rect.top);
+    }
+    return floor;
+}
+
+/* Меню строки, которую обрезает прокрутка вбок (полоса «Похоже на любимое»
+ * на главной), — поверх страницы, у самой кнопки: внутри полосы оно уходило
+ * под мини-плеер, а вверх его срезал край полосы. Под кнопкой, если до
+ * плеера помещается, иначе над ней, иначе — сколько влезет над плеером. */
+function placeMenuBy(menu, button) {
+    menu.classList.add("more-menu");
+    document.body.appendChild(menu);
+    const box = button.getBoundingClientRect();
+    const floor = menuFloor() - 8;
+    const height = menu.offsetHeight;
+    let top = box.bottom + 6;
+    if (top + height > floor) top = box.top - 6 - height;
+    if (top < 8) top = Math.max(8, floor - height);
+    menu.style.left = Math.round(Math.max(8, Math.min(box.right - menu.offsetWidth, window.innerWidth - menu.offsetWidth - 8))) + "px";
+    menu.style.top = Math.round(top) + "px";
+    /* Колесо мыши прокручивает страницу без pointerdown — меню осталось бы
+     * висеть над чужими строками. Прокрутка внутри самого меню — не повод. */
+    document.addEventListener("scroll", menuScrolled, true);
+}
+
+function menuScrolled(event) {
+    if (openMenu && !openMenu.menu.contains(event.target)) closeTrackMenu();
+}
+
 /* Меню у нижней строки уходило за край экрана: открываем его вверх, если
  * снизу не помещается. Только для меню, стоящих у своей строки (absolute).
  *
@@ -2913,16 +2951,7 @@ function menuPointerDown(event) {
  * верхние пункты было не нажать. Не помещается ни туда, ни туда — остаётся
  * под строкой, а страница сама прокручивается, чтобы его было видно. */
 function keepMenuOnScreen(menu) {
-    /* Низ — верх того, что прижато к низу окна: полосы плеера и, на
-     * телефоне, вкладок. Меряем сами элементы: --tabbar — это calc() с
-     * отступом под «чёлку», числом его не прочесть. Большой плеер на весь
-     * экран начинается сверху — он не «низ». */
-    let floor = window.innerHeight;
-    for (const node of document.querySelectorAll("#player, .tabbar")) {
-        const rect = node.getBoundingClientRect();
-        if (rect.height && rect.top > window.innerHeight / 2) floor = Math.min(floor, rect.top);
-    }
-    const bottomLimit = floor - 8;
+    const bottomLimit = menuFloor() - 8;
     const box = menu.getBoundingClientRect();
     if (box.bottom <= bottomLimit) return;
     const anchor = (menu.offsetParent || menu.parentElement).getBoundingClientRect();
