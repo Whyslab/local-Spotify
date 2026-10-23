@@ -5139,3 +5139,30 @@ def test_a_smart_playlist_without_a_cover_costs_no_404_and_shows_no_star(page, s
         assert asked == []  # ни /cover, ни /tracks
     finally:
         (server["root"] / "★ Звезда.m3u").unlink()
+
+
+def test_a_cold_start_on_a_slow_network_opens_the_saved_page_at_once(page):
+    # Видео 23.10: запуск с иконки — 2–4 с чёрного экрана. Страницу worker
+    # брал сначала из сети и ждал до 6 с, а туннель Tailscale после сна
+    # просыпается секундами. Теперь страница ждёт сеть недолго, потом берёт
+    # сохранённую копию, а свежая ложится в хранилище для следующего раза.
+    import time
+
+    from adder import app as app_module
+
+    _controlled_by_worker(page)
+    page.wait_for_function("caches.open('shell-v1').then(c => c.match('/')).then(Boolean)")
+    real = app_module.static_stamp
+
+    def slow(path):
+        time.sleep(1.5)  # семь файлов — 10 с на ответ «/»
+        return real(path)
+
+    app_module.static_stamp = slow
+    try:
+        started = time.monotonic()
+        page.reload(wait_until="commit")
+        page.wait_for_function("typeof switchView === 'function'", timeout=15000)
+        assert time.monotonic() - started < 4
+    finally:
+        app_module.static_stamp = real

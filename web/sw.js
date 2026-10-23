@@ -24,6 +24,12 @@ const META = "offline-meta-v1";
 const COVERS = "offline-covers-v1";   // обложки скачанных треков — их не вытесняет API_MAX
 const KNOWN = [SHELL, API, AUDIO, META, COVERS];
 const NETWORK_TIMEOUT_MS = 6000;
+/* Сама страница ждёт сеть недолго: запуск с иконки — это чёрный экран, пока
+ * она не пришла, а туннель Tailscale после сна просыпается секундами (видео
+ * 23.10: 2–4 с). Не успела — сохранённая копия, а свежая всё равно ложится в
+ * хранилище и откроется в следующий раз. Файлы страницы — с отпечатком,
+ * копия и её скрипты всегда одной версии. */
+const PAGE_TIMEOUT_MS = 1000;
 const API_MAX = 1500;                 // записей в API: старые вытесняются
 const TRIM_EVERY = 50;                // обрезка API — раз на столько записей
 let apiPuts = 0;
@@ -96,7 +102,9 @@ self.addEventListener("fetch", (event) => {
         event.respondWith(serveStreamUrl(request, url));
     } else if (url.pathname.startsWith("/static/") && url.searchParams.has("v")) {
         event.respondWith(cacheFirst(event, request));
-    } else if (url.pathname === "/" || url.pathname.startsWith("/static/")) {
+    } else if (url.pathname === "/") {
+        event.respondWith(networkFirst(event, request, SHELL, true, PAGE_TIMEOUT_MS));
+    } else if (url.pathname.startsWith("/static/")) {
         event.respondWith(networkFirst(event, request, SHELL, true));
     } else if (REMEMBERED.some((re) => re.test(url.pathname))) {
         // Поиск по фонотеке не помнится: каждое нажатие клавиши — своя запись.
@@ -182,7 +190,7 @@ function withTimeout(promise, ms) {
  * и обрыв на 6-й превращал медленный ответ в ошибку. Ответ с ошибкой (401
  * после смены токена, 500) не сохраняется и не подменяется старой копией:
  * страница должна увидеть, что что-то не так. */
-async function networkFirst(event, request, cacheName, dropOldVersions) {
+async function networkFirst(event, request, cacheName, dropOldVersions, timeoutMs = NETWORK_TIMEOUT_MS) {
     const network = fetch(request);
     /* Копия пишется после ответа, а не до него: страница ждала запись в
      * хранилище (и обход старых версий) на каждом списке. waitUntil держит
@@ -202,7 +210,7 @@ async function networkFirst(event, request, cacheName, dropOldVersions) {
     const cached = await caches.match(request);
     if (!cached) return network;
     try {
-        const response = await withTimeout(network, NETWORK_TIMEOUT_MS);
+        const response = await withTimeout(network, timeoutMs);
         return SERVER_DOWN.has(response.status) ? cached : response;
     } catch (error) {
         return cached;
