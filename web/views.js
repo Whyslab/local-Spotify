@@ -249,7 +249,20 @@ function recordTop() {
     const st = history.state;
     if (st && st.playerOpen) return;
     if (LAB_PAGES.includes(activeView)) return;
-    try { history.replaceState({ lab: true, view: activeView, mode: libraryMode }, ""); } catch (e) { /* без истории */ }
+    const here = { lab: true, depth: depthOf(st), view: activeView, mode: libraryMode };
+    try { history.replaceState(here, ""); } catch (e) { /* без истории */ }
+}
+
+/* Глубина записи: 0 — та, с которой приложение открылось. «Назад» на странице
+ * идёт по истории, только если под записью есть наша; иначе history.back()
+ * уводил из приложения, а iOS показывала снимок пустой стартовой страницы —
+ * белый экран. */
+function depthOf(st) {
+    return st && typeof st.depth === "number" ? st.depth : 0;
+}
+
+function deeper(state) {
+    return Object.assign({ lab: true, depth: depthOf(history.state) + 1 }, state);
 }
 
 function pushPage(state) {
@@ -263,10 +276,10 @@ function pushPage(state) {
         /* Где были и докуда прокрутили — в текущую запись, чтобы «назад»
          * вернул туда же. */
         if (!(st && st.playerOpen)) {
-            const here = st && st.lab ? st : { lab: true, view: activeView, mode: libraryMode };
+            const here = st && st.lab ? st : { lab: true, depth: 0, view: activeView, mode: libraryMode };
             history.replaceState(Object.assign({}, here, { scroll: scroller().scrollTop }), "");
         }
-        history.pushState(Object.assign({ lab: true }, state), "");
+        history.pushState(deeper(state), "");
     } catch (e) { /* без истории */ }
     /* Новая страница — с начала, а не с места, докуда листали прежнюю. */
     restoringScroll = 0;
@@ -281,7 +294,8 @@ function applyScroll() {
 }
 
 function goBack(fallback) {
-    if (history.state && history.state.lab) history.back();
+    const st = history.state;
+    if (st && st.lab && depthOf(st) > 0) history.back();
     else switchView(fallback || "viewHome");
 }
 
@@ -291,7 +305,7 @@ window.addEventListener("popstate", () => {
         if (pendingPush) {
             const state = pendingPush;
             pendingPush = null;
-            try { history.pushState(Object.assign({ lab: true }, state), ""); } catch (e) { /* без истории */ }
+            try { history.pushState(deeper(state), ""); } catch (e) { /* без истории */ }
         } else {
             /* Пока плеер сворачивался, успели сменить раздел («показать,
              * откуда играет») — запись должна знать, где мы теперь. */
@@ -333,6 +347,19 @@ openPlaylist = function (name, ...rest) {
     if (!same) pushPage({ view: "viewPlaylist", name });
     return openPlaylistPlain(name, ...rest).then((ok) => { applyScroll(); return ok; });
 };
+
+/* Подборка, открытая при запуске, — не шаг вглубь, а то, с чего начали:
+ * запись та же, стартовая. Новая запись поверх пустой ещё страницы и давала
+ * белый экран на жест «назад». */
+function openPlaylistAtBoot(name) {
+    try { history.replaceState({ lab: true, depth: 0, view: "viewPlaylist", name }, ""); } catch (e) { /* без истории */ }
+    return openPlaylistPlain(name).then((ok) => {
+        /* Подборки уже нет — запись о ней не оставляем: «назад» вёл бы в никуда. */
+        if (!ok) recordTop();
+        applyScroll();
+        return ok;
+    });
+}
 
 /* Переименовали открытую подборку — запись истории под новым именем, иначе
  * «назад» к ней искал бы старое. */

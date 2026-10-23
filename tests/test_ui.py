@@ -4933,3 +4933,54 @@ def test_the_library_does_not_say_nothing_found_while_it_loads(server, browser):
         assert page.locator("#libraryEmpty").is_hidden()
     finally:
         context.close()
+
+
+def test_a_playlist_reopened_at_launch_does_not_add_a_history_entry(server, browser):
+    # Видео, 4:57: жест «назад» с главной показал белый экран — запись,
+    # снимок которой iOS сняла при запуске, пока страница была пустой.
+    (server["root"] / "Запуск.m3u").write_text("Quiet/Singles/Quiet.m4a\n", encoding="utf-8")
+    context, page = _fresh_page(
+        server,
+        browser,
+        {
+            "token": TOKEN,
+            "lastView": "viewPlaylist",
+            "lastPlaylist": "Запуск",
+            "lastBrowseView": "viewPlaylists",
+        },
+    )
+    try:
+        page.set_viewport_size({"width": 390, "height": 844})
+        page.wait_for_function("activeView === 'viewPlaylist'")
+        page.wait_for_selector("#playlistTracks .track")
+        # Сколько записей было, когда документ только начался (about:blank у
+        # Playwright — тоже запись), столько и осталось.
+        start = page.evaluate("window.__startLength")
+        assert page.evaluate("history.length") == start
+        # «‹ Подборки» на странице ведёт в раздел, а не прочь из приложения.
+        page.locator("#viewPlaylist .o-back").click()
+        page.wait_for_function("activeView === 'viewPlaylists'")
+        assert page.evaluate("history.length") == start
+        # Дальше всё как раньше: страница вглубь — запись, «назад» — к разделу.
+        page.locator("#playlistsBody .o-card").filter(has_text="Запуск").click()
+        page.wait_for_function("activeView === 'viewPlaylist'")
+        assert page.evaluate("history.length") == start + 1
+        page.locator("#viewPlaylist .o-back").click()
+        page.wait_for_function("activeView === 'viewPlaylists'")
+    finally:
+        context.close()
+        (server["root"] / "Запуск.m3u").unlink()
+
+
+def test_a_missing_playlist_at_launch_leaves_no_dead_history_entry(server, browser):
+    # Подборку удалили, а запуск помнит её: запись о ней оставалась, и
+    # «назад» со следующей страницы вёл в никуда.
+    context, page = _fresh_page(
+        server,
+        browser,
+        {"token": TOKEN, "lastView": "viewPlaylist", "lastPlaylist": "Нет такой"},
+    )
+    try:
+        page.wait_for_function("!history.state || history.state.view !== 'viewPlaylist'")
+    finally:
+        context.close()

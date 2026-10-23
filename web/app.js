@@ -2167,7 +2167,8 @@ function restoreView() {
     if (!view || !VIEW_TITLES[view] || view === "viewLyrics" || view === activeView) return false;
     if (view === "viewPlaylist") {
         if (!playlist || !token()) return false;
-        openPlaylist(playlist);
+        if (typeof openPlaylistAtBoot === "function") openPlaylistAtBoot(playlist);
+        else openPlaylist(playlist);
         return false;  // пока подборка грузится, остальное обновим как обычно
     }
     switchView(view);
