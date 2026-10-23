@@ -197,3 +197,19 @@ def test_recreating_a_playlist_cancels_its_queued_delete(client):
     navidrome.enqueue("delete", "Other")
     assert client.post("/api/playlists", json={"name": "Gym", "paths": []}).status_code == 200
     assert [r["name"] for r in db.db_query("SELECT name FROM navidrome_ops")] == ["Other"]
+
+
+def test_the_list_says_which_playlists_have_a_cover_and_their_first_track(client):
+    # Видео 23.10: у подборок «★» без своей обложки каждый показ стоил 404 на
+    # /cover и список треков ради первого — а пока ждали, на месте обложки
+    # мигала «★».
+    from tests.test_covers import PNG
+
+    client.post("/api/playlists", json={"name": "★ Своя", "paths": ["A.m4a", "B.m4a"]})
+    client.post("/api/playlists", json={"name": "★ Без", "paths": ["C.m4a"]})
+    client.post("/api/playlists", json={"name": "Пустая", "paths": []})
+    covers.store("★ Своя", PNG)
+    rows = {row["name"]: row for row in client.get("/api/playlists").json()}
+    assert (rows["★ Своя"]["cover"], rows["★ Своя"]["first"]) == (True, "A.m4a")
+    assert (rows["★ Без"]["cover"], rows["★ Без"]["first"]) == (False, "C.m4a")
+    assert (rows["Пустая"]["cover"], rows["Пустая"]["first"]) == (False, None)

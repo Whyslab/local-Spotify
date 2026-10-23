@@ -1596,7 +1596,11 @@ STREAM_TYPES = {
 
 @app.get("/api/playlists")
 def get_playlists(authenticated: bool = Depends(verify_token)):
-    return playlists.listing()
+    # Есть ли своя обложка — в списке: иначе страница спрашивала /cover у
+    # каждой подборки, и у всех без своей картинки это был 404 на каждый показ.
+    return [
+        {**row, "cover": covers.media_type(row["name"]) is not None} for row in playlists.listing()
+    ]
 
 
 @app.post("/api/playlists")

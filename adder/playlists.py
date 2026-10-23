@@ -398,7 +398,7 @@ def listing() -> list[dict]:
         except HTTPException:
             continue
         try:
-            count = len(parse(path.read_text(encoding="utf-8")))
+            paths = parse(path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError) as exc:
             # Одна .m3u не в UTF-8 (скопированная откуда-то в cp1251) не должна
             # ронять список подборок и /health вместе с ним.
@@ -407,7 +407,9 @@ def listing() -> list[dict]:
         out.append(
             {
                 "name": path.stem,
-                "tracks": count,
+                "tracks": len(paths),
+                # Первый трек — для обложки подборки без своей картинки.
+                "first": paths[0] if paths else None,
                 "revision": revision_of(path),
                 "updated_at": int(path.stat().st_mtime),
             }

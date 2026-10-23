@@ -2633,6 +2633,9 @@ function playlistFirstTrack(name) {
     if (player.playlist && player.playlist.name === name && player.playlist.entries.length) {
         return Promise.resolve(player.playlist.entries[0].path);
     }
+    /* Первый трек есть в списке подборок — без запроса всего списка треков. */
+    const known = knownPlaylists.find((p) => p.name === name);
+    if (known && "first" in known) return Promise.resolve(known.first);
     if (!firstTrackOf.has(name)) {
         /* Сбой (нет сети, ноутбук спит) не запоминается: иначе буква вместо
          * обложки стояла до перезагрузки, хотя сеть давно вернулась. */
@@ -2649,11 +2652,14 @@ function loadPlaylistCover(host, name) {
     /* Шапка одна на все подборки: поздний ответ прежней её не трогает. */
     const ticket = host._playlistCover = {};
     const mine = () => host._playlistCover === ticket;
+    /* Первая буква или цифра, а не первый знак: у умных подборок это «★». */
     const letter = () => {
         if (!mine()) return;
         host.replaceChildren();
-        host.textContent = name.slice(0, 1).toUpperCase();
+        host.textContent = (name.match(/[\p{L}\p{N}]/u) || [name])[0].slice(0, 1).toUpperCase();
     };
+    /* Что известно из списка подборок: есть ли своя обложка и первый трек. */
+    const known = knownPlaylists.find((p) => p.name === name);
     /* Своей обложки нет — обложка первого трека, как в «Обложке»; нет и её —
      * буква. */
     /* Список подборки берём, только когда её обложка на экране: в рельсе на
@@ -2677,7 +2683,12 @@ function loadPlaylistCover(host, name) {
                 return true;
             });
     });
-    letter();
+    /* Пока грузится — пустой цветной квадрат, а не буква: буква на долю
+     * секунды и потом обложка читалась как мигание. Буква — только когда
+     * обложки нет совсем. */
+    host.replaceChildren();
+    /* Своей обложки нет — и спрашивать её незачем (был 404 на каждый показ). */
+    if (known && known.cover === false) { fallback(); return; }
     /* Через общий кэш обложек: рельс перерисовывается каждым опросом, и без
      * него обложка подборки мигала бы на букву несколько раз в минуту. */
     coverUrl("playlist:" + name, "/api/playlists/" + encodeURIComponent(name) + "/cover")
@@ -4140,6 +4151,9 @@ async function uploadCover(input) {
     }
     // Старую из кэша выкинуть, иначе новая не появится до перезагрузки.
     forgetCover("playlist:" + name);
+    // И список подборок до следующего опроса должен знать, что она есть.
+    const known = knownPlaylists.find((p) => p.name === name);
+    if (known) known.cover = true;
     setPlaylistNote("");
     renderPlaylist();
     playlists();

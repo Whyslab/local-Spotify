@@ -5116,3 +5116,26 @@ def test_a_row_form_at_the_bottom_stays_above_the_player(page, server, item):
     assert box[0] >= 0 and box[1] <= box[2], box
     page.keyboard.press("Escape")
     (server["root"] / "Форма.m3u").unlink()
+
+
+def test_a_smart_playlist_without_a_cover_costs_no_404_and_shows_no_star(page, server):
+    # Видео 23.10: у «★»-подборок каждый показ — 404 на /cover, список треков
+    # ради первого, а пока ждали — «★» на месте обложки.
+    asked = []
+    star = "/api/playlists/%E2%98%85%20%D0%97%D0%B2%D0%B5%D0%B7%D0%B4%D0%B0/"
+    page.on("request", lambda r: asked.append(r.url) if star in r.url else None)
+    _playlist(server, page, "★ Звезда", "Quiet/Singles/Quiet.m4a")
+    try:
+        page.evaluate("switchView('viewPlaylists')")
+        card = page.locator("#playlistsBody .o-card").filter(has_text="★ Звезда")
+        card.wait_for()
+        page.wait_for_function(
+            "[...document.querySelectorAll('#playlistsBody .o-card')]"
+            ".find(c => c.textContent.includes('★ Звезда'))"
+            ".querySelector('.o-cover').childNodes.length > 0"
+        )
+        cover = card.locator(".o-cover")
+        assert cover.locator("img").count() == 1 or cover.text_content() == "З"
+        assert asked == []  # ни /cover, ни /tracks
+    finally:
+        (server["root"] / "★ Звезда.m3u").unlink()
