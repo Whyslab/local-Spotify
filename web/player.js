@@ -3457,7 +3457,7 @@ function askForPosition(button, from, total) {
 
 function smallButton(label, title, onClick) {
     const b = document.createElement("button");
-    b.className = "icon-button small";
+    b.className = "icon-button small row-more";
     b.textContent = label;
     b.title = title;
     b.setAttribute("aria-label", title);

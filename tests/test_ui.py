@@ -3742,6 +3742,22 @@ def _tiny_png() -> bytes:
     )
 
 
+def test_the_row_dots_are_as_bright_as_the_title(page):
+    """iPhone test 24.10: the «⋯» of a row (in Stats beside «10 раз») was
+    small and grey, and was not found -- it is the way to every action."""
+    page.set_viewport_size({"width": 390, "height": 844})
+    open_library(page)
+    look = page.evaluate(
+        "(() => { const row = document.querySelector('#library .track');"
+        " const dots = [...row.querySelectorAll('button')].find(b => b.textContent === '⋯');"
+        " const s = getComputedStyle(dots);"
+        " return [s.color, getComputedStyle(row.querySelector('.track-title')).color,"
+        " parseFloat(s.fontSize)]; })()"
+    )
+    assert look[0] == look[1]
+    assert look[2] >= 20
+
+
 def test_no_lyrics_says_so_in_large_letters(page):
     # На телефоне текст открывается кнопкой; на ноутбуке он и так справа.
     page.set_viewport_size({"width": 390, "height": 844})

@@ -701,6 +701,9 @@ code {
     font-size: 15px;
     line-height: 1;
 }
+/* «⋯» строки — вход во все действия с треком; мелким и серым его не
+   находили (тест на айфоне 24.10: в «Статистике» рядом с «10 раз»). */
+.icon-button.row-more { color: var(--text); font-size: 22px; font-weight: 700; }
 
 /* Red is reserved for the things that remove something. */
 .icon-button.danger {
