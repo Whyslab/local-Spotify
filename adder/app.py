@@ -719,7 +719,7 @@ def list_library(
     разложить. ``sort=name`` возвращает прежний порядок — по пути на диске,
     то есть по артисту.
     """
-    needle = q.strip().lower()
+    needle = library.fold(q.strip())
     rows = library.library_index()
     if sort == "new":
         rows = sorted(rows, key=lambda r: r.get("added") or 0, reverse=True)

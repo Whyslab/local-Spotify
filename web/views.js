@@ -1210,9 +1210,23 @@ function renderSearch(focus) {
     fillSearch();
 }
 
+/* Название, артист и альбом трека так, как их сравнивает поиск, — один раз на
+ * строку индекса, а не на каждую набранную букву. Ключ — сама строка: новый
+ * индекс приходит новыми объектами, и старые сравнения уходят вместе с ним. */
+const FOLDED_TRACKS = new WeakMap();
+function foldedTrack(t) {
+    let folded = FOLDED_TRACKS.get(t);
+    if (folded === undefined) {
+        /* Разделитель, которого нет в наборе: иначе «Moon» + «Light» находились бы по «nl». */
+        folded = [t.title, t.artist, t.album].map(foldText).join("\n");
+        FOLDED_TRACKS.set(t, folded);
+    }
+    return folded;
+}
+
 async function fillSearch() {
     const body = document.getElementById("searchBody");
-    const q = searchQueryText.trim().toLowerCase();
+    const q = foldText(searchQueryText.trim());
     if (!q) {
         const moods = (homeDataForMoods || homeCache || {}).moods || [];
         put(body, moods.length ? labSection("Под настроение", null, el("div", "o-browse-grid", "",
@@ -1221,15 +1235,15 @@ async function fillSearch() {
         return;
     }
     const rows = await labIndex(true);
-    if (searchQueryText.trim().toLowerCase() !== q) return;  // набрали дальше
+    if (foldText(searchQueryText.trim()) !== q) return;  // набрали дальше
     /* Ответили старым индексом — когда придёт свежий, выдача перерисуется. */
     if (labTracksPromise) {
         labTracksPromise.then((fresh) => {
-            if (fresh !== rows && searchQueryText.trim().toLowerCase() === q) fillSearch();
+            if (fresh !== rows && foldText(searchQueryText.trim()) === q) fillSearch();
         });
     }
-    const hit = (s) => (s || "").toLowerCase().includes(q);
-    const tracks = rows.filter((t) => hit(t.title) || hit(t.artist) || hit(t.album)).slice(0, 60);
+    const hit = (s) => foldText(s).includes(q);
+    const tracks = rows.filter((t) => foldedTrack(t).includes(q)).slice(0, 60);
     const groups = labGroups(rows);
     const artists = groups.artists.filter((a) => hit(a.name)).slice(0, 12);
     const albums = groups.albums.filter((g) => g.tracks.length > 1 && (hit(g.album) || hit(g.artist))).slice(0, 12);

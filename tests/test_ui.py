@@ -3066,6 +3066,33 @@ def test_search_finds_artists_and_tracks_in_the_library(page):
     assert page.locator("#searchBody .o-yt-ask").count() == 1
 
 
+def test_search_takes_yo_for_ye_everywhere(page, server):
+    """iPhone test 24.10: «темный» found nothing, the artist is «тёмный принц»."""
+    rel = "тёмный принц/Singles/Ночь.opus"
+    _track(server["root"], rel, "тёмный принц", "Ночь", 2, gain=None)
+    library.invalidate_library_index()
+    try:
+        page.evaluate("labTracks = null")
+        page.evaluate("switchView('viewSearch')")
+        page.locator("#searchEverywhere").fill("Темный")
+        page.wait_for_selector("#searchBody .o-card.is-artist")
+        assert (
+            page.locator("#searchBody .o-card.is-artist").filter(has_text="тёмный принц").count()
+            == 1
+        )
+
+        # Фонотека ищет на сервере, подборка — на месте.
+        page.evaluate("switchView('viewLibrary')")
+        page.locator("#librarySearch").fill("темн")
+        page.wait_for_function(
+            "[...document.querySelectorAll('#library .track-title')].some(t => t.textContent === 'Ночь')"
+        )
+        assert page.evaluate("rowMatches({textContent: 'тёмный принц — Ночь'}, searchText())")
+    finally:
+        (server["root"] / rel).unlink()
+        library.invalidate_library_index()
+
+
 def test_search_debounce_within_budget(page):
     """Typing waited 300 ms (library) and 120 ms (search page) before
     searching at all: the whole 150 ms budget went before any work began.

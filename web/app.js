@@ -969,7 +969,15 @@ function plural(n, one, few, many) {
  * за ними второй раз незачем. */
 function searchText() {
     const field = document.getElementById("librarySearch");
-    return field ? field.value.trim().toLowerCase() : "";
+    return field ? foldText(field.value.trim()) : "";
+}
+
+/* Как сравнивает поиск: без регистра, и «ё» — это «е». По-русски чаще пишут
+ * без «ё»: «темный» не находил «тёмный принц». NFC — потому что тег с Mac
+ * может хранить «ё» как «е» и отдельную точку сверху. Сервер сравнивает так
+ * же (library.fold). */
+function foldText(text) {
+    return (text || "").normalize("NFC").toLowerCase().replace(/ё/g, "е");
 }
 
 const LIBRARY_PAGE = 200;
@@ -1000,7 +1008,9 @@ function runSearchHere() {
 /* Фильтр спрятал всё — сказать словами и дать сбросить одним нажатием. */
 function showFilterEmpty(box, needle) {
     const text = document.createElement("span");
-    text.textContent = `Ничего не нашлось по «${needle}». `;
+    /* Как набрано, а не как сравнивается: «Тёмный», а не «темный». */
+    const field = document.getElementById("librarySearch");
+    text.textContent = `Ничего не нашлось по «${(field && field.value.trim()) || needle}». `;
     const reset = document.createElement("button");
     reset.className = "ghost small-inline";
     reset.textContent = "Сбросить поиск";
@@ -1015,7 +1025,7 @@ function showFilterEmpty(box, needle) {
 
 /* Совпадение по тексту строки целиком: в ней и название, и артист, и альбом. */
 function rowMatches(row, needle) {
-    return !needle || (row.textContent || "").toLowerCase().includes(needle);
+    return !needle || foldText(row.textContent).includes(needle);
 }
 
 /* Строки прячем, а не пересобираем список: у каждой строки записан её номер в

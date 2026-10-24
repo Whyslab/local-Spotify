@@ -8,6 +8,7 @@ import logging
 import shutil
 import threading
 import time
+import unicodedata
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
@@ -259,7 +260,7 @@ def library_index() -> list[dict]:
                     # тех пор, как его скачали (тот же отпечаток, что у кэша).
                     "size": stat.st_size,
                     "stamp": "-".join(f"{n:x}" for n in stamp),
-                    "haystack": f"{artist} {title} {album}".lower(),
+                    "haystack": fold(f"{artist} {title} {album}"),
                 }
             )
             _FILE_ROWS[key] = (stamp, rows[-1])
@@ -281,6 +282,16 @@ def invalidate_library_index() -> None:
     # generation tells a rebuild in progress that it started too early.
     _LIBRARY_INDEX["generation"] = int(_LIBRARY_INDEX["generation"]) + 1
     _LIBRARY_INDEX["at"] = 0.0
+
+
+def fold(text: str) -> str:
+    """Text as search compares it: case aside, and «ё» is «е».
+
+    Russian is mostly typed without «ё»: «темный» found nothing while the
+    artist is «тёмный принц». NFC first: a tag written on a Mac can hold «ё»
+    as «е» plus a combining mark, and «й» the same way.
+    """
+    return unicodedata.normalize("NFC", text).lower().replace("ё", "е")
 
 
 def library_counts() -> tuple[int, int]:

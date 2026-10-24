@@ -1219,6 +1219,33 @@ def test_a_finished_task_whose_track_was_deleted_says_so(client):
     assert rows == {"https://x/here": False, "https://x/gone": True, "https://x/wait": False}
 
 
+def test_library_search_takes_yo_for_ye(client):
+    """«темный» found nothing: the artist is «тёмный принц»."""
+    import shutil
+    import unicodedata
+
+    from mutagen.mp4 import MP4
+
+    from adder import library
+
+    (config.LIBRARY / "тёмный принц" / "Singles").mkdir(parents=True)
+    path = config.LIBRARY / "тёмный принц" / "Singles" / "Ночь.m4a"
+    shutil.copy(Path(__file__).parent / "fixtures" / "tone.m4a", path)
+    tags = MP4(path)
+    # В теге — «ё» из «е» и отдельного знака (NFD), как пишет Mac.
+    tags["\xa9ART"] = [unicodedata.normalize("NFD", "тёмный принц")]
+    tags["\xa9nam"] = ["Ночь"]
+    tags.save()
+    library.invalidate_library_index()
+
+    # Последний — «ё» из «е» и отдельного знака (NFD), как пишет тег Mac.
+    for q in ("темный", "ТЁМНЫЙ", "тёмный", "те\u0308мный"):
+        rows = client.get(
+            "/api/library", params={"q": q, "fresh": 1}, headers=auth_headers()
+        ).json()
+        assert [row["path"] for row in rows] == ["тёмный принц/Singles/Ночь.m4a"], q
+
+
 def test_library_rows_have_size_and_stamp(client):
     """The phone reconciles its downloads with one /api/library answer (plan 4a.1):
     the size tells it how much room the rest needs, the stamp that a file changed,
