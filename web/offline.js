@@ -57,6 +57,7 @@ async function loadOfflineIndex() {
  * Проход по всем строкам дорог: при скачивании многих треков — раз на
  * MARKS_EVERY треков, а между ними обновляется только счётчик. */
 const MARKS_EVERY = 10;
+const SAMPLE_MAX_MS = 120000;  // потолок одного трека в «ещё ~N мин»
 
 function refreshOfflineMarks() {
     for (const row of document.querySelectorAll("[data-track-path]")) {
@@ -380,15 +381,23 @@ async function downloadPlaylist() {
     if (!offline.supported || !pl || offline.running) return;
     await askToKeepStorage();
     const tracks = uniqueTracks(pl.entries).filter(t => !isOutside(t));
-    const job = { name: pl.name, done: 0, total: tracks.length, failed: 0, stop: false };
+    /* waiting, spent, fetched — для «ещё ~N мин». Время — только удачно
+     * скачанных: сбой приходит быстро и занизил бы среднее. */
+    const waiting = new Set(tracks.filter(t => !isDownloaded(t.path)).map(t => t.path));
+    const job = { name: pl.name, done: 0, total: tracks.length, failed: 0, stop: false, waiting, spent: 0, fetched: 0 };
     offline.running = job;
     renderPlaylistOffline();
     try {
         for (const track of tracks) {
             if (job.stop) break;
             if (!isDownloaded(track.path)) {
+                const began = Date.now();
                 try {
                     await downloadTrack(track);
+                    /* Айфон усыпил страницу посреди трека — эти минуты не
+                     * скорость сети; больше двух минут на трек не считаем. */
+                    job.spent += Math.min(Date.now() - began, SAMPLE_MAX_MS);
+                    job.fetched += 1;
                 } catch (e) {
                     if (isQuotaError(e)) {
                         setOfflineNote("На устройстве кончилось место — скачано не всё.");
@@ -397,6 +406,7 @@ async function downloadPlaylist() {
                     job.failed += 1;
                 }
             }
+            job.waiting.delete(track.path);  // и скачанный тем временем в другом месте
             job.done += 1;
             if (job.done % MARKS_EVERY === 0) refreshOfflineMarks();
             else renderPlaylistOffline();
@@ -411,6 +421,7 @@ async function downloadPlaylist() {
 
 function stopDownloading() {
     if (offline.running) offline.running.stop = true;
+    renderPlaylistOffline();
 }
 
 async function removePlaylistDownloads() {
@@ -628,6 +639,7 @@ function setOfflineNote(text) {
 
 /* Кнопка в шапке подборки: сколько скачано и что можно сделать. */
 function renderPlaylistOffline() {
+    renderPlaylistProgress();
     const button = document.getElementById("playlistOffline");
     if (!button) return;
     const pl = player.playlist;
@@ -648,6 +660,34 @@ function renderPlaylistOffline() {
         button.disabled = Boolean(job);
     }
     if (!job || (job.name === pl.name && !job.library)) button.disabled = false;
+}
+
+/* «· ещё ~N мин» по средней скорости уже скачанных; по первым двум
+ * трекам цифра скачет — молчим. */
+function timeLeft(job) {
+    if (job.fetched < 3 || !job.waiting.size) return "";
+    const minutes = (job.waiting.size * job.spent) / job.fetched / 60000;
+    if (minutes < 1) return " · меньше минуты";
+    if (minutes < 90) return ` · ещё ~${Math.round(minutes)} мин`;
+    return ` · ещё ~${Math.round(minutes / 60)} ч`;
+}
+
+/* Строка хода под шапкой открытой подборки — пока качается именно она. */
+function renderPlaylistProgress() {
+    const box = document.getElementById("playlistProgress");
+    if (!box) return;
+    const job = offline.running;
+    const pl = player.playlist;
+    box.hidden = !(job && pl && job.name === pl.name && !job.library);
+    if (box.hidden) return;
+    box.querySelector(".playlist-progress-text").textContent = job.stop
+        ? "Останавливаю…"
+        : `Скачиваю: ${job.done} из ${job.total}${timeLeft(job)}`;
+    box.querySelector(".playlist-progress-stop").disabled = job.stop;
+    const bar = box.querySelector(".playlist-progress-bar");
+    bar.setAttribute("aria-valuemax", String(job.total));
+    bar.setAttribute("aria-valuenow", String(job.done));
+    bar.firstElementChild.style.width = (job.total ? (100 * job.done) / job.total : 0) + "%";
 }
 
 /* Карточка в «Сервисе»: сколько скачано и сколько это места. */

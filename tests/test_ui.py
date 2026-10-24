@@ -5029,6 +5029,46 @@ def test_the_reverse_button_turns_any_playlist_order_around(page, server):
     assert reverse.get_attribute("aria-pressed") == "false"
 
 
+def test_downloading_a_playlist_shows_how_far_it_got_outside_the_menu(page, server):
+    """iPhone test 24.10: «На телефон» is in the ⋯ menu, which closes at once,
+    so «how many of how many» was nowhere to be seen while it downloaded."""
+    _open_two_track_playlist(page, server, "Скачка")
+    if not page.evaluate("offline.supported"):
+        pytest.skip("no Cache Storage in this browser")
+    page.evaluate(
+        "window.__go = []; downloadTrack = () => new Promise(r => window.__go.push(r)); true"
+    )
+    page.evaluate("downloadPlaylist(); true")
+    progress = page.locator("#playlistProgress")
+    progress.wait_for()
+    assert "0 из 2" in progress.inner_text()
+    page.wait_for_function("window.__go.length === 1")
+    page.evaluate("window.__go[0]()")
+    page.wait_for_function(
+        "document.getElementById('playlistProgress').textContent.includes('1 из 2')"
+    )
+    progress.get_by_role("button", name="Стоп").click()
+    page.wait_for_function("window.__go.length === 2")
+    page.evaluate("window.__go[1]()")
+    page.wait_for_function("offline.running === null")
+    assert progress.is_hidden()
+    # «Сколько ждать» — по средней скорости скачанных, не раньше трёх.
+    assert page.evaluate("timeLeft({fetched: 2, waiting: {size: 30}, spent: 8000})") == ""
+    assert (
+        page.evaluate("timeLeft({fetched: 3, waiting: {size: 30}, spent: 12000})")
+        == " · ещё ~2 мин"
+    )
+    assert (
+        page.evaluate("timeLeft({fetched: 3, waiting: {size: 2}, spent: 3000})")
+        == " · меньше минуты"
+    )
+    assert page.evaluate("timeLeft({fetched: 3, waiting: {size: 0}, spent: 3000})") == ""
+    assert (
+        page.evaluate("timeLeft({fetched: 3, waiting: {size: 100}, spent: 3 * 60000})")
+        == " · ещё ~2 ч"
+    )
+
+
 def test_only_downloaded_hides_the_rest_and_no_network_greys_it(page, server):
     _open_two_track_playlist(page, server, "Скачанное")
     if not page.evaluate("offline.supported"):

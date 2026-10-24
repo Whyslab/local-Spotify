@@ -2798,6 +2798,12 @@ html.sheet-lock, html.sheet-lock body { overflow: hidden; }
 .playlist-sort select option { background: #1c1c1e; color: #fff; }
 .playlist-sort select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .playlist-track.is-filtered-out { display: none; }
+.playlist-progress { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 4px 0 8px; color: var(--text-2); font-size: 14px; }
+.playlist-progress[hidden] { display: none; }
+.playlist-progress-text { flex: 1; min-width: 0; font-variant-numeric: tabular-nums; }
+.playlist-progress-stop { min-height: 40px; padding: 0 14px; border-radius: 999px; font-size: 14px; }
+.playlist-progress-bar { flex-basis: 100%; height: 3px; border-radius: 2px; background: var(--fill-2); overflow: hidden; }
+.playlist-progress-bar > div { width: 0; height: 100%; background: var(--accent); transition: width .3s ease-out; }
 #playlistTracks.is-sorted .playlist-track { cursor: default; }
 
 /* Без сети: нескачанное не сыграет — строка бледная (offline.js). */

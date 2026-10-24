@@ -313,6 +313,13 @@
           </select>
         </label>
       </div>
+      <!-- Ход «На телефон» на виду: кнопка с числом — в меню «⋯», а оно
+           закрывается сразу после нажатия (тест на айфоне 24.10). -->
+      <div id="playlistProgress" class="playlist-progress" hidden>
+        <span class="playlist-progress-text"></span>
+        <button class="ghost playlist-progress-stop" type="button" onclick="stopDownloading()">Стоп</button>
+        <div class="playlist-progress-bar" role="progressbar" aria-label="Скачано треков" aria-valuemin="0"><div></div></div>
+      </div>
       <p id="playlistNote" class="note"></p>
       <div id="playlistTracks" class="rows"></div>
       <!-- Поиск спрятал все строки — сказать об этом и дать сбросить: иначе
