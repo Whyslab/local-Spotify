@@ -1703,12 +1703,12 @@ async function loadShuffle(mode, playlist = "", noteId = "shuffleNote", paths = 
         const fresh = data.external ? `, новых ${data.external}` : ", новых нет";
         if (playlist || paths) {
             /* Про подборку интересно другое: сколько в очереди своего и
-             * сколько пришло со стороны. Разброс темпа тут — мелкий шрифт. */
+             * сколько пришло со стороны. «Разброс темпа до 11.97 BPM» читался
+             * как ошибка (тест на айфоне 24.10) — без него. */
             const outside = data.outside || 0;
             const near = outside - (data.external || 0);
             say(`Своих ${data.queue.length - outside}`
-                + (near ? `, из фонотеки ${near}` : "") + fresh
-                + ` — разброс темпа до ${report.max_tempo_jump ?? "—"} BPM`);
+                + (near ? `, из фонотеки ${near}` : "") + fresh);
         } else if (data.analysed < data.total) {
             /* Said plainly, because it is the difference between "it works"
              * and "it has nothing to work with yet": tempo cannot order a
@@ -1716,8 +1716,8 @@ async function loadShuffle(mode, playlist = "", noteId = "shuffleNote", paths = 
             say(`Измерено ${data.analysed} из ${data.total} — остальные ставятся без учёта темпа`
                 + fresh);
         } else {
-            say(`Разброс темпа до ${report.max_tempo_jump ?? "—"} BPM, артистов ${report.distinct_artists}`
-                + fresh);
+            // Без «разброса темпа в BPM»: цифры читались как ошибка (тест на айфоне 24.10).
+            say(`Артистов ${report.distinct_artists}` + fresh);
         }
     } catch (e) {
         say(e.message);

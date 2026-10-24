@@ -86,6 +86,29 @@ def test_meta_failure_reports_the_error_line(app, monkeypatch):
     assert app.classify_error(str(excinfo.value)) == "youtube_not_found"
 
 
+def test_the_task_is_named_as_soon_as_the_video_is_known(app, monkeypatch):
+    """iPhone test 24.10: «Загрузки» showed a bare youtube.com link for the
+    whole download; the name was stored only at tagging. The video's own
+    names go in at once (tagging may still correct them)."""
+    updates = []
+    monkeypatch.setattr(app.db, "task_update", lambda tid, **fields: updates.append(fields))
+    monkeypatch.setattr(app, "check_disk_space", lambda: (True, 10_000))
+    monkeypatch.setattr(
+        app,
+        "yt_meta",
+        lambda url: {"id": "abc123", "title": "Кольщик", "artist": "Михаил Круг", "duration": 200},
+    )
+    monkeypatch.setattr(app, "check_downloadable", lambda meta: None)
+
+    def no_download(url, video_id):
+        raise RuntimeError("stop here")
+
+    monkeypatch.setattr(app, "yt_download", no_download)
+    with pytest.raises(RuntimeError):
+        app.download_to_temp(7, "https://www.youtube.com/watch?v=abc123")
+    assert {"artist": "Михаил Круг", "title": "Кольщик"} in updates
+
+
 # ---------------------------------------------------------------------------
 # yt_download
 # ---------------------------------------------------------------------------

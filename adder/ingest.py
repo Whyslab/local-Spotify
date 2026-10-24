@@ -1355,6 +1355,9 @@ def download_to_temp(tid: int, url: str) -> Downloaded:
     meta = yt_meta(url)
     check_downloadable(meta)
     fs_artist, fs_title, full_artist, meta_title = split_artist_title(meta)
+    # Name the task now: «Загрузки» otherwise showed the bare link for the
+    # whole download (iPhone test 24.10). Tagging may correct it later.
+    db.task_update(tid, artist=full_artist, title=meta_title)
 
     downloaded = yt_download(url, meta["id"])
     if not downloaded.exists():

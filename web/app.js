@@ -367,6 +367,15 @@ const QUEUE_STATUSES = new Set(["queued", "downloading", "tagging", "error"]);
  * доехал», и мало, чтобы список не превращался в журнал. */
 const RECENT_DONE_LIMIT = 5;
 
+/* Название задачи. Пока YouTube не ответил, названия нет — голая ссылка
+ * на всю строку выглядела поломкой (тест на айфоне 24.10). Сбой без
+ * названия — ссылкой: иначе не понять, что именно не скачалось. */
+function taskTitle(t) {
+    if (t.title) return t.title;
+    if (t.status === "error" || !QUEUE_STATUSES.has(t.status)) return t.url || "—";
+    return "Узнаю название…";
+}
+
 async function tasks() {
     const box = document.getElementById("tasks");
     const empty = document.getElementById("tasksEmpty");
@@ -398,7 +407,7 @@ async function tasks() {
 
         for (const t of queue) {
             box.appendChild(trackRow({
-                title: t.title || t.url || "—",
+                title: taskTitle(t),
                 artist: t.artist || "",
                 status: t.status,
                 error: t.error,
@@ -411,7 +420,7 @@ async function tasks() {
             recentBox.replaceChildren();
             for (const t of recent) {
                 recentBox.appendChild(trackRow({
-                    title: t.title || t.url || "—",
+                    title: taskTitle(t),
                     artist: t.artist || "",
                     status: t.replaced ? "replaced" : t.gone ? "gone" : t.status,
                     error: t.error,
@@ -921,7 +930,7 @@ function renderRailQueue(tasks, pending) {
         row.className = "rail-job" + (task.status === "error" ? " is-error" : "");
 
         const what = document.createElement("b");
-        what.textContent = [task.artist, task.title].filter(Boolean).join(" — ") || task.url || "—";
+        what.textContent = [task.artist, task.title].filter(Boolean).join(" — ") || taskTitle(task);
 
         const stage = document.createElement("small");
         stage.textContent = TASK_STAGE[task.status] || task.status;
@@ -2540,7 +2549,10 @@ function renderDiscography(data) {
     if (have) parts.push(`${have} уже есть`);
     if (data.hidden) parts.push(`скрыто версий и повторов: ${data.hidden}`);
     if (data.hidden_releases) parts.push(`релизов-версий: ${data.hidden_releases}`);
-    artistSay(parts.join(", ") + (all.length ? "" : ". Скачивать нечего."));
+    /* Ноль треков — скорее всего, нашёлся не тот артист (опечатка: «Михал
+     * круг» → «Mikhail Krug: 0 треков», тест на айфоне 24.10). */
+    if (!tracks && !data.hidden && !data.hidden_releases) artistSay(`Не нашёл треков: в Deezer у «${data.artist.name}» их нет. Проверь, так ли написано имя.`);
+    else artistSay(parts.join(", ") + (all.length ? "" : ". Скачивать нечего."));
 
     const pickAll = document.createElement("button");
     pickAll.className = "ghost";

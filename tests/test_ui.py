@@ -3974,6 +3974,32 @@ def test_weekly_selection_not_downloaded_yet_says_so(page, monkeypatch):
         runtime.WEEKLY_FILE.unlink(missing_ok=True)
 
 
+def test_texts_from_the_iphone_test_say_plain_things(page):
+    """iPhone test 24.10: a download showed a bare youtube.com link, and a
+    mistyped artist gave «Mikhail Krug: 0 треков. Скачивать нечего»."""
+    link = "https://www.youtube.com/watch?v=abc123"
+    assert (
+        page.evaluate(f"taskTitle({{status: 'downloading', url: '{link}'}})") == "Узнаю название…"
+    )
+    assert page.evaluate(f"taskTitle({{status: 'error', url: '{link}'}})") == link
+    assert page.evaluate(f"taskTitle({{status: 'queued', url: '{link}', title: 'Кольщик'}})") == (
+        "Кольщик"
+    )
+    page.evaluate(
+        "renderDiscography({artist: {id: '1', name: 'Mikhail Krug'}, releases: [], hidden: 0}); true"
+    )
+    note = page.evaluate("document.getElementById('artistNote').textContent")
+    assert note.startswith("Не нашёл треков")
+    assert "0 треков" not in note
+    # Всё скрыто как версии и повторы — артист тот, просто брать нечего.
+    page.evaluate(
+        "renderDiscography({artist: {id: '1', name: 'Quiet'}, releases: [], hidden: 3}); true"
+    )
+    assert not page.evaluate("document.getElementById('artistNote').textContent").startswith(
+        "Не нашёл"
+    )
+
+
 def test_an_artist_is_downloaded_from_a_ticked_list(page, fake_deezer_artist):
     page.evaluate("switchView('viewAdd')")
     page.locator("#artistQuery").fill("quiet")
