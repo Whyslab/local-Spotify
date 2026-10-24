@@ -5069,6 +5069,20 @@ def test_downloading_a_playlist_shows_how_far_it_got_outside_the_menu(page, serv
     )
 
 
+def test_an_empty_playlist_says_how_to_fill_it(page, server):
+    """iPhone test 24.10: a new playlist showed «0 треков» and nothing else."""
+    (server["root"] / "Пустая.m3u").write_text("", encoding="utf-8")
+    page.evaluate("playlists()")
+    page.wait_for_function("knownPlaylists.some(p => p.name === 'Пустая')")
+    page.evaluate("openPlaylist('Пустая')")
+    page.wait_for_function("activeView === 'viewPlaylist'")
+    hint = page.locator("#playlistTracks .playlist-empty")
+    hint.wait_for()
+    assert "«В подборку…»" in hint.inner_text()
+    hint.get_by_role("button", name="В фонотеку").click()
+    page.wait_for_function("activeView === 'viewLibrary'")
+
+
 def test_only_downloaded_hides_the_rest_and_no_network_greys_it(page, server):
     _open_two_track_playlist(page, server, "Скачанное")
     if not page.evaluate("offline.supported"):

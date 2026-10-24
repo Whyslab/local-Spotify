@@ -2898,6 +2898,21 @@ function renderPlaylist() {
     const box = document.getElementById("playlistTracks");
     box.replaceChildren();
     pl.entries.forEach((entry, position) => box.appendChild(playlistTrackRow(entry, position)));
+    /* Пустая — сказать, как наполнить: «0 треков» и пустота под поиском
+     * выглядели поломкой (тест на айфоне 24.10). */
+    if (!pl.entries.length) {
+        const hint = document.createElement("div");
+        hint.className = "empty playlist-empty";
+        const text = document.createElement("p");
+        text.textContent = "Пусто. Трек добавляется так: «⋯» у трека → «В подборку…».";
+        const go = document.createElement("button");
+        go.className = "ghost";
+        go.type = "button";
+        go.textContent = "В фонотеку";
+        go.onclick = () => switchView("viewLibrary");
+        hint.append(text, go);
+        box.appendChild(hint);
+    }
     applyPlaylistView();
     filterOpenPlaylist();
     markPlayingRow();
