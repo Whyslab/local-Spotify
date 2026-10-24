@@ -130,13 +130,64 @@ def channel_artist(uploader: str) -> str:
 # file names use all three. Only a dash with spaces round it; the one in
 # "T-Fest" is part of the name.
 ARTIST_TITLE_DASH = re.compile(r"\s[-–—]\s")
+# The same dash with a space on one side only: «Михаил Круг- Кольщик» (iPhone
+# test 24.10). Read only when it is the one dash of its kind in the title; a
+# dash inside a name («AC-DC») has no space next to it.
+ARTIST_TITLE_LOOSE_DASH = re.compile(r"(?<=\w)[-–—]\s|\s[-–—](?=\w)")
+# What follows a one-sided dash in a title that is not «Artist- Title».
+VERSION_AFTER_DASH = re.compile(
+    r"(?:(?:re)?mix|edit|version|live|acoustic|instrumental|remaster|cover|slowed|sped"
+    r"|ремикс|кавер|версия|акустика|минус)\b",
+    re.IGNORECASE,
+)
+
+
+def _plausible_side(text: str) -> bool:
+    """Long enough to be a name: «Re- Up», «Что- то», «2020- 2021» are not."""
+    text = text.strip()
+    return bool(re.search(r"[^\W\d_]", text)) and (len(text) > 3 or " " in text)
+
+
+def title_dash(title: str) -> tuple[re.Match | None, bool]:
+    """The dash between artist and title, and whether it is only a guess.
+
+    « - » with spaces on both sides is taken as it is. A one-sided one
+    («Михаил Круг- Кольщик») is a guess: only when it is the one dash of its
+    kind and both sides look like names.
+    """
+    split = ARTIST_TITLE_DASH.search(title)
+    if split:
+        return split, False
+    loose = list(ARTIST_TITLE_LOOSE_DASH.finditer(title))
+    if len(loose) != 1:
+        return None, False
+    left, right = title[: loose[0].start()], title[loose[0].end() :]
+    if not (_plausible_side(left) and _plausible_side(right)) or VERSION_AFTER_DASH.match(
+        right.strip()
+    ):
+        return None, False
+    return loose[0], True
+
+
+def names_doubt(meta: dict) -> str:
+    """Why the artist in split_artist_title(meta) may be wrong; "" when it is not in doubt."""
+    if meta.get("artist") or meta.get("creator"):
+        return ""
+    split, guessed = title_dash(meta.get("track") or meta.get("title") or "Unknown")
+    if guessed:
+        return "Исполнитель и название разделены наугад"
+    if split:
+        return ""
+    if channel_artist(meta.get("uploader") or ""):
+        return "Исполнитель — название канала YouTube"
+    return "Исполнитель неизвестен"
 
 
 def split_artist_title(meta: dict):
     artist = meta.get("artist") or meta.get("creator") or ""
     title = meta.get("track") or meta.get("title") or "Unknown"
     # A missed split left the channel as the artist.
-    split = ARTIST_TITLE_DASH.search(title) if not artist else None
+    split = title_dash(title)[0] if not artist else None
     if split:
         artist, title = title[: split.start()].strip(), title[split.end() :].strip()
     elif artist and not meta.get("track"):
@@ -1307,13 +1358,15 @@ class TrackNames:
     """What a track should be called, once the source has been interrogated.
 
     ``fs_*`` are sanitised for the filesystem, ``meta_*`` keep the punctuation
-    and version markers that belong in the tags.
+    and version markers that belong in the tags. ``doubt``: why the names may
+    be wrong (names_doubt), "" when nothing is in doubt.
     """
 
     fs_artist: str
     fs_title: str
     full_artist: str
     meta_title: str
+    doubt: str = ""
 
 
 @dataclass(frozen=True)
@@ -1372,7 +1425,7 @@ def download_to_temp(tid: int, url: str) -> Downloaded:
 
     return Downloaded(
         temp_path=stage_into_temp(downloaded, meta["id"]),
-        names=TrackNames(fs_artist, fs_title, full_artist, meta_title),
+        names=TrackNames(fs_artist, fs_title, full_artist, meta_title, names_doubt(meta)),
         thumbnail=meta.get("thumbnail"),
     )
 
@@ -1641,6 +1694,12 @@ def ingest_temp_file(tid: int, temp_path: Path, names: TrackNames, thumbnail: st
     hint = db.db_query("SELECT album_hint FROM tasks WHERE id = ?", (tid,))
     album_id = hint[0]["album_hint"] if hint else None
     info, source = enrich.describe(names.full_artist, names.meta_title, album_id)
+    if names.doubt and source == "fallback":
+        # Nobody vouched for those names: they come from the video alone, and
+        # Deezer and MusicBrainz did not know the track (iPhone test 24.10:
+        # the channel «Настольгия Жива» as the artist). A later, weightier
+        # warning may replace this one.
+        db.task_update(tid, warning=f"{names.doubt}: проверь теги («⋯» → «Изменить теги…»)")
     logger.info(
         "Metadata for %r by %r: album=%r track=%s source=%s",
         names.meta_title,

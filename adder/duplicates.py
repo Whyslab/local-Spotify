@@ -78,8 +78,13 @@ def pairs() -> list[dict]:
         "WHERE status = 'done' AND warning IS NOT NULL AND warning != '' ORDER BY id DESC"
     )
     for task in tasks:
-        new = describe(task["result_path"]) if task["result_path"] else None
         existing_path = _similar_path(task)
+        # Not every warning is about a twin («Исполнитель — название канала…»,
+        # «Старая версия оставлена…»): those are not pairs, and clearing them
+        # here wiped them before anyone read them.
+        if not existing_path:
+            continue
+        new = describe(task["result_path"]) if task["result_path"] else None
         existing = describe(existing_path) if existing_path else None
         if new is None or existing is None:
             _clear(task["id"])

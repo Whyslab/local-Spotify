@@ -6,7 +6,7 @@ HTTP requests, is replaced with canned API responses.
 
 import pytest
 
-from adder import enrich
+from adder import enrich, ingest
 from adder.ingest import split_artist_title
 
 # conftest replaces enrich.lookup in every test so nothing reaches Deezer;
@@ -402,3 +402,35 @@ def test_a_title_split_by_an_en_or_em_dash_names_the_artist_not_the_channel():
         fs_artist, fs_title, full_artist, title = split_artist_title(meta)
         assert full_artist == "T-Fest x Truwer", dash
         assert title == "На волну", dash
+
+
+def test_a_dash_with_a_space_on_one_side_still_splits_artist_from_title():
+    """iPhone test 24.10: «Михаил Круг- Кольщик» from the channel «Настольгия
+    Жива» got the channel as its artist -- only a dash with a space on both
+    sides was read. A one-sided one splits too when it is the only one; a
+    dash inside a name («AC-DC», «Jay-Z») has no space next to it."""
+    for title in ("Михаил Круг- Кольщик", "Михаил Круг -Кольщик", "Михаил Круг– Кольщик"):
+        _, _, artist, track = split_artist_title({"title": title, "uploader": "Настольгия Жива"})
+        assert (artist, track) == ("Михаил Круг", "Кольщик"), title
+    # Слово только начинается как пометка версии — это не она.
+    _, _, artist, track = split_artist_title({"title": "Muse- Livin' Free", "uploader": "X"})
+    assert (artist, track) == ("Muse", "Livin' Free")
+    not_names = ("AC-DC Thunderstruck", "Раз- два- три", "Раз- два", "Re- Up", "Что- то")
+    not_names += ("2020- 2021", "Nu -Metal", "A -ha", "Ж -Д", "Song Pt. 2 -Remix", "Любэ -Ремикс")
+    for title in not_names:
+        _, _, artist, track = split_artist_title({"title": title, "uploader": "Канал"})
+        assert (artist, track) == ("Канал", title), title
+
+
+def test_names_in_doubt_say_why():
+    doubt = ingest.names_doubt
+    assert doubt({"title": "Кольщик", "uploader": "Настольгия Жива"}).startswith(
+        "Исполнитель — название канала"
+    )
+    assert doubt({"title": "Михаил Круг- Кольщик", "uploader": "X"}).startswith(
+        "Исполнитель и название разделены"
+    )
+    assert doubt({"title": "Кольщик", "uploader": ""}) == "Исполнитель неизвестен"
+    # Разделено по честному тире — сомнений нет, даже если канал зовут так же.
+    assert doubt({"title": "Кино - Группа крови", "uploader": "Кино"}) == ""
+    assert doubt({"title": "Кольщик", "artist": "Михаил Круг", "uploader": "X"}) == ""

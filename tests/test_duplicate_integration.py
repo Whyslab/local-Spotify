@@ -5,6 +5,9 @@ import pytest
 from adder import config, db, ingest, runtime
 from adder import queue as adder_queue
 
+# Captured before any test patches it: the channel tests need the real one.
+REAL_SPLIT = ingest.split_artist_title
+
 
 @pytest.fixture()
 def app_module(tmp_path, monkeypatch):
@@ -502,3 +505,45 @@ def test_duplicate_does_not_create_collision_filename(
     files = list((config.LIBRARY / "Artist" / "Singles").glob("*.m4a"))
 
     assert [f.name for f in files] == ["Track.m4a"]
+
+
+# ---------------------------------------------------------------------------
+# The channel taken for the artist
+# ---------------------------------------------------------------------------
+
+
+def _ingest_video(monkeypatch, meta):
+    configure_fake_processing(monkeypatch, b"SOME AUDIO " + meta["title"].encode())
+    monkeypatch.setattr(ingest, "split_artist_title", REAL_SPLIT)
+    monkeypatch.setattr(ingest, "yt_meta", lambda url: {"id": "vid", "thumbnail": None, **meta})
+    db.db_exec("INSERT INTO tasks(id, url, status) VALUES(1, 'https://youtu.be/vid', 'queued')")
+    adder_queue.process(1, "https://youtu.be/vid")
+    return db.db_query("SELECT artist, title, warning FROM tasks WHERE id = 1")[0]
+
+
+def test_a_channel_taken_for_the_artist_asks_for_the_tags_to_be_checked(app_module, monkeypatch):
+    """iPhone test 24.10: Deezer did not know the track, and the channel
+    «Настольгия Жива» silently became the artist. Now the download says so."""
+    row = _ingest_video(monkeypatch, {"title": "Кольщик", "uploader": "Настольгия Жива"})
+    assert row["artist"] == "Настольгия Жива"
+    assert "канала" in (row["warning"] or "")
+    # The list of twins reads every warning; this one is not a pair and stays.
+    from adder import duplicates
+
+    assert duplicates.pairs() == []
+    left = db.db_query("SELECT warning FROM tasks WHERE id = 1")[0]["warning"]
+    assert "канала" in (left or "")
+
+
+def test_an_artist_split_by_a_guess_asks_too_but_a_plain_split_does_not(app_module, monkeypatch):
+    row = _ingest_video(
+        monkeypatch, {"title": "Михаил Круг- Кольщик", "uploader": "Настольгия Жива"}
+    )
+    assert row["artist"] == "Михаил Круг"
+    assert "наугад" in (row["warning"] or "")
+
+
+def test_a_plain_artist_title_split_raises_no_warning(app_module, monkeypatch):
+    row = _ingest_video(monkeypatch, {"title": "Михаил Круг - Кольщик", "uploader": "Михаил Круг"})
+    assert row["artist"] == "Михаил Круг"
+    assert not row["warning"]
