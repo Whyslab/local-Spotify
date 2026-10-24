@@ -1815,6 +1815,46 @@ def test_lock_screen_buttons_are_given_again_when_a_track_starts(page):
         )
 
 
+def _swipe_mini_player(page, dx, release=True):
+    box = page.locator("#player .player-track").bounding_box()
+    x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+    page.mouse.move(x, y)
+    page.mouse.down()
+    for step in range(1, 6):
+        page.mouse.move(x + dx * step / 5, y)
+    if release:
+        page.mouse.up()
+
+
+def test_a_mini_player_swipe_stays_in_its_lane_and_says_when_nothing_is_next(page):
+    """iPhone test 24.10: the swiped title slid over ♥ and ▶, and on the last
+    track «next» flew away as if it switched, but nothing happened."""
+    page.set_viewport_size({"width": 390, "height": 844})
+    open_library(page)
+    page.evaluate(f"playQueue([{LOUD}], 0, 'manual')")
+    page.wait_for_function("player.started")
+    page.evaluate("player.audio.pause()")
+    _swipe_mini_player(page, -100, release=False)
+    # Название обрезано по своему месту: за ♥ и ▶ оно не заезжает.
+    clip = page.evaluate(
+        "getComputedStyle(document.querySelector('#player .player-track')).clipPath"
+    )
+    assert clip.startswith("inset(")
+    page.mouse.up()
+    page.wait_for_function(
+        "document.getElementById('playerNote').textContent === 'Дальше ничего нет'"
+    )
+    assert page.evaluate("player.index") == 0
+    page.wait_for_function("document.querySelector('#player .player-track').style.transform === ''")
+    # Подпись временная.
+    page.wait_for_function("document.getElementById('playerNote').textContent === ''", timeout=6000)
+    page.evaluate("player.audio.currentTime = 0")  # дальше 3 с «назад» — с начала, это не то
+    _swipe_mini_player(page, 100)
+    page.wait_for_function(
+        "document.getElementById('playerNote').textContent === 'Раньше ничего нет'"
+    )
+
+
 def test_media_session_handlers_registered(page):
     """Plan 4a.3: on the laptop the lock screen and headphones have every
     control, ±10 s too."""
@@ -4755,6 +4795,8 @@ def test_swiping_the_phone_mini_player_changes_the_track(page):
         "player.audio.pause(); window.skips = [];"
         " nextTrack = () => skips.push('next'); prevTrack = () => skips.push('prev'); true"
     )
+    # По кругу: «назад» с первого трека иначе честно говорит «Раньше ничего нет».
+    page.evaluate("player.repeat = 'all'")
     box = page.locator("#player .player-track").bounding_box()
     y = box["y"] + box["height"] / 2
 

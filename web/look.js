@@ -364,7 +364,32 @@ const SKIP_SWIPE_PX = 70;
     if (!bar || !info) return;
     let startX = 0, startY = 0, dx = 0, active = false, horizontal = null, swallowClick = false;
     const calm = () => window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    const reset = () => { info.style.transform = ""; info.style.opacity = ""; };
+    const reset = () => { info.style.transform = ""; info.style.opacity = ""; info.style.clipPath = ""; };
+    /* Название едет, а видно его только на своём месте: иначе оно
+     * наезжало на ♥ и ▶ (тест на айфоне 24.10). Сдвинуто на x — окно
+     * сдвигаем обратно; сверху и снизу запас под выносные буквы. */
+    const lane = (x) => `inset(-20px ${x}px -20px ${-x}px)`;
+    /* Листать некуда — так и сказать, а не делать вид, что переключил.
+     * «Назад» после трёх секунд — с начала трека, это есть всегда. */
+    const canSkip = (way) => (way < 0
+        ? peekNext() >= 0
+        : (!player.switching && player.audio.currentTime > 3) || peekPrev() >= 0);
+    let nothingTimer = 0, noteBefore = [], nothingShown = null;
+    const sayNothing = (text) => {
+        const note = document.getElementById("playerNote");
+        if (!note) return;
+        /* Прежнюю подпись вернуть потом. Свою же «ничего нет» не запоминать,
+         * а новую, пришедшую между двумя свайпами, — запомнить. */
+        if (note.textContent !== nothingShown) noteBefore = [...note.childNodes];
+        note.textContent = text;
+        nothingShown = text;
+        clearTimeout(nothingTimer);
+        nothingTimer = setTimeout(() => {
+            if (note.textContent === text) note.replaceChildren(...noteBefore);
+            noteBefore = [];
+            nothingShown = null;
+        }, 2500);
+    };
     bar.addEventListener("pointerdown", (e) => {
         if (sheetOpen() || WIDE.matches || e.button !== 0) return;
         /* Вся полоса, кроме кнопок: название, пока въезжает после прошлого
@@ -389,6 +414,7 @@ const SKIP_SWIPE_PX = 70;
         }
         dx = mx;
         info.style.transform = `translateX(${dx}px)`;
+        info.style.clipPath = lane(dx);
         info.style.opacity = String(1 - Math.min(Math.abs(dx) / 240, 0.6));
     });
     const release = () => {
@@ -400,19 +426,32 @@ const SKIP_SWIPE_PX = 70;
         setTimeout(() => { swallowClick = false; }, 0);
         const way = Math.abs(dx) > SKIP_SWIPE_PX ? Math.sign(dx) : 0;
         if (!way) { reset(); return; }
+        if (!canSkip(way)) {
+            sayNothing(way < 0 ? "Дальше ничего нет" : "Раньше ничего нет");
+            const from = { transform: `translateX(${dx}px)`, opacity: info.style.opacity || 1, clipPath: lane(dx) };
+            reset();
+            if (!calm() && info.animate) {
+                info.animate([from, { transform: "translateX(0px)", opacity: 1, clipPath: lane(0) }],
+                    { duration: 220, easing: "ease-out" });
+            }
+            return;
+        }
         const skip = () => { if (way < 0) nextTrack(); else prevTrack(); };
-        if (calm() || !info.animate) { reset(); skip(); return; }
+        /* «Назад» дальше трёх секунд — тот же трек с начала: улетать и
+         * влетать обратно названию незачем. */
+        const restart = way > 0 && !player.switching && player.audio.currentTime > 3;
+        if (calm() || !info.animate || restart) { reset(); skip(); return; }
         const width = info.offsetWidth || 300;
         info.animate(
-            [{ transform: `translateX(${dx}px)`, opacity: info.style.opacity || 1 },
-                { transform: `translateX(${way * width}px)`, opacity: 0 }],
+            [{ transform: `translateX(${dx}px)`, opacity: info.style.opacity || 1, clipPath: lane(dx) },
+                { transform: `translateX(${way * width}px)`, opacity: 0, clipPath: lane(way * width) }],
             { duration: 150, easing: "ease-in" },
         ).finished.then(() => {
             reset();
             skip();
             info.animate(
-                [{ transform: `translateX(${-way * width * 0.5}px)`, opacity: 0 },
-                    { transform: "none", opacity: 1 }],
+                [{ transform: `translateX(${-way * width * 0.5}px)`, opacity: 0, clipPath: lane(-way * width * 0.5) },
+                    { transform: "translateX(0px)", opacity: 1, clipPath: lane(0) }],
                 { duration: 220, easing: "ease-out" },
             );
         }).catch(() => { reset(); skip(); });

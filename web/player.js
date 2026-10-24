@@ -203,6 +203,16 @@ function peekNext() {
     return -1;
 }
 
+/* Как peekNext, только назад — без сдвига позиции (stepInOrder(-1) сдвигает). */
+function peekPrev() {
+    if (!player.order.length) return -1;
+    let at = player.orderAt;
+    if (at < 0 || player.order[at] !== player.index) at = player.order.indexOf(player.index);
+    if (at - 1 >= 0) return player.order[at - 1];
+    if (player.repeat === "all") return player.order[player.order.length - 1];
+    return -1;
+}
+
 /* Хватит ли ссылки на весь трек: браузер дочитывает его кусками до конца. */
 function linkLasts(stream, track) {
     // Длина неизвестна — 8 минут: сервер даёт такой ссылке не меньше 10.
