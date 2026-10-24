@@ -3203,7 +3203,8 @@ function openTrackMenu(button, position) {
 
     /* В чужом порядке «выше на один» двигало бы не туда, куда видно, —
      * перемещения только в своём порядке подборки. */
-    if (playlistView(player.playlist.name).sort === "own") {
+    const view = playlistView(player.playlist.name);
+    if (view.sort === "own" && !view.reverse) {
         menu.append(
             item("В начало подборки", "", () => moveTrack(position, 0), position === 0),
             item("Выше на один", "", () => moveTrack(position, position - 1), position === 0),
@@ -4004,6 +4005,14 @@ const PLAYLIST_SORTS = {
     album: e => e.album || "",
     duration: e => (e.duration > 0 ? e.duration : 0),
 };
+/* Что даёт ⇅ при каждом порядке — подсказка на кнопке. */
+const REVERSE_HINTS = {
+    own: "с конца подборки",
+    title: "Я → А",
+    artist: "Я → А",
+    album: "Я → А",
+    duration: "длинные сначала",
+};
 const sortCollator = new Intl.Collator("ru", { sensitivity: "base", numeric: true });
 
 function readPlaylistViews() {
@@ -4020,6 +4029,7 @@ function playlistView(name) {
     return {
         sort: Object.prototype.hasOwnProperty.call(PLAYLIST_SORTS, saved.sort) ? saved.sort : "own",
         only: saved.only === true,
+        reverse: saved.reverse === true,
     };
 }
 
@@ -4035,8 +4045,8 @@ function moveViewSettings(from, to) {
 
 function savePlaylistView(name, view) {
     const all = readPlaylistViews();
-    if (view.sort === "own" && !view.only) delete all[name];
-    else all[name] = { sort: view.sort, only: view.only };
+    if (view.sort === "own" && !view.only && !view.reverse) delete all[name];
+    else all[name] = { sort: view.sort, only: view.only, reverse: view.reverse };
     try { localStorage.setItem(PLAYLIST_VIEW_KEY, JSON.stringify(all)); } catch (e) { /* до перезагрузки не вспомнит */ }
 }
 
@@ -4061,6 +4071,7 @@ function playlistViewPositions(hidden = false) {
             return order || a - b;
         });
     }
+    if (view.reverse) positions.reverse();
     return positions;
 }
 
@@ -4068,7 +4079,8 @@ function applyPlaylistView() {
     const pl = player.playlist;
     if (!pl) return;
     const view = playlistView(pl.name);
-    const sorted = view.sort !== "own";
+    // Свой порядок задом наперёд — тоже чужой: «выше» на экране было бы ниже в файле.
+    const sorted = view.sort !== "own" || view.reverse;
     const only = onlyDownloadedActive(pl, view);
     const box = document.getElementById("playlistTracks");
     const rows = new Map();
@@ -4088,6 +4100,12 @@ function applyPlaylistView() {
 
     const select = document.getElementById("playlistSort");
     if (select) select.value = view.sort;
+    const reverse = document.getElementById("playlistReverse");
+    if (reverse) {
+        reverse.classList.toggle("is-on", view.reverse);
+        reverse.setAttribute("aria-pressed", String(view.reverse));
+        reverse.title = "Обратный порядок: " + REVERSE_HINTS[view.sort];
+    }
     const button = document.getElementById("playlistOnlyDownloaded");
     if (button) {
         button.hidden = !offline.supported || !pl.entries.some(e => isDownloaded(e.path));
@@ -4100,6 +4118,15 @@ function setPlaylistSort(sort) {
     const pl = player.playlist;
     if (!pl) return;
     savePlaylistView(pl.name, { ...playlistView(pl.name), sort });
+    applyPlaylistView();
+    filterOpenPlaylist();
+}
+
+function togglePlaylistReverse() {
+    const pl = player.playlist;
+    if (!pl) return;
+    const view = playlistView(pl.name);
+    savePlaylistView(pl.name, { ...view, reverse: !view.reverse });
     applyPlaylistView();
     filterOpenPlaylist();
 }

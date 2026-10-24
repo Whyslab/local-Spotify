@@ -4993,6 +4993,42 @@ def test_playlist_sort_is_a_view_and_playing_follows_it(page, server):
     )
 
 
+def test_the_reverse_button_turns_any_playlist_order_around(page, server):
+    """iPhone test 24.10: the ⇅ beside the order menu promised a direction
+    and did nothing. It is now its own button."""
+    _open_two_track_playlist(page, server, "Наоборот")
+    reverse = page.locator("#playlistReverse")
+    assert reverse.get_attribute("aria-pressed") == "false"
+    reverse.click()
+    assert reverse.get_attribute("aria-pressed") == "true"
+    assert _shown_titles(page) == [LOUD_PATH, QUIET_PATH]
+    assert _playlist_paths(page, "Наоборот") == [QUIET_PATH, LOUD_PATH]  # это вид
+    # Перевёрнутый свой порядок — уже не свой: «выше на один» был бы ниже.
+    assert (
+        page.evaluate("document.querySelector('#playlistTracks .playlist-track').draggable")
+        is False
+    )
+    page.locator("#playlistTracks .playlist-track").first.get_by_role("button").last.click()
+    assert page.get_by_role("menuitem", name="Выше на один").count() == 0
+    page.keyboard.press("Escape")
+    page.locator("#playlistTracks .playlist-track .track-info").first.click()
+    page.wait_for_function("player.queue.length === 2")
+    assert page.evaluate("player.queue.map(t => t.path)") == [LOUD_PATH, QUIET_PATH]
+    page.evaluate("player.audio.pause()")
+    # По названию — Я → А, и это помнится вместе с порядком.
+    page.locator("#playlistSort").select_option("title")
+    assert _shown_titles(page) == [QUIET_PATH, LOUD_PATH]
+    page.reload()
+    page.evaluate("openPlaylist('Наоборот')")
+    page.wait_for_function("activeView === 'viewPlaylist'")
+    page.locator("#playlistTracks .playlist-track").nth(1).wait_for()
+    assert _shown_titles(page) == [QUIET_PATH, LOUD_PATH]
+    assert reverse.get_attribute("aria-pressed") == "true"
+    reverse.click()
+    assert _shown_titles(page) == [LOUD_PATH, QUIET_PATH]
+    assert reverse.get_attribute("aria-pressed") == "false"
+
+
 def test_only_downloaded_hides_the_rest_and_no_network_greys_it(page, server):
     _open_two_track_playlist(page, server, "Скачанное")
     if not page.evaluate("offline.supported"):

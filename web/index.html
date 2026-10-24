@@ -297,8 +297,13 @@
       <div class="playlist-tools">
         <button id="playlistOnlyDownloaded" class="ghost playlist-only" type="button" aria-pressed="false"
                 onclick="toggleOnlyDownloaded()" hidden>Только скачанное</button>
-        <label class="playlist-sort" title="Порядок треков — только здесь, файл подборки не меняется">
+        <!-- ⇅ — своя кнопка: картинкой внутри выбора порядка она обещала
+             направление и ничего не делала (тест на айфоне 24.10). -->
+        <button id="playlistReverse" class="playlist-reverse" type="button" aria-pressed="false"
+                aria-label="Обратный порядок" title="Обратный порядок" onclick="togglePlaylistReverse()">
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4v16M3 16l4 4 4-4M17 20V4M13 8l4-4 4 4"/></svg>
+        </button>
+        <label class="playlist-sort" title="Порядок треков — только здесь, файл подборки не меняется">
           <select id="playlistSort" aria-label="Порядок треков" onchange="setPlaylistSort(this.value)">
             <option value="own">свой</option>
             <option value="title">название</option>

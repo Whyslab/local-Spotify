@@ -2774,7 +2774,9 @@ html.sheet-lock, html.sheet-lock body { overflow: hidden; }
 .playlist-tools { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; padding: 0 16px 6px; }
 .playlist-only { min-height: 32px; padding: 0 14px; border-radius: 999px; font-size: 14px; }
 .playlist-sort { position: relative; display: inline-flex; align-items: center; gap: 2px; color: var(--text-2); }
-.playlist-sort .icon { width: 18px; height: 18px; }
+.playlist-reverse { display: inline-grid; place-items: center; width: 40px; height: 40px; min-height: 0; padding: 0; border-radius: 8px; background: transparent; color: var(--text-2); }
+.playlist-reverse .icon { width: 18px; height: 18px; }
+.playlist-reverse.is-on { color: var(--accent); background: var(--fill-2); }
 /* Своя стрелка вместо системной рамки: родной вид на телефоне растягивал
    список на всю строку. 16 px — меньше айфон при нажатии увеличивает страницу. */
 .playlist-sort select {
