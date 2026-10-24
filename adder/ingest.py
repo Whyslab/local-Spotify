@@ -174,31 +174,33 @@ def validate_url(url: str) -> tuple[bool, str]:
     """Validate that a URL points to a supported YouTube host.
 
     Returns:
-        (is_valid, error_message)
+        (is_valid, error_message) -- the message goes to the page as is, so it
+        is in Russian like the rest of the page («Invalid URL: …» was the one
+        English line the iPhone test met, 24.10).
     """
     if not url or not url.strip():
-        return False, "Empty URL"
+        return False, "Пустая ссылка"
 
     url = url.strip()
 
     # Max length check
     if len(url) > 2048:
-        return False, "URL too long (max 2048 characters)"
+        return False, "Ссылка слишком длинная (больше 2048 знаков)"
 
     # Parse URL
     try:
         parsed = urlparse(url)
     except Exception:
-        return False, "Invalid URL format"
+        return False, "Это не похоже на ссылку"
 
     # Check scheme
     if parsed.scheme not in ("http", "https"):
-        return False, "URL must use http or https scheme"
+        return False, "Это не ссылка — ссылка начинается с https://"
 
     # Check hostname exists
     hostname = (parsed.hostname or "").lower().rstrip(".")
     if not hostname:
-        return False, "URL must have a hostname"
+        return False, "В ссылке нет адреса сайта"
 
     # Only YouTube URLs are supported.
     allowed_hosts = {
@@ -211,7 +213,7 @@ def validate_url(url: str) -> tuple[bool, str]:
     }
 
     if hostname not in allowed_hosts:
-        return False, "URL must be a YouTube URL"
+        return False, "Нужна ссылка на YouTube"
 
     return True, ""
 

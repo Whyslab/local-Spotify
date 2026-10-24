@@ -200,6 +200,21 @@ def test_invalid_url_is_rejected(client):
     )
 
     assert response.status_code == 400
+    assert response.json()["detail"] == "Нужна ссылка на YouTube"
+
+
+def test_a_bad_link_is_explained_in_russian_and_named_among_several(client):
+    """iPhone test 24.10: «Aaaaa» answered «Invalid URL: URL must use http or https scheme»."""
+    one = client.post("/api/add", json={"links": ["Aaaaa"]}, headers=auth_headers())
+    assert one.json()["detail"] == "Это не ссылка — ссылка начинается с https://"
+
+    many = client.post(
+        "/api/add",
+        json={"links": ["https://youtu.be/dQw4w9WgXcQ", "Aaaaa"]},
+        headers=auth_headers(),
+    )
+    assert many.status_code == 400
+    assert many.json()["detail"] == "Строка «Aaaaa»: Это не ссылка — ссылка начинается с https://"
 
 
 def test_health_does_not_require_auth(client):

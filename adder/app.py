@@ -556,7 +556,11 @@ def add(req: AddRequest, authenticated: bool = Depends(verify_token)):
         # Problem #10: Validate URL
         is_valid, error_msg = ingest.validate_url(link)
         if not is_valid:
-            raise HTTPException(status_code=400, detail=f"Invalid URL: {error_msg}")
+            # Из нескольких строк — сказать, какая не годится.
+            many = len([line for line in req.links if line.strip()]) > 1
+            raise HTTPException(
+                status_code=400, detail=f"Строка «{link[:80]}»: {error_msg}" if many else error_msg
+            )
 
         # Normalize all supported YouTube URL forms to one canonical URL
         # before duplicate checks and database insertion.
@@ -1063,7 +1067,7 @@ def delete_track(req: DeleteRequest, authenticated: bool = Depends(verify_token)
     way round the line stayed for good, since a second try finds no file.
     """
     runtime.guard_real_library(config.LIBRARY, "delete a track")
-    path = library.relative_path(req.path)
+    path = library.library_relative(req.path)
     dropped = playlists.drop_everywhere(path)
     left = playlists.still_pointing_at(path)
     if left:
@@ -1249,7 +1253,7 @@ def replace_track(req: ReplaceRequest, authenticated: bool = Depends(verify_toke
 
     is_valid, error_msg = ingest.validate_url(req.url)
     if not is_valid:
-        raise HTTPException(status_code=400, detail=f"Invalid URL: {error_msg}")
+        raise HTTPException(status_code=400, detail=error_msg)
 
     try:
         link = ingest.canonicalize_youtube_url(req.url)
@@ -1498,7 +1502,7 @@ def import_playlist(req: PlaylistImportRequest, authenticated: bool = Depends(ve
 
     is_valid, error_msg = ingest.validate_url(url)
     if not is_valid:
-        raise HTTPException(status_code=400, detail=f"Invalid URL: {error_msg}")
+        raise HTTPException(status_code=400, detail=error_msg)
     try:
         video_urls = sources.youtube_playlist(url)
     except Exception as exc:
