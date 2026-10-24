@@ -2151,6 +2151,20 @@ async function removeTrack(t) {
     }
 }
 
+/* Свой крестик «Стереть» в полях поиска. Системный айфон показывает, только
+ * пока открыта клавиатура: закрыл её — и стереть набранное нечем, кроме как
+ * снова открыть и держать «удалить» (тест 24.10). Виден, пока в поле есть
+ * текст (style.css, :placeholder-shown). Стирает так же, как набор, —
+ * событием input, и поиск обновляется сам. */
+document.addEventListener("click", (event) => {
+    const clear = event.target instanceof Element && event.target.closest(".search-clear");
+    if (!clear) return;
+    const field = clear.parentElement && clear.parentElement.querySelector("input");
+    if (!field) return;
+    field.value = "";
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+});
+
 /* ---------------- Клавиатура телефона ----------------
  *
  * Айфон поднимает над клавиатурой всё, что прижато к низу окна: мини-плеер и

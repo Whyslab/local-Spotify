@@ -3247,6 +3247,30 @@ def test_search_takes_yo_for_ye_everywhere(page, server):
         library.invalidate_library_index()
 
 
+def test_search_fields_have_their_own_clear_button(page):
+    """iPhone test 24.10: the system «×» shows only while the keyboard is open."""
+    page.evaluate("switchView('viewSearch')")
+    field = page.locator("#searchEverywhere")
+    clear = page.locator("#viewSearch .search-clear")
+    assert not clear.is_visible()
+    field.fill("loud")
+    page.wait_for_selector("#searchBody .track-title")
+    field.blur()
+    assert clear.is_visible()
+    clear.click()
+    assert field.input_value() == ""
+    assert not clear.is_visible()
+    page.wait_for_function("!document.querySelector('#searchBody .track-title')")
+
+    open_library(page)
+    lib = page.locator("#librarySearch")
+    lib.fill("loud")
+    page.wait_for_function("document.querySelectorAll('#library .track').length === 1")
+    page.locator(".search .search-clear").click()
+    assert lib.input_value() == ""
+    page.wait_for_function("document.querySelectorAll('#library .track').length > 1")
+
+
 def test_search_debounce_within_budget(page):
     """Typing waited 300 ms (library) and 120 ms (search page) before
     searching at all: the whole 150 ms budget went before any work began.
