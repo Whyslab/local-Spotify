@@ -413,7 +413,9 @@ button:disabled { opacity: .5; cursor: default; }
    перетягивают внимание на себя сильнее, чем сами названия. */
 /* Готовое — спокойно: его в списке десятки, и белые рамки перетягивали
    взгляд с того, что ещё качается. */
-.track-status.done        { color: var(--text-3); background: var(--fill-2); }
+.track-status.done,
+.track-status.gone,
+.track-status.replaced    { color: var(--text-3); background: var(--fill-2); }
 .track-status.downloading,
 .track-status.tagging     { color: var(--accent); background: var(--fill-2); }
 .track-status.error       { color: var(--danger); background: rgba(255, 69, 58, 0.14); }

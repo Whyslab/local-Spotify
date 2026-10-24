@@ -297,7 +297,7 @@ Authorise with an `Authorization: Bearer <API_TOKEN>` header. `/health` without 
 | `PATCH` | `/api/track` | Correct title, artists and album; `refetch_cover` looks the cover up again |
 | `GET` | `/api/cover` | The artwork inside the file; `?size=96\|300\|600` for a cached thumbnail |
 | `POST` | `/api/covers` | A screen's thumbnails in one answer (`{"items": [{"path", "size"}]}`, up to 64); one still to be made is answered "later" |
-| `GET` `DELETE` | `/api/library` | The library (search, sort, paging) / move a track to `trash/` |
+| `GET` `DELETE` | `/api/library` | The library (search, sort, paging) / move a track to `trash/` and out of every playlist |
 | `POST` | `/api/replace` `/api/replace-file` | Replace a track by a better version, keeping its place in every playlist |
 | `GET` | `/api/home` | Home page shelves, the night's new releases among them |
 | `GET` | `/api/discover-external` | Tracks by similar artists that are not in the library; a new set on every call, with Deezer covers |

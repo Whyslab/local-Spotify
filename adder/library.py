@@ -308,6 +308,14 @@ def move_to_trash(file: Path, relative: Path) -> Path:
     return destination
 
 
+def relative_path(rel_path: str) -> str:
+    """A track's path inside the library as it is on disk: «A//B/./x.m4a» is «A/B/x.m4a».
+
+    Playlist lines are compared with this, not with the string a client sent.
+    """
+    return library_track(rel_path).relative_to(config.LIBRARY.resolve()).as_posix()
+
+
 def delete_track(rel_path: str) -> dict:
     """Remove a track from the library.
 

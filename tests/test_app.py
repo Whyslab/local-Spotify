@@ -1104,6 +1104,121 @@ def test_every_html_page_has_the_csp_and_every_answer_nosniff(client):
         assert client.get(path).headers.get("x-content-type-options") == "nosniff", path
 
 
+def test_deleting_a_track_takes_it_out_of_every_playlist(client, tmp_path, monkeypatch):
+    """A line left pointing into the trash did not play, and Navidrome then listed
+    a path the library did not know, so the playlist stopped syncing back."""
+    from adder import playlists
+
+    monkeypatch.setattr(runtime, "TRASH_DIR", tmp_path / "trash")
+    monkeypatch.setattr(playlists, "HISTORY_DIR", tmp_path / "history")
+    for name in ("gone.m4a", "kept.m4a"):
+        (config.LIBRARY / "A" / "Singles").mkdir(parents=True, exist_ok=True)
+        (config.LIBRARY / "A" / "Singles" / name).write_bytes(b"audio")
+    playlists.create("Monday", ["A/Singles/kept.m4a", "A/Singles/gone.m4a", "A/Singles/kept.m4a"])
+    playlists.create("Other", ["A/Singles/kept.m4a"])
+
+    r = client.request(
+        "DELETE", "/api/library", json={"path": "A/Singles/gone.m4a"}, headers=auth_headers()
+    )
+
+    assert r.status_code == 200
+    assert r.json()["playlists"] == 1
+    assert [e.path for e in playlists.read("Monday").entries] == [
+        "A/Singles/kept.m4a",
+        "A/Singles/kept.m4a",
+    ]
+    assert [e.path for e in playlists.read("Other").entries] == ["A/Singles/kept.m4a"]
+    assert (tmp_path / "trash" / "A" / "Singles" / "gone.m4a").exists()
+
+
+def _two_tracks(tmp_path, monkeypatch):
+    from adder import playlists
+
+    monkeypatch.setattr(runtime, "TRASH_DIR", tmp_path / "trash")
+    monkeypatch.setattr(playlists, "HISTORY_DIR", tmp_path / "history")
+    (config.LIBRARY / "A" / "Singles").mkdir(parents=True, exist_ok=True)
+    for name in ("gone.m4a", "kept.m4a"):
+        (config.LIBRARY / "A" / "Singles" / name).write_bytes(b"audio")
+    return playlists
+
+
+def _delete(client, path):
+    return client.request("DELETE", "/api/library", json={"path": path}, headers=auth_headers())
+
+
+def test_a_path_spelled_differently_still_leaves_the_playlists(client, tmp_path, monkeypatch):
+    """The file is found through «A//Singles/./x»; the playlist line is «A/Singles/x»."""
+    playlists = _two_tracks(tmp_path, monkeypatch)
+    playlists.create("Monday", ["A/Singles/gone.m4a", "A/Singles/kept.m4a"])
+
+    assert _delete(client, "A//Singles/./gone.m4a").status_code == 200
+    assert [e.path for e in playlists.read("Monday").entries] == ["A/Singles/kept.m4a"]
+
+
+def test_a_playlist_that_cannot_be_rewritten_keeps_the_track(client, tmp_path, monkeypatch):
+    """Trashing first would leave the line for good: a second try finds no file."""
+    playlists = _two_tracks(tmp_path, monkeypatch)
+    playlists.create("Monday", ["A/Singles/gone.m4a"])
+
+    def broken(path, text):
+        raise OSError("disk says no")
+
+    monkeypatch.setattr(playlists, "_atomic_write", broken)
+    r = _delete(client, "A/Singles/gone.m4a")
+
+    assert r.status_code == 409
+    assert "Monday" in r.json()["detail"]
+    assert (config.LIBRARY / "A" / "Singles" / "gone.m4a").exists()
+
+
+def test_an_old_edit_does_not_bring_a_deleted_track_back(client, tmp_path, monkeypatch):
+    """An edit the phone kept while offline still lists the track deleted since."""
+    playlists = _two_tracks(tmp_path, monkeypatch)
+    before = playlists.create("Monday", ["A/Singles/gone.m4a", "A/Singles/kept.m4a"])
+    assert _delete(client, "A/Singles/gone.m4a").status_code == 200
+
+    after = playlists.write("Monday", ["A/Singles/kept.m4a", "A/Singles/gone.m4a"], None)
+
+    assert before.revision != after.revision
+    assert [e.path for e in after.entries] == ["A/Singles/kept.m4a"]
+
+
+def test_a_replaced_track_is_not_called_deleted(client):
+    """The task that added the old version of a replaced track: «заменён», not «удалён»."""
+    db.db_exec(
+        "INSERT INTO tasks(url, status, result_path) VALUES ('https://x/old', 'done', 'A/old.m4a')"
+    )
+    (config.LIBRARY / "A").mkdir(parents=True)
+    (config.LIBRARY / "A" / "new.m4a").write_bytes(b"audio")
+    db.db_exec(
+        "INSERT INTO tasks(url, status, result_path, replace_of)"
+        " VALUES ('https://x/new', 'done', 'A/new.m4a', 'A/old.m4a')"
+    )
+
+    rows = {r["url"]: r for r in client.get("/api/tasks", headers=auth_headers()).json()}
+
+    assert rows["https://x/old"]["gone"] and rows["https://x/old"]["replaced"]
+    assert not rows["https://x/new"]["gone"]
+
+
+def test_a_finished_task_whose_track_was_deleted_says_so(client):
+    """«Недавно добавлены» showed a deleted track as «готово»."""
+    (config.LIBRARY / "A" / "Singles").mkdir(parents=True)
+    (config.LIBRARY / "A" / "Singles" / "here.m4a").write_bytes(b"audio")
+    for url, path in (
+        ("https://x/here", "A/Singles/here.m4a"),
+        ("https://x/gone", "A/Singles/gone.m4a"),
+    ):
+        db.db_exec("INSERT INTO tasks(url, status, result_path) VALUES (?, 'done', ?)", (url, path))
+    db.db_exec("INSERT INTO tasks(url, status) VALUES ('https://x/wait', 'queued')")
+
+    rows = {
+        row["url"]: row["gone"] for row in client.get("/api/tasks", headers=auth_headers()).json()
+    }
+
+    assert rows == {"https://x/here": False, "https://x/gone": True, "https://x/wait": False}
+
+
 def test_library_rows_have_size_and_stamp(client):
     """The phone reconciles its downloads with one /api/library answer (plan 4a.1):
     the size tells it how much room the rest needs, the stamp that a file changed,

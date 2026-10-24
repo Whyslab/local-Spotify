@@ -351,6 +351,8 @@ const STATUS_LABEL = {
     tagging: "теги",
     done: "готово",
     error: "ошибка",
+    gone: "удалён",
+    replaced: "заменён",
 };
 
 /* Что действительно ждёт работы. Готовое сюда не входит: /api/tasks отдаёт
@@ -411,7 +413,7 @@ async function tasks() {
                 recentBox.appendChild(trackRow({
                     title: t.title || t.url || "—",
                     artist: t.artist || "",
-                    status: t.status,
+                    status: t.replaced ? "replaced" : t.gone ? "gone" : t.status,
                     error: t.error,
                     warning: t.warning,
                 }));

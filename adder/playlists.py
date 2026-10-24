@@ -77,6 +77,25 @@ def _clean_paths(paths: list[str]) -> list[str]:
     return [str(path) for path in paths]
 
 
+def _without_deleted(paths: list[str], already: list[str]) -> list[str]:
+    """Новые строки на трек, который удалили (файл в корзине), не записываются.
+
+    Удаление убирает трек из всех подборок, но правка, собранная раньше, —
+    отложенная телефоном без сети, страница со старым списком — вернула бы
+    строку. А с ней и отказ обмена с Navidrome: путь, которого фонотека не
+    знает. Строки, уже стоящие в файле, не трогаются.
+    """
+    known = set(already)
+
+    def deleted(path: str) -> bool:
+        return not (config.LIBRARY / path).exists() and (runtime.TRASH_DIR / path).exists()
+
+    kept = [path for path in paths if path in known or not deleted(path)]
+    if len(kept) != len(paths):
+        logger.info("Playlist: %d line(s) for deleted tracks not written", len(paths) - len(kept))
+    return kept
+
+
 def safe_name(name: str) -> str:
     """Validate a playlist name that is about to become a file name."""
     cleaned = (name or "").strip()
@@ -250,8 +269,13 @@ def write(name: str, paths: list[str], expected_revision: str | None) -> Playlis
                     f"expected revision {expected_revision}, on disk {current}."
                 ),
             )
+        try:
+            on_disk = parse(path.read_text(encoding="utf-8")) if path.exists() else []
+        except (OSError, UnicodeDecodeError):
+            on_disk = []  # файл и так перезаписывается целиком
+        paths = _without_deleted(_clean_paths(paths), on_disk)
         _archive(path)
-        _atomic_write(path, render(_clean_paths(paths)))
+        _atomic_write(path, render(paths))
         logger.info("Playlist %r written: %d entries", name, len(paths))
     return read(name)
 
@@ -287,25 +311,46 @@ def swap_everywhere(old_path: str, new_path: str) -> int:
     завершившаяся загрузка, и отказывать ей из-за того, что подборку тронули
     минуту назад, значило бы оставить в ней битую строку.
     """
+    return _rewrite_everywhere(old_path, new_path)
+
+
+def drop_everywhere(old_path: str) -> int:
+    """Убрать `old_path` из всех подборок; остальные треки остаются на своих местах.
+
+    Для удалённого трека. Строка на файл в корзине не играет, а обмен с
+    Navidrome отказывается забирать подборку, в которой Navidrome видит путь,
+    неизвестный фонотеке. Прежний вид каждой подборки остаётся в её истории.
+    """
+    return _rewrite_everywhere(old_path, None)
+
+
+def _rewrite_everywhere(old_path: str, new_path: str | None) -> int:
+    """Поставить `new_path` вместо `old_path` во всех подборках, None — убрать строку."""
     changed = 0
     for entry in listing():
         name = entry["name"]
         # Одна подборка, которую не вышло прочитать или записать, не должна
-        # останавливать остальные: новый трек к этому времени уже в фонотеке.
+        # останавливать остальные: файл к этому времени уже переехал.
         try:
             with _lock_for(name):
                 path = playlist_path(name)
                 paths = parse(path.read_text(encoding="utf-8")) if path.exists() else []
-                swapped = [new_path if _same_track(p, old_path) else p for p in paths]
-                if swapped == paths:
+                if new_path is None:
+                    rewritten = [p for p in paths if not _same_track(p, old_path)]
+                else:
+                    rewritten = [new_path if _same_track(p, old_path) else p for p in paths]
+                if rewritten == paths:
                     continue
                 _archive(path)
-                _atomic_write(path, render(swapped))
+                _atomic_write(path, render(rewritten))
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Playlist %r: замена %s не записана: %s", name, old_path, exc)
+            logger.warning("Playlist %r: правка строки %s не записана: %s", name, old_path, exc)
             continue
         changed += 1
-        logger.info("Playlist %r: %s заменён на %s", name, old_path, new_path)
+        if new_path is None:
+            logger.info("Playlist %r: удалённый %s убран", name, old_path)
+        else:
+            logger.info("Playlist %r: %s заменён на %s", name, old_path, new_path)
     return changed
 
 
@@ -336,7 +381,7 @@ def create(name: str, paths: list[str] | None = None) -> Playlist:
         # Проверка — под замком: иначе два одновременных «создать» оба писали.
         if path.exists():
             raise HTTPException(status_code=409, detail="Playlist already exists")
-        _atomic_write(path, render(_clean_paths(paths or [])))
+        _atomic_write(path, render(_without_deleted(_clean_paths(paths or []), [])))
     logger.info("Playlist %r created", name)
     return read(name)
 

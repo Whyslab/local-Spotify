@@ -608,7 +608,13 @@ def add(req: AddRequest, authenticated: bool = Depends(verify_token)):
 
 @app.get("/api/tasks")
 def tasks(authenticated: bool = Depends(verify_token)):
-    return db.db_query("SELECT * FROM tasks ORDER BY id DESC LIMIT 50")
+    rows = db.db_query("SELECT * FROM tasks ORDER BY id DESC LIMIT 50")
+    for row in rows:
+        # Готовая задача, чей трек потом удалили: «готово» в «Недавно
+        # добавлены» выглядело так, будто трек ещё в фонотеке.
+        row["gone"] = row["status"] == "done" and _can_requeue(row)
+        row["replaced"] = row["gone"] and library.replaced_by(row["result_path"]) is not None
+    return rows
 
 
 # A rate-limited task is tried again by itself this long after it failed, at
@@ -1048,8 +1054,33 @@ def track_covers(req: CoversRequest, authenticated: bool = Depends(verify_token)
 
 @app.delete("/api/library")
 def delete_track(req: DeleteRequest, authenticated: bool = Depends(verify_token)):
-    """Remove a track from the library, moving it to trash rather than unlinking."""
-    return library.delete_track(req.path)
+    """Remove a track from the library, moving it to trash rather than unlinking.
+
+    Every playlist drops it first: a line pointing into the trash does not
+    play, and it stops the playlist syncing back from Navidrome. The same order
+    as a replacement (ingest._apply_replacement): a playlist that could not be
+    rewritten keeps the file where it is, and the answer names it -- the other
+    way round the line stayed for good, since a second try finds no file.
+    """
+    runtime.guard_real_library(config.LIBRARY, "delete a track")
+    path = library.relative_path(req.path)
+    dropped = playlists.drop_everywhere(path)
+    left = playlists.still_pointing_at(path)
+    if left:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Не удалил: не вышло убрать трек из подборок {', '.join(left)}"
+                + (
+                    f". Из остальных ({dropped}) убран, прежний вид — в их истории"
+                    if dropped
+                    else ""
+                )
+            ),
+        )
+    result = library.delete_track(path)
+    result["playlists"] = dropped
+    return result
 
 
 # ---------------------------------------------------------------------------

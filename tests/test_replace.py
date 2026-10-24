@@ -68,6 +68,26 @@ def test_swap_does_nothing_without_the_track(library):
     assert _paths("Чужая") == ["other.m4a"]
 
 
+def test_drop_removes_every_copy_and_keeps_the_order(library):
+    """Удалённый трек уходит из подборки целиком, соседи не сдвигаются местами."""
+    _make("Вечер", ["new.m4a", "old.m4a", "other.m4a", "old.m4a"])
+    _make("Чужая", ["other.m4a"])
+
+    assert playlists.drop_everywhere("old.m4a") == 1
+    assert _paths("Вечер") == ["new.m4a", "other.m4a"]
+    assert _paths("Чужая") == ["other.m4a"]
+
+
+def test_drop_keeps_the_old_list_in_history(library):
+    """Убрал по ошибке — прежний вид подборки лежит в её истории."""
+    _make("Вечер", ["old.m4a", "other.m4a"])
+
+    playlists.drop_everywhere("old.m4a")
+
+    saved = list((playlists.HISTORY_DIR / "Вечер").glob("*.m3u"))
+    assert any("old.m4a" in path.read_text(encoding="utf-8") for path in saved)
+
+
 @pytest.mark.parametrize("odd", [".sync-conflict", "x" * 130, "a\x01b"])
 def test_an_odd_playlist_file_is_left_out_and_does_not_stop_the_swap(library, odd):
     """Файл, чьё имя не прошло бы safe_name, валил каждую замену ошибкой 400.
