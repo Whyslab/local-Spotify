@@ -392,6 +392,7 @@ function trackStarted() {
     extendSmartQueue();
     extendRadio();
     prefetchNextStream();
+    prefetchNextArtwork();
 }
 
 /* ---------------- Треки со стороны ----------------
@@ -827,6 +828,7 @@ async function extendSmartQueue() {
         player.order.push(...more.map((_, i) => first + i));
         renderQueuePanel();
         prefetchOutside();
+        prefetchNextArtwork();  // следующий мог смениться, а trackStarted уже был
     } catch (e) {
         /* Не вышло — очередь просто кончится, как без дополнения. */
     } finally {
@@ -997,6 +999,7 @@ async function extendRadio() {
         player.order.push(...more.map((_, i) => first + i));
         renderQueuePanel();
         prefetchOutside();
+        prefetchNextArtwork();  // следующий мог смениться, а trackStarted уже был
         /* Первая порция не пришла, а повтор пришёл — подпись о неудаче уже неправда. */
         if (radioNoteFailed) setPlayerNote(`Радио «${data.artist || ""}»`);
         radioNoteFailed = false;
@@ -2040,14 +2043,24 @@ function renderPlayer() {
  */
 let announced = null;
 
-function announceTrack(track) {
-    if (!("mediaSession" in navigator) || !window.MediaMetadata) return;
-    announced = track;
-    const meta = { ...trackNames(track), album: track.album || "" };
-    navigator.mediaSession.metadata = new MediaMetadata(meta);
-    if (isOutside(track)) return;
+/* Обложки для экрана блокировки, готовые к показу, — по пути трека. Тест на
+ * айфоне 24.10: после быстрого «дальше» экран блокировки несколько секунд
+ * показывал ноту вместо обложки — её качали и перегоняли в data: URL только
+ * при смене трека, да ещё ждали все три размера. Теперь следующий трек
+ * готовит обложку заранее (trackStarted), а показывается первый готовый
+ * размер. Держим немного: текущий, следующий и пару прошлых — для «назад». */
+const ARTWORK_KEEP = 4;
+const artworkCache = new Map();  // path → {sizes: Promise[], all: Promise, ready: artwork[] | null}
+
+function artworkFor(path) {
+    const known = artworkCache.get(path);
+    if (known) {
+        artworkCache.delete(path);  // в конец: недавние не вытесняются
+        artworkCache.set(path, known);
+        return known;
+    }
     // Три размера, как их хранит скачанное (offline.js): система берёт подходящий.
-    const one = (size) => fetch("/api/cover?path=" + encodeURIComponent(track.path) + "&size=" + size, { headers: headers() })
+    const one = (size) => fetch("/api/cover?path=" + encodeURIComponent(path) + "&size=" + size, { headers: headers() })
         .then(r => (r.ok ? r.blob() : null))
         .then(blob => new Promise(resolve => {
             if (!blob) { resolve(null); return; }
@@ -2057,12 +2070,50 @@ function announceTrack(track) {
             reader.readAsDataURL(blob);
         }))
         .catch(() => null);
-    Promise.all(COVER_SIZES.map(one)).then(found => {
+    const sizes = COVER_SIZES.map(one);
+    const entry = { sizes, all: null, ready: null };
+    entry.all = Promise.all(sizes).then(found => {
         const artwork = found.filter(Boolean);
-        // Пока грузилась обложка, могли переключить трек.
-        if (!artwork.length || announced !== track) return;
-        navigator.mediaSession.metadata = new MediaMetadata({ ...meta, artwork });
+        if (artwork.length) entry.ready = artwork;
+        // Не вышло (нет сети) — не помнить пустоту: в следующий раз спросить снова.
+        else if (artworkCache.get(path) === entry) artworkCache.delete(path);
+        return artwork;
     });
+    artworkCache.set(path, entry);
+    while (artworkCache.size > ARTWORK_KEEP) artworkCache.delete(artworkCache.keys().next().value);
+    return entry;
+}
+
+/* Обложку трека поменяли (app.js refreshTrackCover): забыть готовую, а если
+ * он сейчас на экране блокировки — показать новую. */
+function forgetArtwork(path) {
+    artworkCache.delete(path);
+    if (announced && !isOutside(announced) && announced.path === path) announceTrack(announced);
+}
+
+function prefetchNextArtwork() {
+    if (!("mediaSession" in navigator) || !window.MediaMetadata) return;
+    const track = player.queue[peekNext()];
+    if (track && !isOutside(track)) artworkFor(track.path);
+}
+
+function announceTrack(track) {
+    if (!("mediaSession" in navigator) || !window.MediaMetadata) return;
+    announced = track;
+    const meta = { ...trackNames(track), album: track.album || "" };
+    const entry = isOutside(track) ? null : artworkFor(track.path);
+    /* Готова заранее — название и обложка приходят одним разом. */
+    navigator.mediaSession.metadata = new MediaMetadata(entry && entry.ready ? { ...meta, artwork: entry.ready } : meta);
+    if (!entry || entry.ready) return;
+    let shown = 0;
+    const show = (artwork) => {
+        // Пока грузилась обложка, могли переключить трек; меньше уже показанного — не надо.
+        if (announced !== track || artwork.length <= shown) return;
+        shown = artwork.length;
+        navigator.mediaSession.metadata = new MediaMetadata({ ...meta, artwork });
+    };
+    for (const size of entry.sizes) size.then(found => { if (found && !shown) show([found]); });
+    entry.all.then(show);
 }
 
 function sharePosition() {

@@ -1379,6 +1379,7 @@ async function refreshTrackCover(path) {
             { headers: headers(), cache: "reload" }).catch(() => null);
         forgetCover(`track:${size}:${path}`);
     }));
+    forgetArtwork(path);
 }
 
 /* Обложку строки просим, только когда строка на экране.

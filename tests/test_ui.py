@@ -1845,6 +1845,57 @@ def test_media_session_handlers_registered(page):
     page.evaluate("player.audio.pause()")
 
 
+def test_the_next_tracks_lock_screen_cover_is_ready_before_it_starts(page):
+    """iPhone test 24.10: after a quick «next» the lock screen showed a note
+    for seconds -- the cover was fetched only when the track changed."""
+    open_library(page)
+    page.evaluate(
+        "(async () => { const real = window.fetch;"
+        " const png = await (await real('/static/icon-180.png')).blob();"
+        " window.__covers = [];"
+        " window.fetch = (url, options) => { if (!String(url).startsWith('/api/cover?')) return real(url, options);"
+        "   window.__covers.push(decodeURIComponent(String(url)));"
+        "   return Promise.resolve(new Response(png, {headers: {'Content-Type': 'image/png'}})); }; })()"
+    )
+    page.evaluate(f"playQueue([{LOUD}, {QUIET}], 0, 'manual')")
+    page.wait_for_function("player.started")
+    # Обложка следующего уже взята, пока играет этот.
+    page.wait_for_function("window.__covers.filter(u => u.includes('Quiet')).length === 3")
+    page.wait_for_function("artworkCache.get('Quiet/Singles/Quiet.m4a').ready !== null")
+    page.evaluate("player.audio.pause(); nextStream = null")
+    shown = page.evaluate(
+        "(() => { nextTrack(); const m = navigator.mediaSession.metadata;"
+        " return [m.title, m.artwork.length]; })()"
+    )
+    assert shown == ["Quiet", 3]
+
+
+def test_a_changed_cover_reaches_the_lock_screen(page):
+    """The lock-screen covers are kept ready; «Найти обложку заново» must not
+    leave the old one there."""
+    open_library(page)
+    page.evaluate(
+        "(async () => { const real = window.fetch;"
+        " window.__png = await (await real('/static/icon-180.png')).blob();"
+        " window.fetch = (url, options) => { if (!String(url).startsWith('/api/cover?')) return real(url, options);"
+        "   return Promise.resolve(new Response(window.__png, {headers: {'Content-Type': 'image/png'}})); }; })()"
+    )
+    page.evaluate(f"playQueue([{QUIET}], 0, 'manual')")
+    page.wait_for_function(
+        "navigator.mediaSession.metadata && navigator.mediaSession.metadata.artwork.length === 3"
+    )
+    old = page.evaluate("navigator.mediaSession.metadata.artwork[0].src")
+    page.evaluate(
+        "(async () => { window.__png = await (await fetch('/static/favicon-32.png')).blob();"
+        " await refreshTrackCover('Quiet/Singles/Quiet.m4a'); })()"
+    )
+    page.wait_for_function(
+        "navigator.mediaSession.metadata.artwork.length === 3"
+        f" && navigator.mediaSession.metadata.artwork[0].src !== {old!r}"
+    )
+    page.evaluate("player.audio.pause()")
+
+
 def test_a_play_heard_offline_is_sent_when_the_network_returns(page, server):
     from adder import db
 
