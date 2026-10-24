@@ -3270,6 +3270,13 @@ def test_search_fields_have_their_own_clear_button(page):
     assert lib.input_value() == ""
     page.wait_for_function("document.querySelectorAll('#library .track').length > 1")
 
+    # С клавиатуры: Enter на крестике — и фокус снова в поле, а не в пустоте.
+    lib.fill("loud")
+    page.locator(".search .search-clear").focus()
+    page.keyboard.press("Enter")
+    assert lib.input_value() == ""
+    assert page.evaluate("document.activeElement.id") == "librarySearch"
+
 
 def test_search_debounce_within_budget(page):
     """Typing waited 300 ms (library) and 120 ms (search page) before
@@ -4593,6 +4600,27 @@ def test_list_rows_are_not_text_on_a_phone_but_their_fields_are(server, browser)
         assert styles == ["none", "text"]
     finally:
         context.close()
+
+
+def test_the_queue_fits_a_phone_on_its_side(page):
+    """iPhone test 24.10, 15:30: on its side the queue showed «Перемешать зан»
+    and two or three letters of each title -- three buttons per row took the
+    width. 734 points is the iPhone 15 Pro sideways less the notch insets."""
+    page.set_viewport_size({"width": 734, "height": 393})
+    open_library(page)
+    page.evaluate(f"playQueue([{LOUD}, {QUIET}, {EVIL_TRACK}], 0, 'manual')")
+    page.wait_for_function("player.started")
+    page.evaluate("player.audio.pause(); expandPlayer('cover'); showInSheet('queue')")
+    page.wait_for_selector("#playQueueRows .queue-row:nth-child(3)")
+    sizes = page.evaluate(
+        "(() => { const b = document.getElementById('playQueueReshuffle');"
+        " const info = document.querySelectorAll('#playQueueRows .queue-row .track-info')[1];"
+        " return {clipped: b.scrollWidth > b.clientWidth, title: info.getBoundingClientRect().width,"
+        "  reveal: getComputedStyle(document.querySelectorAll('#playQueueRows .queue-reveal')[1]).display}; })()"
+    )
+    assert sizes["clipped"] is False
+    assert sizes["reveal"] == "none"
+    assert sizes["title"] > 130
 
 
 def test_swiping_the_phone_mini_player_changes_the_track(page):

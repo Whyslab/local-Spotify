@@ -2163,6 +2163,9 @@ document.addEventListener("click", (event) => {
     if (!field) return;
     field.value = "";
     field.dispatchEvent(new Event("input", { bubbles: true }));
+    /* Стёрли с клавиатуры (Enter, detail 0) — фокус в поле, а не в пустоту:
+     * кнопка после этого прячется. Пальцем — нет: открылась бы клавиатура. */
+    if (event.detail === 0) field.focus();
 });
 
 /* ---------------- Клавиатура телефона ----------------
