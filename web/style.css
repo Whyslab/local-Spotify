@@ -931,6 +931,12 @@ button.danger {
     -webkit-mask-image: linear-gradient(transparent, #000 6%, #000 88%, transparent);
     mask-image: linear-gradient(transparent, #000 6%, #000 88%, transparent);
 }
+/* Пока не прокручен, верх не тает: первую строку и так видно целиком, а
+   тусклой она казалась поломкой (тест на айфоне 24.10). */
+.lyrics-body.is-at-top {
+    -webkit-mask-image: linear-gradient(#000, #000 88%, transparent);
+    mask-image: linear-gradient(#000, #000 88%, transparent);
+}
 
 /* Поля сверху и снизу — половина высоты блока, чтобы и первую, и последнюю
    строку можно было поставить посередине. Не padding: проценты в нём берутся

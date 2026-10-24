@@ -4505,6 +4505,36 @@ def test_a_late_lyrics_failure_does_not_wipe_the_next_tracks_lyrics(page):
     assert "Не удалось" not in shown
 
 
+def test_the_first_lyrics_line_is_not_faded_until_scrolled(page):
+    """iPhone test 24.10: the top edge of the lyrics faded from the start, so
+    the first line was always dim before anything was scrolled."""
+    page.set_viewport_size({"width": 390, "height": 844})
+    open_library(page)
+    page.evaluate(
+        "const real = window.fetch;"
+        " window.fetch = (u, o) => String(u).includes('/api/lyrics?path=')"
+        "   ? Promise.resolve(new Response(JSON.stringify({found: true,"
+        "       plain: Array.from({length: 80}, (_, i) => 'Строка ' + i).join('\\n')}),"
+        "       {headers: {'Content-Type': 'application/json'}}))"
+        "   : real(u, o); true"
+    )
+    row(page, "Loud").locator(".track-info").click()
+    page.wait_for_function("!document.getElementById('player').hidden")
+    page.evaluate("player.audio.pause(); expandPlayer('art')")
+    page.locator("#playerLyricsButton").click()
+    page.locator(".lyric.plain").first.wait_for()
+    top_alpha = (
+        "(() => { const b = document.getElementById('lyricsBody');"
+        " const m = getComputedStyle(b).maskImage || getComputedStyle(b).webkitMaskImage;"
+        " return m.match(/linear-gradient\\((rgba?\\([^)]*\\))/)[1]; })()"
+    )
+    assert page.evaluate(top_alpha) == "rgb(0, 0, 0)"
+    page.evaluate("document.getElementById('lyricsBody').scrollTop = 200")
+    page.wait_for_function(f"{top_alpha} === 'rgba(0, 0, 0, 0)'")
+    page.evaluate("document.getElementById('lyricsBody').scrollTop = 0")
+    page.wait_for_function(f"{top_alpha} === 'rgb(0, 0, 0)'")
+
+
 def test_releasing_the_seek_slider_where_it_was_taken_unfreezes_it(page):
     """Audit 20.10: input without change (released at the start value) left
     the slider and the elapsed time frozen until the next seek."""

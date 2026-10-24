@@ -2292,6 +2292,7 @@ function loadLyrics(track, force = false) {
     lyrics.index = -1;
     box.replaceChildren();
     box.classList.remove("has-lyrics", "is-synced", "is-empty");
+    markLyricsTop(box);
 
     /* Номер запроса, а не путь: два запроса одного трека подряд (сохранили
      * свой текст) дописывали строки дважды. */
@@ -2413,6 +2414,7 @@ function openLyricsFinder() {
 
     panel.append(search, note, list, own, ownRow);
     box.replaceChildren(panel);
+    markLyricsTop(box);
 
     const post = async (url, body) => {
         const r = await fetch(url, {
@@ -2540,9 +2542,17 @@ function resyncLyrics() {
  * прокрутка к строке тоже шлёт scroll, и отличать её по времени (700 мс)
  * перестало работать, когда строки стали крупнее: далёкий прыжок длится
  * дольше, и слежение выключалось само. */
+/* Верхний край текста тает, только когда есть что прятать (style.css,
+ * .is-at-top). Отскок айфона даёт scrollTop меньше нуля — это тоже верх. */
+function markLyricsTop(box) {
+    box.classList.toggle("is-at-top", box.scrollTop <= 1);
+}
+
 function watchLyricsScroll() {
     const box = document.getElementById("lyricsBody");
     if (!box) return;
+    markLyricsTop(box);
+    box.addEventListener("scroll", () => markLyricsTop(box), { passive: true });
     const byHand = () => {
         if (!lyrics.follow || !lyrics.lines.length) return;
         lyrics.follow = false;
