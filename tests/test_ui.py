@@ -3782,6 +3782,20 @@ def _tiny_png() -> bytes:
     )
 
 
+def test_a_menu_does_not_fade_in_over_its_blurred_backdrop(page):
+    """iPhone test 24.10: the artist «⋯» menu opened see-through the first
+    time. Safari may leave an element with backdrop-filter stuck mid-fade;
+    the menu now only scales in, at full opacity from the first frame."""
+    open_library(page)
+    page.locator("#library .track .row-more").first.click()
+    frames = page.evaluate(
+        "document.querySelector('.row-menu').getAnimations()"
+        ".flatMap(a => a.effect.getKeyframes()).map(k => k.opacity ?? null)"
+    )
+    page.keyboard.press("Escape")
+    assert all(o in (None, "1") for o in frames), frames
+
+
 def test_the_row_dots_are_as_bright_as_the_title(page):
     """iPhone test 24.10: the «⋯» of a row (in Stats beside «10 раз») was
     small and grey, and was not found -- it is the way to every action."""
