@@ -2673,12 +2673,16 @@ html.sheet-lock, html.sheet-lock body { overflow: hidden; }
     backdrop-filter: var(--blur);
 }
 #viewPlaylist > .o-backbar { margin-inline: -16px; margin-top: calc(-10px - env(safe-area-inset-top, 0px)); }
+/* У альбома, настроения (и «артиста нет») отступ под часы давали и страница,
+   и плашка — сверху стояла пустая полоса (тест на айфоне 24.10). */
+#albumBody > .o-backbar, #moodBody > .o-backbar, #artistBody > .o-backbar { margin-top: calc(-10px - env(safe-area-inset-top, 0px)); }
 
 /* Цифры трека — в большом плеере на компьютере, под названием. */
 .player-facts { display: none; }
 @media (min-width: 1100px) {
     .o-backbar { padding-top: 6px; }
     #viewPlaylist > .o-backbar { margin-inline: -28px; padding-inline: 28px; margin-top: -6px; }
+    #albumBody > .o-backbar, #moodBody > .o-backbar, #artistBody > .o-backbar { margin-top: 0; }
     /* На компьютере «Добавить» — в левой панели; «+» в заголовке остаётся
        только у подборок (новая подборка). */
     .app[data-view="viewHome"] .top-add,

@@ -4274,6 +4274,29 @@ def _sweep_tag_editor(page):
     page.locator("form.edit-tags").wait_for()
 
 
+@pytest.mark.parametrize("size", [(1280, 800), (390, 844)], ids=["laptop", "phone"])
+def test_the_back_bar_of_album_and_mood_sits_where_the_playlists_does(page, server, size):
+    """iPhone test 24.10: an album and a mood page had an empty band above
+    «‹ Назад» -- the room for the clock was given by the page and again by
+    the bar. The playlist page, fixed earlier, is the reference."""
+    (server["root"] / "Обход.m3u").write_text(
+        "Loud Band/Singles/Loud.opus\nQuiet/Singles/Quiet.m4a\n", encoding="utf-8"
+    )
+    page.set_viewport_size({"width": size[0], "height": size[1]})
+    page.evaluate("playlists()")
+    page.wait_for_function("knownPlaylists.some(p => p.name === 'Обход')")
+    bar_top = (
+        "(() => { scrollTo(0, 0); const bar = [...document.querySelectorAll('.o-backbar')]"
+        ".find(b => b.checkVisibility()); return Math.round(bar.getBoundingClientRect().top); })()"
+    )
+    _sweep_playlist(page)
+    reference = page.evaluate(bar_top)
+    _sweep_album(page)
+    assert page.evaluate(bar_top) == reference
+    _sweep_mood(page)
+    assert page.evaluate(bar_top) == reference
+
+
 # (экран, как открыть, где на нём кнопки)
 SWEEP_SCREENS = [
     ("рельса, вкладки и шапка", _sweep_view("viewHome"), ".side, .tabbar, .topbar"),
