@@ -1047,6 +1047,40 @@ function renderPlayerModes() {
 
 /* ---------------- Панель очереди ---------------- */
 
+/* Долгое нажатие пальцем на строке списка — не нажатие. Тест на айфоне
+ * 24.10: палец задержался на строке очереди, вылезли лупа и «Скопировать», а
+ * по отпусканию заиграл трек. Один сторож на все строки (.track): в фонотеке
+ * и подборках строка так же включает трек по отпусканию.
+ *
+ * Только палец и перо: медленный щелчок мышью — всё ещё щелчок. Щелчок от
+ * Enter (row.click()) и от VoiceOver отпускания пальца не имеет — его не
+ * трогаем. */
+const LONG_PRESS_MS = 500;
+const pressedAt = new Map();  // pointerId → когда коснулись
+let lastPress = { up: -Infinity, held: 0 };
+
+document.addEventListener("pointerdown", (event) => {
+    if (event.pointerType === "touch" || event.pointerType === "pen") pressedAt.set(event.pointerId, event.timeStamp);
+}, true);
+document.addEventListener("pointerup", (event) => {
+    if (!pressedAt.has(event.pointerId)) return;
+    lastPress = { up: event.timeStamp, held: event.timeStamp - pressedAt.get(event.pointerId) };
+    pressedAt.delete(event.pointerId);
+}, true);
+document.addEventListener("pointercancel", (event) => { pressedAt.delete(event.pointerId); }, true);
+
+function wasLongPress(event) {
+    return event.timeStamp - lastPress.up < 400 && lastPress.held > LONG_PRESS_MS;
+}
+
+document.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof Element) || !target.closest(".track") || target.closest("input, textarea")) return;
+    if (!wasLongPress(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+}, true);
+
 function toggleQueuePanel() {
     const panel = document.getElementById("playQueue");
     if (!panel) return;

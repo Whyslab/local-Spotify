@@ -2826,3 +2826,12 @@ html.sheet-lock, html.sheet-lock body { overflow: hidden; }
  * не всплывают над ней посреди списка. Большой плеер — сам экран, его не трогаем. */
 .keyboard-open .app:not(.player-open) #player,
 .keyboard-open .tabbar { display: none; }
+
+/* Строки списков на телефоне — не текст: долгое нажатие выделяло слова и
+ * открывало «Скопировать / Найти / Перевести» (тест на айфоне 24.10). */
+@media (pointer: coarse) {
+    .track { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+    /* Окошки «Заменить по ссылке» и «На какое место?» живут внутри строки, а
+     * Safari не даёт печатать в поле под user-select: none. */
+    .track input, .track textarea { -webkit-user-select: text; user-select: text; -webkit-touch-callout: default; }
+}

@@ -4515,6 +4515,62 @@ def test_queue_rows_can_be_removed_and_dragged(page):
     assert _route_titles(page) == ["Loud", "evil", "Quiet"]
 
 
+def test_a_long_press_on_a_queue_row_does_not_play_it(page):
+    """iPhone test 24.10: a finger held on a queue row brought up the loupe and
+    «Скопировать», and on release that track started."""
+    page.set_viewport_size({"width": 1300, "height": 800})
+    open_library(page)
+    page.evaluate(f"playQueue([{LOUD}, {QUIET}, {EVIL_TRACK}], 0, 'manual')")
+    page.wait_for_function("player.started")
+    page.evaluate(
+        "player.audio.pause(); toggleQueuePanel(); window.__played = [];"
+        " playAt = (i) => { window.__played.push(i); return Promise.resolve(true); }; true"
+    )
+    # Касание пальцем: down, отпускание через held мс, щелчок — как у Safari.
+    touch = (
+        "([held]) => new Promise(done => {"
+        " const t = document.querySelectorAll('#playQueueRows .queue-row .track-title')[1];"
+        " const at = {bubbles: true, pointerId: 5, pointerType: 'touch'};"
+        " t.dispatchEvent(new PointerEvent('pointerdown', at));"
+        " setTimeout(() => { t.dispatchEvent(new PointerEvent('pointerup', at)); t.click(); done(); }, held); })"
+    )
+    page.evaluate(touch, [700])
+    assert page.evaluate("window.__played") == []
+    page.evaluate(touch, [80])
+    assert page.evaluate("window.__played") == [1]
+    # Медленный щелчок мышью и Enter — по-прежнему включают.
+    page.evaluate("window.__played = []")
+    row = page.locator("#playQueueRows .queue-row").nth(2).locator(".track-title")
+    box = row.bounding_box()
+    page.mouse.move(box["x"] + 5, box["y"] + 5)
+    page.mouse.down()
+    page.wait_for_timeout(700)
+    page.mouse.up()
+    assert page.evaluate("window.__played") == [2]
+    page.evaluate("window.__played = []")
+    page.locator("#playQueueRows .queue-row").nth(1).press("Enter")
+    assert page.evaluate("window.__played") == [1]
+
+
+def test_list_rows_are_not_text_on_a_phone_but_their_fields_are(server, browser):
+    context = browser.new_context(
+        viewport={"width": 390, "height": 844}, has_touch=True, is_mobile=True
+    )
+    try:
+        context.add_init_script(f"localStorage.setItem('token', '{TOKEN}');")
+        phone = context.new_page()
+        phone.goto(server["url"] + "/")
+        phone.wait_for_function("typeof playQueue === 'function'")
+        styles = phone.evaluate(
+            "(() => { const row = document.createElement('div'); row.className = 'track';"
+            " const field = document.createElement('input'); row.append(field); document.body.append(row);"
+            " return [getComputedStyle(row).userSelect, getComputedStyle(field).userSelect]; })()"
+        )
+        assert styles == ["none", "text"]
+    finally:
+        context.close()
+
+
 def test_swiping_the_phone_mini_player_changes_the_track(page):
     """Влево — следующий, вправо — предыдущий; короткий сдвиг — нажатие,
     оно раскрывает плеер, а свайп — нет."""
