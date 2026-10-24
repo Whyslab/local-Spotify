@@ -140,6 +140,8 @@ function mixWindow(plan) {
 
 /* Зовётся из timeupdate текущего трека. */
 function mixTick() {
+    /* Время — прежнего трека, а номер в очереди — уже нового (player.switching). */
+    if (player.switching) return;
     if (!mixEnabled() || !mix.ctx || mix.ctx.state !== "running" || mix.run) return;
     const a = player.audio;
     if (!mix.nodes.has(a)) return;  // трек начался без графа — этот стык обычный

@@ -430,6 +430,52 @@ def test_the_next_track_starts_without_waiting_for_the_server(page):
     assert waited is True
 
 
+def test_back_while_the_next_track_loads_goes_one_track_back(page):
+    """iPhone test 24.10, 11:02: the link took about a second, the mini player
+    kept the old title, and the next swipe back measured «over 3 s» on the old
+    track -- the listener saw a track skipped. Now the title changes at once,
+    and «back» during the wait means the track before."""
+    open_library(page)
+    row = "{path: 'Loud Band/Singles/Loud.opus', title: '%s', artist: 'Loud Band', duration: 12}"
+    page.evaluate(f"playQueue([{row % 'A'}, {row % 'B'}, {row % 'C'}], 2, 'manual')")
+    page.wait_for_function("player.started")
+    # Ссылка теперь ждёт, пока тест её не отпустит.
+    page.evaluate(
+        "window.__wait = []; const real = streamUrlFor;"
+        " streamUrlFor = (p) => new Promise(r => window.__wait.push(r)).then(() => real(p));"
+        " nextStream = null; player.audio.currentTime = 1; true"
+    )
+
+    page.evaluate("prevTrack()")
+    assert page.locator("#playerTitle").inner_text() == "B"
+    assert page.locator("#playerElapsed").inner_text() == "0:00"
+
+    # Старый трек тем временем доиграл до пятой секунды.
+    page.evaluate("player.audio.currentTime = 5; prevTrack()")
+    assert page.evaluate("player.index") == 0
+    assert page.locator("#playerTitle").inner_text() == "A"
+
+    # Прежний трек доиграл, пока новый грузится, — очередь не листается дальше.
+    page.evaluate("player.audio.dispatchEvent(new Event('ended'))")
+    assert page.evaluate("player.index") == 0
+
+    page.evaluate("window.__wait.forEach(r => r())")
+    page.wait_for_function("!player.switching && player.started && player.index === 0")
+    assert page.locator("#playerTitle").inner_text() == "A"
+
+
+def test_a_track_that_cannot_start_does_not_leave_the_player_switching(page):
+    """Флаг смены держит «назад», конец трека и время: застрял бы — сломал бы все три."""
+    open_library(page)
+    page.evaluate(f"playQueue([{LOUD}, {LOUD}], 1, 'manual')")
+    page.wait_for_function("player.started")
+    page.evaluate(
+        "nextStream = null; streamUrlFor = () => Promise.reject(new Error('Сломалось')); prevTrack()"
+    )
+    page.wait_for_function("document.getElementById('playerNote').textContent === 'Сломалось'")
+    assert page.evaluate("player.switching") is False
+
+
 def test_a_prefetched_link_must_cover_the_whole_next_track(page):
     open_library(page)
     now = page.evaluate("Date.now() / 1000")
@@ -4242,8 +4288,11 @@ def test_a_refused_play_still_shows_the_bar(page):
         "player.audio.play = () => Promise.reject(new DOMException('no', 'NotAllowedError')); true"
     )
     page.evaluate(f"playQueue([{LOUD}], 0, 'manual')")
-    page.wait_for_function("!document.getElementById('player').hidden")
-    assert "Нажмите «играть»" in page.locator("#playerNote").text_content()
+    # Полоса появляется сразу, ещё до play(); записка — когда play() отказал.
+    page.wait_for_function(
+        "document.getElementById('playerNote').textContent.includes('Нажмите «играть»')"
+    )
+    assert not page.locator("#player").is_hidden()
 
 
 def test_a_late_lyrics_failure_does_not_wipe_the_next_tracks_lyrics(page):

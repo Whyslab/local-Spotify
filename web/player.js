@@ -20,6 +20,9 @@ const player = {
     playlist: null,      // {name, revision, entries}
     reported: false,     // one journal entry per track, not one per pause
     started: false,      // the current track has actually played ("playing" fired)
+    /* Трек уже сменили, а звук ещё прежний: playAt ждёт ссылку. Время и конец
+     * в это время — прежнего трека, и к новому их не относить. */
+    switching: false,
     queueMode: "manual", // "smart", "plain", "radio" or "manual" -- see reportPlay
     queueSource: null,   // {kind: "playlist", name} | {kind: "library"} | {kind: "radio", seed} | null
 
@@ -142,11 +145,12 @@ async function streamUrlFor(path, fresh = false) {
     let r;
     try {
         /* fresh — мимо скачанной копии (sw.js): спросить сам сервер. */
-        /* Повторная ссылка (сторож застревания) — с пределом: туннель к
-         * спящему компьютеру может молчать минутами. */
+        /* С пределом: туннель к спящему компьютеру может молчать минутами.
+         * Без него playAt всё это время показывал бы новое название над
+         * прежней музыкой (player.switching), а дальше — тишину. Не дождались
+         * — это «сервер недоступен», и playAt идёт к скачанному. */
         const url = "/api/stream-url?path=" + encodeURIComponent(path) + (fresh ? "&fresh=1" : "");
-        r = fresh ? await fetchWithin(url, { headers: headers() }, STREAM_URL_TIMEOUT_MS)
-            : await fetch(url, { headers: headers() });
+        r = await fetchWithin(url, { headers: headers() }, STREAM_URL_TIMEOUT_MS);
     } catch (e) {
         const error = new Error("Сервер недоступен");
         error.unreachable = true;
@@ -260,6 +264,7 @@ async function playAt(position, skipped = 0, direction = 1, options = {}) {
     const generation = ++player.generation;
     player.resumeAt = 0;  // место из прошлого запуска — только для того трека
     player.index = position;
+    player.switching = true;
     player.reported = false;
     player.started = false;
     player.mixAdopted = false;
@@ -269,6 +274,12 @@ async function playAt(position, skipped = 0, direction = 1, options = {}) {
     /* Добавленное руками — «manual» в любой очереди: такое пропускают реже,
      * и оно приукрасило бы умную или обычную. */
     player.playingMode = track && track.queued ? "manual" : player.queueMode;
+    /* Название и строка в списках — сразу, а не когда трек загрузится. Тест на айфоне 24.10:
+     * ссылка шла около секунды, всё это время в мини-плеере висел прежний
+     * трек, и второй свайп «назад» увёл ещё на один трек — человек видел,
+     * что его перескочило. */
+    renderPlayer();
+    markPlayingRow();
 
     let url;
     let gain;
@@ -319,6 +330,7 @@ async function playAt(position, skipped = 0, direction = 1, options = {}) {
         /* Прежний трек не должен звучать под новым названием: нажатие «играть»
          * включило бы его снова. Без источника togglePlay пробует этот трек. */
         player.pauseReason = "смена трека";
+        player.switching = false;
         player.audio.pause();
         player.audio.removeAttribute("src");
         player.audio.load();
@@ -341,9 +353,11 @@ async function playAt(position, skipped = 0, direction = 1, options = {}) {
         if (typeof mixAttach === "function" && mixEnabled()) mixAttach(player.audio);
         applyVolume();
         player.audio.src = url;
+        player.switching = false;
         if (midway) player.audio.currentTime = options.startAt;
         if (!options.paused) await player.audio.play();
     } catch (e) {
+        player.switching = false;  // и на сбое до src: иначе флаг застрял бы навсегда
         if (generation !== player.generation) return false;
         /* AbortError — это не сбой трека: play() прервала пауза, нажатая, пока
          * трек грузился. Трек всё равно текущий — очередь должна это знать. */
@@ -1400,7 +1414,7 @@ function saveQueue() {
     queueSavedAt = Date.now();
     /* Вышли — без ключа очереди на устройстве не место, даже доигрывающей. */
     if (!token() || !player.queue.length || player.index < 0) { forgetSavedQueue(); return; }
-    const time = player.audio.getAttribute("src") && Number.isFinite(player.audio.currentTime)
+    const time = player.audio.getAttribute("src") && !player.switching && Number.isFinite(player.audio.currentTime)
         ? player.audio.currentTime : (player.resumeAt || 0);
     try {
         if (queueChanged) {
@@ -1709,12 +1723,16 @@ function nextTrack() {
 function prevTrack() {
     /* Restart the track first, like every other player: pressing back three
      * seconds in means "from the top", not "the previous song". */
-    if (player.audio.currentTime > 3) { player.audio.currentTime = 0; return; }
+    /* Пока новый трек грузится, время — прежнего: «назад» тогда значит
+     * «предыдущий», как если бы новый только начался. */
+    if (!player.switching && player.audio.currentTime > 3) { player.audio.currentTime = 0; return; }
     const back = stepInOrder(-1);
     if (back >= 0) playAt(back, 0, -1);
 }
 
 onAudio("ended", () => {
+    /* Доиграл прежний трек, а новый уже выбран и грузится — дальше не листать. */
+    if (player.switching) return;
     /* Переход «как диджей» сам подведёт следующий трек (mix.js). */
     if (typeof mixOwnsEnd === "function" && mixOwnsEnd()) return;
     reportPlay(true);
@@ -1739,7 +1757,7 @@ onAudio("ended", () => {
 onAudio("timeupdate", renderProgress);
 onAudio("timeupdate", fadeTick);
 onAudio("timeupdate", prefetchNextStream);
-onAudio("timeupdate", () => highlightLyric(false));
+onAudio("timeupdate", () => { if (!player.switching) highlightLyric(false); });
 onAudio("seeked", () => highlightLyric(true));
 onAudio("play", renderPlayer);
 onAudio("pause", renderPlayer);
@@ -1794,7 +1812,7 @@ function watchForStall() {
     clearTimeout(stallTimer);
     stallTimer = setTimeout(() => {
         const a = player.audio;
-        if (a.paused || a.ended || a.readyState >= 3) return;
+        if (a.paused || a.ended || a.readyState >= 3 || player.switching) return;
         if (stallTries >= STALL_RETRIES) { playerEvent("stall-giveup", `попыток ${stallTries}`); return; }
         stallTries += 1;
         playerEvent("stall-reload", `попытка ${stallTries}`);
@@ -1845,6 +1863,9 @@ if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
 }
 
 onAudio("error", async () => {
+    /* Сбой прежнего трека, когда новый уже выбран: новый и так включится, а
+     * «та же ссылка с того же места» поставила бы новый трек с середины. */
+    if (player.switching) return;
     const track = player.queue[player.index];
     const error = player.audio.error;
     if (error) playerEvent("error", `код ${error.code}${error.message ? ": " + error.message : ""}`);
@@ -2495,10 +2516,12 @@ function renderProgress() {
      * которого «играть» продолжит, а не 0:00. */
     const waiting = !player.audio.getAttribute("src") && player.resumeAt > 0;
     const track = player.queue[player.index];
-    const done = waiting ? player.resumeAt : (player.audio.currentTime || 0);
+    /* Трек сменили, звук ещё прежний: показывать начало нового, а не время старого. */
+    const switching = player.switching;
+    const done = switching ? 0 : waiting ? player.resumeAt : (player.audio.currentTime || 0);
     /* Длина бывает Infinity (поток без заголовка длины) — перематывать нечего. */
-    const total = Number.isFinite(player.audio.duration) ? player.audio.duration
-        : (waiting && track && track.duration > 0 ? track.duration : 0);
+    const total = !switching && Number.isFinite(player.audio.duration) ? player.audio.duration
+        : ((waiting || switching) && track && track.duration > 0 ? track.duration : 0);
     paintSeek(done, total);
     if (!seekDragging) document.getElementById("playerElapsed").textContent = formatTime(done);
     document.getElementById("playerTotal").textContent = formatTime(total);
