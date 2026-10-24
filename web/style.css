@@ -874,6 +874,9 @@ button.danger {
 
 .row-menu-form { gap: 6px; padding: 10px; }
 .row-menu-label { color: var(--text-3); font-size: 11px; }
+.row-menu-label.is-error { color: var(--danger); font-size: 13px; }
+.row-menu-label:empty { display: none; }
+.row-menu-cancel { color: var(--text-2); }
 .row-menu-input { padding: 8px 10px; font-size: 14px; }
 
 /* Номер трека в альбоме. Моноширинные цифры, чтобы столбик не гулял от
@@ -2818,3 +2821,8 @@ html.sheet-lock, html.sheet-lock body { overflow: hidden; }
     .player-note-action { position: relative; }
     .player-note-action::after { content: ""; position: absolute; inset: -14px -10px; }
 }
+
+/* Открыта клавиатура телефона (app.js, watchKeyboard): мини-плеер и вкладки
+ * не всплывают над ней посреди списка. Большой плеер — сам экран, его не трогаем. */
+.keyboard-open .app:not(.player-open) #player,
+.keyboard-open .tabbar { display: none; }

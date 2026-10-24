@@ -2915,6 +2915,8 @@ function closeTrackMenu() {
     document.removeEventListener("keydown", menuKeydown, true);
     document.removeEventListener("pointerdown", menuPointerDown, true);
     document.removeEventListener("scroll", menuScrolled, true);
+    /* Поле ушло вместе с окошком, а focusout у удалённого не бывает. */
+    if (typeof refreshKeyboardState === "function") refreshKeyboardState();
 }
 
 /* Меню с role=menu ждут стрелок: вверх/вниз по пунктам, Home/End — к краям.
@@ -2949,8 +2951,58 @@ function menuPointerDown(event) {
     /* contains, а не равенство: нажатие приходит на значок внутри кнопки, и
      * меню закрывалось, а кнопка тут же открывала его снова. */
     if (openMenu && !openMenu.menu.contains(event.target) && !openMenu.button.contains(event.target)) {
+        /* Окошко с полем («Новая подборка», «Заменить по ссылке») нажатие
+         * мимо только закрывает. Тест 24.10: закрыть «Новую подборку» было
+         * нечем, нажатие рядом закрыло её и тут же открыло карточку под
+         * пальцем. Обычное меню по-прежнему пропускает нажатие дальше. */
+        if (openMenu.menu.tagName === "FORM") swallowClickOf(event.pointerId);
         closeTrackMenu();
     }
+}
+
+/* Съесть щелчок именно этого касания — не «следующий за ним по времени»:
+ * долгое нажатие иначе пропускало щелчок, а быстрое после прокрутки терялось. */
+function swallowClickOf(pointerId) {
+    let timer = 0;
+    const done = () => {
+        clearTimeout(timer);
+        document.removeEventListener("click", eat, true);
+        document.removeEventListener("pointerup", up, true);
+        document.removeEventListener("pointercancel", cancel, true);
+    };
+    const eat = (event) => { event.preventDefault(); event.stopPropagation(); done(); };
+    /* Щелчок приходит сразу за отпусканием; не пришёл — касания он не касается. */
+    const up = (event) => {
+        if (event.pointerId !== pointerId) return;
+        clearTimeout(timer);
+        timer = setTimeout(done, 300);
+    };
+    /* Касание стало прокруткой — щелчка не будет. */
+    const cancel = (event) => { if (event.pointerId === pointerId) done(); };
+    timer = setTimeout(done, 5000);  // отпускания не дождались (окно ушло в фон)
+    document.addEventListener("click", eat, true);
+    document.addEventListener("pointerup", up, true);
+    document.addEventListener("pointercancel", cancel, true);
+}
+
+/* «Отмена» в окошке с полем: на телефоне ни Esc, ни очевидного «мимо». */
+function cancelItem(button) {
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.className = "row-menu-item row-menu-cancel";
+    cancel.textContent = "Отмена";
+    cancel.onclick = () => { closeTrackMenu(); button.focus({ preventScroll: true }); };
+    return cancel;
+}
+
+/* Ошибка в окошке — заметно, а не мелким серым, как подпись над полем. */
+function showFormError(note, text) {
+    note.setAttribute("role", "alert");  // диктор прочтёт сразу
+    note.textContent = text;
+    note.classList.toggle("is-error", Boolean(text));
+    /* Строка ошибки удлинила окошко — проверить, что оно не ушло под плеер. */
+    const form = note.closest("form");
+    if (form && !form.classList.contains("more-menu")) keepMenuOnScreen(form);
 }
 
 /* Низ — верх того, что прижато к низу окна: полосы плеера и, на телефоне,
@@ -3200,14 +3252,19 @@ function askForReplacement(button, position) {
     };
     or.appendChild(picker);
 
+    const note = document.createElement("span");
+    note.className = "row-menu-label";
+
     form.onsubmit = (event) => {
         event.preventDefault();
         const url = field.value.trim();
+        /* Пустое молча закрывало окошко — выглядело как «кнопка не работает». */
+        if (!url) { showFormError(note, "Вставь ссылку — или выбери файл ниже."); field.focus(); return; }
         closeTrackMenu();
-        if (url) sendReplacement(entry.path, url, null);
+        sendReplacement(entry.path, url, null);
     };
 
-    form.append(label, field, go, or);
+    form.append(label, field, note, go, or, cancelItem(button));
     button.insertAdjacentElement("afterend", form);
     /* Как и меню: у нижней строки форма уходила под мини-плеер. */
     keepMenuOnScreen(form);
@@ -3276,7 +3333,7 @@ function askForPosition(button, from, total) {
         moveTrack(from, Math.min(total - 1, Math.max(0, wanted - 1)));
     };
 
-    form.append(label, field, go);
+    form.append(label, field, go, cancelItem(button));
     button.insertAdjacentElement("afterend", form);
     keepMenuOnScreen(form);
     button.setAttribute("aria-expanded", "true");
@@ -4003,16 +4060,16 @@ function askNewPlaylist(button) {
         event.preventDefault();
         const name = field.value.trim();
         /* Молчание на пустое поле читается как поломка кнопки. */
-        if (!name) { note.textContent = "Впиши название."; field.focus(); return; }
+        if (!name) { showFormError(note, "Впиши название."); field.focus(); return; }
         go.disabled = true;
         const error = await createPlaylist(name);
         go.disabled = false;
-        if (error) { note.textContent = error; field.focus(); return; }
+        if (error) { showFormError(note, error); field.focus(); return; }
         closeTrackMenu();
         playlists();
         openPlaylist(name);
     };
-    form.append(label, field, note, go);
+    form.append(label, field, note, go, cancelItem(button));
     document.body.appendChild(form);
 
     /* По месту кнопки: у рельсы — под ней, у нижней панели телефона — над ней. */

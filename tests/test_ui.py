@@ -2877,6 +2877,114 @@ def test_an_empty_name_says_so_instead_of_doing_nothing(page):
     dialog = page.get_by_role("dialog", name="Новая подборка")
     dialog.get_by_role("button", name="Создать").click()
     assert "Впиши название" in dialog.inner_text()
+    # Заметно, а не мелким серым, как подпись над полем.
+    assert dialog.locator(".row-menu-label.is-error").inner_text() == "Впиши название."
+
+
+def test_the_new_playlist_box_has_cancel_and_a_tap_beside_it_only_closes_it(page):
+    """iPhone test 24.10: no way to close the box, and the tap beside it both
+    closed it and opened the card under the finger."""
+    page.locator("#railNewPlaylist").click()
+    dialog = page.get_by_role("dialog", name="Новая подборка")
+    dialog.get_by_role("button", name="Отмена").click()
+    assert dialog.count() == 0
+
+    page.evaluate(
+        "const b = document.createElement('button'); b.id = 'bait'; b.textContent = 'bait';"
+        " b.style.cssText = 'position:fixed;left:5px;bottom:5px;z-index:9999';"
+        " window.__bait = 0; b.onclick = () => { window.__bait += 1; }; document.body.append(b)"
+    )
+    page.locator("#railNewPlaylist").click()
+    assert dialog.count() == 1
+    page.locator("#bait").click()
+    assert dialog.count() == 0
+    assert page.evaluate("window.__bait") == 0
+    # Съедено только то одно нажатие.
+    page.locator("#bait").click()
+    assert page.evaluate("window.__bait") == 1
+
+    # Долгое нажатие мимо — тоже только закрывает: щелчок того же касания.
+    page.locator("#railNewPlaylist").click()
+    box = page.locator("#bait").bounding_box()
+    page.mouse.move(box["x"] + 5, box["y"] + 5)
+    page.mouse.down()
+    page.wait_for_timeout(800)
+    page.mouse.up()
+    assert dialog.count() == 0
+    assert page.evaluate("window.__bait") == 1
+
+    # Касание мимо стало прокруткой (pointercancel) — следующее нажатие не съедено.
+    page.locator("#railNewPlaylist").click()
+    page.evaluate(
+        "const b = document.getElementById('bait');"
+        " b.dispatchEvent(new PointerEvent('pointerdown', {bubbles: true, pointerId: 41}));"
+        " b.dispatchEvent(new PointerEvent('pointercancel', {bubbles: true, pointerId: 41}))"
+    )
+    assert dialog.count() == 0
+    page.locator("#bait").click()
+    assert page.evaluate("window.__bait") == 2
+
+
+def test_replace_by_link_with_an_empty_field_says_what_to_do(page):
+    """iPhone test 24.10: an empty «Заменить по ссылке» closed the box silently."""
+    page.evaluate(
+        "const b = document.createElement('button'); b.id = 'replaceAnchor'; document.body.append(b);"
+        " player.playlist = {name: 'x', revision: 'r', entries: [{path: 'Loud Band/Singles/Loud.opus'}]};"
+        " askForReplacement(b, 0)"
+    )
+    form = page.locator(".row-menu-form")
+    form.get_by_role("button", name="Заменить по ссылке").click()
+    assert form.count() == 1
+    assert "Вставь ссылку" in form.locator(".is-error").inner_text()
+    form.get_by_role("button", name="Отмена").click()
+    assert form.count() == 0
+
+
+def test_the_phone_keyboard_hides_the_mini_player_and_tabs(page):
+    """iPhone test 24.10: with the keyboard open the mini player and the tabs
+    floated in the middle of the list and covered the replace-by-link field."""
+    page.set_viewport_size({"width": 390, "height": 844})
+    page.evaluate("document.getElementById('librarySearch').focus()")
+    assert page.evaluate("keyboardOpen(500, 844, document.getElementById('librarySearch'))") is True
+    # Щипок без поля ввода и мелкая разница — не клавиатура.
+    assert page.evaluate("keyboardOpen(500, 844, document.body)") is False
+    assert (
+        page.evaluate("keyboardOpen(830, 844, document.getElementById('librarySearch'))") is False
+    )
+
+    open_library(page)
+    page.evaluate(f"playQueue([{LOUD}], 0, 'manual'); player.audio.pause()")
+    page.wait_for_selector("#player:not([hidden])")
+    assert page.locator(".tabbar").is_visible()
+    page.evaluate("document.documentElement.classList.add('keyboard-open')")
+    assert not page.locator("#player").is_visible()
+    assert not page.locator(".tabbar").is_visible()
+    # Большой плеер — сам экран: его клавиатура не прячет.
+    page.evaluate("document.querySelector('.app').classList.add('player-open')")
+    assert page.locator("#player").is_visible()
+    page.evaluate(
+        "document.querySelector('.app').classList.remove('player-open');"
+        " document.documentElement.classList.remove('keyboard-open')"
+    )
+    assert page.locator("#player").is_visible()
+
+    # Сама слежка: видимая часть окна сжалась при фокусе в поле — класс есть.
+    page.evaluate(
+        "window.__vvHeight = 400;"
+        " Object.defineProperty(visualViewport, 'height', {configurable: true, get: () => window.__vvHeight});"
+        " document.getElementById('librarySearch').focus();"
+        " visualViewport.dispatchEvent(new Event('resize'))"
+    )
+    assert page.evaluate("document.documentElement.classList.contains('keyboard-open')") is True
+    page.evaluate(
+        "window.__vvHeight = innerHeight; visualViewport.dispatchEvent(new Event('resize'))"
+    )
+    assert page.evaluate("document.documentElement.classList.contains('keyboard-open')") is False
+    # Щипок: та же высота, но страница увеличена — не клавиатура.
+    assert (
+        page.evaluate("keyboardOpen(500, 844, document.getElementById('librarySearch'), 1.5)")
+        is False
+    )
 
 
 def test_on_a_phone_the_four_tabs_are_home_library_playlists_search(page):

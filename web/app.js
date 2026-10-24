@@ -2151,6 +2151,43 @@ async function removeTrack(t) {
     }
 }
 
+/* ---------------- Клавиатура телефона ----------------
+ *
+ * Айфон поднимает над клавиатурой всё, что прижато к низу окна: мини-плеер и
+ * вкладки всплывали посреди списка и закрывали поле в окошке «Заменить по
+ * ссылке» (тест 24.10). В родных приложениях клавиатура их просто накрывает —
+ * здесь их прячем, пока она открыта. Открыта — значит, видимая часть окна
+ * заметно ниже самого окна, страница не увеличена щипком (он тоже уменьшает
+ * видимую часть) и фокус в поле ввода. */
+const KEYBOARD_MIN_PX = 120;
+
+function isTextField(node) {
+    if (!node) return false;
+    if (node.tagName === "TEXTAREA" || node.isContentEditable) return true;
+    return node.tagName === "INPUT"
+        && !["button", "checkbox", "radio", "range", "file", "submit", "reset", "color"].includes(node.type);
+}
+
+function keyboardOpen(viewportHeight, windowHeight, focused, scale = 1) {
+    return Math.abs(scale - 1) < 0.01 && windowHeight - viewportHeight > KEYBOARD_MIN_PX && isTextField(focused);
+}
+
+function refreshKeyboardState() {
+    const view = window.visualViewport;
+    if (!view) return;
+    document.documentElement.classList.toggle("keyboard-open",
+        keyboardOpen(view.height, window.innerHeight, document.activeElement, view.scale || 1));
+}
+
+function watchKeyboard() {
+    const view = window.visualViewport;
+    if (!view) return;
+    view.addEventListener("resize", refreshKeyboardState);
+    document.addEventListener("focusin", refreshKeyboardState);
+    /* После focusout фокус ещё на старом поле — смотреть на следующем шаге. */
+    document.addEventListener("focusout", () => setTimeout(refreshKeyboardState, 0));
+}
+
 /* ---------------- Boot ---------------- */
 
 /* Both scripts are at the end of the body, so this fires once player.js has
@@ -2160,6 +2197,7 @@ async function removeTrack(t) {
 document.addEventListener("DOMContentLoaded", () => {
     document.querySelector(".app").dataset.view = activeView;
     applyLoginState();
+    watchKeyboard();
     /* restoreView сам переключает экран, а переключение само обновляет. */
     if (!restoreView()) refresh(true);
     setInterval(refresh, POLL_MS);
