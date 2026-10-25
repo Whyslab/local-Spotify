@@ -117,32 +117,51 @@ function sendBootProbe(end) {
     let nav = "";
     let net = "";
     let js = "";
+    let css = "";
     try {
         const entry = performance.getEntriesByType("navigation")[0];
         nav = entry?.type || "";
         if (probe.kind === "load" && entry) {
             net = [entry.workerStart, entry.fetchStart, entry.requestStart, entry.responseStart,
                 entry.responseEnd, entry.domInteractive].map(Math.round).join(",");
-            const script = performance.getEntriesByType("resource").find((e) => e.name.includes("/static/app.js"));
+            const files = performance.getEntriesByType("resource");
+            const script = files.find((e) => e.name.includes("/static/app.js"));
             if (script) js = [script.startTime, script.responseStart, script.responseEnd].map(Math.round).join(",");
+            /* style.css стоит в начале страницы, app.js — в конце: спрошены
+             * в одно время — значит, браузер взялся читать страницу поздно. */
+            const style = files.find((e) => e.name.includes("/static/style.css"));
+            if (style) css = [style.startTime, style.responseEnd].map(Math.round).join(",");
         }
     } catch (e) { /* старый браузер */ }
     const standalone = navigator.standalone === true
         || (window.matchMedia && matchMedia("(display-mode: standalone)").matches);
     const skips = Object.entries(probe.skips).map(([k, n]) => k + n).join(",");
-    /* Важное — вперёд: длиннее 200 знаков строку обрежут с конца. age — сколько
+    /* Важное — вперёд: длиннее 300 знаков строку обрежут с конца. age — сколько
      * секунд ответу: большое число — это сохранённая копия из sw.js, а не сервер. */
     const detail = [
-        probe.kind, end, net && "net=" + net, js && "js=" + js, ...probe.marks, skips && "skip=" + skips,
+        probe.kind, end, net && "net=" + net, css && "css=" + css, js && "js=" + js,
+        storageMb && "mb=" + storageMb, ...probe.marks, skips && "skip=" + skips,
         probe.age && "age=" + probe.age, probe.cv && "cv=" + probe.cv, "n=" + probe.calls,
-        probe.mode && "mode=" + probe.mode, probe.rows && "k=" + probe.rows,
-        "view=" + (probe.view || activeView).replace(/^view/, ""),
-        "ios=" + (/iP(hone|ad)/.test(navigator.userAgent) || navigator.maxTouchPoints > 1 ? 1 : 0),
-        "sa=" + (standalone ? 1 : 0), "sw=" + (navigator.serviceWorker?.controller ? 1 : 0),
-        "nav=" + nav, "vis=" + document.visibilityState, probe.h && "h=" + probe.h,
+        probe.mode && "m=" + probe.mode, probe.rows && "k=" + probe.rows,
+        "v=" + (probe.view || activeView).replace(/^view/, ""),
+        /* f= — i: айфон или айпад, a: открыт с экрана «Домой», w: страницей
+         * правит service worker, h: страница уже в фоне. */
+        "f=" + [
+            /iP(hone|ad)/.test(navigator.userAgent) || navigator.maxTouchPoints > 1 ? "i" : "",
+            standalone ? "a" : "", navigator.serviceWorker?.controller ? "w" : "", document.hidden ? "h" : "",
+        ].join(""),
+        "nav=" + nav, probe.h && "h=" + probe.h,
     ].filter(Boolean).join(" ");
     if (typeof playerEvent === "function") playerEvent("startup", detail);
 }
+
+/* Сколько места занято под скачанное: при холодном запуске браузер
+ * открывает это хранилище, и подозрение на паузу — на него. */
+let storageMb = "";
+try {
+    navigator.storage?.estimate?.().then((e) => { storageMb = String(Math.round((e.usage || 0) / 1e6)); })
+        .catch(() => { /* не скажет — и ладно */ });
+} catch (e) { /* старый браузер */ }
 
 startBootProbe("load");
 document.addEventListener("visibilitychange", () => {

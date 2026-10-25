@@ -1849,7 +1849,7 @@ function playerEvent(event, detail = "") {
             event,
             path: track ? track.path : "",
             at: Number.isFinite(player.audio.currentTime) ? Math.min(player.audio.currentTime, 86400) : null,
-            detail: String(detail).slice(0, 200),
+            detail: String(detail).slice(0, 300),
         }),
         keepalive: true,
     }).catch(() => { /* журнал — не повод мешать музыке */ });

@@ -259,6 +259,12 @@ def test_a_page_startup_measurement_is_one_info_line(client, caplog):
     record = next(rec for rec in caplog.records if "Player: startup" in rec.getMessage())
     assert record.levelno == logging.INFO
     assert "(load paint nav=navigate n=1 lib@130 rows@520)" in record.getMessage()
+    # На телефоне строка выходит за двести знаков; длиннее трёхсот — отказ.
+    assert client.post(
+        "/api/player-event", json={"event": "startup", "detail": "x" * 300}, headers=AUTH
+    ).is_success
+    too_long = {"event": "startup", "detail": "x" * 301}
+    assert client.post("/api/player-event", json=too_long, headers=AUTH).status_code == 422
 
 
 def test_player_strings_cannot_forge_a_journal_line(client, caplog):

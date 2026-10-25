@@ -5827,7 +5827,8 @@ def test_opening_the_library_reports_once_when_its_rows_were_drawn(page):
     assert len(startups) == 1, startups
     first = startups[0].split()
     assert first[:2] == ["load", "paint"], startups
-    for field in ("view=Library", "mode=tracks", "nav=navigate", "cv=1", "n=1"):
+    assert len(startups[0]) <= 300, startups  # длиннее — сервер получит обрезок
+    for field in ("v=Library", "m=tracks", "nav=navigate", "cv=1", "n=1"):
         assert field in first, (field, startups)
     assert any(f in first for f in ("age=0", "age=1")), startups  # ответ сервера, не копия
     marks = {m.split("@")[0]: int(m.split("@")[1]) for m in first if "@" in m}
@@ -5837,7 +5838,8 @@ def test_opening_the_library_reports_once_when_its_rows_were_drawn(page):
     # Путь самой страницы: worker, запрос, первый и последний байт, разбор — по порядку.
     net = [int(n) for n in next(f for f in first if f.startswith("net="))[4:].split(",")]
     assert len(net) == 6 and net[1:] == sorted(net[1:]), first
-    assert any(f.startswith("js=") for f in first), first
+    for field in ("js=", "css=", "mb="):
+        assert any(f.startswith(field) for f in first), (field, first)
 
     page.evaluate("library()")  # обычный опрос — не новое открытие
     page.wait_for_timeout(300)

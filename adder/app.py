@@ -509,7 +509,8 @@ class PlayerEvent(BaseModel):
     ]
     path: str = Field(default="", max_length=4096)
     at: float | None = Field(default=None, ge=0, le=86400, allow_inf_nan=False)
-    detail: str = Field(default="", max_length=200)
+    # 300: строке замера запуска (startup) двухсот не хватает — обрезалась.
+    detail: str = Field(default="", max_length=300)
 
 
 class PlayRequest(BaseModel):
