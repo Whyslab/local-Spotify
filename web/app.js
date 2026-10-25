@@ -40,7 +40,10 @@ let appReady = false;
 function markAppReady() {
     if (appReady) return;
     appReady = true;
-    requestAnimationFrame(() => performance.mark("app-ready"));
+    requestAnimationFrame(() => {
+        performance.mark("app-ready");
+        probeMark("ready");
+    });
 }
 
 /* Замер открытия фонотеки — одна строка в журнале службы на открытие.
@@ -103,18 +106,34 @@ function sendBootProbe(end) {
     if (!probe) return;
     bootProbe = null;
     clearTimeout(probe.timer);
-    /* Фонотеку за это время не открывали — мерить нечего. */
-    if (!probe.calls) return;
+    /* Возврат без фонотеки — мерить нечего. Загрузку шлём всегда: 25.10.2026
+     * фонотека встала за 0,07 с после нажатия, а между выдачей страницы
+     * сервером и первым запросом её скриптов прошло 2,7 с. net= — путь самой
+     * страницы: worker, запрос, первый и последний байт, разбор (мс от
+     * открытия); js= — то же для app.js. Ожидание здесь при быстром сервере —
+     * это service worker (sw.js), а не сеть. */
+    if (!probe.calls && probe.kind !== "load") return;
     bootProbeLines += 1;
     let nav = "";
-    try { nav = performance.getEntriesByType("navigation")[0]?.type || ""; } catch (e) { /* старый браузер */ }
+    let net = "";
+    let js = "";
+    try {
+        const entry = performance.getEntriesByType("navigation")[0];
+        nav = entry?.type || "";
+        if (probe.kind === "load" && entry) {
+            net = [entry.workerStart, entry.fetchStart, entry.requestStart, entry.responseStart,
+                entry.responseEnd, entry.domInteractive].map(Math.round).join(",");
+            const script = performance.getEntriesByType("resource").find((e) => e.name.includes("/static/app.js"));
+            if (script) js = [script.startTime, script.responseStart, script.responseEnd].map(Math.round).join(",");
+        }
+    } catch (e) { /* старый браузер */ }
     const standalone = navigator.standalone === true
         || (window.matchMedia && matchMedia("(display-mode: standalone)").matches);
     const skips = Object.entries(probe.skips).map(([k, n]) => k + n).join(",");
     /* Важное — вперёд: длиннее 200 знаков строку обрежут с конца. age — сколько
      * секунд ответу: большое число — это сохранённая копия из sw.js, а не сервер. */
     const detail = [
-        probe.kind, end, ...probe.marks, skips && "skip=" + skips,
+        probe.kind, end, net && "net=" + net, js && "js=" + js, ...probe.marks, skips && "skip=" + skips,
         probe.age && "age=" + probe.age, probe.cv && "cv=" + probe.cv, "n=" + probe.calls,
         probe.mode && "mode=" + probe.mode, probe.rows && "k=" + probe.rows,
         "view=" + (probe.view || activeView).replace(/^view/, ""),

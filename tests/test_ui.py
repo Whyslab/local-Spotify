@@ -5831,8 +5831,13 @@ def test_opening_the_library_reports_once_when_its_rows_were_drawn(page):
         assert field in first, (field, startups)
     assert any(f in first for f in ("age=0", "age=1")), startups  # ответ сервера, не копия
     marks = {m.split("@")[0]: int(m.split("@")[1]) for m in first if "@" in m}
-    assert list(marks) == ["dom", "tolib", "lib", "resp", "json", "rows", "paint"], marks
-    assert list(marks.values()) == sorted(marks.values()), marks
+    steps = ["dom", "tolib", "lib", "resp", "json", "rows", "paint"]
+    assert [m for m in marks if m in steps] == steps, marks
+    assert [marks[m] for m in steps] == sorted(marks[m] for m in steps), marks
+    # Путь самой страницы: worker, запрос, первый и последний байт, разбор — по порядку.
+    net = [int(n) for n in next(f for f in first if f.startswith("net="))[4:].split(",")]
+    assert len(net) == 6 and net[1:] == sorted(net[1:]), first
+    assert any(f.startswith("js=") for f in first), first
 
     page.evaluate("library()")  # обычный опрос — не новое открытие
     page.wait_for_timeout(300)
@@ -5874,9 +5879,10 @@ def test_returns_to_the_page_without_the_library_do_not_use_up_the_measurement(p
         }"""
     )
     page.wait_for_timeout(300)
-    assert startups == []
+    # Одна строка — сама загрузка страницы, кончившаяся уходом в фон.
+    assert len(startups) == 1 and '"detail":"load hidden net=' in startups[0], startups
     open_library(page)
     deadline = time.monotonic() + 5
-    while not startups and time.monotonic() < deadline:
+    while len(startups) < 2 and time.monotonic() < deadline:
         page.wait_for_timeout(50)
-    assert len(startups) == 1 and '"detail":"resume paint' in startups[0], startups
+    assert len(startups) == 2 and '"detail":"resume paint' in startups[1], startups
