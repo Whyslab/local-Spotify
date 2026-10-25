@@ -246,6 +246,21 @@ def test_player_events_go_to_the_journal_and_need_the_token(client, caplog):
     assert bad.status_code == 422
 
 
+def test_a_page_startup_measurement_is_one_info_line(client, caplog):
+    """24.10.2026 строки фонотеки на айфоне появлялись через секунды, а служба
+    отвечала за 0,02 с: страница присылает, когда что встало, — это замер, не
+    тревога, поэтому INFO."""
+    import logging
+
+    body = {"event": "startup", "detail": "load paint nav=navigate n=1 lib@130 rows@520"}
+    with caplog.at_level(logging.INFO, logger="adder.app"):
+        r = client.post("/api/player-event", json=body, headers=AUTH)
+    assert r.status_code == 200
+    record = next(rec for rec in caplog.records if "Player: startup" in rec.getMessage())
+    assert record.levelno == logging.INFO
+    assert "(load paint nav=navigate n=1 lib@130 rows@520)" in record.getMessage()
+
+
 def test_player_strings_cannot_forge_a_journal_line(client, caplog):
     """path и detail приходят от страницы как есть: «\n» в них дописывал в
     журнал службы строку, неотличимую от настоящей."""

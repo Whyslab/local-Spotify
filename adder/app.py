@@ -495,8 +495,17 @@ class PlayerEvent(BaseModel):
     """
 
     # mix / mix-fail — переход «как диджей» (web/mix.js): вышел и как встал стык; не вышел — почему.
+    # startup — замер открытия фонотеки (web/app.js, startBootProbe): когда что встало.
     event: Literal[
-        "pause", "error", "stall", "stall-reload", "stall-giveup", "device", "mix", "mix-fail"
+        "pause",
+        "error",
+        "stall",
+        "stall-reload",
+        "stall-giveup",
+        "device",
+        "mix",
+        "mix-fail",
+        "startup",
     ]
     path: str = Field(default="", max_length=4096)
     at: float | None = Field(default=None, ge=0, le=86400, allow_inf_nan=False)
@@ -2319,7 +2328,7 @@ def player_event(req: PlayerEvent, authenticated: bool = Depends(verify_token)):
         _EVENTS_WINDOW.append(now)
     at = f" at {req.at:.1f}s" if req.at is not None else ""
     detail = f" ({_one_line(req.detail)})" if req.detail else ""
-    level = logging.INFO if req.event in ("pause", "mix") else logging.WARNING
+    level = logging.INFO if req.event in ("pause", "mix", "startup") else logging.WARNING
     logger.log(
         level,
         "Player: %s%s %s%s",

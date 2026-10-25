@@ -5800,3 +5800,83 @@ def test_a_long_playlist_is_drawn_whole_on_a_touch_phone(server, browser, page):
     finally:
         context.close()
         (server["root"] / "Длинная.m3u").unlink()
+
+
+def test_opening_the_library_reports_once_when_its_rows_were_drawn(page):
+    """24.10.2026 на айфоне строки фонотеки вставали через секунды, а служба
+    отвечала за 0,02 с. Страница присылает одну строку: когда ушёл запрос,
+    пришёл ответ, встали и нарисовались строки, — и так же после возврата
+    к открытой странице."""
+    startups = []
+
+    def on_request(request):
+        if request.method == "POST" and request.url.endswith("/api/player-event"):
+            body = json.loads(request.post_data or "{}")
+            if body.get("event") == "startup":
+                startups.append(body["detail"])
+
+    def settle(count):
+        deadline = time.monotonic() + 5
+        while len(startups) < count and time.monotonic() < deadline:
+            page.wait_for_timeout(50)
+        page.wait_for_timeout(300)  # и больше ни одной
+
+    page.on("request", on_request)
+    open_library(page)
+    settle(1)
+    assert len(startups) == 1, startups
+    first = startups[0].split()
+    assert first[:2] == ["load", "paint"], startups
+    for field in ("view=Library", "mode=tracks", "nav=navigate", "cv=1", "n=1"):
+        assert field in first, (field, startups)
+    assert any(f in first for f in ("age=0", "age=1")), startups  # ответ сервера, не копия
+    marks = {m.split("@")[0]: int(m.split("@")[1]) for m in first if "@" in m}
+    assert list(marks) == ["dom", "tolib", "lib", "resp", "json", "rows", "paint"], marks
+    assert list(marks.values()) == sorted(marks.values()), marks
+
+    page.evaluate("library()")  # обычный опрос — не новое открытие
+    page.wait_for_timeout(300)
+    assert len(startups) == 1, startups
+
+    page.evaluate("document.dispatchEvent(new Event('visibilitychange'))")
+    settle(2)
+    assert len(startups) == 2, startups
+    again = startups[1].split()
+    assert again[:2] == ["resume", "paint"] and "skip=same1" in again, startups
+
+
+def test_returns_to_the_page_without_the_library_do_not_use_up_the_measurement(page):
+    """Музыка играет часами, телефон то и дело гасят и будят на главной: эти
+    возвраты не должны исчерпать замер до того, как откроют фонотеку."""
+    startups = []
+    page.on(
+        "request",
+        lambda r: (
+            startups.append(r.post_data)
+            if r.method == "POST"
+            and r.url.endswith("/api/player-event")
+            and "startup" in (r.post_data or "")
+            else None
+        ),
+    )
+    page.evaluate(
+        """() => {
+            let hidden = false;
+            Object.defineProperty(document, "hidden", { configurable: true, get: () => hidden });
+            Object.defineProperty(document, "visibilityState", {
+                configurable: true, get: () => (hidden ? "hidden" : "visible") });
+            for (let i = 0; i < 30; i++) {
+                hidden = true;
+                document.dispatchEvent(new Event("visibilitychange"));
+                hidden = false;
+                document.dispatchEvent(new Event("visibilitychange"));
+            }
+        }"""
+    )
+    page.wait_for_timeout(300)
+    assert startups == []
+    open_library(page)
+    deadline = time.monotonic() + 5
+    while not startups and time.monotonic() < deadline:
+        page.wait_for_timeout(50)
+    assert len(startups) == 1 and '"detail":"resume paint' in startups[0], startups

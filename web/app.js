@@ -43,6 +43,97 @@ function markAppReady() {
     requestAnimationFrame(() => performance.mark("app-ready"));
 }
 
+/* Замер открытия фонотеки — одна строка в журнале службы на открытие.
+ * 24.10.2026 на айфоне строки фонотеки появились секунд через пять после
+ * открытия, а на ноутбуке с тем же сервером — за доли секунды; служба
+ * отвечала за 0,02 с. Где теряется время, отсюда не видно — эта строка и
+ * должна показать: когда ушёл запрос, пришёл ответ, встали и отрисовались
+ * строки, и почему отрисовка пропускалась. Замер — с загрузки страницы и с
+ * каждого возврата к ней (айфон чаще будит старую страницу, чем грузит
+ * новую). Ушла страница в фон — замер кончается: иначе время в кармане
+ * читалось бы как медленное открытие. Строк не больше BOOT_PROBE_LINES за
+ * жизнь страницы; возвраты без фонотеки их не тратят. */
+const BOOT_PROBE_LINES = 20;
+const BOOT_PROBE_WAIT_MS = 30000;
+let bootProbe = null;
+let bootProbeLines = 0;
+
+function startBootProbe(kind) {
+    if (bootProbe || bootProbeLines >= BOOT_PROBE_LINES) return;
+    const t0 = kind === "load" ? 0 : performance.now();
+    bootProbe = { kind, t0, marks: [], skips: {}, calls: 0, view: "", mode: "", rows: "", age: "", cv: "", h: "" };
+    bootProbe.timer = setTimeout(() => sendBootProbe("timeout"), BOOT_PROBE_WAIT_MS);
+}
+
+/* again — метка последнего из запросов внахлёст: она заменяет прежнюю. */
+function probeMark(name, again = false) {
+    if (!bootProbe) return;
+    const at = bootProbe.marks.findIndex((m) => m.startsWith(name + "@"));
+    if (at >= 0 && !again) return;
+    const mark = name + "@" + Math.round(performance.now() - bootProbe.t0);
+    if (at >= 0) bootProbe.marks[at] = mark;
+    else bootProbe.marks.push(mark);
+}
+
+function probeSkip(why) {
+    if (bootProbe) bootProbe.skips[why] = (bootProbe.skips[why] || 0) + 1;
+}
+
+/* Строки встали — через два кадра они на экране; заодно: не пропустил ли
+ * браузер первую пачку как невидимую (content-visibility, style.css). Спрашивать
+ * надо строку внутри пачки: сама пачка для checkVisibility видна всегда. */
+function probeRowsPainted(box) {
+    if (!bootProbe) return;
+    probeMark("rows");
+    const probe = bootProbe;
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+        if (probe !== bootProbe) return;
+        probeMark("paint");
+        const first = box.querySelector(".row-chunk > *");
+        if (first && first.checkVisibility) {
+            probe.cv = first.checkVisibility({ contentVisibilityAuto: true }) ? "1" : "0";
+        }
+        probe.h = String(Math.round(box.getBoundingClientRect().height));
+        sendBootProbe("paint");
+    }));
+}
+
+function sendBootProbe(end) {
+    const probe = bootProbe;
+    if (!probe) return;
+    bootProbe = null;
+    clearTimeout(probe.timer);
+    /* Фонотеку за это время не открывали — мерить нечего. */
+    if (!probe.calls) return;
+    bootProbeLines += 1;
+    let nav = "";
+    try { nav = performance.getEntriesByType("navigation")[0]?.type || ""; } catch (e) { /* старый браузер */ }
+    const standalone = navigator.standalone === true
+        || (window.matchMedia && matchMedia("(display-mode: standalone)").matches);
+    const skips = Object.entries(probe.skips).map(([k, n]) => k + n).join(",");
+    /* Важное — вперёд: длиннее 200 знаков строку обрежут с конца. age — сколько
+     * секунд ответу: большое число — это сохранённая копия из sw.js, а не сервер. */
+    const detail = [
+        probe.kind, end, ...probe.marks, skips && "skip=" + skips,
+        probe.age && "age=" + probe.age, probe.cv && "cv=" + probe.cv, "n=" + probe.calls,
+        probe.mode && "mode=" + probe.mode, probe.rows && "k=" + probe.rows,
+        "view=" + (probe.view || activeView).replace(/^view/, ""),
+        "ios=" + (/iP(hone|ad)/.test(navigator.userAgent) || navigator.maxTouchPoints > 1 ? 1 : 0),
+        "sa=" + (standalone ? 1 : 0), "sw=" + (navigator.serviceWorker?.controller ? 1 : 0),
+        "nav=" + nav, "vis=" + document.visibilityState, probe.h && "h=" + probe.h,
+    ].filter(Boolean).join(" ");
+    if (typeof playerEvent === "function") playerEvent("startup", detail);
+}
+
+startBootProbe("load");
+document.addEventListener("visibilitychange", () => {
+    if (document.hidden) sendBootProbe("hidden");
+    else startBootProbe("resume");
+});
+window.addEventListener("pageshow", (e) => {
+    if (e.persisted) startBootProbe("restore");
+});
+
 /* ---------------- Token ---------------- */
 
 /* Ключ — в памяти тоже: Safari с запретом данных сайтов бросает исключение
@@ -184,6 +275,7 @@ function leavePlaylist() {
 
 function switchView(id) {
     navigation += 1;
+    if (id === "viewLibrary") probeMark("tolib");
     activeView = id;
     updateSearchPlaceholder(id);
     keepSearchFor(id);
@@ -1792,9 +1884,13 @@ function hasOpenChoice(id) {
 }
 
 async function library() {
+    if (bootProbe) {
+        bootProbe.calls += 1;
+        probeMark("lib", true);
+    }
     /* Открыт один альбом — фоновый опрос не должен смахивать его обратно в
      * сетку под руками. Выход из него — только кнопкой «Назад». */
-    if (hasOpenChoice("library")) return;
+    if (hasOpenChoice("library")) return probeSkip("open");
     const box = document.getElementById("library");
     const empty = document.getElementById("libraryEmpty");
     const count = document.getElementById("libraryCount");
@@ -1818,16 +1914,31 @@ async function library() {
         const r = await fetch(
             "/api/library?limit=" + limit + "&sort=" + librarySort + "&q=" + encodeURIComponent(q),
             { headers: headers() });
-        if (!r.ok) return;
+        /* Два запроса внахлёст (смена режима, потом переход) — время берём
+         * у последнего: старый ответ всё равно выбросят. */
+        const latest = () => bootProbe && ticket === libraryTicket;
+        if (latest()) {
+            probeMark("resp", true);
+            const sent = Date.parse(r.headers.get("date") || "");
+            if (sent) bootProbe.age = String(Math.max(0, Math.round((Date.now() - sent) / 1000)));
+        }
+        if (!r.ok) return probeSkip("http" + r.status);
         const data = await r.json();
-        if (ticket !== libraryTicket || mode !== libraryMode) return;
+        if (latest()) {
+            probeMark("json", true);
+            Object.assign(bootProbe, { view: activeView, mode, rows: String(data.length) });
+        }
+        if (ticket !== libraryTicket || mode !== libraryMode) return probeSkip("stale");
         /* Пока ответ шёл, под строкой могли открыть вопрос («удалить?», «в
          * какую подборку?») — проверка в начале этого уже не видела. */
-        if (hasOpenChoice("library")) return;
+        if (hasOpenChoice("library")) return probeSkip("open");
         /* Опрос принёс то же самое — список не трогаем: перерисовка сбивала
          * прокрутку и открытые под строкой вопросы. */
         const signature = [mode, limit, q, data.length, ...data.map(t => t.path)].join("\n");
-        if (signature === librarySignature && box.childElementCount) return;
+        if (signature === librarySignature && box.childElementCount) {
+            probeSkip("same");
+            return probeRowsPainted(box);
+        }
         librarySignature = signature;
         box.replaceChildren();
         empty.textContent = "Ничего не нашлось.";
@@ -1864,6 +1975,7 @@ async function library() {
             }
             markPlayingRow();
             markAppReady();
+            probeRowsPainted(box);
             return;
         }
 
@@ -1883,8 +1995,10 @@ async function library() {
         }
         markPlayingRow();
         markAppReady();
+        probeRowsPainted(box);
     } catch (e) {
         // Same reasoning as tasks(): the next keystroke or poll retries.
+        probeSkip("err");
     }
 }
 
@@ -2222,6 +2336,7 @@ function watchKeyboard() {
  * calling it a moment too early throws before the polling timer is ever set --
  * leaving a page that renders once and then never updates again. */
 document.addEventListener("DOMContentLoaded", () => {
+    probeMark("dom");
     document.querySelector(".app").dataset.view = activeView;
     applyLoginState();
     watchKeyboard();
