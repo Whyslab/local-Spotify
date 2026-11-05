@@ -1374,6 +1374,50 @@ class Downloaded:
     temp_path: Path
     names: TrackNames
     thumbnail: str | None
+    # Откуда звук на самом деле, если не из ссылки задачи: ссылку на клип
+    # меняют на студийную запись (studio.for_link). В тег SOURCE_URL идёт она.
+    source_url: str | None = None
+
+
+class AlreadyInLibrary(Exception):
+    """Звук, который надо скачать, уже лежит в фонотеке (``path``)."""
+
+    def __init__(self, path: str):
+        super().__init__(path)
+        self.path = path
+
+
+def _studio_instead(
+    tid: int, url: str, meta: dict, artist: str, title: str
+) -> tuple[str, str] | None:
+    """Ссылка на студийную запись вместо клипа и что было прислано («клип»,
+    «чистая»), или None — качать присланное.
+
+    Что сказать в карточке задачи, пишется сюда же: подмену видно, и видно,
+    когда студийной не нашлось. Сбой YouTube Music — «качать как есть».
+    """
+    from . import studio
+
+    try:
+        choice = studio.for_link(
+            meta.get("id") or "", meta.get("title") or "", artist, title, meta.get("duration")
+        )
+    except Exception as exc:  # noqa: BLE001 — подмена необязательна
+        logger.info("Студийная версия не искалась: %s", exc, extra={"task_id": tid})
+        return None
+    if choice is None:
+        return None
+    db.task_update(tid, warning=choice.note)
+    if choice.song is None or choice.song.url == url:
+        return None
+    logger.info(
+        "Вместо %s качаю студийную запись %s (%s)",
+        url,
+        choice.song.url,
+        choice.note,
+        extra={"task_id": tid},
+    )
+    return choice.song.url, choice.sent
 
 
 def stage_into_temp(source: Path, key: str) -> Path:
@@ -1406,13 +1450,45 @@ def download_to_temp(tid: int, url: str) -> Downloaded:
 
     db.task_update(tid, status="downloading")
     meta = yt_meta(url)
-    check_downloadable(meta)
     fs_artist, fs_title, full_artist, meta_title = split_artist_title(meta)
     # Name the task now: «Загрузки» otherwise showed the bare link for the
     # whole download (iPhone test 24.10). Tagging may correct it later.
     db.task_update(tid, artist=full_artist, title=meta_title)
 
-    downloaded = yt_download(url, meta["id"])
+    # Клип → студийная запись той же песни (решение пользователя 05.11.2026).
+    # До проверки длины: клип на 9 минут даёт трек на 3.
+    instead = _studio_instead(tid, url, meta, full_artist, meta_title)
+    source_url, sent = instead if instead else (None, "")
+    sent_meta = meta
+    if source_url:
+        existing = library.find_by_source(source_url)
+        if existing:
+            raise AlreadyInLibrary(existing)
+        try:
+            meta = yt_meta(source_url)
+            check_downloadable(meta)
+            downloaded = yt_download(source_url, meta["id"])
+        except runtime.ShutdownRequested:
+            raise
+        except Exception as exc:  # noqa: BLE001 — сбой подмены = качать присланное
+            # Ограничение YouTube — не сбой подмены: присланное упрётся в него же.
+            if classify_error(str(exc)) == "rate_limited":
+                raise
+            logger.warning(
+                "Студийная %s не скачалась (%s), качаю присланное",
+                source_url,
+                exc,
+                extra={"task_id": tid},
+            )
+            taken = "чистая версия" if sent == "чистая" else "звук клипа"
+            db.task_update(tid, warning=f"Замена не скачалась — взята {taken}")
+            source_url, meta = None, sent_meta
+        else:
+            fs_artist, fs_title, full_artist, meta_title = split_artist_title(meta)
+            db.task_update(tid, artist=full_artist, title=meta_title)
+    if not source_url:
+        check_downloadable(meta)
+        downloaded = yt_download(url, meta["id"])
     if not downloaded.exists():
         raise RuntimeError("Downloaded file not found")
 
@@ -1427,6 +1503,7 @@ def download_to_temp(tid: int, url: str) -> Downloaded:
         temp_path=stage_into_temp(downloaded, meta["id"]),
         names=TrackNames(fs_artist, fs_title, full_artist, meta_title, names_doubt(meta)),
         thumbnail=meta.get("thumbnail"),
+        source_url=source_url,
     )
 
 
@@ -1614,7 +1691,7 @@ def _take_its_place(temp_path: Path, target: Path, tid: int) -> None:
     logger.info("Замена на месте: %s", relative, extra={"task_id": tid})
 
 
-def _apply_replacement(tid: int, new_path: str) -> None:
+def _apply_replacement(tid: int, new_path: str) -> bool:
     """Поставить свежескачанный трек на место того, который он заменяет.
 
     Заменяем не байты файла, а ссылку: новый трек проходит обычный конвейер со
@@ -1630,9 +1707,26 @@ def _apply_replacement(tid: int, new_path: str) -> None:
     rows = db.db_query("SELECT replace_of FROM tasks WHERE id = ?", (tid,))
     old_path = (rows[0]["replace_of"] if rows else None) or ""
     if not old_path or old_path == new_path:
-        return
+        return False
+    return swap_into(old_path, new_path, tid)
 
+
+def swap_into(old_path: str, new_path: str, tid: int | None = None) -> bool:
+    """Трек ``new_path`` встаёт на место ``old_path`` во всех подборках, старый —
+    в корзину, прослушивания и текст — к новому. False — старый оставлен
+    (какую-то подборку не вышло переписать); тогда, если есть задача, в ней
+    предупреждение."""
     from . import playlists
+
+    log = {"task_id": tid if tid is not None else "system"}
+
+    # Индекс фонотеки живёт минуту: удалённый за это время файл он ещё
+    # отдаёт, и подборки встали бы на пустое место, а старый трек — в корзину.
+    if not (config.LIBRARY / new_path).is_file():
+        logger.warning("Замена: %s не на месте, %s оставлен", new_path, old_path, extra=log)
+        if tid is not None:
+            db.task_update(tid, warning=f"Старая версия оставлена: нет файла {new_path}")
+        return False
 
     moved = playlists.swap_everywhere(old_path, new_path)
     # Подборку, которую не вышло переписать, нельзя оставить со строкой на
@@ -1644,31 +1738,77 @@ def _apply_replacement(tid: int, new_path: str) -> None:
             "Замена: %s оставлен — на него всё ещё ссылаются %s",
             old_path,
             ", ".join(left),
-            extra={"task_id": tid},
+            extra=log,
         )
-        db.task_update(
-            tid,
-            warning=f"Старая версия оставлена: не обновились подборки {', '.join(left)}",
-        )
-        return
+        if tid is not None:
+            db.task_update(
+                tid,
+                warning=f"Старая версия оставлена: не обновились подборки {', '.join(left)}",
+            )
+        return False
     try:
         # Тот же путь, что и у обычного удаления: файл уезжает в корзину, а
         # пустые папки за ним подчищаются.
         library.delete_track(old_path)
     except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "Не удалось убрать заменённый файл %s: %s", old_path, exc, extra={"task_id": tid}
-        )
+        logger.warning("Не удалось убрать заменённый файл %s: %s", old_path, exc, extra=log)
     else:
         # Прослушивания и текст — туда же, куда подборки.
         library.carry_history(old_path, new_path)
+    with suppress(Exception):
+        db.db_exec(
+            "INSERT OR REPLACE INTO swaps(old_path, new_path) VALUES (?, ?)", (old_path, new_path)
+        )
     logger.info(
         "Замена: %s → %s, подборок затронуто %d",
         old_path,
         new_path,
         moved,
-        extra={"task_id": tid},
+        extra=log,
     )
+    return True
+
+
+def replace_with_existing(tid: int, existing: str) -> None:
+    """Замена, звук которой уже лежит в фонотеке: старый трек уступает место ``existing``.
+
+    Так бывает, когда ссылку уже качали («Как делишки», 05.11.2026: замена
+    акустической версии обычной, которая уже была в фонотеке, отвечала 409) или
+    когда клип подменён студийной записью, а она уже есть. Ничего не делает,
+    если задача — не замена или заменяет сама себя.
+    """
+    old_path = _replace_of(tid)
+    if not old_path:
+        return
+    if old_path == existing:
+        # Клип подменён студийной, а она и есть заменяемый трек: менять нечего.
+        with suppress(Exception):
+            db.task_update(
+                tid, replace_outcome=0, warning="Это и есть заменяемый трек — менять нечего"
+            )
+        return
+    try:
+        replaced = _apply_replacement(tid, existing)
+    except Exception as exc:  # noqa: BLE001 — как best_effort в ingest_temp_file
+        logger.warning("Замена на %s не удалась: %s", existing, exc, extra={"task_id": tid})
+        with suppress(Exception):
+            db.task_update(
+                tid,
+                replace_outcome=0,
+                warning="Трек уже был в фонотеке, но старый не заменён: см. журнал",
+            )
+        return
+    with suppress(Exception):
+        if replaced:
+            db.task_update(
+                tid,
+                replace_outcome=1,
+                result_path=existing,
+                warning=f"Уже был в фонотеке — встал на место старого: {existing}",
+            )
+        else:
+            # Почему — swap_into уже написал в предупреждении.
+            db.task_update(tid, replace_outcome=0)
 
 
 def _task_source(tid: int) -> str | None:
@@ -1678,7 +1818,13 @@ def _task_source(tid: int) -> str | None:
     return url if url and url.startswith(("http://", "https://")) else None
 
 
-def ingest_temp_file(tid: int, temp_path: Path, names: TrackNames, thumbnail: str | None) -> str:
+def ingest_temp_file(
+    tid: int,
+    temp_path: Path,
+    names: TrackNames,
+    thumbnail: str | None,
+    source_url: str | None = None,
+) -> str:
     """Tag a staged file and move it into the library, or discard it as a duplicate.
 
     The tail of the pipeline, and the only path by which anything reaches the
@@ -1726,7 +1872,7 @@ def ingest_temp_file(tid: int, temp_path: Path, names: TrackNames, thumbnail: st
 
     write_tags(temp_path, info, names.meta_title, cover, fmt)
     # Not "source": that name already holds where the metadata came from.
-    source_url = _task_source(tid)
+    source_url = source_url or _task_source(tid)
     if source_url:
         write_source(temp_path, source_url)
     # Loudness, so a shuffle does not jump between quiet and loud uploads. A
@@ -1766,24 +1912,32 @@ def ingest_temp_file(tid: int, temp_path: Path, names: TrackNames, thumbnail: st
                 extra={"task_id": tid},
             )
             temp_path.unlink()
+            twin = str(duplicate.relative_to(config.LIBRARY))
             # Путь близнеца — результат задачи: без него готовая задача без
             # пути навсегда отказывала той же ссылке, даже когда близнеца
             # удалили (см. app._can_requeue).
             with suppress(Exception):
-                db.task_update(tid, result_path=str(duplicate.relative_to(config.LIBRARY)))
-            return "duplicate"
-
-        if replace_of is not None and _names_the_same_file(replace_of, base_target):
+                db.task_update(tid, result_path=twin)
+        elif replace_of is not None and _names_the_same_file(replace_of, base_target):
             # Замена с тем же именем и расширением — на место старой: путь не
             # меняется ни у подборок, ни у очереди на телефоне, ни у
             # скачанного, ни у звёзд в Navidrome. Раньше — «… (1)» рядом.
+            twin = None
             final_target = base_target
             _take_its_place(temp_path, base_target, tid)
         else:
             # Same filename + different content is allowed.
             # Preserve the existing collision-safe naming behavior.
+            twin = None
             final_target = unique_path(base_target)
             shutil.move(str(temp_path), str(final_target))
+
+    if twin is not None:
+        # Замена звуком, который уже лежит в фонотеке: старый трек уступает
+        # место близнецу. Раньше задача кончалась «готово», а старый трек
+        # оставался в подборках — замена молча не происходила.
+        replace_with_existing(tid, twin)
+        return "duplicate"
 
     # Файл уже в фонотеке. Всё, что дальше, — довесок: упавший шаг только
     # пишется в журнал. Ошибка задачи здесь значила бы повтор и второй файл
@@ -1834,11 +1988,24 @@ def ingest_temp_file(tid: int, temp_path: Path, names: TrackNames, thumbnail: st
                 tid, warning=f"Похоже на уже имеющийся трек: {similar}", similar_to=similar
             ),
         )
-    if not best_effort("the replacement", lambda: _apply_replacement(tid, relative)):
-        # Видно в панели: иначе «готово» читалось бы как «заменено».
+    if replace_of is not None:
+        outcome = {"replaced": False}
+
+        def replace() -> None:
+            # Тот же путь — файл уже лёг на место старого (_take_its_place).
+            outcome["replaced"] = relative == replace_of or _apply_replacement(tid, relative)
+
+        if not best_effort("the replacement", replace):
+            # Видно в панели: иначе «готово» читалось бы как «заменено».
+            best_effort(
+                "the replacement warning",
+                lambda: db.task_update(
+                    tid, warning="Трек добавлен, но старый не заменён — см. журнал"
+                ),
+            )
         best_effort(
-            "the replacement warning",
-            lambda: db.task_update(tid, warning="Трек добавлен, но старый не заменён — см. журнал"),
+            "the replacement outcome",
+            lambda: db.task_update(tid, replace_outcome=int(outcome["replaced"])),
         )
 
     # Текст — сразу, чтобы он был уже при первом включении. В своём потоке:

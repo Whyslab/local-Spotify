@@ -3396,8 +3396,48 @@ function askForReplacement(button, position) {
     field.focus();
 }
 
+/* Ход замены — и в заметке подборки, и под плеером: заметка подборки стоит
+ * над списком, и у строки в глубине Monday её не видно. Так «Заменить» и
+ * выглядело неработающим (05.11.2026): отказ сервера был, но наверху. */
+function tellReplacement(text) {
+    setPlaylistNote(text);
+    if (!document.getElementById("player").hidden) setPlayerNote(text);
+}
+
+/* Новая версия качается в фоне — дождаться задачи и сказать, чем кончилось. */
+const REPLACE_POLL_MS = 4000;
+const REPLACE_POLL_LIMIT = 150; /* десять минут */
+
+async function watchReplacement(tid, name) {
+    for (let i = 0; i < REPLACE_POLL_LIMIT; i++) {
+        await new Promise(resolve => setTimeout(resolve, REPLACE_POLL_MS));
+        let task;
+        try {
+            const r = await fetch(`/api/tasks/${tid}`, { headers: headers() });
+            if (r.status === 404) return;
+            if (!r.ok) continue;
+            task = await r.json();
+        } catch (e) { continue; }
+        if (task.status === "error") {
+            tellReplacement("Замена не удалась: " + (task.error || "ошибка загрузки"));
+            return;
+        }
+        if (task.status !== "done") continue;
+        const what = task.title ? `«${task.title}»` : "новая версия";
+        /* replace_outcome: 1 — встал на место, 0 — старый остался (почему — в warning). */
+        if (task.replace_outcome === 0) {
+            tellReplacement(`Не заменено: ${task.warning || "старый трек остался"}`);
+            return;
+        }
+        tellReplacement(`Заменено: ${what} на месте старого` + (task.warning ? `. ${task.warning}` : ""));
+        if (name && playlistOnScreen(name)) await openPlaylist(name);
+        return;
+    }
+}
+
 async function sendReplacement(path, url, file) {
-    setPlaylistNote("Ставлю в очередь замену…");
+    const name = player.playlist ? player.playlist.name : null;
+    tellReplacement("Ставлю в очередь замену…");
     try {
         let r;
         if (file) {
@@ -3416,10 +3456,17 @@ async function sendReplacement(path, url, file) {
             });
         }
         const data = await r.json().catch(() => ({}));
-        if (!r.ok) { setPlaylistNote(data.detail || "Не удалось заменить"); return; }
-        setPlaylistNote("Версия качается. Когда доедет — встанет на это же место.");
+        if (!r.ok) { tellReplacement(data.detail || "Не удалось заменить"); return; }
+        if (data.replaced_with) {
+            /* Трек по ссылке уже был в фонотеке — он встал на место сразу. */
+            tellReplacement("Этот трек уже был в фонотеке — он встал на место старого.");
+            if (name && playlistOnScreen(name)) await openPlaylist(name);
+            return;
+        }
+        tellReplacement("Версия качается. Когда доедет — встанет на это же место.");
+        if (typeof data.task === "number") watchReplacement(data.task, name);
     } catch (e) {
-        setPlaylistNote("Не удалось заменить: " + e.message);
+        tellReplacement("Не удалось заменить: " + e.message);
     }
 }
 

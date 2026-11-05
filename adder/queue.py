@@ -98,23 +98,31 @@ def process(tid: int, url: str):
                 # The file itself says where it came from, so a link already in
                 # the library is recognised even when the task table was lost.
                 existing = library.find_by_source(url)
+                if existing is None:
+                    try:
+                        downloaded = ingest.download_to_temp(tid, url)
+                    except ingest.AlreadyInLibrary as already:
+                        # Ссылку подменили студийной записью, а она уже есть.
+                        existing = already.path
                 if existing:
                     logger.info(
                         "Already in the library as %s; not downloading again",
                         existing,
                         extra={"task_id": tid},
                     )
-                    db.task_update(
-                        tid, status="done", error="", error_type="", result_path=existing
-                    )
+                    db.task_update(tid, error="", error_type="", result_path=existing)
+                    # Замена ссылкой на трек, который уже есть: он и встаёт на
+                    # место старого. Раньше задача молча кончалась «готово».
+                    # До «готово»: плеер по нему читает, чем кончилась замена.
+                    ingest.replace_with_existing(tid, existing)
+                    db.task_update(tid, status="done")
                     with runtime.FILE_LOCK:
                         runtime.PROCESSING_URLS.discard(url)
                     return
-                downloaded = ingest.download_to_temp(tid, url)
             temp_path = downloaded.temp_path
 
             outcome = ingest.ingest_temp_file(
-                tid, temp_path, downloaded.names, downloaded.thumbnail
+                tid, temp_path, downloaded.names, downloaded.thumbnail, downloaded.source_url
             )
             temp_path = None  # consumed by the ingest half, nothing left to clean up
 

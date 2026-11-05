@@ -14,7 +14,7 @@ from urllib.parse import urlparse
 
 import requests
 
-from . import enrich, ingest
+from . import enrich, ingest, studio
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +33,9 @@ SPOTIFY_EMBED_LIMIT = 100
 # August; the rule was tightened twice before it held. Three seconds allows for
 # a trimmed intro, not for a different arrangement.
 DURATION_TOLERANCE_SECONDS = 3
+
+# Сколько студийных записей YouTube Music ставить первыми в выдачу поиска.
+STUDIO_RESULTS = 3
 
 
 @dataclass(frozen=True)
@@ -71,6 +74,15 @@ def search_youtube(query: str, limit: int = 8) -> list[dict]:
     if not query:
         return []
 
+    # Студийные записи YouTube Music — первыми и с пометкой (канал «YouTube
+    # Music · студийная · 18+»): выбирает человек, но лучшее у него перед
+    # глазами. Только те, где в запросе есть и артист, и название: иначе на
+    # «Монеточка» первыми встали бы чужие песни.
+    studio_first = [
+        studio.as_search_result(song) for song in studio.search_query(query, limit=STUDIO_RESULTS)
+    ]
+    seen = {row["url"].rsplit("=", 1)[-1] for row in studio_first}
+
     result = ingest.run_yt_dlp(
         [
             *ingest.ytdlp_base(),
@@ -81,13 +93,15 @@ def search_youtube(query: str, limit: int = 8) -> list[dict]:
         timeout=90,
     )
     if result.returncode != 0:
+        if studio_first:
+            return studio_first
         raise RuntimeError(ingest.ytdlp_error(result.stderr))
 
     payload = json.loads(result.stdout or "{}")
-    found = []
+    found = list(studio_first)
     for entry in payload.get("entries") or []:
         video_id = entry.get("id")
-        if not video_id:
+        if not video_id or video_id in seen:
             continue
         found.append(
             {
@@ -125,6 +139,17 @@ def best_youtube_match(candidate: Candidate) -> dict | None:
     the length is within a few seconds. Any two of them are not enough -- title
     and artist alone match a live version of the same song by the same person.
     """
+    # Сначала студийная запись YouTube Music: без звуков клипа и с матом,
+    # если есть версия «18+» (studio). Длина — по тем же правилам.
+    song = studio.find(
+        candidate.artist,
+        candidate.title,
+        candidate.duration,
+        tolerance=DURATION_TOLERANCE_SECONDS if candidate.duration else None,
+    )
+    if song is not None:
+        return studio.as_search_result(song)
+
     try:
         results = search_youtube(candidate.query, limit=8)
     except Exception as exc:

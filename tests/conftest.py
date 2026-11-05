@@ -65,6 +65,14 @@ def _outside_stays_offline(monkeypatch, tmp_path, request):
     monkeypatch.setattr(analysis, "analyse_track", lambda path: None)
     monkeypatch.setattr(enrich, "lookup", lambda artist, title: None)
     monkeypatch.setattr(enrich, "musicbrainz_lookup", lambda artist, title: None)
+    # YouTube Music (студийная версия вместо клипа) — сеть: по умолчанию он
+    # «не отвечает», и всё качается как прислано, без пометок. Свои тесты
+    # (test_studio.py) подставляют выдачу сами.
+    from adder import studio
+
+    monkeypatch.setattr(studio, "_search", lambda query, limit: None)
+    monkeypatch.setattr(studio, "kind", lambda video_id: None)
+    monkeypatch.setattr(studio, "describe", lambda video_id: None)
     # И обход текстов в фоне — тоже сеть.
     from adder import lyrics
 

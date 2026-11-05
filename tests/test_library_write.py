@@ -789,6 +789,8 @@ def test_a_failure_after_the_move_does_not_fail_the_stored_track(app, monkeypatc
     monkeypatch.setattr(analysis, "analyse_track", broken)
     monkeypatch.setattr(ingest, "_apply_replacement", broken)
     monkeypatch.setattr(library, "invalidate_library_index", broken)
+    # Замена: только у неё есть что «не заменить».
+    monkeypatch.setattr(ingest, "_replace_of", lambda _tid: "A/Singles/Old.m4a")
     youtube(app, monkeypatch, {"title": "A - B", "uploader": "x"})
     deezer(app, monkeypatch, None)
     covers(app, monkeypatch)
@@ -798,6 +800,7 @@ def test_a_failure_after_the_move_does_not_fail_the_stored_track(app, monkeypatc
     assert task["status"] == "done", task["error"]
     assert task["result_path"] == "A/Singles/B.m4a"
     assert "не заменён" in task["warning"]
+    assert task["replace_outcome"] == 0
     assert library_files(app) == [Path("A/Singles/B.m4a")]
 
 

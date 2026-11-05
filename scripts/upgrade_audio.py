@@ -412,7 +412,15 @@ def _stamp(stat: os.stat_result) -> tuple[int, int, int, int]:
     return stat.st_mtime_ns, stat.st_size, stat.st_ctime_ns, stat.st_ino
 
 
-def swap(old: Path, new: Path, url: str, root: Path, db_path: Path) -> None:
+def swap(
+    old: Path, new: Path, url: str, root: Path, db_path: Path, same_recording: bool = True
+) -> None:
+    """Put ``new`` in place of ``old``, keeping tags, path and history.
+
+    ``same_recording`` — the new file is the same recording in better quality,
+    so the old tempo and transition analysis still holds and moves over; a
+    different recording (studio instead of a clip) is measured afresh.
+    """
     before = old.stat()
     old_hash = loudness.file_hash(old)
     carry_tags(old, new, url)
@@ -435,20 +443,27 @@ def swap(old: Path, new: Path, url: str, root: Path, db_path: Path) -> None:
     RESCAN_PENDING.touch()  # before the replace: a kill right after it must not lose the rescan
     os.replace(staged, old)
     try:
-        _move_analysis(db_path, str(relative), old_hash, loudness.file_hash(old))
+        _move_analysis(
+            db_path, str(relative), old_hash, loudness.file_hash(old) if same_recording else None
+        )
     except sqlite3.Error as exc:
         # The audio is swapped already; a missed row only means it is measured again.
         logger.warning("  analysis row not moved: %s", exc)
 
 
-def _move_analysis(db_path: Path, relative: str, before: str, after: str) -> None:
+def _move_analysis(db_path: Path, relative: str, before: str, after: str | None) -> None:
+    """Re-key the analysis row to the new bytes; ``after`` None drops it."""
     if not db_path.exists():
         return
     with sqlite3.connect(db_path, timeout=30) as con:
         has = con.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'audio_features'"
         ).fetchone()
-        if has:
+        if has and after is None:
+            con.execute(
+                "DELETE FROM audio_features WHERE path = ? AND sha256 = ?", (relative, before)
+            )
+        elif has:
             con.execute(
                 "UPDATE audio_features SET sha256 = ? WHERE path = ? AND sha256 = ?",
                 (after, relative, before),

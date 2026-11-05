@@ -337,6 +337,10 @@ def _rewrite_everywhere(old_path: str, new_path: str | None) -> int:
                 paths = parse(path.read_text(encoding="utf-8")) if path.exists() else []
                 if new_path is None:
                     rewritten = [p for p in paths if not _same_track(p, old_path)]
+                elif any(_same_track(p, new_path) for p in paths):
+                    # Новый трек в подборке уже есть: второй его строкой
+                    # старая не становится, она просто уходит.
+                    rewritten = [p for p in paths if not _same_track(p, old_path)]
                 else:
                     rewritten = [new_path if _same_track(p, old_path) else p for p in paths]
                 if rewritten == paths:

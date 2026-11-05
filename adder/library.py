@@ -147,6 +147,8 @@ def replaced_by(rel_path: str) -> str | None:
     try:
         for _ in range(10):
             rows = db.db_query(
+                "SELECT new_path AS result_path FROM swaps WHERE old_path = ?", (current,)
+            ) or db.db_query(
                 "SELECT result_path FROM tasks WHERE replace_of = ? AND status = 'done'"
                 " AND result_path IS NOT NULL ORDER BY id DESC LIMIT 1",
                 (current,),

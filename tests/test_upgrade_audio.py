@@ -222,6 +222,27 @@ def test_the_analysis_row_follows_the_new_file(dirs, tmp_path):
     assert sha == loudness.file_hash(old)
 
 
+def test_a_different_recording_drops_the_analysis_row(dirs, tmp_path):
+    """Студийная вместо клипа (studio_audit): темп и переходы клипа к ней не относятся."""
+    from adder import loudness
+
+    old = _library_track(dirs)
+    db = tmp_path / "adder.db"
+    with sqlite3.connect(db) as con:
+        con.execute("CREATE TABLE audio_features(path TEXT, sha256 TEXT, tempo REAL)")
+        con.execute(
+            "INSERT INTO audio_features VALUES (?, ?, 120)",
+            ("Artist/Singles/Song.m4a", loudness.file_hash(old)),
+        )
+
+    upgrade.swap(
+        old, _opus_download(tmp_path), "https://youtu.be/vid", dirs, db, same_recording=False
+    )
+
+    with sqlite3.connect(db) as con:
+        assert con.execute("SELECT COUNT(*) FROM audio_features").fetchone() == (0,)
+
+
 def test_a_file_edited_during_the_swap_is_left_alone(dirs, tmp_path, monkeypatch):
     old = _library_track(dirs)
     new = _opus_download(tmp_path)

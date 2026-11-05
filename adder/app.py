@@ -624,11 +624,26 @@ def add(req: AddRequest, authenticated: bool = Depends(verify_token)):
 def tasks(authenticated: bool = Depends(verify_token)):
     rows = db.db_query("SELECT * FROM tasks ORDER BY id DESC LIMIT 50")
     for row in rows:
-        # Готовая задача, чей трек потом удалили: «готово» в «Недавно
-        # добавлены» выглядело так, будто трек ещё в фонотеке.
-        row["gone"] = row["status"] == "done" and _can_requeue(row)
-        row["replaced"] = row["gone"] and library.replaced_by(row["result_path"]) is not None
+        _describe_task(row)
     return rows
+
+
+@app.get("/api/tasks/{tid}")
+def one_task(tid: int, authenticated: bool = Depends(verify_token)):
+    """Одна задача — плееру, который ждёт свою замену: в общем списке только
+    50 последних, и при большом импорте она из него выпадала."""
+    rows = db.db_query("SELECT * FROM tasks WHERE id = ?", (tid,))
+    if not rows:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return _describe_task(rows[0])
+
+
+def _describe_task(row: dict) -> dict:
+    # Готовая задача, чей трек потом удалили: «готово» в «Недавно
+    # добавлены» выглядело так, будто трек ещё в фонотеке.
+    row["gone"] = row["status"] == "done" and _can_requeue(row)
+    row["replaced"] = row["gone"] and library.replaced_by(row["result_path"]) is not None
+    return row
 
 
 # A rate-limited task is tried again by itself this long after it failed, at
@@ -1139,6 +1154,7 @@ def _reset_task(tid: int, keep_album: bool = False) -> None:
         similar_to=None,
         retry_count=0,
         replace_of=None,
+        replace_outcome=None,
         result_path=None,
         **fields,
     )
@@ -1270,13 +1286,44 @@ def replace_track(req: ReplaceRequest, authenticated: bool = Depends(verify_toke
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=f"Invalid YouTube URL: {exc}") from exc
 
+    # Трек по этой ссылке уже есть — он и встаёт на место старого, качать
+    # нечего. Раньше здесь был отказ 409, и замена «не работала» (05.11.2026:
+    # акустическую «КАК ДЕЛИШКИ» меняли ссылкой на обычную, а та уже была).
+    existing = _already_have(link)
+    if existing is not None:
+        if existing == replace_of:
+            raise HTTPException(status_code=409, detail="По этой ссылке и скачан этот трек")
+        if not ingest.swap_into(replace_of, existing):
+            raise HTTPException(
+                status_code=409,
+                detail="Старый трек оставлен: не все подборки удалось переписать",
+            )
+        return {"task": None, "replaced_with": existing}
+
     tid = _queue_source(link, replace_of=replace_of)
     if tid is None:
-        raise HTTPException(
-            status_code=409,
-            detail="Эта ссылка уже в очереди или её трек уже в фонотеке",
-        )
+        raise HTTPException(status_code=409, detail="Эта ссылка уже качается — подожди")
     return {"task": tid}
+
+
+def _already_have(link: str) -> str | None:
+    """Путь трека фонотеки, скачанного по ``link``, если он на месте.
+
+    Сначала по ссылке в тегах файла. Путь из задачи — только если в тегах
+    того файла нет другой ссылки: замена с тем же именем кладёт под старый
+    путь другую запись, и строка задачи об этом не знает.
+    """
+    found = library.find_by_source(link)
+    if found:
+        return found
+    rows = db.db_query("SELECT status, result_path FROM tasks WHERE url = ?", (link,))
+    done = rows[0] if rows and rows[0]["status"] == "done" else None
+    path = done.get("result_path") if done else None
+    if not path or not (config.LIBRARY / path).is_file():
+        return None
+    row = next((r for r in library.library_index() if r.get("path") == path), None)
+    source = row.get("source") if row else None
+    return path if not source or source == link else None
 
 
 @app.post("/api/replace-file")
@@ -1385,20 +1432,20 @@ def import_album(req: AlbumImportRequest, authenticated: bool = Depends(verify_t
 def _queue_artist_track(item: dict) -> str:
     """Найти один трек артиста на YouTube и поставить в загрузку.
 
-    Выбор ролика — тот же, что у умного перемешивания (outside.choose_video):
-    длительность из Deezer, имена и латиницей, концертники и клипы мимо.
+    Выбор ролика — тот же, что у умного перемешивания (outside.find_video):
+    студийная запись YouTube Music, иначе поиск; длительность из Deezer,
+    имена и латиницей, концертники и клипы мимо.
     Сбой поиска — TryLater: это «не дозвались», а не «такой записи нет»;
     после 429 тормозим все вызовы yt-dlp, как очередь загрузок.
     """
     try:
-        entries = outside._search(f"{item['artist']} {item['title']}")
+        match = outside.find_video(item["artist"], item["title"], item.get("duration"))
     except runtime.ShutdownRequested:
         raise
     except Exception as exc:
         if ingest.classify_error(str(exc)) == "rate_limited":
             runtime.pause_youtube(config.RATE_LIMIT_BACKOFF)
         raise discography.TryLater(str(exc)) from exc
-    match = outside.choose_video(entries, item["artist"], item["title"], item.get("duration"))
     if match is None:
         return "missed"
     url = ingest.canonicalize_youtube_url(f"https://www.youtube.com/watch?v={match['id']}")

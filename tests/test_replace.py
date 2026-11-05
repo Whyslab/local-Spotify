@@ -141,7 +141,8 @@ def test_a_line_differing_only_in_case_or_unicode_form_is_swapped_too(library):
     assert playlists.still_pointing_at("old.m4a") == ["Mix.m3u"]
     assert playlists.swap_everywhere("old.m4a", "new.m4a") == 1
     assert playlists.swap_everywhere("Ёлка.m4a", "new.m4a") == 1
-    assert _paths("Mix") == ["new.m4a", "new.m4a", "other.m4a"]
+    # new.m4a в подборке уже есть — вторая строка на него не нужна.
+    assert _paths("Mix") == ["new.m4a", "other.m4a"]
     assert playlists.still_pointing_at("old.m4a") == []
 
 

@@ -80,6 +80,16 @@ def db_init():
     # сами, без человека: больше трёх — значит, дело не в паузе.
     with suppress(sqlite3.OperationalError):
         db_exec("ALTER TABLE tasks ADD COLUMN auto_requeues INTEGER DEFAULT 0")
+    # Чем кончилась замена: 1 — новый трек на месте старого, 0 — старый
+    # остался (NULL — не замена или задача старше этой колонки). Без этого
+    # плеер по «готово» писал «Заменено», когда замены не было.
+    with suppress(sqlite3.OperationalError):
+        db_exec("ALTER TABLE tasks ADD COLUMN replace_outcome INTEGER")
+    # Замены без своей задачи (трек по ссылке уже был в фонотеке): куда ушёл
+    # старый путь — для library.replaced_by, как у замен через задачу.
+    db_exec("""CREATE TABLE IF NOT EXISTS swaps(
+        old_path TEXT PRIMARY KEY, new_path TEXT NOT NULL,
+        at TEXT DEFAULT (datetime('now','localtime')))""")
 
     db_exec("CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT)")
 

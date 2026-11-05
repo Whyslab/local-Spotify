@@ -496,6 +496,23 @@ def choose_video(
     return best
 
 
+def find_video(artist: str, title: str, duration: float | None) -> dict | None:
+    """Ролик для трека: сначала студийная запись YouTube Music, потом поиск.
+
+    Студийная запись — без звуков клипа и с матом, если есть версия «18+»
+    (см. studio). Её длина сверяется с каталогом так же строго. Обычный поиск
+    YouTube — только если YouTube Music её не знает или не ответил; его сбой
+    поднимается дальше, как раньше.
+    """
+    from . import studio
+
+    song = studio.find(artist, title, duration, tolerance=DURATION_TOLERANCE if duration else None)
+    if song is not None and (duration or song.duration is None or song.duration <= 600):
+        return {"id": song.video_id, "title": song.title, "duration": song.duration}
+    entries = _search(f"{similar.primary(artist)} - {title}")
+    return choose_video(entries, artist, title, duration)
+
+
 # ---------------------------------------------------------------------------
 # Скачивание в фоне
 # ---------------------------------------------------------------------------
@@ -709,8 +726,7 @@ def fetch(key: str) -> None:
     if not has_space:
         raise RuntimeError(f"мало места на диске: {free_mb} МБ")
 
-    entries = _search(f"{similar.primary(meta['artist'])} - {meta['title']}")
-    video = choose_video(entries, meta["artist"], meta["title"], meta.get("duration"))
+    video = find_video(meta["artist"], meta["title"], meta.get("duration"))
     if video is None:
         raise RuntimeError("на YouTube нет версии той же длины")
 

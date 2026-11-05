@@ -45,6 +45,8 @@ check has passed.
 - `adder/shuffle.py`, `outside.py`, `similar.py`, `moods.py`, `shelves.py`, `analysis.py` —
   shuffles, home shelves, tracks from outside the library, audio analysis scheduling
 - `adder/lyrics.py`, `signing.py` (signed stream URLs), `sources.py` (search, playlist import)
+- `adder/studio.py` — YouTube Music lookup: the studio recording (explicit when there is one) instead
+  of a clip, for links, imports, radio and search; any failure there means "download as before"
 - `adder/thumbs.py` — track cover thumbnails: ffmpeg (two at a time), disk cache by cover hash,
   in-memory file-stamp map so a warm request skips the tag parse; made on ingest and nightly
 - `scripts/`, `adder/fix_covers.py` — offline tools; `scripts/README.md` describes them
