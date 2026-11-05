@@ -127,3 +127,24 @@ def test_the_wrong_video_is_told_by_its_length(monkeypatch):
     album = np.tile(beat + voice, 5)
     compared = compare(monkeypatch, album, beat + voice)
     assert audit.verdict(False, compared) == ("wrong", "файл 1:40, песня 0:20")
+
+
+def test_a_recheck_with_the_same_studio_track_does_not_download_again(monkeypatch, tmp_path):
+    """--again после правки поиска: совпала та же запись — лимит YouTube не тратится."""
+    from adder import studio
+
+    track = tmp_path / "x.m4a"
+    track.write_bytes(b"audio")
+    stamp = list(audit.ua._stamp(track.stat()))
+    song = studio.Song("vid", "Song", ("A",), 200.0, True, "")
+    monkeypatch.setattr(
+        audit, "look_up", lambda *a, **k: {"video_type": None, "video_title": "", "song": song}
+    )
+    monkeypatch.setattr(audit.ua, "download", lambda *a: pytest.fail("downloaded again"))
+    previous = {"group": "clip", "video": "vid", "stamp": stamp, "why": "w"}
+
+    entry = audit.audit_one(None, track, {"duration": 200}, "old", previous)
+
+    assert entry["group"] == "clip" and entry["rechecked"]
+    with pytest.raises(pytest.fail.Exception):
+        audit.audit_one(None, track, {"duration": 200}, "old", {**previous, "video": "other"})

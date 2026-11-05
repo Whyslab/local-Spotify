@@ -96,7 +96,9 @@ MOST_MUTES = 25
 SAME_SONG = 0.9  # overall correlation under which it is another mix
 WRONG_RATIO = 1.6
 LAG_LIMIT_SECONDS = 300
-PAUSE_SECONDS = 3.0
+# Между скачиваниями. С 3 с YouTube закрыл загрузки на час после ~370
+# роликов за 50 минут (06.11.2026) — и службе тоже: адрес у них один.
+PAUSE_SECONDS = 15.0
 
 # Words that make a video something other than the song.
 _JUNK = re.compile(
@@ -343,13 +345,19 @@ def look_up(tags: dict, video_id: str | None, length: float | None = None) -> di
     return found
 
 
-def audit_one(client, path: Path, tags: dict, video_id: str | None) -> dict:
+def audit_one(
+    client, path: Path, tags: dict, video_id: str | None, previous: dict | None = None
+) -> dict:
     # До сравнения: правка файла во время него не должна попасть в отметку.
     stamp = list(ua._stamp(path.stat()))
     found = look_up(tags, video_id, tags.get("duration"))
     if "group" in found:
         return {"group": found["group"], "video_type": found["video_type"]}
     song: studio.Song = found.pop("song")
+    # --again: та же студийная запись и тот же файл — сравнение уже есть, и
+    # качать её снова незачем (лимит YouTube).
+    if previous and previous.get("video") == song.video_id and previous.get("stamp") == stamp:
+        return {**previous, "rechecked": True}
     got = ua.download(client, song.video_id)
     if got is None:
         return {"group": "failed", "why": "студийная запись не скачалась", "video": song.video_id}
@@ -431,7 +439,7 @@ def audit(root: Path, state: dict, args: argparse.Namespace) -> int:
         logger.info("%s", relative)
         entry: dict
         try:
-            entry = audit_one(client, path, tags, ua.youtube_id(source))
+            entry = audit_one(client, path, tags, ua.youtube_id(source), state.get(relative))
         except ua.Blocked as exc:
             logger.error("YouTube is refusing requests, stopping here: %s", exc)
             stopped = 2
@@ -444,7 +452,7 @@ def audit(root: Path, state: dict, args: argparse.Namespace) -> int:
         state[relative] = entry
         logger.info("  -> %s %s", entry["group"], entry.get("why", ""))
         ua.save_state(state, STATE)
-        if "video" in entry:
+        if "video" in entry and not entry.pop("rechecked", False):
             time.sleep(PAUSE_SECONDS)
     ua.save_state(state, STATE)
     return stopped
