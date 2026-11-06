@@ -6,6 +6,7 @@ Deezer подменяется: ``discography.find_artist`` — кто есть �
 
 import datetime
 import json
+import socket
 import time
 
 import httpx
@@ -505,15 +506,41 @@ def test_the_service_address_follows_host(monkeypatch):
     assert releases._service_url().startswith("http://[::1]:")
 
 
+# Настоящий connect, взятый до заглушки сторожа сети (conftest.no_network):
+# _is_mine делает connect() у UDP — он ничего не отправляет, только выбирает
+# маршрут и свой адрес.
+_REAL_CONNECT = socket.socket.connect
+
+
 def test_the_token_never_goes_to_an_address_that_is_not_this_machines(monkeypatch):
     """Security review of 4c: a HOST from .env that DHCP gave to another
     device would receive the bearer token in clear text."""
+    monkeypatch.setattr(socket.socket, "connect", _udp_only)
     # TEST-NET-3: never assigned to a real interface.
     monkeypatch.setattr(config, "HOST", "203.0.113.7")
     assert releases._service_url().startswith("http://127.0.0.1:")
     monkeypatch.setattr(config, "HOST", "not-an-address")
     assert releases._service_url().startswith("http://127.0.0.1:")
     assert releases._is_mine("127.0.0.1")
+
+
+def _udp_only(sock, address):
+    assert sock.type == socket.SOCK_DGRAM, "только UDP: он ничего не отправляет"
+    return _REAL_CONNECT(sock, address)
+
+
+def test_this_machines_own_address_is_its_own(monkeypatch):
+    """И при net.ipv4.ip_nonlocal_bind=1: проверка не через bind()."""
+    monkeypatch.setattr(socket.socket, "connect", _udp_only)
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+        try:
+            probe.connect(("192.0.2.1", 9))  # TEST-NET-1: только выбор маршрута
+        except OSError:
+            pytest.skip("no IPv4 route")
+        own = probe.getsockname()[0]
+    assert releases._is_mine(own)
+    monkeypatch.setattr(socket.socket, "bind", lambda *a: None)  # как nonlocal_bind
+    assert not releases._is_mine("203.0.113.7")
 
 
 def _export_script():

@@ -275,13 +275,18 @@ def _service_url() -> str:
 
 
 def _is_mine(host: str) -> bool:
+    """Адрес этой машины: путь к своему адресу ядро ведёт с него же, к чужому —
+    со своего. Не bind(): с net.ipv4.ip_nonlocal_bind=1 (на ThinkPad он нужен
+    sshd на адресе Tailscale) привязаться можно к любому адресу. connect() у
+    UDP ничего не отправляет."""
     try:
-        if ipaddress.ip_address(host).is_loopback:
+        address = ipaddress.ip_address(host)
+        if address.is_loopback:
             return True
-        family = socket.AF_INET6 if ":" in host else socket.AF_INET
+        family = socket.AF_INET6 if address.version == 6 else socket.AF_INET
         with socket.socket(family, socket.SOCK_DGRAM) as probe:
-            probe.bind((host, 0))  # привязаться можно только к своему адресу
-        return True
+            probe.connect((host, 9))
+            return ipaddress.ip_address(probe.getsockname()[0]) == address
     except (ValueError, OSError):
         return False
 
