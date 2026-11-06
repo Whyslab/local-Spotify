@@ -42,6 +42,9 @@ Usage:
     .venv/bin/python scripts/studio_audit.py --report           # report.html again
     .venv/bin/python scripts/studio_audit.py --apply            # swap every "replace"
     .venv/bin/python scripts/studio_audit.py --apply --skip "A/Singles/x.m4a"
+
+``--apply`` leaves other people's uploads (UGC) alone even in a "replace"
+group; ``--uploads-too`` swaps them as well.
 """
 
 from __future__ import annotations
@@ -473,6 +476,9 @@ def apply(root: Path, state: dict, args: argparse.Namespace) -> int:
             continue
         if args.only and relative != args.only:
             continue
+        # Чужая загрузка — выбор пользователя, даже если звук из клипа (06.11.2026).
+        if entry.get("video_type") == studio.UPLOAD and not args.uploads_too:
+            continue
         path, kept = root / relative, KEEP / f"{entry['video']}.m4a"
         if not path.is_file() or not kept.is_file():
             logger.warning("%s: file or studio recording is gone, skipped", relative)
@@ -566,6 +572,9 @@ def main() -> int:
     parser.add_argument("--report", action="store_true", help="only write report.html")
     parser.add_argument("--apply", action="store_true", help="swap every 'replace' verdict")
     parser.add_argument("--skip", action="append", help="a path --apply leaves alone")
+    parser.add_argument(
+        "--uploads-too", action="store_true", help="--apply swaps other people's uploads too"
+    )
     parser.add_argument(
         "--groups",
         default=None,

@@ -528,6 +528,10 @@ def test_the_explicit_twin_is_the_same_version_with_a_known_length():
         ("Future", "Drake feat. Future", True),
         ("Simon & Garfunkel", "Simon & Garfunkel", True),
         ("Eldzhey", "Элджей, Пошлая молли", True),
+        # Теги фонотеки склеивают артистов через «•».
+        ("Кравц", "Элджей • Кравц", True),
+        ("Travis Scott", "Playboi Carti • Travis Scott", True),
+        ("Drake Bell", "Drake • Future", False),
     ],
 )
 def test_an_artist_matches_by_whole_name(their, ours, same):
@@ -715,3 +719,9 @@ def test_a_rate_limit_on_the_studio_track_is_not_swallowed(app, monkeypatch):
     ).lastrowid
     with pytest.raises(RuntimeError, match="429"):
         ingest.download_to_temp(tid, watch("j1O0qKwqQEo"))
+
+
+def test_a_song_of_several_tagged_artists_is_found():
+    songs = [studio._song(song("c", "CRUSH", ["Playboi Carti", "Travis Scott"], 174, True))]
+    found = studio.pick(songs, "Playboi Carti • Travis Scott", "CRUSH (with Travis Scott)")
+    assert found is songs[0]

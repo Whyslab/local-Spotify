@@ -148,3 +148,39 @@ def test_a_recheck_with_the_same_studio_track_does_not_download_again(monkeypatc
     assert entry["group"] == "clip" and entry["rechecked"]
     with pytest.raises(pytest.fail.Exception):
         audit.audit_one(None, track, {"duration": 200}, "old", {**previous, "video": "other"})
+
+
+def test_apply_leaves_other_peoples_uploads_alone(monkeypatch, tmp_path):
+    """Правило пользователя 06.11.2026: чужие загрузки не менять и в группе «клип»."""
+    import argparse
+
+    from adder import studio
+
+    root, keep = tmp_path / "lib", tmp_path / "keep"
+    root.mkdir()
+    keep.mkdir()
+    state = {}
+    for name, kind in (("ugc", studio.UPLOAD), ("omv", studio.OFFICIAL_VIDEO)):
+        track = root / f"{name}.m4a"
+        track.write_bytes(b"old")
+        (keep / f"{name}.m4a").write_bytes(b"new")
+        state[track.name] = {
+            "group": "clip",
+            "video": name,
+            "video_type": kind,
+            "stamp": list(audit.ua._stamp(track.stat())),
+        }
+    swapped = []
+    monkeypatch.setattr(audit, "KEEP", keep)
+    monkeypatch.setattr(audit, "WORK", tmp_path / "work")
+    monkeypatch.setattr(audit, "STATE", tmp_path / "state.json")
+    monkeypatch.setattr(audit.ua, "swap", lambda path, *a, **k: swapped.append(path.name))
+    monkeypatch.setattr(audit.ua, "rescan_navidrome", lambda: None)
+    args = argparse.Namespace(skip=None, groups=None, only=None, db=None, uploads_too=False)
+
+    audit.apply(root, state, args)
+    assert swapped == ["omv.m4a"]
+
+    state["ugc.m4a"]["group"] = "clip"
+    audit.apply(root, state, argparse.Namespace(**{**vars(args), "uploads_too": True}))
+    assert swapped == ["omv.m4a", "ugc.m4a"]

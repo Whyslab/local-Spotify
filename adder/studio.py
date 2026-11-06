@@ -41,6 +41,7 @@ logger = logging.getLogger(__name__)
 
 STUDIO = "MUSIC_VIDEO_TYPE_ATV"
 OFFICIAL_VIDEO = "MUSIC_VIDEO_TYPE_OMV"
+UPLOAD = "MUSIC_VIDEO_TYPE_UGC"  # чужая загрузка
 
 SEARCH_LIMIT = 10
 # Версии «18+» и чистая — один мастер с заглушёнными словами: длина у них
@@ -278,9 +279,10 @@ def same_artist(song: Song, artist: str) -> bool:
     «Егор Крид». По именам, а не по словам: «Drake» — не «Drake Bell», «Lil» —
     не «Lil Peep». В ``artist`` может быть несколько имён («A feat. B», «A, B»).
     """
-    # Целиком тоже: «Simon & Garfunkel» — одно имя, а не два. «feat.» и
-    # запятая делят всегда, «&», «/», «and» — только если у записи несколько
-    # артистов: иначе «Florence» сошёлся бы с «Florence and the Machine».
+    # Целиком тоже: «Simon & Garfunkel» — одно имя, а не два. «feat.», «•»
+    # (так теги склеивают артистов) и запятая делят всегда; «&», «/», «and» —
+    # только если у записи несколько артистов: иначе «Florence» сошёлся бы с
+    # «Florence and the Machine».
     splitter = _ARTIST_SPLIT if len(song.artists) > 1 else _FEAT_SPLIT
     parts = [artist or "", *splitter.split(artist or "")]
     names = [outside._latin_words(n) for n in parts]
@@ -294,9 +296,9 @@ def same_artist(song: Song, artist: str) -> bool:
     return False
 
 
-_FEAT_SPLIT = re.compile(r"\s*(?:,|\bfeat\.?|\bft\.?|\bfeaturing\b)\s*", re.IGNORECASE)
+_FEAT_SPLIT = re.compile(r"\s*(?:,|•|\bfeat\.?|\bft\.?|\bfeaturing\b)\s*", re.IGNORECASE)
 _ARTIST_SPLIT = re.compile(
-    r"\s*(?:,|&|\+|/|;|\bx\b|\bfeat\.?|\bft\.?|\bfeaturing\b|\bwith\b|\band\b|\bи\b)\s*",
+    r"\s*(?:,|•|&|\+|/|;|\bx\b|\bfeat\.?|\bft\.?|\bfeaturing\b|\bwith\b|\band\b|\bи\b)\s*",
     re.IGNORECASE,
 )
 
