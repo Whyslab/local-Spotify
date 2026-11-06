@@ -478,6 +478,8 @@ def apply(root: Path, state: dict, args: argparse.Namespace) -> int:
     skip = set(args.skip or [])
     groups = set(args.groups.split(",")) if args.groups else None
     changed = 0
+    # Одна студийная запись на два файла-дубля: удалять её после всех замен.
+    spent: set[Path] = set()
     for relative, entry in sorted(state.items()):
         if GROUPS.get(entry.get("group", ""), ("keep",))[0] != "replace" or relative in skip:
             continue
@@ -511,13 +513,15 @@ def apply(root: Path, state: dict, args: argparse.Namespace) -> int:
             logger.warning("%s: not swapped (%s)", relative, exc)
             staged.unlink(missing_ok=True)
             continue
-        kept.unlink(missing_ok=True)
+        spent.add(kept)
         entry["group_before"], entry["group"] = entry["group"], "replaced"
         entry["stamp"] = list(ua._stamp(path.stat()))
         state[relative] = entry
         ua.save_state(state, STATE)
         changed += 1
         logger.info("%s: swapped (%s)", relative, entry.get("why", ""))
+    for kept in spent:
+        kept.unlink(missing_ok=True)
     logger.info("Swapped %d", changed)
     if changed:
         ua.rescan_navidrome()

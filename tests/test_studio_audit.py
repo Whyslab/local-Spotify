@@ -191,3 +191,36 @@ def test_apply_leaves_other_peoples_uploads_alone(monkeypatch, tmp_path):
     state["ugc.m4a"]["group"] = "clip"
     audit.apply(root, state, argparse.Namespace(**{**vars(args), "uploads_too": True}))
     assert swapped == ["omv.m4a", "ugc.m4a"]
+
+
+def test_apply_swaps_both_duplicates_of_one_studio_recording(monkeypatch, tmp_path):
+    """Два файла одной песни — одна скачанная запись: менять оба за один прогон."""
+    import argparse
+
+    from adder import studio
+
+    root, keep = tmp_path / "lib", tmp_path / "keep"
+    root.mkdir()
+    keep.mkdir()
+    (keep / "vid.m4a").write_bytes(b"new")
+    state = {}
+    for name in ("a.m4a", "b.m4a"):
+        (root / name).write_bytes(b"old")
+        state[name] = {
+            "group": "clip",
+            "video": "vid",
+            "video_type": studio.OFFICIAL_VIDEO,
+            "stamp": list(audit.ua._stamp((root / name).stat())),
+        }
+    swapped = []
+    monkeypatch.setattr(audit, "KEEP", keep)
+    monkeypatch.setattr(audit, "WORK", tmp_path / "work")
+    monkeypatch.setattr(audit, "STATE", tmp_path / "state.json")
+    monkeypatch.setattr(audit.ua, "swap", lambda path, *a, **k: swapped.append(path.name))
+    monkeypatch.setattr(audit.ua, "rescan_navidrome", lambda: None)
+    args = argparse.Namespace(skip=None, groups=None, only=None, db=None, uploads_too=False)
+
+    audit.apply(root, state, args)
+
+    assert swapped == ["a.m4a", "b.m4a"]
+    assert not (keep / "vid.m4a").exists()
