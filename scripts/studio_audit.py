@@ -359,7 +359,16 @@ def audit_one(
     song: studio.Song = found.pop("song")
     # --again: та же студийная запись и тот же файл — сравнение уже есть, и
     # качать её снова незачем (лимит YouTube).
-    if previous and previous.get("video") == song.video_id and previous.get("stamp") == stamp:
+    # Но запись к замене должна лежать в KEEP: её могла забрать замена дубля.
+    if (
+        previous
+        and previous.get("video") == song.video_id
+        and previous.get("stamp") == stamp
+        and (
+            GROUPS.get(previous.get("group", ""), ("keep",))[0] != "replace"
+            or (KEEP / f"{song.video_id}.m4a").is_file()
+        )
+    ):
         return {**previous, "rechecked": True}
     got = ua.download(client, song.video_id)
     if got is None:

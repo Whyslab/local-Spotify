@@ -143,9 +143,16 @@ def test_a_recheck_with_the_same_studio_track_does_not_download_again(monkeypatc
     monkeypatch.setattr(audit.ua, "download", lambda *a: pytest.fail("downloaded again"))
     previous = {"group": "clip", "video": "vid", "stamp": stamp, "why": "w"}
 
+    monkeypatch.setattr(audit, "KEEP", tmp_path / "keep")
+    (tmp_path / "keep").mkdir()
+    (tmp_path / "keep" / "vid.m4a").write_bytes(b"studio")
     entry = audit.audit_one(None, track, {"duration": 200}, "old", previous)
 
     assert entry["group"] == "clip" and entry["rechecked"]
+    # Запись к замене пропала (её забрала замена дубля) — качается снова.
+    (tmp_path / "keep" / "vid.m4a").unlink()
+    with pytest.raises(pytest.fail.Exception):
+        audit.audit_one(None, track, {"duration": 200}, "old", previous)
     with pytest.raises(pytest.fail.Exception):
         audit.audit_one(None, track, {"duration": 200}, "old", {**previous, "video": "other"})
 
