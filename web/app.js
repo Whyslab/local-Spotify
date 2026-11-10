@@ -32,7 +32,8 @@ let librarySearchTimer = null;
  * тем временем ушёл в фонотеку) не должен возвращать его обратно. */
 let navigation = 0;
 
-/* Первый экран нарисован тем, что пришло с сервера, — точка «готово», до которой
+/* Первый экран нарисован тем, что пришло с сервера (или копией списка фонотеки с
+ * телефона — её видно так же), — точка «готово», до которой
  * меряется скорость открытия (scripts/measure_ui.py, measure_window.py). Один раз
  * за жизнь страницы: дальше — переходы, а не открытие. Метка ставится в кадре
  * после отрисовки, а не в момент вставки узлов. */
@@ -1122,6 +1123,12 @@ function foldText(text) {
 const LIBRARY_PAGE = 200;
 let libraryLimit = LIBRARY_PAGE;
 let librarySignature = "";
+/* Список нарисован копией с телефона: отпечатки её файлов. Пути те же, а теги
+ * переписаны — копия со старыми названиями осталась бы до следующего трека. */
+let libraryCopyStamps = null;
+/* Номер запроса, ответ сети на который уже разобран: копия, опоздавшая к нему,
+ * не рисуется — даже если сеть принесла пустой список. */
+let libraryAnsweredTicket = 0;
 /* Номер последнего запроса фонотеки. Ответы приходят не по порядку: опрос
  * без фильтра, ушедший раньше, мог вернуться после поиска и заменить его
  * выдачу. Рисует только последний. */
@@ -1930,9 +1937,6 @@ async function library() {
      * сетку под руками. Выход из него — только кнопкой «Назад». */
     if (hasOpenChoice("library")) return probeSkip("open");
     const box = document.getElementById("library");
-    const empty = document.getElementById("libraryEmpty");
-    const count = document.getElementById("libraryCount");
-    const note = document.getElementById("libraryModeNote");
     const q = document.getElementById("librarySearch").value.trim();
 
     /* Списком треков хватает первых двухсот: дальше всё равно ищут поиском.
@@ -1948,10 +1952,14 @@ async function library() {
     const limit = mode === "tracks" ? libraryLimit : 5000;
     const ticket = ++libraryTicket;
 
+    const url = "/api/library?limit=" + limit + "&sort=" + librarySort + "&q=" + encodeURIComponent(q);
+
     try {
-        const r = await fetch(
-            "/api/library?limit=" + limit + "&sort=" + librarySort + "&q=" + encodeURIComponent(q),
-            { headers: headers() });
+        const asked = fetch(url, { headers: headers() });
+        /* Список пуст — страница только открылась: пока идёт сеть, рисуем копию
+         * с телефона, ответ сервера потом сверится с ней и заменит, если другой. */
+        if (!box.childElementCount && !q) drawSavedLibrary(url, ticket, mode, limit);
+        const r = await asked;
         /* Два запроса внахлёст (смена режима, потом переход) — время берём
          * у последнего: старый ответ всё равно выбросят. */
         const latest = () => bootProbe && ticket === libraryTicket;
@@ -1972,72 +1980,122 @@ async function library() {
         if (hasOpenChoice("library")) return probeSkip("open");
         /* Опрос принёс то же самое — список не трогаем: перерисовка сбивала
          * прокрутку и открытые под строкой вопросы. */
-        const signature = [mode, limit, q, data.length, ...data.map(t => t.path)].join("\n");
-        if (signature === librarySignature && box.childElementCount) {
-            probeSkip("same");
+        libraryAnsweredTicket = ticket;
+        const signature = librarySignatureOf(data, mode, limit, q);
+        const copyStamps = libraryCopyStamps;
+        libraryCopyStamps = null;
+        if (signature === librarySignature && box.childElementCount
+            && (copyStamps === null || copyStamps === stampsOf(data))) {
+            probeSkip(copyStamps === null ? "same" : "copy");
             return probeRowsPainted(box);
         }
         librarySignature = signature;
-        box.replaceChildren();
-        empty.textContent = "Ничего не нашлось.";
-
-        if (mode === "tracks") {
-            if (note) note.textContent = q ? "" : libraryTotalNote();
-            /* Число в поле — только при поиске: «200+» в пустом поле читалось
-             * как «нашлось двести». */
-            count.textContent = q && data.length ? String(data.length) + (data.length === limit ? "+" : "") : "";
-            empty.hidden = data.length > 0;
-            if (!data.length && q) showFilterEmpty(empty, q);
-            /* Keep the rendered list around: playing one row queues the rest, so
-             * "next" carries on down the screen instead of stopping at one track. */
-            appendInChunks(box, data.map((t) => libraryRow(t, data)));
-            /* Раньше список молча обрывался на двухсотом треке из тысячи с
-             * лишним, и до остальных можно было добраться только поиском. */
-            if (data.length === limit) {
-                const more = document.createElement("button");
-                more.className = "ghost block library-more";
-                more.textContent = "Показать ещё " + LIBRARY_PAGE;
-                more.onclick = async () => {
-                    libraryLimit += LIBRARY_PAGE;
-                    more.disabled = true;
-                    more.textContent = "Загружаю…";
-                    await library();
-                    /* Не перерисовалось (вопрос под строкой, сбой сети) — кнопка
-                     * не должна застрять в «Загружаю…». */
-                    if (more.isConnected) {
-                        more.disabled = false;
-                        more.textContent = "Показать ещё " + LIBRARY_PAGE;
-                    }
-                };
-                box.appendChild(more);
-            }
-            markPlayingRow();
-            markAppReady();
-            probeRowsPainted(box);
-            return;
-        }
-
-        /* Артисты — строками с круглой обложкой, альбомы — сеткой карточек
-         * (views.js). Весь список нужен целиком: издание или артист могут
-         * начинаться на любую букву. */
-        if (mode === "artists") {
-            const artists = renderArtistList(box, data);
-            count.textContent = q && artists ? String(artists) : "";
-            empty.hidden = artists > 0;
-            if (note) note.textContent = plural(artists, "артист", "артиста", "артистов");
-        } else {
-            const albums = renderAlbumGrid(box, groupIntoAlbums(data));
-            count.textContent = q && albums ? String(albums) : "";
-            empty.hidden = albums > 0;
-            if (note) note.textContent = plural(albums, "альбом", "альбома", "альбомов");
-        }
-        markPlayingRow();
-        markAppReady();
-        probeRowsPainted(box);
+        drawLibrary(data, mode, limit, q);
     } catch (e) {
         // Same reasoning as tasks(): the next keystroke or poll retries.
         probeSkip("err");
     }
+}
+
+function librarySignatureOf(data, mode, limit, q) {
+    return [mode, limit, q, data.length, ...data.map(t => t.path)].join("\n");
+}
+
+function stampsOf(data) {
+    return data.map((t) => t.stamp || "").join("\n");
+}
+
+/* Копию последнего ответа хранит service worker (sw.js, хранилище API).
+ * 25.10.2026 на айфоне строки ждали сеть ещё 1,2 с после открытия страницы,
+ * а при плохой сети worker ждёт её до шести секунд и только потом отдаёт ту
+ * же копию. Опоздала копия — сеть уже нарисовала своё — её выбрасываем.
+ * Сеть ответила ошибкой — копия остаётся: без сети показать её и нужно. */
+
+async function drawSavedLibrary(url, ticket, mode, limit) {
+    let data = null;
+    try {
+        if (typeof caches === "undefined") return;
+        const saved = await (await caches.open(API_CACHE)).match(url, { ignoreVary: true });
+        if (saved) data = await saved.json();
+    } catch (e) { return; }
+    const box = document.getElementById("library");
+    if (!Array.isArray(data) || !data.length) return;
+    if (ticket !== libraryTicket || ticket === libraryAnsweredTicket || mode !== libraryMode
+        || box.childElementCount || hasOpenChoice("library")) return;
+    probeMark("saved");
+    librarySignature = librarySignatureOf(data, mode, limit, "");
+    libraryCopyStamps = stampsOf(data);
+    try {
+        drawLibrary(data, mode, limit, "", true);
+    } catch (e) {
+        librarySignature = "";  // ответ сети нарисует заново
+        libraryCopyStamps = null;
+    }
+}
+
+/* copy — рисуется копия с телефона: замер открытия (bootProbe) ждёт ответа
+ * сети, он и закончит замер. */
+function drawLibrary(data, mode, limit, q, copy = false) {
+    const box = document.getElementById("library");
+    const empty = document.getElementById("libraryEmpty");
+    const count = document.getElementById("libraryCount");
+    const note = document.getElementById("libraryModeNote");
+    box.replaceChildren();
+    empty.textContent = "Ничего не нашлось.";
+
+    if (mode === "tracks") {
+        if (note) note.textContent = q ? "" : libraryTotalNote();
+        /* Число в поле — только при поиске: «200+» в пустом поле читалось
+         * как «нашлось двести». */
+        count.textContent = q && data.length ? String(data.length) + (data.length === limit ? "+" : "") : "";
+        empty.hidden = data.length > 0;
+        if (!data.length && q) showFilterEmpty(empty, q);
+        /* Keep the rendered list around: playing one row queues the rest, so
+         * "next" carries on down the screen instead of stopping at one track. */
+        appendInChunks(box, data.map((t) => libraryRow(t, data)));
+        /* Раньше список молча обрывался на двухсотом треке из тысячи с
+         * лишним, и до остальных можно было добраться только поиском. */
+        if (data.length === limit) {
+            const more = document.createElement("button");
+            more.className = "ghost block library-more";
+            more.textContent = "Показать ещё " + LIBRARY_PAGE;
+            more.onclick = async () => {
+                libraryLimit += LIBRARY_PAGE;
+                more.disabled = true;
+                more.textContent = "Загружаю…";
+                await library();
+                /* Не перерисовалось (вопрос под строкой, сбой сети) — кнопка
+                 * не должна застрять в «Загружаю…». */
+                if (more.isConnected) {
+                    more.disabled = false;
+                    more.textContent = "Показать ещё " + LIBRARY_PAGE;
+                }
+            };
+            box.appendChild(more);
+        }
+        markPlayingRow();
+        markAppReady();
+        if (!copy) probeRowsPainted(box);
+        return;
+    }
+
+    /* Артисты — строками с круглой обложкой, альбомы — сеткой карточек
+     * (views.js). Весь список нужен целиком: издание или артист могут
+     * начинаться на любую букву. */
+    if (mode === "artists") {
+        const artists = renderArtistList(box, data);
+        count.textContent = q && artists ? String(artists) : "";
+        empty.hidden = artists > 0;
+        if (note) note.textContent = plural(artists, "артист", "артиста", "артистов");
+    } else {
+        const albums = renderAlbumGrid(box, groupIntoAlbums(data));
+        count.textContent = q && albums ? String(albums) : "";
+        empty.hidden = albums > 0;
+        if (note) note.textContent = plural(albums, "альбом", "альбома", "альбомов");
+    }
+    markPlayingRow();
+    markAppReady();
+    if (!copy) probeRowsPainted(box);
 }
 
 /* Строки фонотеки — пачками по пятьдесят. Пропускать раскладку и отрисовку

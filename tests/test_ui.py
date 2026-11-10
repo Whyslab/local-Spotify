@@ -5830,7 +5830,8 @@ def test_opening_the_library_reports_once_when_its_rows_were_drawn(page):
     assert len(startups[0]) <= 300, startups  # длиннее — сервер получит обрезок
     for field in ("v=Library", "m=tracks", "nav=navigate", "cv=1", "n=1"):
         assert field in first, (field, startups)
-    assert any(f in first for f in ("age=0", "age=1")), startups  # ответ сервера, не копия
+    # Ответ сервера, не копия: Date — с точностью до секунды, отсюда запас.
+    assert any(f in first for f in ("age=0", "age=1", "age=2")), startups
     marks = {m.split("@")[0]: int(m.split("@")[1]) for m in first if "@" in m}
     steps = ["dom", "tolib", "lib", "resp", "json", "rows", "paint"]
     assert [m for m in marks if m in steps] == steps, marks
@@ -5888,3 +5889,107 @@ def test_returns_to_the_page_without_the_library_do_not_use_up_the_measurement(p
     while len(startups) < 2 and time.monotonic() < deadline:
         page.wait_for_timeout(50)
     assert len(startups) == 2 and '"detail":"resume paint' in startups[1], startups
+
+
+def test_the_library_opens_from_the_saved_copy_while_the_network_is_slow(page):
+    """25.10.2026 на айфоне строки ждали ответа сети ещё 1,2 с после открытия
+    страницы, а при плохой сети worker держит запрос до шести секунд. Копия
+    списка на телефоне уже есть — она и рисуется, пока идёт сеть; другой ответ
+    сервера потом её заменяет."""
+    worker = _controlled_by_worker(page)
+    open_library(page)
+    page.wait_for_function(
+        "caches.open('api-v1').then(c => c.keys())"
+        ".then(k => window.savedLibrary = k.find(r => r.url.includes('/api/library?limit=200'))?.url)"
+        " && window.savedLibrary",
+        timeout=15000,
+    )
+    # Копия старше сервера: в ней три трека, которых в фонотеке уже нет.
+    page.evaluate(
+        """(rows) => caches.open('api-v1').then((c) => c.put(window.savedLibrary,
+            new Response(rows, { headers: { 'Content-Type': 'application/json' } })))""",
+        _fake_rows(3),
+    )
+    worker.evaluate(
+        """() => {
+            const real = self.fetch;
+            self.fetch = (request, options) => {
+                if (!String(request.url || request).includes("/api/library?limit=200")) {
+                    return real(request, options);
+                }
+                return new Promise((done) => setTimeout(() => done(real(request, options)), 2500));
+            };
+        }"""
+    )
+    page.reload()
+    page.wait_for_function("typeof switchView === 'function'")
+    page.wait_for_selector("#library .track", timeout=2000)
+    assert page.evaluate("activeView") == "viewLibrary"
+    assert row(page, "Song 0").is_visible()
+    page.wait_for_function(
+        "!document.querySelector('#library').textContent.includes('Song 0')", timeout=8000
+    )
+    titles = page.locator("#library .track").all_inner_texts()
+    assert titles and not [t for t in titles if "Song " in t], titles
+
+
+def test_a_saved_copy_with_old_tags_gives_way_to_the_server(page):
+    """Пути в копии те же, а теги на ноутбуке переписаны: сравнение по путям
+    оставило бы старые названия до следующего добавленного трека. И замер
+    открытия ждёт ответа сети, а не кончается на копии."""
+    worker = _controlled_by_worker(page)
+    open_library(page)
+    page.wait_for_function(
+        "caches.open('api-v1').then(c => c.keys())"
+        ".then(k => window.savedLibrary = k.find(r => r.url.includes('/api/library?limit=200'))?.url)"
+        " && window.savedLibrary",
+        timeout=15000,
+    )
+    page.evaluate(
+        """() => caches.open('api-v1').then(async (c) => {
+            const rows = await (await c.match(window.savedLibrary, { ignoreVary: true })).json();
+            const old = rows.map((t) => ({ ...t, title: 'Старое имя ' + t.title, stamp: 'old' }));
+            await c.put(window.savedLibrary, new Response(JSON.stringify(old),
+                { headers: { 'Content-Type': 'application/json' } }));
+        })"""
+    )
+    worker.evaluate(
+        """() => {
+            const real = self.fetch;
+            self.fetch = (request, options) => {
+                if (!String(request.url || request).includes("/api/library?limit=200")) {
+                    return real(request, options);
+                }
+                return new Promise((done) => setTimeout(() => done(real(request, options)), 1500));
+            };
+        }"""
+    )
+    startups = []
+    page.on(
+        "request",
+        lambda r: (
+            startups.append(json.loads(r.post_data)["detail"])
+            if r.method == "POST"
+            and r.url.endswith("/api/player-event")
+            and "startup" in (r.post_data or "")
+            else None
+        ),
+    )
+    page.reload()
+    page.wait_for_function("typeof switchView === 'function'")
+    page.wait_for_function(
+        "document.querySelector('#library').textContent.includes('Старое имя')", timeout=1500
+    )
+    page.wait_for_function(
+        "document.querySelectorAll('#library .track').length"
+        " && !document.querySelector('#library').textContent.includes('Старое имя')",
+        timeout=8000,
+    )
+    deadline = time.monotonic() + 5
+    while not startups and time.monotonic() < deadline:
+        page.wait_for_timeout(50)
+    line = startups[0].split() if startups else []
+    assert any(f.startswith("saved@") for f in line) and any(f.startswith("resp@") for f in line), (
+        startups
+    )
+    assert "skip=copy1" not in line, startups  # отпечатки разные — перерисовано, не пропущено
