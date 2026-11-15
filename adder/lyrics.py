@@ -570,7 +570,7 @@ def remove(rel_path: str, row: dict) -> dict:
     его не перезапишет ни обход, ни поиск (см. _store), а «Найти текст»
     по-прежнему даёт выбрать другой или вставить свой.
     """
-    result = {
+    result: dict = {
         "found": False,
         "at": time.time(),
         "rules": RULES,
@@ -658,8 +658,8 @@ def _search_tracks() -> list[dict]:
         elif _search_dirty:
             rows_by_path = {row["path"]: row for row in rows}
             for path in list(_search_dirty):
-                row = rows_by_path.get(path)
-                entry = _search_entry(row) if row else None
+                current = rows_by_path.get(path)
+                entry = _search_entry(current) if current else None
                 if entry:
                     by_path[path] = entry
                 else:
@@ -677,7 +677,7 @@ def search(query: str, limit: int = SEARCH_LIMIT) -> dict:
     needle = search_fold(query)
     if len(needle) < SEARCH_MIN:
         return {"hits": [], "more": False}
-    hits = []
+    hits: list[dict] = []
     more = False
     for track in _search_tracks():
         position = track["text"].find(needle)

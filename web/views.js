@@ -558,7 +558,7 @@ function renderLabHome(data) {
         const n = data.duplicates;
         parts.push(labSection("Одинаковые песни", { label: "Посмотреть", run: openLibraryDuplicates },
             el("p", "o-section-note",
-                `Нашлось ${n} ${plural(n, "песня", "песни", "песен")} в нескольких экземплярах — можно оставить по одному.`)));
+                `${n % 10 === 1 && n % 100 !== 11 ? "Нашлась" : "Нашлось"} ${plural(n, "песня", "песни", "песен")} в нескольких экземплярах — можно оставить по одному.`)));
     }
 
     if (moods.length) {

@@ -494,6 +494,8 @@ button:disabled { opacity: .5; cursor: default; }
 @media (max-width: 520px) { .dup-sides { grid-template-columns: 1fr; } }
 .dup-side { min-width: 0; }
 .dup-side .track-album, .dup-side .track-title { white-space: normal; overflow-wrap: anywhere; }
+/* The row style hides .track-album; here the facts are what one chooses by. */
+.dup-side .track-album { display: block; }
 .duplicate .row { margin-top: 10px; flex-wrap: wrap; }
 
 /* Правка тегов: подписи над полями, поля во всю ширину. */

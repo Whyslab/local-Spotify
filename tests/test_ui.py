@@ -3907,11 +3907,15 @@ def test_library_duplicates_are_told_on_home_and_chosen_in_add(page):
     )
     home = page.locator("#homeBody .o-section", has_text="Одинаковые песни")
     home.wait_for()
+    assert "Нашлась 1 песня в нескольких экземплярах" in home.inner_text()
     home.get_by_role("button", name="Посмотреть").click()
     page.wait_for_function("activeView === 'viewAdd'")
     card = page.locator("#libraryDuplicates .duplicate")
     card.wait_for()
     assert card.get_by_role("button", name="Оставить этот").count() == 2
+    # По чему выбирать — длина, битрейт и путь — видно, а не спрятано стилем строки.
+    assert card.get_by_text("S/Кайен (1).m4a").is_visible()
+    assert card.get_by_text("128 кбит/с").first.is_visible()
     card.get_by_role("button", name="Оставить этот").nth(1).click()
     page.wait_for_function("window.__resolved.length === 1")
     assert page.evaluate("window.__resolved[0]") == {
