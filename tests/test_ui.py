@@ -3914,6 +3914,54 @@ def test_library_duplicates_are_told_on_home_and_chosen_in_add(page):
     assert page.locator("#libraryDuplicatesHead").is_hidden()
 
 
+def test_a_line_of_the_lyrics_is_found_everywhere_search_is(page, server):
+    """С 15.11.2026: строчка песни находит трек в общем поиске, в фонотеке и
+    в подборке; рядом — сама строчка; нажатие играет с неё."""
+    _api(server, "POST", "/api/lyrics/custom",
+         {"path": LOUD_PATH, "text": "[00:01.00] раз\n[00:03.00] Ты чё, обиделась?\n[00:05.00] три"})  # fmt: skip
+
+    # Общий поиск.
+    page.evaluate("searchQueryText = ''; switchView('viewSearch'); renderSearch(false)")
+    page.locator("#searchEverywhere").fill("ты че обиделась")
+    section = page.locator("#searchBody .lyric-hits")
+    section.wait_for()
+    assert "Есть в тексте песни" in section.inner_text()
+    quote = section.locator(".lyric-quote")
+    assert quote.inner_text() == "«Ты чё, обиделась?»"
+    section.locator(".track-title", has_text="Loud").click()
+    page.wait_for_function("player.started && player.queue[player.index].path.includes('Loud')")
+    assert page.evaluate("player.audio.currentTime") >= 1.5  # со строчки, а не с начала
+    page.evaluate("player.audio.pause()")
+
+    # Фонотека.
+    open_library(page)
+    page.locator("#librarySearch").fill("обиделась")
+    page.locator("#libraryLyricHits .lyric-quote").wait_for()
+    assert "Loud" in page.locator("#libraryLyricHits").inner_text()
+    page.locator("#librarySearch").fill("")
+    page.evaluate("runSearchHere()")
+    page.wait_for_function("!document.querySelector('#libraryLyricHits .lyric-hits')")
+
+    # Подборка: строка остаётся видна, под ней — строчка.
+    name = "LyricsFind"
+    with contextlib.suppress(Exception):
+        _api(server, "DELETE", "/api/playlists/" + name)
+    _api(server, "POST", "/api/playlists", {"name": name, "paths": [LOUD_PATH, QUIET_PATH]})
+    page.evaluate(f"openPlaylist('{name}')")
+    page.wait_for_selector("#playlistTracks .playlist-track")
+    page.locator("#librarySearch").fill("обиделась")
+    page.locator("#playlistTracks .lyric-quote").wait_for()
+    visible = page.evaluate(
+        "[...document.querySelectorAll('#playlistTracks .playlist-track')]"
+        ".filter(r => !r.hidden).map(r => r.dataset.trackPath)"
+    )
+    assert visible == [LOUD_PATH]
+    assert page.locator("#playlistFilterEmpty").is_hidden()
+    page.locator("#librarySearch").fill("")
+    page.evaluate("runSearchHere()")
+    _api(server, "DELETE", "/api/playlists/" + name)
+
+
 # --- Артист целиком ----------------------------------------------------------
 
 

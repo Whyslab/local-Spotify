@@ -1632,7 +1632,7 @@ function flashTrackRow(path, index) {
     return true;
 }
 
-function playQueue(tracks, startAt = 0, mode = "manual", source = null) {
+function playQueue(tracks, startAt = 0, mode = "manual", source = null, options = {}) {
     newQueue(tracks);
     player.queueMode = mode;
     player.queueSource = source;
@@ -1640,7 +1640,7 @@ function playQueue(tracks, startAt = 0, mode = "manual", source = null) {
     /* Прежняя сборка умной очереди — про прежнюю очередь. */
     player.smartTicket += 1;
     buildOrder(startAt);
-    playAt(startAt);
+    playAt(startAt, 0, 1, options);
     /* Умное перемешивание включено — новая подборка или альбом тоже идут
      * умно, как в Spotify. Не дожидаясь первого трека: он мог не начаться
      * (пауза, сбой ссылки, «дальше»), а ✦ без умной очереди — обман.

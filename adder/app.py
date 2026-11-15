@@ -996,6 +996,12 @@ class LyricsPathRequest(BaseModel):
     path: str
 
 
+@app.get("/api/lyrics/search")
+def lyrics_search(q: str = "", authenticated: bool = Depends(verify_token)):
+    """Треки, в тексте которых есть эта фраза, — со строкой, где она нашлась."""
+    return lyrics.search(q[:200])
+
+
 @app.post("/api/lyrics/remove")
 def lyrics_remove(req: LyricsPathRequest, authenticated: bool = Depends(verify_token)):
     """Убрать текст, который не подходит. Сам он больше не найдётся;

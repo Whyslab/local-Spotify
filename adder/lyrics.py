@@ -12,6 +12,7 @@
 может писать (см. ReadWritePaths в юните).
 """
 
+import bisect
 import hashlib
 import json
 import logging
@@ -416,6 +417,8 @@ def carry_over(old: str, new: str) -> None:
 
 
 def _write(rel_path: str, result: dict) -> dict:
+    with _search_lock:
+        _search_dirty.add(rel_path)  # поиск по текстам перечитает этот трек
     try:
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
         target = _key(rel_path)
@@ -583,6 +586,117 @@ def remove(rel_path: str, row: dict) -> dict:
     }
     with _store_lock:
         return _write(rel_path, result)
+
+
+# ---------------------------------------------------------------------------
+# Поиск по строчкам текста (15.11.2026)
+# ---------------------------------------------------------------------------
+
+SEARCH_MIN = 3
+SEARCH_LIMIT = 300
+_SEARCH_TTL = 600  # тексты, записанные другим процессом (скрипты), — раз в 10 минут
+_search_lock = threading.Lock()
+_search_index: dict = {"rows": None, "at": 0.0, "by_path": {}}
+# Треки, чей текст записан после сборки индекса, — перечитать только их.
+_search_dirty: set[str] = set()
+
+
+def search_fold(text: str) -> str:
+    """Как сравнивает поиск по тексту: без регистра, «ё» — это «е», знаки
+    препинания — пробел. «ты чё, обиделась?» находится по «ты че обиделась»."""
+    text = library.fold(text or "")
+    return " ".join(re.sub(r"[^\w]+", " ", text).split())
+
+
+def _lines_of(cached: dict) -> list[tuple[str, float | None]]:
+    synced = [
+        (str(item.get("line") or ""), item.get("at"))
+        for item in cached.get("synced") or []
+        if str(item.get("line") or "").strip()
+    ]
+    if synced:
+        return synced
+    plain = cached.get("plain") or ""
+    return [(line, None) for line in plain.splitlines() if line.strip()]
+
+
+def _search_entry(row: dict) -> dict | None:
+    try:
+        cached = json.loads(_key(row["path"]).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not cached.get("found"):
+        return None
+    lines = _lines_of(cached)
+    if not lines:
+        return None
+    # Весь текст одной строкой — фраза, перенесённая на новую строку, тоже
+    # находится; starts — где в ней начинается каждая строка песни.
+    folded, starts = [], []
+    offset = 0
+    for line, _ in lines:
+        piece = search_fold(line)
+        starts.append(offset)
+        folded.append(piece)
+        offset += len(piece) + 1
+    return {"row": row, "text": " ".join(folded), "starts": starts, "lines": lines}
+
+
+def _search_tracks() -> list[dict]:
+    rows = library.library_index()
+    with _search_lock:
+        index = _search_index
+        by_path = index["by_path"]
+        if index["rows"] is not rows or time.time() - index["at"] > _SEARCH_TTL:
+            _search_dirty.clear()
+            by_path = {}
+            for row in rows:
+                entry = _search_entry(row)
+                if entry:
+                    by_path[row["path"]] = entry
+            index.update(rows=rows, at=time.time(), by_path=by_path)
+        elif _search_dirty:
+            rows_by_path = {row["path"]: row for row in rows}
+            for path in list(_search_dirty):
+                row = rows_by_path.get(path)
+                entry = _search_entry(row) if row else None
+                if entry:
+                    by_path[path] = entry
+                else:
+                    by_path.pop(path, None)
+            _search_dirty.clear()
+        return [by_path[row["path"]] for row in rows if row["path"] in by_path]
+
+
+def search(query: str, limit: int = SEARCH_LIMIT) -> dict:
+    """Треки фонотеки, в тексте которых есть эта фраза, — со строкой, где она.
+
+    Только по тому, что уже лежит в кэше текстов: каталог не спрашивается.
+    ``at`` — время строки, если текст с таймингами (плеер начнёт с неё).
+    """
+    needle = search_fold(query)
+    if len(needle) < SEARCH_MIN:
+        return {"hits": [], "more": False}
+    hits = []
+    more = False
+    for track in _search_tracks():
+        position = track["text"].find(needle)
+        if position < 0:
+            continue
+        if len(hits) >= limit:
+            more = True
+            break
+        number = max(0, bisect.bisect_right(track["starts"], position) - 1)
+        line, at = track["lines"][number]
+        row = track["row"]
+        hits.append(
+            {
+                **{key: row.get(key) for key in ("path", "title", "artist", "album", "duration")},
+                "line": line.strip(),
+                "at": at,
+            }
+        )
+    return {"hits": hits, "more": more}
 
 
 # ---------------------------------------------------------------------------

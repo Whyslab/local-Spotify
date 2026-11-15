@@ -217,6 +217,54 @@ def test_lyrics_chosen_after_a_removal_replace_it(monkeypatch):
     assert lyrics.for_track(ROW["path"], row=ROW)["plain"] == "своя строка"
 
 
+def _with_text(monkeypatch, rows, texts):
+    monkeypatch.setattr(library, "library_index", lambda: rows)
+    for row in rows:
+        if row["path"] in texts:
+            lyrics._write(row["path"], {"found": True, **texts[row["path"]]})
+
+
+def test_a_line_of_the_lyrics_finds_its_track(monkeypatch):
+    rows = [
+        {"path": "A/one.m4a", "artist": "A", "title": "One", "album": "", "duration": 90},
+        {"path": "B/two.m4a", "artist": "B", "title": "Two", "album": "", "duration": 80},
+        {"path": "C/three.m4a", "artist": "C", "title": "Three", "album": "", "duration": 70},
+    ]
+    _with_text(
+        monkeypatch,
+        rows,
+        {
+            "A/one.m4a": {
+                "synced": [
+                    {"at": 1.0, "line": "Первая строка"},
+                    {"at": 12.5, "line": "Ты чё, обиделась?"},
+                ]
+            },
+            "B/two.m4a": {"plain": "что-то другое\nсовсем другое"},
+        },
+    )
+    found = lyrics.search("ты че обиделась")
+    assert [h["path"] for h in found["hits"]] == ["A/one.m4a"]
+    hit = found["hits"][0]
+    assert hit["line"] == "Ты чё, обиделась?" and hit["at"] == 12.5 and hit["title"] == "One"
+    # Фраза через перенос строки — тоже; без таймингов at пустой.
+    (two,) = lyrics.search("другое совсем")["hits"]
+    assert two["path"] == "B/two.m4a" and two["at"] is None and two["line"] == "что-то другое"
+    # Слишком коротко — не ищем; трек без текста не находится никогда.
+    assert lyrics.search("ты")["hits"] == []
+    assert lyrics.search("three")["hits"] == []
+
+
+def test_lyrics_search_sees_a_text_saved_a_moment_ago(monkeypatch):
+    rows = [{"path": "A/one.m4a", "artist": "A", "title": "One", "album": "", "duration": 90}]
+    _with_text(monkeypatch, rows, {})
+    assert lyrics.search("новая строчка")["hits"] == []
+    lyrics.save_custom("A/one.m4a", rows[0], "новая строчка песни")
+    assert [h["path"] for h in lyrics.search("новая строчка")["hits"]] == ["A/one.m4a"]
+    lyrics.remove("A/one.m4a", rows[0])
+    assert lyrics.search("новая строчка")["hits"] == []
+
+
 # ---------------------------------------------------------------------------
 # Обход фонотеки
 # ---------------------------------------------------------------------------

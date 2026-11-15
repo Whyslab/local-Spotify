@@ -374,6 +374,8 @@ function keepSearchFor(view) {
         field.value = "";
         libraryLimit = LIBRARY_PAGE;
     }
+    const hits = document.getElementById("libraryLyricHits");
+    if (hits) hits.replaceChildren();
     /* Число найденного — от прежнего места поиска, в новом оно врало бы. */
     const found = document.getElementById("libraryCount");
     if (found) found.textContent = "";
@@ -1229,7 +1231,7 @@ function runSearchHere() {
     /* Из главной и остальных разделов искать всё равно логично по фонотеке —
      * там лежит всё, что можно найти. */
     if (activeView !== "viewLibrary" && searchText()) switchView("viewLibrary");
-    library();
+    fillLibraryLyricHits(library());
 }
 
 /* Фильтр спрятал всё — сказать словами и дать сбросить одним нажатием. */
@@ -1250,9 +1252,122 @@ function showFilterEmpty(box, needle) {
     box.hidden = false;
 }
 
+/* ---------------- Поиск по строчкам текста ----------------
+ *
+ * С 15.11.2026: набранное ищется и в текстах песен — в общем поиске, в
+ * фонотеке и в подборке. Сервер ищет только в уже скачанных текстах
+ * (adder/lyrics.search), без каталога; ответ на одну фразу помнится. */
+const LYRIC_SEARCH_MIN = 3;
+const lyricHitsCache = new Map();
+
+function lyricHits(query) {
+    const q = foldText((query || "").trim());
+    if (q.replace(/[^\p{L}\p{N}]/gu, "").length < LYRIC_SEARCH_MIN) return Promise.resolve({ hits: [], more: false });
+    if (!lyricHitsCache.has(q)) {
+        const asked = fetch("/api/lyrics/search?q=" + encodeURIComponent(q), { headers: headers() })
+            .then((r) => (r.ok ? r.json() : { hits: [], more: false }))
+            .catch(() => ({ hits: [], more: false }));
+        lyricHitsCache.set(q, asked);
+        if (lyricHitsCache.size > 30) lyricHitsCache.delete(lyricHitsCache.keys().next().value);
+        /* Ответ «ничего» (или сбой) не держим: текст мог появиться через минуту. */
+        asked.then((data) => { if (!data.hits.length) lyricHitsCache.delete(q); });
+    }
+    return lyricHitsCache.get(q);
+}
+
+/* Строка «нашлось в тексте»: трек и сама строчка. Нажатие играет найденное
+ * по порядку, начиная с этого трека — с той строки, если у текста тайминги. */
+function lyricHitRow(hit, hits) {
+    const card = libraryRow(hit, hits);
+    card.classList.add("lyric-hit");
+    const info = card.querySelector(".track-info");
+    info.querySelector(".track-album")?.remove();
+    info.appendChild(lyricQuote(hit.line));
+    info.onclick = () => playQueue(hits, hits.indexOf(hit), "manual", null,
+        hit.at > 0 ? { startAt: Math.max(0, hit.at - 1) } : {});
+    return card;
+}
+
+function lyricQuote(line) {
+    const quote = document.createElement("div");
+    quote.className = "lyric-quote";
+    quote.textContent = "«" + line + "»";
+    return quote;
+}
+
+/* Найденное по названию уже стоит выше — второй раз его не показываем. */
+function withoutShown(data, shownPaths) {
+    const hits = data.hits.filter((hit) => !shownPaths.has(hit.path));
+    return { hits, more: data.more };
+}
+
+function lyricHitsSection(data, query) {
+    const box = document.createElement("div");
+    box.className = "lyric-hits";
+    const head = document.createElement("div");
+    head.className = "list-head";
+    const title = document.createElement("span");
+    title.textContent = "Есть в тексте песни";
+    const count = document.createElement("span");
+    count.className = "muted";
+    count.textContent = String(data.hits.length) + (data.more ? "+" : "");
+    head.append(title, count);
+    const list = document.createElement("div");
+    list.className = "rows";
+    const shown = data.hits.slice(0, 60);
+    for (const hit of shown) list.appendChild(lyricHitRow(hit, shown));
+    box.append(head, list);
+    box.dataset.query = query;
+    return box;
+}
+
+/* Фонотека: под найденным по названию — найденное в текстах. */
+async function fillLibraryLyricHits(drawn = null) {
+    const box = document.getElementById("libraryLyricHits");
+    if (!box) return;
+    const field = document.getElementById("librarySearch");
+    const query = field ? field.value.trim() : "";
+    if (activeView !== "viewLibrary" || libraryMode !== "tracks" || !query) { box.replaceChildren(); return; }
+    const found = await lyricHits(query);
+    /* Сравнивать с уже нарисованной выдачей фонотеки, а не с прежней. */
+    if (drawn) await Promise.resolve(drawn).catch(() => {});
+    if ((field ? field.value.trim() : "") !== query) return;  // набрали дальше
+    const shown = new Set([...document.querySelectorAll("#library [data-track-path]")].map((r) => r.dataset.trackPath));
+    const data = withoutShown(found, shown);
+    box.replaceChildren(...(data.hits.length ? [lyricHitsSection(data, query)] : []));
+    markPlayingRow();
+}
+
+/* Подборка: строка, у которой фраза есть в тексте, остаётся видна — и под ней
+ * строчка, где фраза нашлась. */
+let playlistLyricTicket = 0;
+async function markPlaylistLyricHits(needle) {
+    const ticket = ++playlistLyricTicket;
+    for (const quote of document.querySelectorAll("#playlistTracks .lyric-quote")) quote.remove();
+    if (!needle) return;
+    const field = document.getElementById("librarySearch");
+    const data = await lyricHits(field ? field.value : needle);
+    if (ticket !== playlistLyricTicket || !data.hits.length) return;
+    const lines = new Map(data.hits.map((hit) => [hit.path, hit.line]));
+    let added = 0;
+    for (const row of document.querySelectorAll("#playlistTracks .playlist-track")) {
+        const line = lines.get(row.dataset.trackPath);
+        if (!line || row.classList.contains("is-filtered-out")) continue;
+        row.hidden = false;
+        row.querySelector(".track-info")?.appendChild(lyricQuote(line));
+        added += 1;
+    }
+    const empty = document.getElementById("playlistFilterEmpty");
+    if (added && empty) empty.hidden = true;
+}
+
 /* Совпадение по тексту строки целиком: в ней и название, и артист, и альбом. */
 function rowMatches(row, needle) {
-    return !needle || foldText(row.textContent).includes(needle);
+    if (!needle) return true;
+    /* Строчка песни под строкой — не название: её не сравниваем. */
+    const quote = typeof row.querySelector === "function" ? row.querySelector(".lyric-quote") : null;
+    const text = quote ? row.textContent.replace(quote.textContent, "") : row.textContent;
+    return foldText(text).includes(needle);
 }
 
 /* Строки прячем, а не пересобираем список: у каждой строки записан её номер в
@@ -1268,9 +1383,11 @@ function filterOpenPlaylist() {
         if (!row.hidden) shown += 1;
     }
     const empty = document.getElementById("playlistFilterEmpty");
-    if (!empty) return;
-    if (total && !shown) showFilterEmpty(empty, needle);
-    else empty.hidden = true;
+    if (empty) {
+        if (total && !shown) showFilterEmpty(empty, needle);
+        else empty.hidden = true;
+    }
+    markPlaylistLyricHits(needle);
 }
 
 /* ---------------- Главная ----------------
@@ -1464,7 +1581,7 @@ function setLibraryMode(mode) {
     if (typeof syncNav === "function") syncNav();
     /* Режим — часть того, куда вернёт «назад». */
     if (typeof recordTop === "function") recordTop();
-    library();
+    fillLibraryLyricHits(library());
 }
 
 function groupIntoAlbums(rows) {

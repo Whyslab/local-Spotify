@@ -373,6 +373,19 @@ button:disabled { opacity: .5; cursor: default; }
     margin-top: 2px;
 }
 
+/* Строчка песни, где нашлась набранная фраза (поиск по текстам). */
+.lyric-quote {
+    margin-top: 3px;
+    font-size: 13px;
+    line-height: 18px;
+    color: var(--text-2);
+    font-style: italic;
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+.lyric-hits { margin-top: 18px; }
+#viewSearch .lyric-hits { padding: 0 16px; }
+
 /* Имя исполнителя — ссылка на его страницу, но выглядит как текст строки:
    подчёркивание только под указателем и в фокусе. */
 .artist-link {

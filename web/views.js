@@ -1287,9 +1287,18 @@ async function fillSearch() {
             labCard(labCover(g.tracks[0].path, THUMB_LARGE, g.artist), g.album, g.artist, () => openAlbumPage(g))))));
     }
     if (tracks.length) parts.push(labSection("Треки", null, labRows(tracks, false)));
-    if (!parts.length) parts.push(el("div", "o-empty", "", el("p", "", "В фонотеке ничего не нашлось по «" + searchQueryText.trim() + "».")));
-    parts.push(el("div", "o-yt", "", youtube));
+    const nothing = !parts.length;
+    if (nothing) parts.push(el("div", "o-empty", "", el("p", "", "В фонотеке ничего не нашлось по «" + searchQueryText.trim() + "».")));
+    const yt = el("div", "o-yt", "", youtube);
+    parts.push(yt);
     put(body, ...parts);
+    markPlayingRow();
+    /* Строчки песен — следом: ответ сервера приходит после названий. */
+    const asked = searchQueryText;
+    const lyricData = withoutShown(await lyricHits(asked), new Set(tracks.map((t) => t.path)));
+    if (searchQueryText !== asked || !lyricData.hits.length || !body.contains(yt)) return;
+    if (nothing) body.querySelector(".o-empty")?.remove();
+    body.insertBefore(lyricHitsSection(lyricData, asked.trim()), yt);
     markPlayingRow();
 }
 
