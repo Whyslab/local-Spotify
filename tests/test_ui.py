@@ -3956,7 +3956,9 @@ def test_a_line_of_the_lyrics_is_found_everywhere_search_is(page, server):
     open_library(page)
     page.locator("#librarySearch").fill("обиделась")
     page.locator("#libraryLyricHits .lyric-quote").wait_for()
-    assert "Loud" in page.locator("#libraryLyricHits").inner_text()
+    # text_content, не inner_text: строка ниже края экрана не разложена
+    # (content-visibility: auto), и inner_text её не видит (CI 15.11).
+    assert "Loud" in page.locator("#libraryLyricHits").text_content()
     page.locator("#librarySearch").fill("")
     page.evaluate("runSearchHere()")
     page.wait_for_function("!document.querySelector('#libraryLyricHits .lyric-hits')")
