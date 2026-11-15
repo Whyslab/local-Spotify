@@ -23,8 +23,11 @@
    16, 8 или 4 удара — чтобы кончилось за 4 удара до голоса B; басы меняются
    посередине; B громко уже с первой четверти; B с самого начала.
 3. «cut»: голос у B сразу или темпы далеко. A затихает на ударе за 4 удара
-   без басов, B входит с самого начала на последнем ударе (голос сразу) или на
-   первом.
+   без басов, B входит с самого начала так, что его первый удар ложится на
+   последний удар A (голос сразу) или на первый. Затакт B (звук до первого
+   удара) звучит поверх A; длинный — A играет на несколько ударов дольше.
+   До 15.11.2026 B ставился на удар первым звуком, и затакт сдвигал все его
+   удары мимо сетки A — на слух «заикание» (44 % связок «cut»).
 
 Где у B голос — первая строка синхронного текста (её передаёт служба);
 текста нет — наложение 8 ударов.
@@ -43,6 +46,7 @@ soundfile (scripts/requirements-analysis.txt) и ffmpeg с фильтром rubb
 from __future__ import annotations
 
 import json
+import math
 import os
 import subprocess
 import sys
@@ -58,7 +62,8 @@ os.environ.setdefault(
 if TYPE_CHECKING:
     import numpy as np
 
-VERSION = 1
+# 2 — первый удар B на ударе A в «cut» (15.11.2026)
+VERSION = 2
 SR = 48000
 LEAD = 4.0  # с чистого A в начале связки
 TAIL = 8.0  # с чистого B в конце связки
@@ -69,6 +74,7 @@ MAX_STRETCH = 0.08
 INTRO_SOLO_BEATS = 4  # столько ударов начало B звучит одно, до голоса
 BEATLESS_INTRO = 4.0  # с: вступление без барабана, которого хватает на способ «intro»
 VOICE_SOON = 3.0  # с: голос раньше — способ «cut»
+CUT_EXTRA_MAX = 8  # ударов A сверх четырёх под длинный затакт B; дальше затакт срезается
 CEILING = 0.999  # прижимается только сумма двух треков; чистые края — как есть, чтобы
 # совпадать с самим треком отсчёт в отсчёт (редкий пик выше 1 после декодера срежет FLAC)
 
@@ -356,18 +362,32 @@ def render(job: dict, beats_hook=None) -> tuple[np.ndarray, dict]:
         seam = b_head[fb_i - pre + n : fb_i - pre + n + int(0.02 * SR)]
     else:
         together = decision["together"]
-        start_a = a_from(4 * beat)
+        # Первый удар B — на удар A: звук B до удара (затакт) идёт раньше.
+        # Не влезает в четыре удара — A играет дольше, но не больше чем на
+        # CUT_EXTRA_MAX; остаток затакта срезается.
+        lead_beat = first_beat_b if len(beats_b) else 0.0
+        extra = math.ceil((lead_beat - (4 - together) * beat) / beat - 1e-6)
+        k = 4 + min(CUT_EXTRA_MAX, max(0, extra))
+        start_a = a_from(k * beat)
         sa = int(round(start_a * SR))
-        a_mix = a[sa : sa + int(round(4 * beat * SR))]
+        a_mix = a[sa : sa + int(round(k * beat * SR))]
         n = len(a_mix)
-        lead_in = n - min(n, int(round(together * beat * SR)))  # A один до входа B
-        b_mix = b_body[: n - lead_in]
-        curve = ramp(n) if together > 1 else np.clip((ramp(n) - 0.5) * 2, 0, 1)
+        entry = n - min(n, int(round(together * beat * SR)))  # первый удар B
+        b_at = entry - int(round(lead_beat * SR))  # первый звук B
+        skip = max(0, -b_at)
+        b_at = max(0, b_at)
+        b_mix = b_body[skip : skip + n - b_at]
+        if together > 1:
+            curve = ramp(n)
+        else:
+            # A уходит за вторую половину — или раньше, с затактом B.
+            f0 = min(n // 2, b_at)
+            curve = np.clip((np.arange(n, dtype=np.float32)[:, None] - f0) / max(1, n - f0), 0, 1)
         mixed = highpass(a_mix) * np.cos(curve * np.pi / 2)
         rise = np.sin(np.clip(ramp(len(b_mix)) * (3 if together > 1 else 40), 0, 1) * np.pi / 2)
-        mixed[lead_in : lead_in + len(b_mix)] += b_mix * rise
+        mixed[b_at : b_at + len(b_mix)] += b_mix * rise
         mix_a = start_a
-        b_used = len(b_mix)
+        b_used = skip + len(b_mix)
         b_stretched = False
         seam = None
 

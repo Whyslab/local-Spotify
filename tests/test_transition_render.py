@@ -101,6 +101,8 @@ def tracks(tmp_path_factory):
         "b123": make_track(d / "b123.m4a", 123, 60),
         "b123_intro": make_track(d / "b123i.m4a", 123, 60, intro=8.0),
         "b150": make_track(d / "b150.m4a", 150, 60),
+        # Аккорд с первой секунды, первый удар — через 0,3 с: затакт.
+        "b150_pickup": make_track(d / "b150p.m4a", 150, 60, intro=0.3),
         "loud": make_track(d / "loud.m4a", 123, 60, level=1.0),
     }
 
@@ -234,6 +236,35 @@ def test_a_failure_is_one_json_line_and_a_nonzero_exit(tmp_path):
     )
     assert run.returncode == 1
     assert "error" in json.loads(run.stdout)
+
+
+def _kicks(x, start, stop):
+    """Секунды атак бас-барабана в [start, stop) связки: у A в переходе басы
+    срезаны (highpass), так что низы там — только от B."""
+    from scipy.signal import butter, sosfiltfilt
+
+    sos = butter(4, 100, btype="lowpass", fs=SR, output="sos")
+    low = np.abs(sosfiltfilt(sos, x[:, 0].astype(np.float64)))
+    seg = low[int(start * SR) : int(stop * SR)]
+    hop = int(0.002 * SR)
+    env = seg[: len(seg) // hop * hop].reshape(-1, hop).max(axis=1)
+    above = env > env.max() * 0.3
+    rises = np.nonzero(above[1:] & ~above[:-1])[0] + 1
+    return [start + r * hop / SR for r in rises]
+
+
+@pytest.mark.parametrize("voice_b", [None, 0.6], ids=["together4", "voice-right-away"])
+def test_the_first_beat_of_b_lands_on_a_beat_of_a(tracks, voice_b):
+    """15.11.2026, «заикание»: B входил в сетку A первым звуком, и затакт
+    (0,3 с до первого удара) сдвигал его удары мимо ударов A."""
+    bridge, plan = render(tracks, "a120", "b150_pickup", voice_b=voice_b)
+    assert plan["case"] == "cut"
+    (first, *_) = _kicks(bridge, plan["lead"], plan["b_solo_at"])
+    # Удары A в его файле — ровно каждые 0,5 с; в связке время A = a_from + t.
+    phase = (plan["a_from"] + first) % 0.5
+    assert min(phase, 0.5 - phase) < 0.02, (first, phase)
+    # И звук B до удара (аккорд затакта) в связке есть, а не срезан.
+    assert plan["b_from"] >= 0.3
 
 
 def test_a_track_without_beats_still_gets_a_bridge(tracks):

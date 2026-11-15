@@ -2911,8 +2911,10 @@ def test_all_playlists_are_a_tab_with_a_grid(page, server):
 
 def test_a_library_row_has_one_menu_button_with_seven_actions(page):
     open_library(page)
-    buttons = row(page, "Quiet").get_by_role("button")
+    # Кроме «⋯» — только имя исполнителя ссылкой (с 15.11.2026).
+    buttons = row(page, "Quiet").locator("button:not(.artist-link)")
     assert buttons.count() == 1
+    assert row(page, "Quiet").locator(".artist-link").count() == 1
     buttons.first.click()
     items = page.get_by_role("menuitem").all_inner_texts()
     assert items == [
@@ -3894,11 +3896,17 @@ def test_library_duplicates_are_told_on_home_and_chosen_in_add(page):
             }
             return real(url, opts);
         };
-        renderLabHome({duplicates: 1});
+        // Главная перерисовывается и сама (сеть, сохранённая копия) — пусть
+        // любая её отрисовка знает об одной группе дублей.
+        const realRender = renderLabHome;
+        window.__realRenderLabHome = realRender;
+        renderLabHome = (data) => realRender({...(data || {}), duplicates: 1});
+        switchView('viewHome');
+        renderLabHome(homeDataForMoods || {});
         }"""
     )
     home = page.locator("#homeBody .o-section", has_text="Одинаковые песни")
-    assert home.is_visible()
+    home.wait_for()
     home.get_by_role("button", name="Посмотреть").click()
     page.wait_for_function("activeView === 'viewAdd'")
     card = page.locator("#libraryDuplicates .duplicate")
@@ -3912,6 +3920,7 @@ def test_library_duplicates_are_told_on_home_and_chosen_in_add(page):
     }
     page.wait_for_function("!document.querySelector('#libraryDuplicates .duplicate')")
     assert page.locator("#libraryDuplicatesHead").is_hidden()
+    page.evaluate("renderLabHome = window.__realRenderLabHome; true")
 
 
 def test_a_line_of_the_lyrics_is_found_everywhere_search_is(page, server):

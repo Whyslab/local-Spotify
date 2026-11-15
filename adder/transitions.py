@@ -38,7 +38,7 @@ from . import analysis, config, db, library, lyrics, runtime
 
 logger = logging.getLogger(__name__)
 
-RENDER_VERSION = 1  # то же, что VERSION в scripts/render_transition.py
+RENDER_VERSION = 2  # то же, что VERSION в scripts/render_transition.py
 SCRIPT = runtime.PROJECT.parent / "scripts" / "render_transition.py"
 KEEP = 60  # связок на диске (обычно 2–3 МБ, длинное наложение — до ~9)
 MIN_A = 60.0  # с: короче — переход съел бы заметную часть трека
