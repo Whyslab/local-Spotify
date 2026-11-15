@@ -49,7 +49,6 @@ const player = {
     fadeSeconds: 0,      // длина затухания на стыке, 0 — без него
     djMode: false,       // переход «как диджей» (mix.js); где не выйдет — затухание fadeSeconds
     mixAdopted: false,   // трек начался с середины (переход «как диджей») — без выхода из тишины
-    sleep: null,         // {until: мс} | {track: true} | null — таймер сна
     trackGain: null,     // ReplayGain текущего трека в дБ, null — не измерен
     volumeAdjustable: false,
     /* «Без звука». У элемента в графе Web Audio (mix.js) свой muted всегда
@@ -357,7 +356,7 @@ async function playAt(position, skipped = 0, direction = 1, options = {}) {
          * если позиция была не нулевой, — первое включение прозвучало бы на
          * прежней громкости до первого timeupdate. */
         const midway = options.startAt > 0;
-        player.fadeLevel = player.fadeSeconds > 0 && !midway ? 0 : Math.min(1, sleepLevel());
+        player.fadeLevel = player.fadeSeconds > 0 && !midway ? 0 : 1;
         player.mixAdopted = midway;  // начало уже прозвучало — выход из тишины не нужен
         /* «Как диджей»: элемент — в граф Web Audio до того, как зазвучит. */
         if (typeof mixAttach === "function" && mixEnabled()) mixAttach(player.audio);
@@ -1206,7 +1205,7 @@ function renderQueuePanel() {
         if (names.artist) {
             const artist = document.createElement("div");
             artist.className = "track-artist";
-            artist.textContent = names.artist;
+            fillArtistLinks(artist, names.artist, track.path);
             info.appendChild(artist);
         }
         row.appendChild(info);
@@ -1783,12 +1782,6 @@ onAudio("ended", () => {
     /* Переход «как диджей» сам подведёт следующий трек (mix.js). */
     if (typeof mixOwnsEnd === "function" && mixOwnsEnd()) return;
     reportPlay(true);
-    /* «До конца трека»: этот доиграл — дальше тишина. */
-    if (player.sleep && player.sleep.track) {
-        clearSleep();
-        renderPlayer();
-        return;
-    }
     if (player.repeat === "one") {
         /* Тот же трек с начала: позиция в маршруте не двигается. Это новое
          * прослушивание — и в журнал оно пишется отдельно. */
@@ -2025,7 +2018,7 @@ function renderPlayer() {
 
     const names = trackNames(track);
     document.getElementById("playerTitle").textContent = names.title;
-    document.getElementById("playerArtist").textContent = names.artist;
+    fillArtistLinks(document.getElementById("playerArtist"), names.artist, track.path);
     document.getElementById("playerToggle").setAttribute(
         "aria-label", audioPaused() ? "Играть" : "Пауза");
     document.getElementById("playerToggleIcon").setAttribute(
@@ -2211,7 +2204,7 @@ function renderNowPanel(track) {
 
     const names = trackNames(track);
     document.getElementById("nowTitle").textContent = names.title;
-    document.getElementById("nowArtist").textContent = names.artist;
+    fillArtistLinks(document.getElementById("nowArtist"), names.artist, track.path);
 
     if (nowRequested === track.path) return;
     nowRequested = track.path;
@@ -2296,6 +2289,7 @@ function loadLyrics(track, force = false) {
     if (!force && draft && draft.value.trim()) return;
     lyrics.follow = true;
     updateSyncButton();
+    showRemoveLyrics(false);
     lyrics.box = box;
     lyrics.path = track.path;
     lyrics.lines = [];
@@ -2314,7 +2308,12 @@ function loadLyrics(track, force = false) {
             /* Медленный ответ для трека, который уже не играет, не должен
              * затирать тот, что играет сейчас, — как и открытый «Найти текст». */
             if (stale()) return;
-            if (!data.found) { renderNoLyrics(box, data.reason); return; }
+            if (!data.found) {
+                if (data.removed) renderNoLyrics(box, "", REMOVED_LYRICS);
+                else renderNoLyrics(box, data.reason);
+                return;
+            }
+            showRemoveLyrics(true);
 
             if (data.synced && data.synced.length) {
                 lyrics.lines = data.synced;
@@ -2352,7 +2351,9 @@ function loadLyrics(track, force = false) {
 /* Текста нет — крупно, на месте самого текста: мелкая серая строчка
  * терялась на экране (02.10.2026). Сбой — по-прежнему мелким пояснением:
  * это не «текста нет», а «не дозвались». */
-function renderNoLyrics(box, reason) {
+const REMOVED_LYRICS = "Текст убран";
+
+function renderNoLyrics(box, reason, heading = "Извините, но тут буквально ничего") {
     const hint = document.createElement("p");
     hint.className = "lyric-note";
     if (reason) {
@@ -2363,7 +2364,7 @@ function renderNoLyrics(box, reason) {
     box.classList.add("is-empty");
     const title = document.createElement("p");
     title.className = "lyric-empty";
-    title.textContent = "Извините, но тут буквально ничего";
+    title.textContent = heading;
     hint.textContent = "«Найти текст» покажет варианты или даст вставить свой.";
     box.replaceChildren(title, hint);
 }
@@ -2381,6 +2382,7 @@ function openLyricsFinder() {
     const box = document.getElementById("lyricsBody");
     if (!track || !box) return;
     /* Ответ на ещё идущую загрузку текста не должен заменить это окно. */
+    showRemoveLyrics(false);
     lyrics.path = null;
     lyrics.lines = [];
     lyrics.index = -1;
@@ -2534,6 +2536,41 @@ function highlightLyric(force) {
 
 /* ---------------- Текст: кнопка и слежение ---------------- */
 
+function showRemoveLyrics(on) {
+    const button = document.getElementById("lyricsRemove");
+    if (button) button.hidden = !on;
+}
+
+/* «Удалить текст»: найденный не тот — убрать. Сервер запоминает это как
+ * выбор, так что обход фонотеки его не вернёт; «Найти текст» остаётся. */
+async function removeLyrics() {
+    const track = player.queue[player.index];
+    const box = document.getElementById("lyricsBody");
+    if (!track || !box) return;
+    const button = document.getElementById("lyricsRemove");
+    if (button) button.disabled = true;
+    try {
+        const r = await fetch("/api/lyrics/remove", {
+            method: "POST",
+            headers: { ...headers(), "Content-Type": "application/json" },
+            body: JSON.stringify({ path: track.path }),
+        });
+        if (!r.ok) {
+            const data = await r.json().catch(() => ({}));
+            throw new Error(data.detail || ("ошибка " + r.status));
+        }
+        /* Скачанный трек хранит свою копию текста — иначе без сети он вернётся. */
+        if (typeof isDownloaded === "function" && isDownloaded(track.path) && typeof saveExtras === "function") {
+            saveExtras(track.path).catch(() => {});
+        }
+        loadLyrics(player.queue[player.index] || track, true);
+    } catch (e) {
+        setPlayerNote("Текст не убран: " + e.message);
+    } finally {
+        if (button) button.disabled = false;
+    }
+}
+
 function updateSyncButton() {
     const button = document.getElementById("lyricsSync");
     if (button) button.hidden = lyrics.follow || !lyrics.lines.length;
@@ -2605,6 +2642,19 @@ function renderFacts(facts) {
  * туда, где играет. Сама перемотка — по отпусканию (change), а не на каждое
  * движение: иначе каждый пиксель пути был бы отдельным запросом к файлу. */
 let seekDragging = false;
+/* Застревание (04.11.2026, скриншоты в задачах): перемотали на 1:19, звук
+ * пошёл оттуда, а время и бегунок встали — плеер так и считал, что ползунок
+ * тянут. Признак снимали только change и pointerup/blur самого ползунка, а
+ * отпускание может прийти мимо него. Теперь кнопка отслеживается по всему окну,
+ * а без нажатой кнопки и без движения дольше секунды тянуть нечему. */
+let seekPointerDown = false;
+let seekInputAt = 0;
+const SEEK_IDLE_MS = 1000;
+
+function seekStillDragging() {
+    if (seekDragging && !seekPointerDown && Date.now() - seekInputAt > SEEK_IDLE_MS) seekDragging = false;
+    return seekDragging;
+}
 
 function paintSeek(done, total) {
     const slider = document.getElementById("playerSeek");
@@ -2617,6 +2667,7 @@ function paintSeek(done, total) {
 }
 
 function renderProgress() {
+    seekStillDragging();
     /* Очередь вернулась после перезапуска, звука ещё нет: показать место, с
      * которого «играть» продолжит, а не 0:00. */
     const waiting = !player.audio.getAttribute("src") && player.resumeAt > 0;
@@ -2634,6 +2685,7 @@ function renderProgress() {
 
 function previewSeek(value) {
     seekDragging = true;
+    seekInputAt = Date.now();
     const total = Number.isFinite(player.audio.duration) ? player.audio.duration : 0;
     paintSeek(Number(value), total);
     document.getElementById("playerElapsed").textContent = formatTime(Number(value));
@@ -2657,7 +2709,16 @@ function commitSeek(value) {
         seekDragging = false;
         renderProgress();
     }, 300);
-    for (const name of ["pointerup", "pointercancel", "blur"]) slider.addEventListener(name, release);
+    slider.addEventListener("pointerdown", () => { seekPointerDown = true; });
+    slider.addEventListener("blur", release);
+    /* Отпустить кнопку можно где угодно — над ползунком, рядом, за окном. */
+    const up = () => {
+        if (!seekPointerDown) return;
+        seekPointerDown = false;
+        release();
+    };
+    for (const name of ["pointerup", "pointercancel"]) window.addEventListener(name, up, true);
+    window.addEventListener("blur", up);
 })();
 
 /* Стрелки — на пять секунд, а не на одну, как у ползунка по умолчанию:
@@ -2991,7 +3052,7 @@ function playlistTrackRow(entry, position) {
     if (names.artist) {
         const who = document.createElement("div");
         who.className = "track-artist";
-        who.textContent = names.artist;
+        fillArtistLinks(who, names.artist, entry.path);
         info.appendChild(who);
     }
     if (entry.duration > 0) {
@@ -4924,6 +4985,9 @@ function initVolume() {
     } catch (e) { /* приватное окно — играем на полной */ }
 
     player.volumeAdjustable = true;
+    /* Переходы держатся на громкости страницы — кнопка там, где она слушается. */
+    const fade = document.getElementById("playerFadeWrap");
+    if (fade) fade.hidden = false;
     player.userVolume = saved;
     applyVolume();
     slider.value = String(Math.round(saved * 100));
@@ -5003,24 +5067,18 @@ document.addEventListener("keydown", (event) => {
 });
 
 
-/* ---------------- Sleep timer and fades ----------------
+/* ---------------- Fades ----------------
  *
  * Плавный переход — затухание, а не наложение двух треков: настоящий
  * кроссфейд требует второго <audio>, а на iPhone ещё и Web Audio, который
  * обрывает фоновое воспроизведение. Конец трека уходит в тишину, начало
  * следующего из неё выходит; считается по позиции в треке, поэтому перемотка
  * и повтор не сбивают. Там, где громкость странице не подчиняется (iOS),
- * переход не предлагается, а таймер сна просто ставит паузу.
+ * переход не предлагается — кнопки нет. Таймер сна был здесь же; убран
+ * 15.11.2026 по просьбе.
  */
 
 const FADE_KEY = "playerFade";
-const SLEEP_FADE_MS = 10000;
-let sleepTimer = null;
-
-function sleepLevel() {
-    if (!player.sleep || !player.sleep.until) return 1;
-    return Math.max(0, Math.min(1, (player.sleep.until - Date.now()) / SLEEP_FADE_MS));
-}
 
 /* Пока новый трек грузится, длительность у него ещё не известна (NaN).
  * Раньше это значило «без перехода» — громкость 1, и первую секунду трек
@@ -5030,13 +5088,6 @@ function sleepLevel() {
  * правила «слишком короткий — без перехода». */
 function fadeTick() {
     const a = player.audio;
-    /* Таймер сна ведёт setInterval, а его с погашенным экраном браузер может
-     * почти остановить; timeupdate же идёт, пока играет звук. Срок проверяется
-     * и здесь, чтобы музыка не играла дальше назначенного. */
-    if (player.sleep && player.sleep.until && Date.now() >= player.sleep.until && !audioPaused()) {
-        sleepTick();
-        return;
-    }
     let level = 1;
     if (player.fadeSeconds > 0) {
         const known = Number.isFinite(a.duration);
@@ -5050,7 +5101,6 @@ function fadeTick() {
             }
         }
     }
-    level = Math.min(level, sleepLevel());
     if (level !== player.fadeLevel) {
         player.fadeLevel = level;
         applyVolume();
@@ -5069,74 +5119,10 @@ function smoothFade(on) {
     if (!on && fadeTimer) { clearInterval(fadeTimer); fadeTimer = null; }
 }
 
-function renderSleep() {
-    const button = document.getElementById("playerSleep");
-    const left = document.getElementById("playerSleepLeft");
-    if (!button || !left) return;
-    const on = Boolean(player.sleep);
-    button.classList.toggle("is-on", on);
-    button.setAttribute("aria-pressed", String(on));
-    if (!on) {
-        left.hidden = true;
-        button.title = "Таймер сна";
-        return;
-    }
-    if (player.sleep.track) {
-        left.textContent = "1";
-        button.title = "Остановится в конце трека";
-    } else {
-        const minutes = Math.max(1, Math.ceil((player.sleep.until - Date.now()) / 60000));
-        left.textContent = String(minutes);
-        button.title = `Остановится через ${minutes} мин`;
-    }
-    left.hidden = false;
-}
-
-function clearSleep() {
-    player.sleep = null;
-    if (sleepTimer) clearInterval(sleepTimer);
-    sleepTimer = null;
-    fadeTick();
-    renderSleep();
-}
-
-function sleepTick() {
-    if (!player.sleep || !player.sleep.until) return;
-    if (Date.now() >= player.sleep.until) {
-        player.pauseReason = "таймер сна";
-        /* Звучит связка «как диджей», а уходящий трек уже доиграл: его pause()
-         * ничего не остановит — остановиться на следующем. */
-        if (typeof mixSounding === "function" && mixSounding()) {
-            mixPauseOnNext();
-            player.pauseReason = "";  // события pause тут нет — иначе причина прилипла бы к следующей
-        } else {
-            player.audio.pause();
-        }
-        clearSleep();
-        return;
-    }
-    fadeTick();
-    renderSleep();
-}
-
-function setSleep(minutes) {
-    closeSleepMenu();
-    if (sleepTimer) clearInterval(sleepTimer);
-    sleepTimer = null;
-    if (minutes === null) { clearSleep(); return; }
-    if (minutes === "track") {
-        player.sleep = { track: true };
-    } else {
-        player.sleep = { until: Date.now() + minutes * 60000 };
-        sleepTimer = setInterval(sleepTick, 1000);
-    }
-    renderSleep();
-}
-
 /* seconds — 0, 3, 6 или "dj": переход «как диджей» (mix.js), а где он не
- * выйдет (айфон не в счёт — там меню нет), — затухание 3 с. */
+ * выйдет (айфон не в счёт — там кнопки нет), — затухание 3 с. */
 function setFade(seconds) {
-    closeSleepMenu();
+    closeFadeMenu();
     player.djMode = seconds === "dj";
     player.fadeSeconds = player.djMode ? 3 : seconds;
     try { localStorage.setItem(FADE_KEY, String(seconds)); } catch (e) { /* приватное окно */ }
@@ -5147,29 +5133,24 @@ function setFade(seconds) {
 
 function renderFadeChoice() {
     const chosen = player.djMode ? "dj" : String(player.fadeSeconds);
-    for (const button of document.querySelectorAll("#playerFadeBox [data-fade]")) {
+    for (const button of document.querySelectorAll("#playerFadeMenu [data-fade]")) {
         button.setAttribute("aria-checked", String(button.dataset.fade === chosen));
     }
 }
 
-function closeSleepMenu() {
-    const menu = document.getElementById("playerSleepMenu");
+function closeFadeMenu() {
+    const menu = document.getElementById("playerFadeMenu");
     if (menu) menu.hidden = true;
 }
 
-function toggleSleepMenu() {
-    const menu = document.getElementById("playerSleepMenu");
-    if (!menu) return;
-    menu.hidden = !menu.hidden;
-    const fadeBox = document.getElementById("playerFadeBox");
-    if (fadeBox) fadeBox.hidden = !player.volumeAdjustable;
-    const fadeNote = document.getElementById("playerFadeNote");
-    if (fadeNote) fadeNote.hidden = player.volumeAdjustable;
+function toggleFadeMenu() {
+    const menu = document.getElementById("playerFadeMenu");
+    if (menu) menu.hidden = !menu.hidden;
 }
 
 document.addEventListener("click", (event) => {
-    const menu = document.getElementById("playerSleepMenu");
-    if (menu && !menu.hidden && !event.target.closest(".sleep-wrap")) menu.hidden = true;
+    const menu = document.getElementById("playerFadeMenu");
+    if (menu && !menu.hidden && !event.target.closest(".fade-wrap")) menu.hidden = true;
 });
 
 (function initFade() {

@@ -1123,7 +1123,13 @@ async function renderArtistPage(name) {
     const ticket = ++labTicket;
     const rows = await labIndex();
     if (ticket !== labTicket) return;
-    const artist = groupArtists(rows).find((a) => a.name === name);
+    let artist = groupArtists(rows).find((a) => a.name === name);
+    /* Соавтор без своих треков («A • B», B нигде не первый): страница из
+     * треков, где он есть. Раньше его страницы не было вовсе. */
+    if (!artist) {
+        const featured = rows.filter((t) => splitArtists(t.artist).includes(name));
+        if (featured.length) artist = { name, tracks: featured, cover: featured[0].path };
+    }
     const body = document.getElementById("artistBody");
     if (!artist) {
         body.replaceChildren(backBar("Назад", "viewLibrary"), el("p", "empty", "Такого артиста в фонотеке нет."));

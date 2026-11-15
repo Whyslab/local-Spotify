@@ -310,9 +310,11 @@ def for_track(rel_path: str, row: dict | None = None) -> dict:
     if path.exists():
         try:
             cached = json.loads(path.read_text(encoding="utf-8"))
-            fresh = cached.get("found") or (
+            # Выбранное руками — и «текст убран» тоже — не устаревает.
+            recent_miss = (
                 cached.get("rules", 1) >= RULES and (time.time() - cached.get("at", 0)) < MISS_TTL
             )
+            fresh = cached.get("found") or cached.get("chosen") or recent_miss
             if fresh:
                 return cached
         except (ValueError, OSError):
@@ -554,6 +556,35 @@ def save_custom(rel_path: str, row: dict, text: str) -> dict:
     return _store(rel_path, result)
 
 
+REMOVED_REASON = "Текст убран"
+
+
+def remove(rel_path: str, row: dict) -> dict:
+    """Убрать текст, который не подходит (15.11.2026).
+
+    Не просто стереть кэш: тогда обход фонотеки и следующее включение нашли
+    бы тот же чужой текст снова. Пишется «текста нет», выбранное руками, —
+    его не перезапишет ни обход, ни поиск (см. _store), а «Найти текст»
+    по-прежнему даёт выбрать другой или вставить свой.
+    """
+    result = {
+        "found": False,
+        "at": time.time(),
+        "rules": RULES,
+        "synced": [],
+        "plain": "",
+        "source": "",
+        "title": row.get("title") or "",
+        "artist": row.get("artist") or "",
+        "chosen": True,
+        "removed": True,
+        "via": "removed",
+        "reason": REMOVED_REASON,
+    }
+    with _store_lock:
+        return _write(rel_path, result)
+
+
 # ---------------------------------------------------------------------------
 # Обход фонотеки: текст ищется заранее, а не в момент включения
 # ---------------------------------------------------------------------------
@@ -566,7 +597,7 @@ def needs_lookup(rel_path: str, now: float | None = None) -> bool:
         cached = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return True
-    if cached.get("found"):
+    if cached.get("found") or cached.get("chosen"):
         return False
     now = time.time() if now is None else now
     return cached.get("rules", 1) < RULES or now - cached.get("at", 0) >= MISS_TTL

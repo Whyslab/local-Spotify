@@ -473,12 +473,12 @@ const SKIP_SWIPE_PX = 70;
 document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape" || !sheetOpen()) return;
     if (openMenu) return;
-    const sleep = document.getElementById("playerSleepMenu");
-    if (sleep && !sleep.hidden) {
-        /* Меню таймера — не из общих меню, Esc его само не закрывало. */
+    const fade = document.getElementById("playerFadeMenu");
+    if (fade && !fade.hidden) {
+        /* Меню перехода — не из общих меню, Esc его само не закрывало. */
         e.preventDefault();
-        closeSleepMenu();
-        document.getElementById("playerSleep").focus({ preventScroll: true });
+        closeFadeMenu();
+        document.getElementById("playerFade").focus({ preventScroll: true });
         return;
     }
     const el = document.activeElement;

@@ -234,6 +234,8 @@
           <button id="lyricsSync" class="ghost" onclick="resyncLyrics()" hidden>Синхронизировать</button>
           <!-- Есть всегда: текст мог найтись чужой, а мог не найтись вовсе. -->
           <button id="lyricsFind" class="ghost" onclick="openLyricsFinder()">Найти текст</button>
+          <!-- Только когда текст есть: чужой или не тот — убрать, и сам он больше не найдётся. -->
+          <button id="lyricsRemove" class="ghost" onclick="removeLyrics()" hidden>Удалить текст</button>
         </div>
       </div>
       <!-- tabindex: чтобы стрелки листали сам текст и слежение это замечало. -->
@@ -500,30 +502,21 @@
               aria-label="Очередь" title="Очередь" aria-pressed="false">
         <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h11M4 12h11M4 18h7M17 14v7M21 18l-4 3-4-3"/></svg>
       </button>
-      <!-- Таймер сна и плавный переход: одна кнопка, выбор — во всплывающем меню. -->
-      <div class="sleep-wrap">
-        <button id="playerSleep" class="icon-button" onclick="toggleSleepMenu()"
-                aria-label="Таймер сна" title="Таймер сна" aria-pressed="false" aria-haspopup="true">
-          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/></svg>
-          <span id="playerSleepLeft" class="repeat-one" hidden></span>
+      <!-- Плавный переход: выбор — во всплывающем меню. Таймера сна здесь
+           больше нет (убран 15.11.2026 по просьбе). На iOS громкость страницы
+           не слушается, переходов там нет — и кнопка не показывается. -->
+      <div id="playerFadeWrap" class="fade-wrap" hidden>
+        <button id="playerFade" class="icon-button" onclick="toggleFadeMenu()"
+                aria-label="Плавный переход" title="Плавный переход" aria-haspopup="true">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6c6 0 9 12 18 12M3 18c6 0 9-12 18-12"/></svg>
         </button>
-        <div id="playerSleepMenu" class="sleep-menu" role="menu" hidden>
-          <div class="sleep-title">Таймер сна</div>
-          <button role="menuitem" onclick="setSleep(null)">Выключен</button>
-          <button role="menuitem" onclick="setSleep(15)">15 минут</button>
-          <button role="menuitem" onclick="setSleep(30)">30 минут</button>
-          <button role="menuitem" onclick="setSleep(60)">60 минут</button>
-          <button role="menuitem" onclick="setSleep('track')">До конца трека</button>
-          <div id="playerFadeBox" hidden>
-            <div class="sleep-title">Плавный переход</div>
-            <button role="menuitemradio" data-fade="0" onclick="setFade(0)">Нет</button>
-            <button role="menuitemradio" data-fade="3" onclick="setFade(3)">3 секунды</button>
-            <button role="menuitemradio" data-fade="6" onclick="setFade(6)">6 секунд</button>
-            <button role="menuitemradio" data-fade="dj" onclick="setFade('dj')"
-                    title="Треки сводятся удар в удар, начало следующего слышно. Где не выйдет — затухание 3 секунды">Как диджей</button>
-          </div>
-          <p id="playerFadeNote" class="sleep-note" hidden>Плавных переходов здесь нет: громкость страницы
-            iOS не отдаёт. Переход «как диджей» — на ноутбуке.</p>
+        <div id="playerFadeMenu" class="fade-menu" role="menu" hidden>
+          <div class="fade-title">Плавный переход</div>
+          <button role="menuitemradio" data-fade="0" onclick="setFade(0)">Нет</button>
+          <button role="menuitemradio" data-fade="3" onclick="setFade(3)">3 секунды</button>
+          <button role="menuitemradio" data-fade="6" onclick="setFade(6)">6 секунд</button>
+          <button role="menuitemradio" data-fade="dj" onclick="setFade('dj')"
+                  title="Треки сводятся удар в удар, начало следующего слышно. Где не выйдет — затухание 3 секунды">Как диджей</button>
         </div>
       </div>
       </div>

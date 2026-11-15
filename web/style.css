@@ -373,6 +373,26 @@ button:disabled { opacity: .5; cursor: default; }
     margin-top: 2px;
 }
 
+/* Имя исполнителя — ссылка на его страницу, но выглядит как текст строки:
+   подчёркивание только под указателем и в фокусе. */
+.artist-link {
+    display: inline;
+    padding: 0;
+    margin: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    line-height: inherit;
+    text-align: inherit;
+    min-height: 0;
+    border-radius: 0;
+    cursor: pointer;
+}
+.artist-link:active { transform: none; }
+.artist-link:hover,
+.artist-link:focus-visible { text-decoration: underline; text-underline-offset: 2px; }
+
 .track-album {
     font-size: 12px;
     line-height: 16px;
@@ -2091,9 +2111,10 @@ html.sheet-lock, html.sheet-lock body { overflow: hidden; }
     }
 }
 
-/* Таймер сна: меню над кнопкой, число оставшихся минут — как «1» у повтора. */
-.sleep-wrap { position: relative; display: inline-flex; }
-.sleep-menu {
+/* Плавный переход: меню над кнопкой. */
+.fade-wrap { position: relative; display: inline-flex; }
+.fade-wrap[hidden] { display: none; }
+.fade-menu {
     position: absolute;
     bottom: calc(100% + 8px);
     right: 0;
@@ -2109,10 +2130,8 @@ html.sheet-lock, html.sheet-lock body { overflow: hidden; }
     border-radius: 14px;
     box-shadow: 0 18px 48px rgba(0, 0, 0, 0.6), inset 0 0 0 0.5px rgba(255, 255, 255, 0.1);
 }
-.sleep-menu[hidden] { display: none; }
-/* Кнопки перехода — в своём блоке, не прямые дети меню: без этого они вставали в строку. */
-#playerFadeBox:not([hidden]) { display: flex; flex-direction: column; }
-.sleep-menu button {
+.fade-menu[hidden] { display: none; }
+.fade-menu button {
     text-align: left;
     background: none;
     border: 0;
@@ -2123,12 +2142,11 @@ html.sheet-lock, html.sheet-lock body { overflow: hidden; }
     font-size: 15px;
     font-weight: 400;
 }
-.sleep-menu button:hover { background: rgba(255, 255, 255, 0.08); }
+.fade-menu button:hover { background: rgba(255, 255, 255, 0.08); }
 /* Выбранный переход: раньше выбор нигде не был виден — нажал и гадай. */
-.sleep-menu button[aria-checked="true"] { color: var(--accent, var(--text)); font-weight: 600; }
-.sleep-menu button[aria-checked="true"]::after { content: " ✓"; }
-.sleep-title { font-size: 13px; color: var(--text-3); padding: 6px 10px 2px; }
-.sleep-note { font-size: 13px; color: var(--text-3); padding: 6px 10px; margin: 0; max-width: 240px; }
+.fade-menu button[aria-checked="true"] { color: var(--accent, var(--text)); font-weight: 600; }
+.fade-menu button[aria-checked="true"]::after { content: " ✓"; }
+.fade-title { font-size: 13px; color: var(--text-3); padding: 6px 10px 2px; }
 
 /* Строки за пределами экрана браузер не раскладывает и не рисует: в подборке
    на тысячу треков это в разы быстрее (замер 30.09.2026: 265 → 26 мс на

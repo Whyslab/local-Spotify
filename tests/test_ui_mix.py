@@ -411,7 +411,7 @@ def test_the_chosen_transition_is_marked_and_remembered(opened):
     page.evaluate("setFade('dj')")
     assert (
         page.evaluate(
-            "document.querySelector('#playerFadeBox [data-fade=dj]').getAttribute('aria-checked')"
+            "document.querySelector('#playerFadeMenu [data-fade=dj]').getAttribute('aria-checked')"
         )
         == "true"
     )
@@ -455,26 +455,31 @@ def reach_the_end_of_a(page):
     assert page.evaluate("navigator.mediaSession.playbackState") == "playing"
 
 
-def test_the_sleep_timer_stops_the_music_after_the_outgoing_track_ended(opened):
+def test_pause_after_the_outgoing_track_ended_stops_the_music(opened):
+    """«Пауза», когда A уже доиграл и звучит одна связка: встать на B и молчать.
+    (Раньше этот путь проверял таймер сна; таймер убран 15.11.2026.)"""
     page, _, _ = opened
     reach_the_end_of_a(page)
-    page.evaluate("player.sleep = { until: Date.now() - 1 }; sleepTick()")
+    page.evaluate("togglePlay()")
     page.wait_for_timeout(800)
     assert page.evaluate("mix.run") is None
     assert page.evaluate("audioPaused()") is True
     assert page.evaluate("deck.every(el => el.paused)") is True
 
 
-def test_until_the_end_of_the_track_set_during_the_bridge_stops_after_it(opened):
-    page, _, _ = opened
-    start_and_reach_the_bridge(page, "d", "b", "c")
-    wait(page, "mix.run && mix.run.phase === 'bridge'", timeout=15)
-    page.evaluate("setSleep('track')")
-    wait(page, "player.audio.ended || mix.run === null", timeout=20)
-    page.wait_for_timeout(800)
-    assert page.evaluate("mix.run") is None
-    assert page.evaluate("deck.every(el => el.paused)") is True
-    assert page.evaluate("player.index") == 0
+def test_the_transition_button_is_absent_where_volume_is_fixed(server, browser):
+    """iPhone: громкость страницы не слушается — переходов нет, кнопки тоже."""
+    ios = """
+        Object.defineProperty(HTMLMediaElement.prototype, 'volume',
+            { get() { return 1; }, set(v) {}, configurable: true });
+    """
+    context, page, errors, _, _ = _open(server, browser, ios)
+    try:
+        assert page.evaluate("player.volumeAdjustable") is False
+        assert page.locator("#playerFadeWrap").is_hidden()
+        assert errors == []
+    finally:
+        context.close()
 
 
 def test_a_seek_after_the_outgoing_track_ended_plays_it_from_there(opened):

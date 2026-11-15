@@ -964,6 +964,17 @@ def lyrics_choose(req: LyricsChoiceRequest, authenticated: bool = Depends(verify
     return result
 
 
+class LyricsPathRequest(BaseModel):
+    path: str
+
+
+@app.post("/api/lyrics/remove")
+def lyrics_remove(req: LyricsPathRequest, authenticated: bool = Depends(verify_token)):
+    """Убрать текст, который не подходит. Сам он больше не найдётся;
+    «Найти текст» по-прежнему даёт выбрать другой или вставить свой."""
+    return lyrics.remove(req.path, _lyrics_row(req.path))
+
+
 class TransitionRequest(BaseModel):
     from_: str = Field(alias="from", max_length=1024)
     to: str = Field(max_length=1024)

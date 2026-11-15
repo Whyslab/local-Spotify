@@ -193,6 +193,30 @@ def test_a_fresh_miss_by_the_current_rules_is_not_asked_again(monkeypatch):
     assert lyrics.needs_lookup(ROW["path"], now=time.time() + lyrics.MISS_TTL + 1)
 
 
+def test_removed_lyrics_stay_removed(monkeypatch):
+    """«Удалить текст» (15.11.2026): чужой текст убран — ни включение, ни обход
+    фонотеки его не возвращают, даже когда промах давно устарел бы."""
+    monkeypatch.setattr(lyrics, "_search", lambda *a: entry("Travis Scott", "SICKO MODE", 312))
+    assert lyrics.for_track(ROW["path"], row=ROW)["found"] is True
+
+    removed = lyrics.remove(ROW["path"], ROW)
+    assert removed["found"] is False and removed["removed"] is True
+
+    asked = []
+    monkeypatch.setattr(lyrics, "_ask", lambda *a: asked.append(a) or {})
+    again = lyrics.for_track(ROW["path"], row=ROW)
+    assert again["found"] is False and again["removed"] is True
+    assert asked == []
+    assert not lyrics.needs_lookup(ROW["path"], now=time.time() + lyrics.MISS_TTL * 10)
+
+
+def test_lyrics_chosen_after_a_removal_replace_it(monkeypatch):
+    lyrics.remove(ROW["path"], ROW)
+    saved = lyrics.save_custom(ROW["path"], ROW, "своя строка")
+    assert saved["found"] is True
+    assert lyrics.for_track(ROW["path"], row=ROW)["plain"] == "своя строка"
+
+
 # ---------------------------------------------------------------------------
 # Обход фонотеки
 # ---------------------------------------------------------------------------

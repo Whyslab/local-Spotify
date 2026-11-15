@@ -104,7 +104,7 @@ function mixEnable() {
 }
 
 function bridgeLevel() {
-    return player.muted ? 0 : player.userVolume * Math.min(1, sleepLevel());
+    return player.muted ? 0 : player.userVolume;
 }
 
 /* Громкость подключённого элемента — его узлом (см. начало файла). Пока идёт
@@ -129,7 +129,7 @@ function mixPair() {
     const next = at >= 0 ? player.queue[at] : null;
     if (!current || !next || at === player.index) return null;
     if (isOutside(current) || isOutside(next)) return null;
-    if (player.repeat === "one" || (player.sleep && player.sleep.track)) return null;
+    if (player.repeat === "one") return null;
     return { from: current.path, to: next.path };
 }
 
@@ -232,7 +232,7 @@ function mixSounding() {
 function mixOwnsEnd() {
     const run = mix.run;
     if (!run) return false;
-    if (player.repeat === "one" || (player.sleep && player.sleep.track)) {
+    if (player.repeat === "one") {
         mixCancel(null, false);
         return false;
     }
@@ -374,7 +374,7 @@ function check(run) {
 
 /* Уровень элемента с таким усилением трека — по кнопкам плеера. */
 function levelOf(gain) {
-    return player.muted ? 0 : player.userVolume * gainFactor(gain) * Math.min(1, sleepLevel());
+    return player.muted ? 0 : player.userVolume * gainFactor(gain);
 }
 
 /* ---------------- Переход ---------------- */
@@ -582,7 +582,7 @@ function mixAdopt(run, docked, delta) {
     player.started = true;
     player.playingMode = player.queue[next] && player.queue[next].queued ? "manual" : player.queueMode;
     player.trackGain = stream.gain;
-    player.fadeLevel = Math.min(1, sleepLevel());
+    player.fadeLevel = 1;
     player.mixAdopted = true;
     applyVolume();
     trackStarted();

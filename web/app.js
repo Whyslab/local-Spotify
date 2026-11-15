@@ -2114,6 +2114,43 @@ function appendInChunks(box, rows) {
     }
 }
 
+/* Имя исполнителя — ссылкой на его страницу (с 15.11.2026). Соавторов теги
+ * склеивают через « • », и каждое имя ведёт на свою страницу. У трека со
+ * стороны (его нет в фонотеке) страницы нет — там просто текст. Нажатие не
+ * доходит до строки: она бы включила трек, а полоса плеера — раскрылась. */
+function splitArtists(artist) {
+    return String(artist || "").split(" • ").map((name) => name.trim()).filter(Boolean);
+}
+
+function fillArtistLinks(box, artist, path) {
+    box.replaceChildren();
+    const names = splitArtists(artist);
+    if (!names.length) return;
+    if (typeof path === "string" && path.startsWith("outside:")) {
+        box.textContent = names.join(" • ");
+        return;
+    }
+    names.forEach((name, i) => {
+        if (i) box.appendChild(document.createTextNode(" • "));
+        const link = document.createElement("button");
+        link.type = "button";
+        link.className = "artist-link";
+        link.textContent = name;
+        link.title = `Открыть исполнителя «${name}»`;
+        link.onclick = (event) => {
+            event.stopPropagation();
+            goToArtist(name);
+        };
+        box.appendChild(link);
+    });
+}
+
+function goToArtist(name) {
+    if (typeof closeTrackMenu === "function") closeTrackMenu();
+    if (typeof sheetOpen === "function" && sheetOpen()) collapsePlayer();
+    openArtistPage(name);
+}
+
 function libraryRow(t, rows) {
     const card = document.createElement("div");
     card.className = "track";
@@ -2138,7 +2175,7 @@ function libraryRow(t, rows) {
     if (t.artist) {
         const artistEl = document.createElement("div");
         artistEl.className = "track-artist";
-        artistEl.textContent = t.artist;
+        fillArtistLinks(artistEl, t.artist, t.path);
         info.appendChild(artistEl);
     }
 

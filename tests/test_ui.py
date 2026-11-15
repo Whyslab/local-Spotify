@@ -500,19 +500,18 @@ def test_where_volume_is_fixed_the_stream_is_asked_to_carry_the_gain(page):
     assert "norm" not in url  # the slider does it here
 
 
-def test_where_volume_is_fixed_the_menu_says_there_are_no_transitions(page):
-    """iPhone: no fade and no DJ mix, and the menu says so instead of hiding it silently."""
+def test_there_is_no_sleep_timer_only_the_transition_menu(page):
+    """Таймер сна убран 15.11.2026; кнопка-полумесяц стала «Плавный переход»."""
     open_library(page)
     row_action(page, "Loud", "Играть")
-    page.evaluate("player.volumeAdjustable = false")
-    page.get_by_role("button", name="Таймер сна").click()
-    assert page.locator("#playerFadeBox").is_hidden()
-    note = page.locator("#playerFadeNote")
-    assert note.is_visible() and "переход" in note.inner_text()
-    page.evaluate("closeSleepMenu(); player.volumeAdjustable = true")
-    page.get_by_role("button", name="Таймер сна").click()
-    assert page.locator("#playerFadeBox").is_visible() and note.is_hidden()
-    page.evaluate("closeSleepMenu()")
+    assert page.get_by_role("button", name="Таймер сна").count() == 0
+    assert page.evaluate("typeof setSleep") == "undefined"
+    page.get_by_role("button", name="Плавный переход").click()
+    menu = page.locator("#playerFadeMenu")
+    assert menu.is_visible()
+    assert menu.get_by_role("menuitemradio").count() == 4
+    assert "минут" not in menu.inner_text()
+    page.evaluate("closeFadeMenu()")
 
 
 def test_the_transition_choices_stand_one_per_line(page):
@@ -520,13 +519,12 @@ def test_the_transition_choices_stand_one_per_line(page):
     page.set_viewport_size({"width": 1266, "height": 603})
     open_library(page)
     row_action(page, "Loud", "Играть")
-    page.evaluate("player.volumeAdjustable = true")
-    page.get_by_role("button", name="Таймер сна").click()
+    page.get_by_role("button", name="Плавный переход").click()
     tops = page.evaluate(
-        "[...document.querySelectorAll('#playerFadeBox button')].map(b => b.getBoundingClientRect().top)"
+        "[...document.querySelectorAll('#playerFadeMenu button')].map(b => b.getBoundingClientRect().top)"
     )
     assert len(tops) == 4 and tops == sorted(tops) and len(set(tops)) == 4, tops
-    page.evaluate("closeSleepMenu()")
+    page.evaluate("closeFadeMenu()")
 
 
 def _controlled_by_worker(page):
@@ -2810,24 +2808,6 @@ def test_library_download_says_how_long(page):
     assert page.evaluate("libraryTimeLeft({bytes: 0, need: 40e6, started: Date.now()})") == ""
 
 
-def test_the_sleep_timer_counts_down_and_stops_playback(page):
-    open_library(page)
-    row_action(page, "Loud", "Играть")
-    page.wait_for_function("!player.audio.paused")
-
-    page.get_by_role("button", name="Таймер сна").click()
-    page.get_by_role("menuitem", name="15 минут").click()
-    assert page.locator("#playerSleepLeft").inner_text() == "15"
-
-    # Five seconds before the end the volume is halfway down...
-    page.evaluate("player.sleep.until = Date.now() + 5000; fadeTick()")
-    assert page.evaluate("player.fadeLevel") == pytest.approx(0.5, abs=0.1)
-    # ...and at the end playback stops and the timer clears itself.
-    page.evaluate("player.sleep.until = Date.now() - 1; sleepTick()")
-    assert page.evaluate("player.audio.paused") is True
-    assert page.locator("#playerSleepLeft").is_hidden()
-
-
 def test_retry_button_appears_only_with_failures(page):
     from adder import db
 
@@ -3829,6 +3809,70 @@ def test_no_lyrics_says_so_in_large_letters(page):
     assert size >= 26
 
 
+def test_unfitting_lyrics_can_be_removed(page):
+    """«Удалить текст» (15.11.2026): кнопка есть только при тексте; после неё
+    текста нет, и «Найти текст» на месте."""
+    page.set_viewport_size({"width": 390, "height": 844})
+    page.evaluate(
+        "fetch('/api/lyrics/custom', {method: 'POST', headers: {...headers(),"
+        " 'Content-Type': 'application/json'}, body: JSON.stringify("
+        "{path: 'Loud Band/Singles/Loud.opus', text: 'чужая строка'})}).then(r => r.status)"
+    )
+    open_library(page)
+    row(page, "Loud").locator(".track-title").click()
+    page.wait_for_function("!document.getElementById('player').hidden")
+    page.evaluate("expandPlayer('art')")
+    page.locator("#playerLyricsButton").click()
+    page.locator(".lyric").filter(has_text="чужая строка").wait_for()
+    remove = page.get_by_role("button", name="Удалить текст")
+    assert remove.is_visible()
+    remove.click()
+    empty = page.locator(".lyric-empty")
+    empty.wait_for()
+    assert empty.inner_text() == "Текст убран"
+    assert remove.is_hidden()
+    assert page.locator("#lyricsFind").is_visible()
+    # И после нового запроса — убран, а не найден снова.
+    data = page.evaluate(
+        "fetch('/api/lyrics?path=' + encodeURIComponent('Loud Band/Singles/Loud.opus'),"
+        " {headers: headers()}).then(r => r.json())"
+    )
+    assert data["found"] is False and data["removed"] is True
+
+
+def test_the_artist_name_opens_the_artist_page(page):
+    """С 15.11.2026: имя под названием трека и в плеере — ссылка на исполнителя;
+    нажатие не включает трек и не раскрывает плеер."""
+    page.set_viewport_size({"width": 1266, "height": 603})
+    open_library(page)
+    link = row(page, "Loud").locator(".artist-link", has_text="Loud Band")
+    link.click()
+    page.wait_for_function("activeView === 'viewArtist'")
+    assert "Loud Band" in page.locator("#artistBody").inner_text()
+    assert page.evaluate("player.queue.length") == 0  # трек не включился
+
+    open_library(page)
+    row(page, "Loud").locator(".track-title").click()
+    page.wait_for_function("!document.getElementById('player').hidden")
+    page.evaluate("switchView('viewLibrary')")
+    page.locator("#playerArtist .artist-link", has_text="Loud Band").click()
+    page.wait_for_function("activeView === 'viewArtist'")
+    assert page.evaluate("sheetOpen()") is False
+
+
+def test_a_featured_artist_gets_a_page_of_the_tracks_they_are_on(page):
+    rows = page.evaluate("labIndex()")
+    assert rows
+    featured = page.evaluate(
+        "labTracks.push({...labTracks[0], path: 'X/Singles/feat.opus', title: 'Feat',"
+        " artist: 'Loud Band • Guest Star', albumartist: ''}); labTracksAt = Date.now(); true"
+    )
+    assert featured
+    page.evaluate("openArtistPage('Guest Star')")
+    page.wait_for_function("document.getElementById('artistBody').innerText.includes('Feat')")
+    assert "Такого артиста" not in page.locator("#artistBody").inner_text()
+
+
 # --- Артист целиком ----------------------------------------------------------
 
 
@@ -4158,10 +4202,10 @@ _SWEEP_ENUMERATE = """([scope, controls, names, selectors, rowSelector, maxRows]
 }"""
 
 # Где мы (раздел, режим фонотеки, большой плеер и что в нём) и что поверх
-# (меню, таймер сна, диалог). Поверх закрывает Escape, «где» — открытие экрана.
+# (меню, меню перехода, диалог). Поверх закрывает Escape, «где» — открытие экрана.
 _SWEEP_STATE = """() => ({
     place: [activeView, libraryMode, sheetOpen(), sheetPanel],
-    over: [!!openMenu, !document.getElementById("playerSleepMenu").hidden,
+    over: [!!openMenu, !document.getElementById("playerFadeMenu").hidden,
            document.querySelectorAll("[role=dialog]:not(#player)").length],
 })"""
 
@@ -4193,7 +4237,7 @@ def _sweep_calm(page, sheet=None):
     collapse = page.evaluate(
         """(sheet) => {
             closeTrackMenu();
-            closeSleepMenu();
+            closeFadeMenu();
             for (const b of document.querySelectorAll("button"))
                 if (b.textContent.trim() === "Отмена" && b.checkVisibility()) b.click();
             for (const d of document.querySelectorAll("[role=dialog]:not(#player)")) d.remove();
@@ -4422,7 +4466,7 @@ SWEEP_SCREENS = [
     ("перемешать подборку", _sweep_menu(_sweep_playlist, "[onclick^='openPlaylistShuffle']"), "[role=menu]"),
     ("⋯ плеера", _sweep_player_menu("#playerMore"), "[role=menu]"),
     ("перемешать в плеере", _sweep_player_menu("#playerShuffle"), "[role=menu]"),
-    ("таймер сна", _sweep_player_menu("#playerSleep", "#playerSleepMenu"), "#playerSleepMenu"),
+    ("плавный переход", _sweep_player_menu("#playerFade", "#playerFadeMenu"), "#playerFadeMenu"),
     ("новая подборка", _sweep_new_playlist, DIALOG),
 ]  # fmt: skip
 
@@ -4660,12 +4704,45 @@ def test_releasing_the_seek_slider_where_it_was_taken_unfreezes_it(page):
     open_library(page)
     page.evaluate(f"playQueue([{LOUD}], 0, 'manual')")
     page.wait_for_function("player.started")
+    page.evaluate(
+        "document.getElementById('playerSeek').dispatchEvent("
+        "new PointerEvent('pointerdown', {bubbles: true}))"
+    )
     page.evaluate("previewSeek(document.getElementById('playerSeek').value)")
     assert page.evaluate("seekDragging") is True
     page.evaluate(
-        "document.getElementById('playerSeek').dispatchEvent(new PointerEvent('pointerup'))"
+        "document.getElementById('playerSeek').dispatchEvent("
+        "new PointerEvent('pointerup', {bubbles: true}))"
     )
     page.wait_for_function("seekDragging === false", timeout=2000)
+    page.evaluate("player.audio.pause()")
+
+
+def test_a_seek_released_away_from_the_slider_does_not_freeze_it(page):
+    """04.11.2026: seeked to 1:19, the sound went on from there, but the time and
+    the thumb stood still — the release came somewhere other than the slider.
+    Released elsewhere, or with no release event at all, it comes back."""
+    open_library(page)
+    page.evaluate(f"playQueue([{LOUD}], 0, 'manual')")
+    page.wait_for_function("player.started && player.audio.currentTime > 0")
+    slider = "document.getElementById('playerSeek')"
+    # Отпустили над другим элементом.
+    page.evaluate(f"{slider}.dispatchEvent(new PointerEvent('pointerdown', {{bubbles: true}}))")
+    page.evaluate(f"{slider}.value = '1'; previewSeek('1'); commitSeek('1')")
+    page.evaluate(f"{slider}.value = '5'; previewSeek('5')")  # ещё одно движение без change
+    page.evaluate("document.body.dispatchEvent(new PointerEvent('pointerup', {bubbles: true}))")
+    page.wait_for_function("seekDragging === false", timeout=2000)
+
+    # Никакого отпускания вовсе — время всё равно снова идёт.
+    page.evaluate(f"{slider}.value = '2'; previewSeek('2')")
+    assert page.evaluate("seekDragging") is True
+    page.wait_for_function(
+        "seekDragging === false && document.getElementById('playerElapsed').textContent"
+        " === formatTime(player.audio.currentTime)",
+        timeout=4000,
+    )
+    shown = page.evaluate(f"Number({slider}.value)")
+    assert abs(shown - page.evaluate("Math.floor(player.audio.currentTime)")) <= 1
     page.evaluate("player.audio.pause()")
 
 
