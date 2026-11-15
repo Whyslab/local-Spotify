@@ -410,6 +410,11 @@ def carry_over(old: str, new: str) -> None:
             own = None
         if own is not None and own.get("chosen"):
             return
+        # «Текст убран» не стирает найденный текст другого экземпляра: убран
+        # был текст, не подошедший к тому файлу (15.11.2026).
+        if cached.get("removed") and own is not None and own.get("found"):
+            return
+        _mark_search_dirty(old, new)
         try:
             _key(old).replace(_key(new))
         except OSError as exc:
@@ -417,8 +422,6 @@ def carry_over(old: str, new: str) -> None:
 
 
 def _write(rel_path: str, result: dict) -> dict:
-    with _search_lock:
-        _search_dirty.add(rel_path)  # поиск по текстам перечитает этот трек
     try:
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
         target = _key(rel_path)
@@ -427,7 +430,16 @@ def _write(rel_path: str, result: dict) -> dict:
         temporary.replace(target)
     except OSError as exc:
         logger.warning("lyrics: не смог записать кэш: %s", exc)
+    # После записи, не до: поиск, прочитавший трек в промежутке, снял бы
+    # отметку и до конца TTL показывал бы старый текст.
+    _mark_search_dirty(rel_path)
     return result
+
+
+def _mark_search_dirty(*paths: str) -> None:
+    """Поиск по текстам перечитает эти треки при следующем запросе."""
+    with _search_lock:
+        _search_dirty.update(paths)
 
 
 # ---------------------------------------------------------------------------
@@ -596,8 +608,9 @@ SEARCH_MIN = 3
 SEARCH_LIMIT = 300
 _SEARCH_TTL = 600  # тексты, записанные другим процессом (скрипты), — раз в 10 минут
 _search_lock = threading.Lock()
-_search_index: dict = {"rows": None, "at": 0.0, "by_path": {}}
-# Треки, чей текст записан после сборки индекса, — перечитать только их.
+# path → (строка индекса фонотеки, разобранный текст или None, если текста нет).
+_search_index: dict = {"at": 0.0, "by_path": {}}
+# Треки, чей текст записан после того, как индекс их прочитал, — перечитать.
 _search_dirty: set[str] = set()
 
 
@@ -643,29 +656,32 @@ def _search_entry(row: dict) -> dict | None:
 
 
 def _search_tracks() -> list[dict]:
+    """Разобранные тексты треков фонотеки, в её порядке.
+
+    Пересобирается по частям: трек перечитывается, только если его строка в
+    индексе фонотеки сменилась (файл заменили или перетегировали), текст
+    записан заново или трек новый. Целиком — раз в _SEARCH_TTL, ради текстов,
+    записанных другим процессом. library_index() отдаёт каждый раз новый
+    список, но строки неизменных файлов в нём — те же объекты.
+    """
     rows = library.library_index()
     with _search_lock:
         index = _search_index
-        by_path = index["by_path"]
-        if index["rows"] is not rows or time.time() - index["at"] > _SEARCH_TTL:
+        if time.time() - index["at"] > _SEARCH_TTL:
+            index.update(at=time.time(), by_path={})
             _search_dirty.clear()
-            by_path = {}
-            for row in rows:
-                entry = _search_entry(row)
-                if entry:
-                    by_path[row["path"]] = entry
-            index.update(rows=rows, at=time.time(), by_path=by_path)
-        elif _search_dirty:
-            rows_by_path = {row["path"]: row for row in rows}
-            for path in list(_search_dirty):
-                current = rows_by_path.get(path)
-                entry = _search_entry(current) if current else None
-                if entry:
-                    by_path[path] = entry
-                else:
-                    by_path.pop(path, None)
-            _search_dirty.clear()
-        return [by_path[row["path"]] for row in rows if row["path"] in by_path]
+        known = index["by_path"]
+        dirty = set(_search_dirty)
+        _search_dirty.clear()
+        by_path = {}
+        for row in rows:
+            path = row["path"]
+            seen = known.get(path)
+            if seen is None or seen[0] is not row or path in dirty:
+                seen = (row, _search_entry(row))
+            by_path[path] = seen
+        index["by_path"] = by_path
+        return [entry for _, entry in by_path.values() if entry]
 
 
 def search(query: str, limit: int = SEARCH_LIMIT) -> dict:

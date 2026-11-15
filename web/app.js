@@ -598,6 +598,7 @@ function duplicateSide(label, t) {
     const facts = document.createElement("div");
     facts.className = "track-album";
     facts.textContent = [
+        t.album,
         formatSeconds(t.duration),
         t.bitrate ? t.bitrate + " кбит/с" : null,
         t.codec,
@@ -680,15 +681,30 @@ async function duplicates() {
 
 /* Одинаковые песни во всей фонотеке: группа из двух и больше, у каждого
  * экземпляра — «оставить этот»; «оставить все» больше её не покажет. */
-async function libraryDuplicates() {
+/* Один запрос за раз: «Посмотреть» на главной и сам раздел просят список
+ * одновременно. epoch растёт с каждым решением — ответ, начатый до него,
+ * не рисует обратно только что решённую группу. */
+let libraryDuplicatesLoad = null;
+let libraryDuplicatesEpoch = 0;
+
+function libraryDuplicates() {
+    if (!libraryDuplicatesLoad) {
+        libraryDuplicatesLoad = loadLibraryDuplicates().finally(() => { libraryDuplicatesLoad = null; });
+    }
+    return libraryDuplicatesLoad;
+}
+
+async function loadLibraryDuplicates() {
     const box = document.getElementById("libraryDuplicates");
     const head = document.getElementById("libraryDuplicatesHead");
     const count = document.getElementById("libraryDuplicatesCount");
     if (!box || !head) return;
+    const epoch = libraryDuplicatesEpoch;
     try {
         const r = await fetch("/api/duplicates/library", { headers: headers() });
         if (!r.ok) return;
         const found = await r.json();
+        if (epoch !== libraryDuplicatesEpoch) return;
         head.hidden = found.length === 0;
         count.textContent = found.length ? String(found.length) : "";
         box.replaceChildren();
@@ -735,12 +751,19 @@ function libraryDuplicateCard(tracks) {
 
 async function resolveLibraryDuplicate(paths, keep, card) {
     for (const b of card.querySelectorAll("button")) b.disabled = true;
+    libraryDuplicatesEpoch++;
     try {
         const r = await fetch("/api/duplicates/library/resolve", {
             method: "POST",
             headers: { ...headers(), "Content-Type": "application/json" },
             body: JSON.stringify({ paths, keep }),
         });
+        if (r.status === 404) {
+            /* Группа уже не та (файл переименовали, пришёл третий экземпляр) —
+             * показать, какая она теперь. */
+            await libraryDuplicates();
+            return;
+        }
         if (!r.ok) {
             const data = await r.json().catch(() => ({}));
             throw new Error(data.detail || "ошибка " + r.status);

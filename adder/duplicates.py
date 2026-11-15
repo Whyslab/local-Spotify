@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 
 import mutagen
 
@@ -143,7 +144,23 @@ _JUNK = re.compile(
     r"|prod|feat|ft|remaster(?:ed)?|explicit|clean|премьера|premiere|mv|hd|hq)\b[^)\]]*[)\]]",
     re.IGNORECASE,
 )
-_TAIL = re.compile(r"\s+[-–—|]\s+(official|lyrics?|audio|video|клип|премьера)\b.*$", re.IGNORECASE)
+_TAIL = re.compile(
+    r"\s+[-–—|]\s+(official|lyrics?|audio|video|клип|премьера|prod)\b.*$", re.IGNORECASE
+)
+# Слова другой версии. Скобка или хвост с ними остаётся в названии, даже если
+# рядом мусорное слово: «(Live Video)», «(Sped Up Audio)», «(Remix ft. X)» —
+# не та же запись (замечание рецензента 15.11).
+_VERSION = re.compile(
+    r"\b(remix|rmx|live|sped|speed|slowed|nightcore|acoustic|instrumental|karaoke"
+    r"|cover|version|edit|mix|reverb|bass ?boost(?:ed)?|remake|demo|extended|mashup"
+    r"|flip|bootleg|vip|rework|ремикс|лайв|акустик\w*|верси\w*|кавер|минус"
+    r"|ускорен\w*|замедлен\w*)\b",
+    re.IGNORECASE,
+)
+
+
+def _drop_junk(match: re.Match) -> str:
+    return match.group(0) if _VERSION.search(match.group(0)) else ""
 
 
 def _fold(text: str) -> str:
@@ -164,8 +181,9 @@ def _artist_keys(row: dict) -> set[str]:
 
 
 def _title_key(row: dict) -> str:
-    title = lyrics.clean_title(row.get("title") or "")
-    title = _TAIL.sub("", _JUNK.sub("", title))
+    # Не lyrics.clean_title: тот режет всё после «(prod», и «Song (prod. X)
+    # (Remix)» стал бы просто «Song».
+    title = _TAIL.sub(_drop_junk, _JUNK.sub(_drop_junk, row.get("title") or ""))
     # «GONE.Fludd, ЛСП — Ути-Пути»: артист, попавший в название из имени ролика.
     for dash in (" — ", " – ", " - "):
         if dash in title:
@@ -234,12 +252,27 @@ def _open_groups(rows: list[dict]) -> list[list[dict]]:
     новый третий экземпляр покажет её снова.
     """
     dismissed = _dismissed()
-    task_pairs = {_signature([p["new"]["path"], p["existing"]["path"]]) for p in pairs()}
+    task_pairs = _task_pair_signatures()
     return [
         group
         for group in _raw_groups(rows)
         if _signature(row["path"] for row in group) not in dismissed | task_pairs
     ]
+
+
+def _task_pair_signatures() -> set[str]:
+    """Пары «похожий трек» из задач — по одной базе, без чтения файлов и без
+    правок в ней (pairs() читает теги и стирает устаревшие предупреждения)."""
+    tasks = db.db_query(
+        "SELECT result_path, warning, similar_to FROM tasks "
+        "WHERE status = 'done' AND warning IS NOT NULL AND warning != ''"
+    )
+    found = set()
+    for task in tasks:
+        other = _similar_path(task)
+        if other and task["result_path"]:
+            found.add(_signature([task["result_path"], other]))
+    return found
 
 
 def open_count(rows: list[dict] | None = None) -> int:
@@ -270,38 +303,44 @@ def _current_group(paths: list[str]) -> list[str]:
     raise LookupError("Такой группы одинаковых треков нет")
 
 
+_resolve_lock = threading.Lock()
+
+
 def keep_one(paths: list[str], keep: str) -> dict:
     """Оставить ``keep``, остальные из группы — в корзину; подборки и история
-    прослушиваний переходят к оставленному."""
-    group = _current_group(paths)
-    if keep not in group:
-        raise ValueError("keep must be one of the group")
-    removed = []
-    moved = 0
-    for path in group:
-        if path == keep:
-            continue
-        moved += playlists.swap_everywhere(path, keep)
-        left = playlists.still_pointing_at(path)
+    прослушиваний переходят к оставленному.
+
+    Сначала подборки всех лишних, потом удаление: если подборка одного не
+    обновилась, не удалено ничего — а не половина группы под ответом
+    «дубликат оставлен».
+    """
+    with _resolve_lock:
+        group = _current_group(paths)
+        if keep not in group:
+            raise ValueError("Оставить можно только один из этой группы")
+        extra = [path for path in group if path != keep]
+        moved = sum(playlists.swap_everywhere(path, keep) for path in extra)
+        left = sorted({name for path in extra for name in playlists.still_pointing_at(path)})
         if left:
-            raise RuntimeError(f"Подборки {', '.join(left)} не обновились — дубликат оставлен")
-        library.delete_track(path)
-        library.carry_history(path, keep)
-        removed.append(path)
+            raise RuntimeError(f"Подборки {', '.join(left)} не обновились — ничего не удалено")
+        for path in extra:
+            library.delete_track(path)
+            library.carry_history(path, keep)
     logger.info(
         "Library duplicate resolved: kept %s, removed %s, playlists updated %d",
         keep,
-        removed,
+        extra,
         moved,
         extra={"task_id": "system"},
     )
-    return {"kept": [keep], "removed": removed, "playlists": moved}
+    return {"kept": [keep], "removed": extra, "playlists": moved}
 
 
 def keep_all(paths: list[str]) -> dict:
     """«Оставить все»: больше эту группу не показывать."""
-    group = _current_group(paths)
-    signatures = _dismissed()
-    signatures.add(_signature(group))
-    _write_dismissed(signatures)
+    with _resolve_lock:
+        group = _current_group(paths)
+        signatures = _dismissed()
+        signatures.add(_signature(group))
+        _write_dismissed(signatures)
     return {"kept": group, "removed": []}

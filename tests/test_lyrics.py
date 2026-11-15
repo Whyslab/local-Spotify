@@ -218,7 +218,8 @@ def test_lyrics_chosen_after_a_removal_replace_it(monkeypatch):
 
 
 def _with_text(monkeypatch, rows, texts):
-    monkeypatch.setattr(library, "library_index", lambda: rows)
+    # Как настоящий: каждый раз новый список из тех же строк.
+    monkeypatch.setattr(library, "library_index", lambda: list(rows))
     for row in rows:
         if row["path"] in texts:
             lyrics._write(row["path"], {"found": True, **texts[row["path"]]})
@@ -263,6 +264,52 @@ def test_lyrics_search_sees_a_text_saved_a_moment_ago(monkeypatch):
     assert [h["path"] for h in lyrics.search("новая строчка")["hits"]] == ["A/one.m4a"]
     lyrics.remove("A/one.m4a", rows[0])
     assert lyrics.search("новая строчка")["hits"] == []
+
+
+def test_lyrics_search_reads_again_only_what_changed(monkeypatch):
+    """Поиск идёт на каждую букву: перечитывать все тексты фонотеки на каждый
+    запрос — секунда на сервере с двумя ядрами (замечание рецензента 15.11)."""
+    rows = [
+        {"path": f"A/{n}.m4a", "artist": "A", "title": str(n), "album": "", "duration": 90}
+        for n in range(5)
+    ]
+    _with_text(
+        monkeypatch, rows, {r["path"]: {"plain": f"строка номер {i}"} for i, r in enumerate(rows)}
+    )
+    reads = []
+    real = lyrics._search_entry
+    monkeypatch.setattr(lyrics, "_search_entry", lambda row: reads.append(row["path"]) or real(row))
+    lyrics.search("строка номер")
+    reads.clear()
+    assert len(lyrics.search("строка номер")["hits"]) == 5
+    assert reads == []
+    # Текст сохранён — перечитан только этот трек.
+    lyrics.save_custom("A/2.m4a", rows[2], "совсем новая")
+    assert [h["path"] for h in lyrics.search("совсем новая")["hits"]] == ["A/2.m4a"]
+    assert reads == ["A/2.m4a"]
+    # Файл перетегирован (новая строка индекса) — перечитан он один.
+    reads.clear()
+    rows[4] = {**rows[4], "title": "Четыре"}
+    (hit,) = lyrics.search("строка номер 4")["hits"]
+    assert hit["title"] == "Четыре" and reads == ["A/4.m4a"]
+
+
+def test_a_removed_text_does_not_wipe_the_kept_copys_own(monkeypatch):
+    """Из двух экземпляров оставлен один: «текст убран» у выброшенного не
+    затирает найденный текст оставленного."""
+    rows = [
+        {"path": "A/old.m4a", "artist": "A", "title": "Song", "album": "", "duration": 90},
+        {"path": "A/new.m4a", "artist": "A", "title": "Song", "album": "", "duration": 90},
+    ]
+    _with_text(monkeypatch, rows, {"A/new.m4a": {"plain": "свой хороший текст"}})
+    lyrics.remove("A/old.m4a", rows[0])
+    lyrics.carry_over("A/old.m4a", "A/new.m4a")
+    assert lyrics.for_track("A/new.m4a", rows[1])["plain"] == "свой хороший текст"
+    # А выбранный руками текст по-прежнему переходит — и поиск это видит.
+    lyrics.save_custom("A/old.m4a", rows[0], "выбранный руками")
+    lyrics.search("выбранный руками")
+    lyrics.carry_over("A/old.m4a", "A/new.m4a")
+    assert [h["path"] for h in lyrics.search("выбранный руками")["hits"]] == ["A/new.m4a"]
 
 
 # ---------------------------------------------------------------------------

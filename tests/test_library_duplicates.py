@@ -48,6 +48,14 @@ def test_other_versions_and_other_artists_are_not_the_same_song():
     assert not grouped(row("A", "Song", "a"), row("A", "Song (Remix)", "b"))
     assert not grouped(row("A", "Song", "a"), row("B", "Song", "b"))
     assert not grouped(row("A", "Song", "a"))
+    # Мусорное слово рядом со словом версии не делает скобку мусором.
+    for other in ("Song (Live Video)", "Song (Sped Up Audio)", "Song (Remix ft. B)",
+                  "Song (Official Remix)", "Song (Nightcore Lyrics)", "Song (prod. X) (Remix)",
+                  "Song - Official Remix", "Song (ремикс)"):  # fmt: skip
+        assert not grouped(row("A", "Song", "a"), row("A", other, "b")), other
+    # А просто мусор — по-прежнему та же песня.
+    for same in ("Song (Official Video)", "Song [prod. by X]", "Song - Lyrics", "Song (feat. B)"):
+        assert grouped(row("A", "Song", "a"), row("A", same, "b")), same
 
 
 @pytest.fixture()
@@ -102,6 +110,32 @@ def test_keeping_one_moves_the_rest_to_the_trash_and_playlists_follow(twins):
     assert [e.path for e in playlists.read("Mix").entries] == [keep]
     library.invalidate_library_index()
     assert duplicates.library_groups() == []
+
+
+def test_a_playlist_that_does_not_follow_leaves_every_copy_in_place(twins, monkeypatch):
+    """Из трёх экземпляров подборка третьего не обновилась — не удалён ни
+    один, а не второй уже в корзине под ответом «оставлен» (рецензент 15.11)."""
+    third = put("Strykalo/Singles/Кайен (2).m4a", "Стрыкало", "Кайен")
+    group = [*twins, third]
+    real = playlists.still_pointing_at
+    monkeypatch.setattr(
+        playlists, "still_pointing_at", lambda p: ["Mix"] if p == third else real(p)
+    )
+    with pytest.raises(RuntimeError, match="ничего не удалено"):
+        duplicates.keep_one(group, twins[0])
+    assert all((config.LIBRARY / p).exists() for p in group)
+    library.invalidate_library_index()
+    (left,) = duplicates.library_groups()
+    assert len(left["tracks"]) == 3
+
+
+def test_a_pair_already_asked_after_a_download_is_not_asked_twice(twins, monkeypatch):
+    """Пару «похожий трек» спрашивает раздел загрузок; на главной она не
+    повторяется — и подсчёт для главной не читает файлы (рецензент 15.11)."""
+    tid = db.db_exec("INSERT INTO tasks(url, status) VALUES('u', 'done')", ()).lastrowid
+    db.task_update(tid, result_path=twins[1], warning="похоже", similar_to=twins[0])
+    monkeypatch.setattr(duplicates, "describe", lambda p: pytest.fail("прочитал файл"))
+    assert duplicates.open_count() == 0
 
 
 def test_keep_all_hides_the_group_until_a_third_copy_comes(twins):

@@ -103,6 +103,7 @@ def tracks(tmp_path_factory):
         "b150": make_track(d / "b150.m4a", 150, 60),
         # Аккорд с первой секунды, первый удар — через 0,3 с: затакт.
         "b150_pickup": make_track(d / "b150p.m4a", 150, 60, intro=0.3),
+        "b150_late": make_track(d / "b150l.m4a", 150, 60, intro=6.0),
         "loud": make_track(d / "loud.m4a", 123, 60, level=1.0),
     }
 
@@ -263,8 +264,20 @@ def test_the_first_beat_of_b_lands_on_a_beat_of_a(tracks, voice_b):
     # Удары A в его файле — ровно каждые 0,5 с; в связке время A = a_from + t.
     phase = (plan["a_from"] + first) % 0.5
     assert min(phase, 0.5 - phase) < 0.02, (first, phase)
-    # И звук B до удара (аккорд затакта) в связке есть, а не срезан.
-    assert plan["b_from"] >= 0.3
+    # И звук B до удара (аккорд затакта) в связке есть, а не срезан: B
+    # звучит в связке с (b_solo_at − b_from) — за 0,3 с до своего удара.
+    b_sound = plan["b_solo_at"] - plan["b_from"]
+    assert abs(first - b_sound - 0.3) < 0.03, (first, b_sound)
+
+
+def test_a_long_start_without_drums_is_not_cut_off_for_the_beat(tracks):
+    """Первый удар B на 6-й секунде, голос сразу: подвести удар под удар A
+    можно, только срезав начало B — а с ним первые слова. Тогда B входит
+    первым звуком, как раньше (рецензент 15.11)."""
+    bridge, plan = render(tracks, "a120", "b150_late", voice_b=0.6)
+    assert plan["case"] == "cut"
+    # Из B в переходе сыграно меньше секунды — с самого его начала.
+    assert plan["b_from"] < 1.0, plan
 
 
 def test_a_track_without_beats_still_gets_a_bridge(tracks):

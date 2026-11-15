@@ -2536,7 +2536,18 @@ function highlightLyric(force) {
 
 /* ---------------- Текст: кнопка и слежение ---------------- */
 
+const REMOVE_LYRICS_LABEL = "Удалить текст";
+let removeLyricsArmed = null;  // таймер второго нажатия
+
+function disarmRemoveLyrics() {
+    clearTimeout(removeLyricsArmed);
+    removeLyricsArmed = null;
+    const button = document.getElementById("lyricsRemove");
+    if (button) button.textContent = REMOVE_LYRICS_LABEL;
+}
+
 function showRemoveLyrics(on) {
+    disarmRemoveLyrics();
     const button = document.getElementById("lyricsRemove");
     if (button) button.hidden = !on;
 }
@@ -2548,6 +2559,13 @@ async function removeLyrics() {
     const box = document.getElementById("lyricsBody");
     if (!track || !box) return;
     const button = document.getElementById("lyricsRemove");
+    /* Второе нажатие: текст мог быть вставлен руками, и вернуть его нечем. */
+    if (button && !removeLyricsArmed) {
+        button.textContent = "Точно удалить?";
+        removeLyricsArmed = setTimeout(disarmRemoveLyrics, 4000);
+        return;
+    }
+    disarmRemoveLyrics();
     if (button) button.disabled = true;
     try {
         const r = await fetch("/api/lyrics/remove", {
@@ -2705,7 +2723,8 @@ function commitSeek(value) {
     const slider = document.getElementById("playerSeek");
     if (!slider) return;
     const release = () => setTimeout(() => {
-        if (!seekDragging) return;
+        /* За 300 мс успели взять ползунок снова — это уже новое движение. */
+        if (!seekDragging || seekPointerDown) return;
         seekDragging = false;
         renderProgress();
     }, 300);

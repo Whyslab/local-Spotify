@@ -364,14 +364,21 @@ def render(job: dict, beats_hook=None) -> tuple[np.ndarray, dict]:
         together = decision["together"]
         # Первый удар B — на удар A: звук B до удара (затакт) идёт раньше.
         # Не влезает в четыре удара — A играет дольше, но не больше чем на
-        # CUT_EXTRA_MAX; остаток затакта срезается.
+        # CUT_EXTRA_MAX. Длиннее и этого (долгое начало без барабана при раннем
+        # голосе) — B входит первым звуком, как до версии 2: срезать начало B
+        # значило бы срезать первые слова.
         lead_beat = first_beat_b if len(beats_b) else 0.0
         extra = math.ceil((lead_beat - (4 - together) * beat) / beat - 1e-6)
-        k = 4 + min(CUT_EXTRA_MAX, max(0, extra))
+        if extra > CUT_EXTRA_MAX:
+            lead_beat, extra = 0.0, 0
+        k = 4 + max(0, extra)
         start_a = a_from(k * beat)
         sa = int(round(start_a * SR))
         a_mix = a[sa : sa + int(round(k * beat * SR))]
         n = len(a_mix)
+        # Отсчёт от start_a по темпу, а не ближайший найденный удар: найденные
+        # дрожат на кадр librosa (±12–25 мс), темп усреднён по 30 с и точнее
+        # (проверено 15.11 тестом про первый удар B).
         entry = n - min(n, int(round(together * beat * SR)))  # первый удар B
         b_at = entry - int(round(lead_beat * SR))  # первый звук B
         skip = max(0, -b_at)

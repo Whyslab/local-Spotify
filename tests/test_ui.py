@@ -3829,6 +3829,12 @@ def test_unfitting_lyrics_can_be_removed(page):
     remove = page.get_by_role("button", name="Удалить текст")
     assert remove.is_visible()
     remove.click()
+    # Первое нажатие только спрашивает: вставленный руками текст не вернуть.
+    sure = page.get_by_role("button", name="Точно удалить?")
+    sure.wait_for()
+    page.wait_for_timeout(200)
+    assert page.locator(".lyric").filter(has_text="чужая строка").count() == 1
+    sure.click()
     empty = page.locator(".lyric-empty")
     empty.wait_for()
     assert empty.inner_text() == "Текст убран"
@@ -5038,6 +5044,18 @@ def test_swiping_the_phone_mini_player_changes_the_track(page):
     assert page.evaluate("skips.length") == 2
     assert not page.evaluate("sheetOpen()")
     assert page.evaluate("document.querySelector('#player .player-track').style.transform") == ""
+    # С имени исполнителя (оно — кнопка) свайп работает так же и страницу
+    # артиста не открывает (замечание рецензента 15.11).
+    link = page.locator("#playerArtist .artist-link").first.bounding_box()
+    lx, ly = link["x"] + link["width"] / 2, link["y"] + link["height"] / 2
+    page.evaluate("window.artistOpened = 0; openArtistPage = () => { artistOpened++; }; true")
+    page.mouse.move(lx, ly)
+    page.mouse.down()
+    page.mouse.move(lx - 120, ly + 3, steps=10)
+    page.mouse.up()
+    page.wait_for_function("skips.length === 3")
+    page.wait_for_timeout(100)
+    assert page.evaluate("artistOpened") == 0
     # Простое нажатие по-прежнему раскрывает.
     page.locator("#player .player-track").click()
     page.wait_for_function("sheetOpen()")

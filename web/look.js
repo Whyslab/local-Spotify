@@ -395,7 +395,9 @@ const SKIP_SWIPE_PX = 70;
         /* Вся полоса, кроме кнопок: название, пока въезжает после прошлого
          * свайпа, стоит не на месте, и быстрый второй свайп мимо него
          * терялся бы. */
-        if (e.target.closest("button:not(.player-art), input, a")) return;
+        /* Имя исполнителя — тоже кнопка, но с него свайп начинается так же:
+         * это треть полосы. Нажатие без сдвига по-прежнему открывает артиста. */
+        if (e.target.closest("button:not(.player-art):not(.artist-link), input, a")) return;
         active = true;
         horizontal = null;
         startX = e.clientX;
