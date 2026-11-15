@@ -6,7 +6,7 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # 26.04: Playwright не ставит туда браузеры (15.11.2026)
     # 3.12 is the oldest supported; 3.14 is what the machine runs (Arch).
     strategy:
       matrix:
@@ -62,7 +62,7 @@ jobs:
   # (libvpx.so.9 is in neither the repositories nor the AUR), so the iPhone
   # tests run here only; locally conftest leaves them out and says so.
   webkit:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # 26.04: Playwright не ставит туда браузеры (15.11.2026)
     timeout-minutes: 20
     steps:
       - name: Checkout
