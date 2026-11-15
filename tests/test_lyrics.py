@@ -312,6 +312,17 @@ def test_a_removed_text_does_not_wipe_the_kept_copys_own(monkeypatch):
     assert [h["path"] for h in lyrics.search("выбранный руками")["hits"]] == ["A/new.m4a"]
 
 
+def test_a_carried_removal_still_takes_a_hand_chosen_text():
+    """Три экземпляра: к оставленному сперва перенесли «убран» от одного, потом
+    вставленный руками текст другого — текст побеждает."""
+    row = {"path": "A/x.m4a", "artist": "A", "title": "Song", "album": "", "duration": 90}
+    lyrics.remove("A/one.m4a", row)
+    lyrics.save_custom("A/two.m4a", row, "вставлен руками")
+    lyrics.carry_over("A/one.m4a", "A/keep.m4a")
+    lyrics.carry_over("A/two.m4a", "A/keep.m4a")
+    assert lyrics.for_track("A/keep.m4a", row)["plain"] == "вставлен руками"
+
+
 # ---------------------------------------------------------------------------
 # Обход фонотеки
 # ---------------------------------------------------------------------------

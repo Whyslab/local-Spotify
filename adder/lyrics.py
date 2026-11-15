@@ -408,17 +408,19 @@ def carry_over(old: str, new: str) -> None:
             own = json.loads(_key(new).read_text(encoding="utf-8"))
         except (OSError, ValueError):
             own = None
-        if own is not None and own.get("chosen"):
+        # «Текст убран» слабее выбранного текста: из трёх экземпляров тот, к
+        # кому уже перенесли «убран», ещё примет вставленный руками.
+        if own is not None and own.get("chosen") and not own.get("removed"):
             return
         # «Текст убран» не стирает найденный текст другого экземпляра: убран
         # был текст, не подошедший к тому файлу (15.11.2026).
         if cached.get("removed") and own is not None and own.get("found"):
             return
-        _mark_search_dirty(old, new)
         try:
             _key(old).replace(_key(new))
         except OSError as exc:
             logger.warning("lyrics: не смог перенести кэш: %s", exc)
+        _mark_search_dirty(old, new)  # после переноса, как в _write
 
 
 def _write(rel_path: str, result: dict) -> dict:

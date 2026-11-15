@@ -102,6 +102,12 @@ def pairs() -> list[dict]:
 
 def resolve(tid: int, keep: str) -> dict:
     """keep = "new", "existing" or "both". Returns what was done."""
+    # Тот же замок, что у одинаковых песен: пара и группа могут делить файл.
+    with _resolve_lock:
+        return _resolve(tid, keep)
+
+
+def _resolve(tid: int, keep: str) -> dict:
     if keep not in ("new", "existing", "both"):
         raise ValueError("keep must be 'new', 'existing' or 'both'")
     pair = next((p for p in pairs() if p["task"] == tid), None)
@@ -149,18 +155,24 @@ _TAIL = re.compile(
 )
 # Слова другой версии. Скобка или хвост с ними остаётся в названии, даже если
 # рядом мусорное слово: «(Live Video)», «(Sped Up Audio)», «(Remix ft. X)» —
-# не та же запись (замечание рецензента 15.11).
+# не та же запись (замечание рецензента 15.11). «version» и «edit» сами по
+# себе — не другая запись: «(Remastered Version)», «(Clean Edit)».
 _VERSION = re.compile(
     r"\b(remix|rmx|live|sped|speed|slowed|nightcore|acoustic|instrumental|karaoke"
-    r"|cover|version|edit|mix|reverb|bass ?boost(?:ed)?|remake|demo|extended|mashup"
-    r"|flip|bootleg|vip|rework|ремикс|лайв|акустик\w*|верси\w*|кавер|минус"
+    r"|cover|mix|reverb|bass ?boost(?:ed)?|remake|demo|extended|mashup"
+    r"|flip|bootleg|vip|rework|ремикс|лайв|акустик\w*|кавер|минус"
     r"|ускорен\w*|замедлен\w*)\b",
     re.IGNORECASE,
 )
+# В «(feat. …)» и «(prod. …)» — имена людей: «feat. Live» — не live-версия.
+_PEOPLE = re.compile(r"^\s*[(\[]\s*(feat|ft|prod)\b", re.IGNORECASE)
+# Название из ролика, обрезанное посреди скобки: «Song (prod. X».
+_OPEN_PROD = re.compile(r"\s*[(\[]\s*prod\b[^)\]]*$", re.IGNORECASE)
 
 
 def _drop_junk(match: re.Match) -> str:
-    return match.group(0) if _VERSION.search(match.group(0)) else ""
+    text = match.group(0)
+    return text if _VERSION.search(text) and not _PEOPLE.match(text) else ""
 
 
 def _fold(text: str) -> str:
@@ -183,7 +195,8 @@ def _artist_keys(row: dict) -> set[str]:
 def _title_key(row: dict) -> str:
     # Не lyrics.clean_title: тот режет всё после «(prod», и «Song (prod. X)
     # (Remix)» стал бы просто «Song».
-    title = _TAIL.sub(_drop_junk, _JUNK.sub(_drop_junk, row.get("title") or ""))
+    title = _OPEN_PROD.sub("", row.get("title") or "")
+    title = _TAIL.sub(_drop_junk, _JUNK.sub(_drop_junk, title))
     # «GONE.Fludd, ЛСП — Ути-Пути»: артист, попавший в название из имени ролика.
     for dash in (" — ", " – ", " - "):
         if dash in title:

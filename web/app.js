@@ -760,8 +760,11 @@ async function resolveLibraryDuplicate(paths, keep, card) {
         });
         if (r.status === 404) {
             /* Группа уже не та (файл переименовали, пришёл третий экземпляр) —
-             * показать, какая она теперь. */
+             * показать, какая она теперь. Запрос, начатый до решения, epoch
+             * отбросит: дождаться его и спросить заново. */
+            if (libraryDuplicatesLoad) await libraryDuplicatesLoad.catch(() => {});
             await libraryDuplicates();
+            if (card.isConnected) throw new Error("список изменился — открой раздел ещё раз");
             return;
         }
         if (!r.ok) {

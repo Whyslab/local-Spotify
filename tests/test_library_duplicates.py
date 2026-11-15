@@ -54,7 +54,9 @@ def test_other_versions_and_other_artists_are_not_the_same_song():
                   "Song - Official Remix", "Song (ремикс)"):  # fmt: skip
         assert not grouped(row("A", "Song", "a"), row("A", other, "b")), other
     # А просто мусор — по-прежнему та же песня.
-    for same in ("Song (Official Video)", "Song [prod. by X]", "Song - Lyrics", "Song (feat. B)"):
+    for same in ("Song (Official Video)", "Song [prod. by X]", "Song - Lyrics", "Song (feat. B)",
+                 "Song (Remastered Version)", "Song (Explicit Version)", "Song (Clean Edit)",
+                 "Song (feat. Live)", "Song (prod. X"):  # fmt: skip
         assert grouped(row("A", "Song", "a"), row("A", same, "b")), same
 
 
