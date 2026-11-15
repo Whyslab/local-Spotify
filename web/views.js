@@ -552,6 +552,15 @@ function renderLabHome(data) {
 
     const parts = [];
 
+    /* Одинаковые песни в фонотеке (с 15.11.2026): сказать и отвести туда,
+     * где выбирают, что оставить. */
+    if (data.duplicates > 0) {
+        const n = data.duplicates;
+        parts.push(labSection("Одинаковые песни", { label: "Посмотреть", run: openLibraryDuplicates },
+            el("p", "o-section-note",
+                `Нашлось ${n} ${plural(n, "песня", "песни", "песен")} в нескольких экземплярах — можно оставить по одному.`)));
+    }
+
     if (moods.length) {
         parts.push(labSection("Под настроение", null, labShelf(moods.map((m) => {
             const first = m.tracks[0];
@@ -1112,6 +1121,15 @@ function artistPhotoChanged(name) {
     const hero = document.querySelector("#artistBody .o-hero > .o-cover");
     const artist = groupArtists(labTracks || []).find((a) => a.name === name);
     if (hero) hero.replaceWith(artistHero(name, artist && artist.cover));
+}
+
+function openLibraryDuplicates() {
+    switchView("viewAdd");
+    const head = document.getElementById("libraryDuplicatesHead");
+    /* Список приходит запросом — прокрутить, когда он нарисован. */
+    libraryDuplicates().then(() => {
+        if (head && !head.hidden) head.scrollIntoView({ block: "start", behavior: "smooth" });
+    });
 }
 
 function openArtistPage(name) {

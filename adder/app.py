@@ -873,6 +873,34 @@ def resolve_duplicate(req: DuplicateChoice, authenticated: bool = Depends(verify
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
+@app.get("/api/duplicates/library")
+def library_duplicates(authenticated: bool = Depends(verify_token)):
+    """Одинаковые песни, уже лежащие в фонотеке: группами, с тем, по чему выбирать."""
+    return duplicates.library_groups()
+
+
+class LibraryDuplicateChoice(BaseModel):
+    paths: list[str] = Field(min_length=2, max_length=20)
+    keep: str | None = None  # None — оставить все
+
+
+@app.post("/api/duplicates/library/resolve")
+def resolve_library_duplicate(
+    req: LibraryDuplicateChoice, authenticated: bool = Depends(verify_token)
+):
+    """Оставить один экземпляр (прочие — в корзину, подборки следуют) или все."""
+    try:
+        if req.keep is None:
+            return duplicates.keep_all(req.paths)
+        return duplicates.keep_one(req.paths, req.keep)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 class TrackEdit(BaseModel):
     path: str
     title: str
@@ -1958,6 +1986,8 @@ def home(authenticated: bool = Depends(verify_token)):
         "weekly": picks,
         # Недавно слушали — из журнала прослушиваний, только то, что ещё на диске.
         "heard": as_tracks(stats.recently_heard(by_path)),
+        # Одинаковые песни фонотеки, ждущие решения (adder/duplicates.py).
+        "duplicates": duplicates.open_count(rows),
         "albums": [
             {
                 "artist": who,

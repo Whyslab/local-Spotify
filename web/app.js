@@ -330,6 +330,8 @@ function switchView(id) {
         section.hidden = section.id !== id;
     }
     if (id === "viewService") { libraryHealth(); blindScore(); }
+    /* Поиск по всей фонотеке — при входе в раздел, а не на каждом опросе. */
+    if (id === "viewAdd") libraryDuplicates();
     /* Вкладки и пункты левой панели подсвечивает views.js (syncNav): у
      * пункта «Артисты» это и фонотека в режиме артистов, и страница артиста. */
     if (typeof syncNav === "function") syncNav();
@@ -671,6 +673,85 @@ async function duplicates() {
         }
     } catch (e) {
         // Как и tasks(): следующий опрос повторит.
+    }
+}
+
+/* Одинаковые песни во всей фонотеке: группа из двух и больше, у каждого
+ * экземпляра — «оставить этот»; «оставить все» больше её не покажет. */
+async function libraryDuplicates() {
+    const box = document.getElementById("libraryDuplicates");
+    const head = document.getElementById("libraryDuplicatesHead");
+    const count = document.getElementById("libraryDuplicatesCount");
+    if (!box || !head) return;
+    try {
+        const r = await fetch("/api/duplicates/library", { headers: headers() });
+        if (!r.ok) return;
+        const found = await r.json();
+        head.hidden = found.length === 0;
+        count.textContent = found.length ? String(found.length) : "";
+        box.replaceChildren();
+        for (const group of found) box.appendChild(libraryDuplicateCard(group.tracks));
+    } catch (e) {
+        // Откроют раздел ещё раз — спросим снова.
+    }
+}
+
+function libraryDuplicateCard(tracks) {
+    const card = document.createElement("div");
+    card.className = "confirm duplicate";
+    const sides = document.createElement("div");
+    sides.className = "dup-sides";
+    const paths = tracks.map((t) => t.path);
+    tracks.forEach((t, i) => {
+        const side = duplicateSide(`Экземпляр ${i + 1}`, t);
+        const play = document.createElement("button");
+        play.className = "ghost";
+        play.textContent = "Послушать";
+        play.onclick = () => playQueue([t], 0, "manual");
+        const keep = document.createElement("button");
+        keep.className = "ghost";
+        keep.textContent = "Оставить этот";
+        keep.onclick = () => resolveLibraryDuplicate(paths, t.path, card);
+        const row = document.createElement("div");
+        row.className = "row";
+        row.append(play, keep);
+        side.appendChild(row);
+        sides.appendChild(side);
+    });
+    const all = document.createElement("button");
+    all.className = "ghost grow";
+    all.textContent = tracks.length > 2 ? "Оставить все" : "Оставить оба";
+    all.onclick = () => resolveLibraryDuplicate(paths, null, card);
+    const row = document.createElement("div");
+    row.className = "row";
+    row.appendChild(all);
+    const note = document.createElement("p");
+    note.textContent = "Лишние уедут в корзину; в подборках их место займёт оставленный.";
+    card.append(sides, note, row);
+    return card;
+}
+
+async function resolveLibraryDuplicate(paths, keep, card) {
+    for (const b of card.querySelectorAll("button")) b.disabled = true;
+    try {
+        const r = await fetch("/api/duplicates/library/resolve", {
+            method: "POST",
+            headers: { ...headers(), "Content-Type": "application/json" },
+            body: JSON.stringify({ paths, keep }),
+        });
+        if (!r.ok) {
+            const data = await r.json().catch(() => ({}));
+            throw new Error(data.detail || "ошибка " + r.status);
+        }
+        card.remove();
+        const left = document.querySelectorAll("#libraryDuplicates .duplicate").length;
+        document.getElementById("libraryDuplicatesHead").hidden = left === 0;
+        document.getElementById("libraryDuplicatesCount").textContent = left ? String(left) : "";
+        if (typeof labTracksAt !== "undefined") labTracksAt = 0;  // фонотека изменилась
+    } catch (e) {
+        for (const b of card.querySelectorAll("button")) b.disabled = false;
+        const note = card.querySelector("p");
+        if (note) note.textContent = "Не вышло: " + e.message;
     }
 }
 

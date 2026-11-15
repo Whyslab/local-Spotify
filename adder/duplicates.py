@@ -8,15 +8,21 @@ where that call is made, with both files side by side.
 Keeping one copy moves the other to the trash the way every deletion does, and
 first puts the kept copy in its place in every playlist, so a playlist never
 ends up pointing at a file that is gone.
+
+The same question is asked of the whole library too (15.11.2026): tracks
+already in it that are one song under two names — «Кайен» and «Кайен (1)»,
+«Smart» and «Смарт», a clip and a fan-clip — see library_groups().
 """
 
 from __future__ import annotations
 
+import json
 import logging
+import re
 
 import mutagen
 
-from . import config, db, library, playlists
+from . import config, db, enrich, library, lyrics, playlists, runtime
 
 logger = logging.getLogger(__name__)
 
@@ -124,3 +130,178 @@ def resolve(tid: int, keep: str) -> dict:
         extra={"task_id": tid},
     )
     return {"kept": [kept], "removed": removed, "playlists": moved}
+
+
+# ---------------------------------------------------------------------------
+# Одинаковые песни во всей фонотеке
+# ---------------------------------------------------------------------------
+
+# Хвосты названий от YouTube, а не от автора. «Speed up», «slowed», «remix»,
+# «live» здесь нет нарочно: это другие версии, а не та же запись.
+_JUNK = re.compile(
+    r"\s*[(\[][^)\]]*\b(lyrics?|audio|official|video|clip|клип|текст|visuali[sz]er"
+    r"|prod|feat|ft|remaster(?:ed)?|explicit|clean|премьера|premiere|mv|hd|hq)\b[^)\]]*[)\]]",
+    re.IGNORECASE,
+)
+_TAIL = re.compile(r"\s+[-–—|]\s+(official|lyrics?|audio|video|клип|премьера)\b.*$", re.IGNORECASE)
+
+
+def _fold(text: str) -> str:
+    """Одна запись для «Смарт» и «Smart», «ГЛАМ!» и «glam»: латиницей, без знаков."""
+    return enrich.normalize(text).translate(lyrics._LATIN).replace(" ", "")
+
+
+def _artists(row: dict) -> list[str]:
+    names = []
+    for joined in (row.get("artist") or "", row.get("albumartist") or ""):
+        for part in joined.split("•"):
+            names += enrich.split_artists(part.strip())
+    return names
+
+
+def _artist_keys(row: dict) -> set[str]:
+    return {_fold(name) for name in _artists(row)} - {""}
+
+
+def _title_key(row: dict) -> str:
+    title = lyrics.clean_title(row.get("title") or "")
+    title = _TAIL.sub("", _JUNK.sub("", title))
+    # «GONE.Fludd, ЛСП — Ути-Пути»: артист, попавший в название из имени ролика.
+    for dash in (" — ", " – ", " - "):
+        if dash in title:
+            head, tail = title.split(dash, 1)
+            heads = {_fold(head)} | {_fold(h) for h in re.split(r"\s*[,&•]\s*", head)}
+            if tail.strip() and heads & _artist_keys(row):
+                title = tail
+            break
+    return _fold(title)
+
+
+def _signature(paths) -> str:
+    return "\n".join(sorted(paths))
+
+
+def _dismissed() -> set[str]:
+    try:
+        data = json.loads(runtime.DUPLICATES_DISMISSED_FILE.read_text(encoding="utf-8"))
+        return {str(item) for item in data}
+    except (OSError, ValueError, TypeError):
+        return set()
+
+
+def _write_dismissed(signatures: set[str]) -> None:
+    target = runtime.DUPLICATES_DISMISSED_FILE
+    temporary = target.with_suffix(".tmp")
+    temporary.write_text(json.dumps(sorted(signatures), ensure_ascii=False), encoding="utf-8")
+    temporary.replace(target)
+
+
+def _raw_groups(rows: list[dict]) -> list[list[dict]]:
+    """Треки с одним названием и хотя бы одним общим артистом — группой.
+
+    Длина не в счёт: клип длиннее студийной записи, а это та же песня.
+    """
+    by_title: dict[str, list[dict]] = {}
+    for row in rows:
+        key = _title_key(row)
+        if key:
+            by_title.setdefault(key, []).append(row)
+    groups = []
+    for same_title in by_title.values():
+        left = list(same_title)
+        while len(left) > 1:
+            group = [left.pop(0)]
+            keys = _artist_keys(group[0])
+            grown = True
+            while grown:
+                grown = False
+                for row in list(left):
+                    if _artist_keys(row) & keys:
+                        group.append(row)
+                        keys |= _artist_keys(row)
+                        left.remove(row)
+                        grown = True
+            if len(group) > 1:
+                groups.append(group)
+    return groups
+
+
+def _open_groups(rows: list[dict]) -> list[list[dict]]:
+    """Группы, о которых ещё не решено.
+
+    Пара, уже показанная как «похожий трек» после скачивания (pairs()), здесь
+    не повторяется; «оставить все» убирает группу, пока в ней те же файлы, —
+    новый третий экземпляр покажет её снова.
+    """
+    dismissed = _dismissed()
+    task_pairs = {_signature([p["new"]["path"], p["existing"]["path"]]) for p in pairs()}
+    return [
+        group
+        for group in _raw_groups(rows)
+        if _signature(row["path"] for row in group) not in dismissed | task_pairs
+    ]
+
+
+def open_count(rows: list[dict] | None = None) -> int:
+    """Сколько групп ждёт решения — для главной, без чтения файлов."""
+    return len(_open_groups(library.library_index() if rows is None else rows))
+
+
+def library_groups() -> list[dict]:
+    """Одинаковые песни, о которых ещё не решено, — с тем, по чему выбирать."""
+    found = []
+    for group in _open_groups(library.library_index()):
+        described = [d for d in (describe(row["path"]) for row in group) if d]
+        if len(described) > 1:
+            found.append({"tracks": described})
+    return found
+
+
+def _current_group(paths: list[str]) -> list[str]:
+    """Группа из этих путей, если она и сейчас такая; иначе LookupError.
+
+    Удалять можно только то, что сам поиск назвал одинаковым: иначе этот
+    запрос стирал бы любой трек фонотеки.
+    """
+    wanted = _signature(paths)
+    for group in _raw_groups(library.library_index()):
+        if _signature(row["path"] for row in group) == wanted:
+            return sorted(paths)
+    raise LookupError("Такой группы одинаковых треков нет")
+
+
+def keep_one(paths: list[str], keep: str) -> dict:
+    """Оставить ``keep``, остальные из группы — в корзину; подборки и история
+    прослушиваний переходят к оставленному."""
+    group = _current_group(paths)
+    if keep not in group:
+        raise ValueError("keep must be one of the group")
+    removed = []
+    moved = 0
+    for path in group:
+        if path == keep:
+            continue
+        moved += playlists.swap_everywhere(path, keep)
+        left = playlists.still_pointing_at(path)
+        if left:
+            raise RuntimeError(f"Подборки {', '.join(left)} не обновились — дубликат оставлен")
+        library.delete_track(path)
+        library.carry_history(path, keep)
+        removed.append(path)
+    logger.info(
+        "Library duplicate resolved: kept %s, removed %s, playlists updated %d",
+        keep,
+        removed,
+        moved,
+        extra={"task_id": "system"},
+    )
+    return {"kept": [keep], "removed": removed, "playlists": moved}
+
+
+def keep_all(paths: list[str]) -> dict:
+    """«Оставить все»: больше эту группу не показывать."""
+    group = _current_group(paths)
+    signatures = _dismissed()
+    signatures.add(_signature(group))
+    _write_dismissed(signatures)
+    return {"kept": group, "removed": []}

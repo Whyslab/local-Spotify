@@ -46,6 +46,8 @@ ARTIST_IMPORT_FILE = PROJECT / "artist-import.json"
 NEW_RELEASES_FILE = PROJECT / "new-releases.json"
 # Подборка недели (adder/weekly.py): собирает ночной проход, читает главная.
 WEEKLY_FILE = PROJECT / "weekly.json"
+# Одинаковые песни фонотеки, о которых сказано «оставить все» (adder/duplicates.py).
+DUPLICATES_DISMISSED_FILE = PROJECT / "duplicates-dismissed.json"
 # yt-dlp keeps player data here and Deno its compiled scripts (both honour
 # XDG_CACHE_HOME). Their default, ~/.cache, is read-only under the systemd
 # unit's ProtectHome=read-only, so each call started from scratch.

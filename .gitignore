@@ -99,6 +99,7 @@ adder/artist-import.json
 # в них состав фонотеки и что слушали, а репозиторий публичный.
 adder/new-releases.json
 adder/weekly.json
+adder/duplicates-dismissed.json
 # yt-dlp and Deno caches (XDG_CACHE_HOME for yt-dlp calls)
 adder/cache/
 

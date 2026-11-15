@@ -3873,6 +3873,47 @@ def test_a_featured_artist_gets_a_page_of_the_tracks_they_are_on(page):
     assert "Такого артиста" not in page.locator("#artistBody").inner_text()
 
 
+def test_library_duplicates_are_told_on_home_and_chosen_in_add(page):
+    """С 15.11.2026: одинаковые песни во всей фонотеке — главная говорит,
+    «Добавить» показывает экземпляры рядом и даёт оставить один."""
+    page.evaluate(
+        """() => {
+        window.__resolved = [];
+        const real = window.fetch;
+        const twin = (path) => ({path, title: 'Кайен', artist: 'Стрыкало', duration: 181,
+                                 codec: 'opus', bitrate: 128, size: 3000000, source: ''});
+        window.fetch = (url, opts) => {
+            const u = String(url);
+            if (u.includes('/api/duplicates/library/resolve')) {
+                window.__resolved.push(JSON.parse(opts.body));
+                return Promise.resolve(new Response('{}', {status: 200}));
+            }
+            if (u.includes('/api/duplicates/library')) {
+                return Promise.resolve(new Response(JSON.stringify([
+                    {tracks: [twin('S/Кайен.m4a'), twin('S/Кайен (1).m4a')]}]), {status: 200}));
+            }
+            return real(url, opts);
+        };
+        renderLabHome({duplicates: 1});
+        }"""
+    )
+    home = page.locator("#homeBody .o-section", has_text="Одинаковые песни")
+    assert home.is_visible()
+    home.get_by_role("button", name="Посмотреть").click()
+    page.wait_for_function("activeView === 'viewAdd'")
+    card = page.locator("#libraryDuplicates .duplicate")
+    card.wait_for()
+    assert card.get_by_role("button", name="Оставить этот").count() == 2
+    card.get_by_role("button", name="Оставить этот").nth(1).click()
+    page.wait_for_function("window.__resolved.length === 1")
+    assert page.evaluate("window.__resolved[0]") == {
+        "paths": ["S/Кайен.m4a", "S/Кайен (1).m4a"],
+        "keep": "S/Кайен (1).m4a",
+    }
+    page.wait_for_function("!document.querySelector('#libraryDuplicates .duplicate')")
+    assert page.locator("#libraryDuplicatesHead").is_hidden()
+
+
 # --- Артист целиком ----------------------------------------------------------
 
 
