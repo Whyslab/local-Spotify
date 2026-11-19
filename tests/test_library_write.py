@@ -908,6 +908,36 @@ def test_a_replacement_under_the_same_name_takes_the_old_path(app, monkeypatch):
     assert not task["warning"]
 
 
+def test_a_replacement_in_place_rewrites_the_length_in_every_playlist(app, monkeypatch):
+    """18.11: Cristoforo Colombo заменён на месте (31:28 → 1:35), а в «Клипах»
+    осталось #EXTINF:1888 — внешние плееры и Navidrome читают длину оттуда."""
+    from adder import library, playlists
+
+    monkeypatch.setattr(playlists, "HISTORY_DIR", config.LIBRARY.parent / "history")
+    monkeypatch.setattr(runtime, "guard_real_library", lambda *a, **k: None)
+    youtube(app, monkeypatch, {"title": "A - New", "uploader": "x"})
+    deezer(app, monkeypatch, None)
+    covers(app, monkeypatch)
+    run(app)
+    path = "A/Singles/New.m4a"
+    playlists.create("Клипы", [path])
+    playlists.create("Другая", ["A/Singles/Other.m4a"])
+    stale = "#EXTM3U\n#EXTINF:1888,A - New (альбом целиком)\nA/Singles/New.m4a\n"
+    (config.LIBRARY / "Клипы.m3u").write_text(stale, encoding="utf-8")
+    other = (config.LIBRARY / "Другая.m3u").read_text(encoding="utf-8")
+
+    task = _replace(app, monkeypatch, path)
+
+    assert task["status"] == "done", task["error"]
+    assert task["result_path"] == path
+    text = (config.LIBRARY / "Клипы.m3u").read_text(encoding="utf-8")
+    seconds = int(next(r for r in library.library_index() if r["path"] == path)["duration"])
+    assert f"#EXTINF:{seconds},A - New\n" in text
+    assert "1888" not in text
+    assert playlists.parse(text) == [path]
+    assert (config.LIBRARY / "Другая.m3u").read_text(encoding="utf-8") == other  # не тронута
+
+
 def test_a_failed_move_in_place_puts_the_old_file_back(app, monkeypatch):
     monkeypatch.setattr(runtime, "guard_real_library", lambda *a, **k: None)
     monkeypatch.setattr(config, "MAX_RETRIES", 0)

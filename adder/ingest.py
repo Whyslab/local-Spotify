@@ -1995,6 +1995,12 @@ def ingest_temp_file(
             # Тот же путь — файл уже лёг на место старого (_take_its_place).
             outcome["replaced"] = relative == replace_of or _apply_replacement(tid, relative)
 
+        if relative == replace_of:
+            # Путь прежний, а длина другая: #EXTINF в подборках — новый.
+            from . import playlists
+
+            best_effort("the playlist lengths", lambda: playlists.refresh_lengths(relative))
+
         if not best_effort("the replacement", replace):
             # Видно в панели: иначе «готово» читалось бы как «заменено».
             best_effort(

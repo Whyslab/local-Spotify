@@ -314,6 +314,38 @@ def swap_everywhere(old_path: str, new_path: str) -> int:
     return _rewrite_everywhere(old_path, new_path)
 
 
+def refresh_lengths(rel_path: str) -> int:
+    """Файл заменили на том же пути (другая версия — другая длина): переписать
+    #EXTINF во всех подборках, где он есть. Возвращает число подборок.
+
+    Плееру строка не нужна — длину он берёт из индекса, — но внешние плееры и
+    Navidrome читают её из файла: у Cristoforo Colombo после замены 18.11 в
+    «Клипах» осталось 31:28 вместо 1:35. Пути не меняются, поэтому прежний вид
+    в историю не уходит: правка не та, которую стоит откатывать.
+    """
+    changed = 0
+    for entry in listing():
+        name = entry["name"]
+        try:
+            with _lock_for(name):
+                path = playlist_path(name)
+                if not path.exists():
+                    continue
+                text = path.read_text(encoding="utf-8")
+                paths = parse(text)
+                if not any(_same_track(p, rel_path) for p in paths):
+                    continue
+                fresh = render(paths)
+                if fresh == text:
+                    continue
+                _atomic_write(path, fresh)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Playlist %r: длина %s не переписана: %s", name, rel_path, exc)
+            continue
+        changed += 1
+    return changed
+
+
 def drop_everywhere(old_path: str) -> int:
     """Убрать `old_path` из всех подборок; остальные треки остаются на своих местах.
 
