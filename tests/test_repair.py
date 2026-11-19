@@ -494,3 +494,48 @@ def test_the_api_needs_the_token(lib):
 def test_a_result_is_json_with_the_file_stamp(examined, lib):
     result = json.loads(_row()["result"])
     assert result["stamp"] == repair._stamp(lib)
+
+
+def test_a_version_that_does_not_match_the_file_is_not_the_best():
+    """Champagne Squirt, живой разбор 19.11.2026: загрузка со сходством 0,06
+    стала «лучшей», а клип со сходством 0,98, отличающийся от файла на словах
+    про наркотики, и был оригиналом."""
+    result = repair.assess(
+        233.0,
+        [
+            {"video_id": "upl", "kind": "upload", "duration": 234, "compared": compared(0.057)},
+            {
+                "video_id": "clip",
+                "kind": "clip",
+                "duration": 234,
+                "compared": compared(0.976, spots=[(30.0, 30.5, "file"), (31.0, 31.5, "other")]),
+            },
+        ],  # fmt: skip
+        LINES,
+    )
+    assert result["best"] == "clip" and result["better"]
+    assert [p["kind"] for p in result["problems"]] == ["words"]
+
+
+def test_when_no_version_matches_none_is_called_better():
+    """BLESSED: клип 2:35, все три версии 1:55, звук не совпал ни с одной."""
+    result = repair.assess(
+        155.0,
+        [
+            {
+                "video_id": "s",
+                "kind": "studio",
+                "duration": 115,
+                "compared": compared(0.022, file_s=155, cand_s=115),
+            },
+            {
+                "video_id": "u",
+                "kind": "upload",
+                "duration": 115,
+                "compared": compared(0.021, file_s=155, cand_s=115),
+            },
+        ],  # fmt: skip
+        LINES,
+    )
+    assert not result["better"]
+    assert "Длиннее песни (2:35 против 1:55)" in result["problems"][0]["text"]

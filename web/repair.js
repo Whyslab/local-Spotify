@@ -177,15 +177,13 @@ async function repairAction(what, item, card, note) {
         });
         const data = await r.json().catch(() => ({}));
         if (!r.ok) throw new Error(data.detail || "Не вышло");
-        if (what === "replace") {
-            /* Играет или стоит в очереди — звук и длина новые (как после
-             * «Заменить по ссылке»). */
-            if (typeof applyReplacement === "function") await applyReplacement(item.path, item.path);
-            setPlaylistNote((data.note || "Заменено") + ". Трек убран из «Клипов».");
-        } else if (what === "keep") {
-            setPlaylistNote("Оставлен как есть и убран из «Клипов».");
-        }
+        /* Играет или стоит в очереди — звук и длина новые (как после
+         * «Заменить по ссылке»). */
+        if (what === "replace" && typeof applyReplacement === "function") await applyReplacement(item.path, item.path);
+        /* Записка — после перезагрузки: openPlaylist её стирает. */
         await openPlaylist(REPAIR_PLAYLIST);
+        if (what === "replace") setPlaylistNote((data.note || "Заменено") + ". Трек убран из «Клипов».");
+        else if (what === "keep") setPlaylistNote("Оставлен как есть и убран из «Клипов».");
     } catch (e) {
         for (const b of card.querySelectorAll("button")) b.disabled = false;
         note.textContent = e.message;

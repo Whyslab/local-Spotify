@@ -392,7 +392,17 @@ def assess(current_seconds: float, compared: list[dict], synced: list[dict]) -> 
             }
         )
     if compared and not any(r["same"] for r in rated) and "scenes" not in seen:
-        problem("other", "Не совпадает ни с одной версией — другая запись (концерт?)")
+        if reference and current_seconds - reference > SCENE_SECONDS:
+            # BLESSED (19.11.2026): клип 2:35 против песни 1:55, звук не
+            # совпал ни с одной из трёх версий — сцены или другое сведение.
+            problem(
+                "other",
+                f"Длиннее песни ({_clock(current_seconds)} против "
+                f"{_clock(reference)}) и по звуку не совпадает ни с одной версией — "
+                "клип со сценами или другая запись",
+            )
+        else:
+            problem("other", "Не совпадает ни с одной версией — другая запись (концерт?)")
 
     words_wanted = "words" in seen
 
@@ -403,11 +413,22 @@ def assess(current_seconds: float, compared: list[dict], synced: list[dict]) -> 
             else {"studio": 0, "upload": 1, "clip": 2}
         )[r["kind"]]
         off = abs((r.get("duration") or 0) - reference) if reference else 0.0
-        return (bool(r["muted"]), r["scenes"], bool(r["unsure"]), kind_rank, off)
+        # Сначала — сверенные с файлом: несовпавшую по звуку проверить было
+        # нечем (Champagne Squirt 19.11.2026: «лучшей» стала загрузка со
+        # сходством 0,06, а клип 0,98 — и есть оригинал). «unsure» — места,
+        # где версия отличается от файла на словах про наркотики, — не минус:
+        # у подцензурного файла так выглядит именно оригинал.
+        return (bool(r["muted"]), not r["same"], r["scenes"], kind_rank, off)
 
     ordered = sorted(rated, key=rank)
     best = ordered[0] if ordered else None
-    better = bool(problems) and best is not None and not best["muted"] and not best["scenes"]
+    better = (
+        bool(problems)
+        and best is not None
+        and best["same"]
+        and not best["muted"]
+        and not best["scenes"]
+    )
     place = None
     if best is not None:
         first = min((p["at"] for p in problems if p.get("at") is not None), default=None)

@@ -909,7 +909,7 @@ def test_a_replacement_under_the_same_name_takes_the_old_path(app, monkeypatch):
 
 
 def test_a_replacement_in_place_rewrites_the_length_in_every_playlist(app, monkeypatch):
-    """18.11: Cristoforo Colombo заменён на месте (31:28 → 1:35), а в «Клипах»
+    """18.11: Cristoforo Colombo заменён на месте (31:28 → 1:35), а в подборке
     осталось #EXTINF:1888 — внешние плееры и Navidrome читают длину оттуда."""
     from adder import library, playlists
 
@@ -920,17 +920,17 @@ def test_a_replacement_in_place_rewrites_the_length_in_every_playlist(app, monke
     covers(app, monkeypatch)
     run(app)
     path = "A/Singles/New.m4a"
-    playlists.create("Клипы", [path])
+    playlists.create("Вечер", [path])
     playlists.create("Другая", ["A/Singles/Other.m4a"])
     stale = "#EXTM3U\n#EXTINF:1888,A - New (альбом целиком)\nA/Singles/New.m4a\n"
-    (config.LIBRARY / "Клипы.m3u").write_text(stale, encoding="utf-8")
+    (config.LIBRARY / "Вечер.m3u").write_text(stale, encoding="utf-8")
     other = (config.LIBRARY / "Другая.m3u").read_text(encoding="utf-8")
 
     task = _replace(app, monkeypatch, path)
 
     assert task["status"] == "done", task["error"]
     assert task["result_path"] == path
-    text = (config.LIBRARY / "Клипы.m3u").read_text(encoding="utf-8")
+    text = (config.LIBRARY / "Вечер.m3u").read_text(encoding="utf-8")
     seconds = int(next(r for r in library.library_index() if r["path"] == path)["duration"])
     assert f"#EXTINF:{seconds},A - New\n" in text
     assert "1888" not in text

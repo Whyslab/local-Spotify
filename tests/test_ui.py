@@ -2307,10 +2307,11 @@ def test_reconcile_uses_one_library_diff(page):
     page.on("request", lambda r: seen.append(r.url))
     page.evaluate("reconcileDownloads(true)")
     asked = [u for u in seen if "/api/" in u and "/api/cover" not in u and "/api/lyrics" not in u]
-    assert [u for u in asked if "/api/library" in u] == [
+    # /api/library/replaced — список заменённых на месте, не список фонотеки.
+    assert [u for u in asked if "/api/library?" in u] == [
         u for u in asked if "/api/library?limit=100000" in u and "fresh=1" in u
     ]
-    assert len([u for u in asked if "/api/library" in u]) == 1
+    assert len([u for u in asked if "/api/library?" in u]) == 1
     assert not [u for u in asked if "/api/stream" in u], asked
     page.evaluate("removeAllDownloads()")
 
