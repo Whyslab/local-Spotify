@@ -531,6 +531,10 @@ class PlayRequest(BaseModel):
     # without network later, and the time of the request would be hours or
     # days off. Plays queued before the field existed come without it.
     heard_at: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    # The order was shuffled -- by the player's shuffle button, a «Перемешать»
+    # button or the server. «manual» alone mixed a shuffled playlist with one
+    # played top to bottom. Plays queued before the field existed come without it.
+    shuffled: bool = False
 
 
 # A client clock this far ahead is still believed (and pulled back to now).
@@ -2482,8 +2486,8 @@ def record_play(req: PlayRequest, authenticated: bool = Depends(verify_token)):
     # it ignores the second copy. Without heard_at two plays cannot be told apart.
     cur = db.db_exec(
         "INSERT OR IGNORE INTO plays"
-        "(path, played_at, played_seconds, duration, skipped, source, mode, heard_at) "
-        "VALUES(?, datetime(?, 'unixepoch', 'localtime'), ?, ?, ?, ?, ?, ?)",
+        "(path, played_at, played_seconds, duration, skipped, source, mode, heard_at, shuffled) "
+        "VALUES(?, datetime(?, 'unixepoch', 'localtime'), ?, ?, ?, ?, ?, ?, ?)",
         (
             req.path,
             # played_at has always been when the play ended: kept so.
@@ -2494,6 +2498,7 @@ def record_play(req: PlayRequest, authenticated: bool = Depends(verify_token)):
             req.source,
             req.mode,
             req.heard_at,
+            1 if req.shuffled else 0,
         ),
     )
     if not cur.rowcount:

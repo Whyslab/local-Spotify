@@ -14,6 +14,7 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import json
+import shutil
 import socket
 import subprocess
 import threading
@@ -3446,6 +3447,67 @@ def test_search_groups_computed_once(page):
         )
     grouped = page.evaluate("window.__grouped")
     assert grouped == {"artists": 1, "albums": 1}, grouped
+
+
+def test_plain_shuffle_puts_the_whole_playlist_in_and_a_new_round_differs(page, server):
+    """«Перемешать → Обычное» ставит подборку целиком, а не 50 треков с сервера
+    (разбор 19.11.2026: 145 прослушиваний, 50 разных), значок горит, а «Повтор»
+    в конце очереди тасует новый круг, а не крутит прежний порядок."""
+    root = server["root"]
+    folder = root / "Deck" / "Singles"
+    folder.mkdir(parents=True, exist_ok=True)
+    first = folder / "000.opus"
+    _track(root, "Deck/Singles/000.opus", "Deck", "Deck", 1, gain=None)
+    for i in range(1, 300):
+        shutil.copyfile(first, folder / f"{i:03}.opus")
+    lines = [f"Deck/Singles/{i:03}.opus" for i in range(300)]
+    # Повтор строки в подборке — тот же трек, в очереди один раз.
+    (root / "Колода.m3u").write_text("\n".join(lines + lines[:5]) + "\n", encoding="utf-8")
+    library.invalidate_library_index()
+    try:
+        # Звук здесь не нужен: 300 треков по очереди пропускались бы как не играющие.
+        page.evaluate("window.__realPlayAt = playAt; playAt = async () => true; true")
+        page.evaluate("openPlaylist('Колода')")
+        page.wait_for_function("player.playlist && player.playlist.entries.length === 305")
+        page.locator("#viewPlaylist [onclick^='openPlaylistShuffle']").click()
+        page.get_by_role("menuitem").filter(has_text="Обычное").click()
+        page.wait_for_function("player.queue.length > 0")
+        assert page.evaluate("player.queue.length") == 300
+        assert page.evaluate("new Set(player.queue.map(t => t.path)).size") == 300
+        assert page.evaluate("player.order.length") == 300
+        assert page.evaluate("player.shuffle") == "plain"
+        assert page.evaluate("player.queueSource.name") == "Колода"
+        assert page.locator("#playerShuffle.is-on").count() == 1
+
+        # Конец круга при «Повторе всей очереди» — новый порядок.
+        before = page.evaluate("player.order.slice()")
+        last = before[-1]
+        page.evaluate(
+            "player.repeat = 'all'; player.index = player.order[player.order.length - 1];"
+            " player.orderAt = player.order.length - 1; true"
+        )
+        peeked = page.evaluate("peekNext()")
+        stepped = page.evaluate("stepInOrder(1)")
+        assert stepped == peeked  # подкачанный заранее и зазвучавший — один трек
+        after = page.evaluate("player.order.slice()")
+        assert sorted(after) == sorted(before)
+        assert after != before
+        assert after[0] != last  # последний трек круга не открывает следующий
+
+        # Фонотека целиком — тоже без предела.
+        page.evaluate("labTracks = null; switchView('viewLibrary'); playPlainShuffle()")
+        page.wait_for_function("player.queueSource && player.queueSource.kind === 'library'")
+        total = page.evaluate("labIndex().then(rows => rows.length)")
+        assert total > 300
+        assert page.evaluate("player.queue.length") == total
+        assert page.evaluate("player.shuffle") == "plain"
+    finally:
+        page.evaluate(
+            "playAt = window.__realPlayAt; player.repeat = 'off'; setShuffle(false); true"
+        )
+        (root / "Колода.m3u").unlink()
+        shutil.rmtree(root / "Deck")
+        library.invalidate_library_index()
 
 
 def test_shuffle_offers_plain_and_smart(page):

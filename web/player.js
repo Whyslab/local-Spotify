@@ -41,6 +41,7 @@ const player = {
     shuffle: false,      // false | "plain" | "smart"
     beforeSmart: null,   // очередь до умного перемешивания — вернуть при выключении
     smartTicket: 0,      // номер последней сборки умной очереди — см. smartifyQueue
+    nextRound: null,     // следующий круг «Повтора» при обычном перемешивании — см. nextRound
     playingMode: null,   // из какой очереди начал играть текущий трек — для журнала
     repeat: "off",       // "off" | "all" | "one"
     generation: 0,       // номер последнего включения — см. playAt
@@ -116,6 +117,11 @@ function reportPlay(finished) {
          * rates cannot be reconstructed later, so the label has to travel
          * with the play. */
         mode: player.playingMode || player.queueMode,
+        /* Порядок перемешан (кнопкой в плеере, «Перемешать» на странице или
+         * сервером), а не сыгран подряд. Раньше тасовка в плеере писалась
+         * просто «manual» — вместе с игрой подборки по порядку, и повторы
+         * перемешивания по журналу было не отличить (разбор 19.11.2026). */
+        shuffled: Boolean(player.shuffle) || ["smart", "plain", "blind"].includes(player.playingMode || player.queueMode),
         /* Когда трек начал звучать, по часам устройства. Прослушивание без
          * сети уходит позже (offline.js), и время отправки соврало бы. */
         heard_at: Math.floor(Date.now() / 1000 - played),
@@ -198,8 +204,31 @@ function peekNext() {
     let at = player.orderAt;
     if (at < 0 || player.order[at] !== player.index) at = player.order.indexOf(player.index);
     if (at + 1 < player.order.length) return player.order[at + 1];
-    if (player.repeat === "all") return player.order[0];
+    if (player.repeat === "all") return player.shuffle === "plain" ? nextRound()[0] : player.order[0];
     return -1;
+}
+
+/* «Повтор всей очереди» при обычном перемешивании — новый круг в новом
+ * порядке, а не прежний ещё раз (разбор 19.11.2026: «перемешано» крутило те же
+ * треки в том же порядке). Круг готовится заранее и запоминается: peekNext
+ * подкачивает следующий трек, и зазвучать должен именно он. Маршрут сменили
+ * или дополнили — круг считается заново. */
+function nextRound() {
+    const cached = player.nextRound;
+    if (cached && cached.order === player.order && cached.length === player.order.length) return cached.round;
+    const last = player.order[player.order.length - 1];
+    const round = [...player.order];
+    for (let i = round.length - 1; i > 0; i -= 1) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [round[i], round[j]] = [round[j], round[i]];
+    }
+    /* Последний трек круга не открывает следующий: два раза подряд — это повтор. */
+    if (round.length > 1 && round[0] === last) {
+        const j = 1 + Math.floor(Math.random() * (round.length - 1));
+        [round[0], round[j]] = [round[j], round[0]];
+    }
+    player.nextRound = { order: player.order, length: player.order.length, round };
+    return round;
 }
 
 /* Как peekNext, только назад — без сдвига позиции (stepInOrder(-1) сдвигает). */
@@ -535,6 +564,7 @@ function queuedAhead() {
  * руками и ещё не сыгранное идёт сразу за играющим — включить или выключить
  * перемешивание не значит отменить свои правки очереди. */
 function buildOrder(startIndex) {
+    player.nextRound = null;
     const n = player.queue.length;
     const ahead = queuedAhead().filter(i => i !== startIndex);
     const aside = new Set(ahead);
@@ -572,6 +602,11 @@ function stepInOrder(delta) {
         return player.order[next];
     }
     if (player.repeat === "all" && player.order.length) {
+        if (delta > 0 && player.shuffle === "plain") {
+            player.order = nextRound();
+            player.nextRound = null;
+            saveQueueSoon();
+        }
         player.orderAt = delta > 0 ? 0 : player.order.length - 1;
         return player.order[player.orderAt];
     }
@@ -801,11 +836,30 @@ async function shuffleDownloads(playlist, paths, say, ticket) {
     }
     if (ticket !== player.smartTicket) { say(""); return; }
     if (!tracks.length) { say("Без сети, а скачанного отсюда нет — играть нечего."); return; }
-    player.shuffle = false;
-    player.smartTicket += 1;
-    renderPlayerModes();
-    playQueue(tracks, 0, "manual", playlist ? { kind: "playlist", name: playlist } : null);
+    playShuffled(tracks, playlist ? { kind: "playlist", name: playlist } : null);
     say(`Без сети — перемешал скачанное: ${tracks.length}, новых нет`);
+}
+
+/* Обычное перемешивание — одно на все кнопки «Перемешать» (подборка,
+ * фонотека, альбом, артист, настроение, скачанное без сети): набор целиком
+ * в очередь, маршрут по нему тасует плеер, значок перемешивания горит и
+ * выключается им же. Раньше подборка и фонотека брали очередь с сервера —
+ * 50 треков из тысячи, и они крутились по кругу (разбор 19.11.2026).
+ * Повторы строк подборки — один трек. Без сети — только скачанное. */
+function playShuffled(tracks, source = null, say = null) {
+    const seen = new Set();
+    let list = (tracks || []).filter(t => t && t.path && !isOutside(t) && !seen.has(t.path) && seen.add(t.path));
+    const cut = !navigator.onLine && offline.supported;
+    if (cut) list = list.filter(t => isDownloaded(t.path));
+    if (!list.length) {
+        if (say) say(cut ? "Без сети, а скачанного отсюда нет — играть нечего." : "Нечего играть.");
+        return false;
+    }
+    player.shuffle = "plain";
+    playQueue(list, Math.floor(Math.random() * list.length), "manual", source);
+    renderPlayerModes();
+    if (say) say(cut ? `Без сети — перемешал скачанное: ${list.length}` : "");
+    return true;
 }
 
 /* Умная очередь длиной не больше двухсот. Подборка бывает на тысячу — тогда,
@@ -1724,7 +1778,10 @@ async function loadShuffle(mode, playlist = "", noteId = "shuffleNote", paths = 
 }
 
 function playSmartShuffle() { loadShuffle("smart"); }
-function playPlainShuffle() { loadShuffle("plain"); }
+function playPlainShuffle() {
+    const note = document.getElementById("shuffleNote");
+    labIndex().then(rows => playShuffled(rows, { kind: "library" }, text => { if (note) note.textContent = text; }));
+}
 
 /* Умно перемешать альбом (или любой другой набор треков). */
 function shuffleTracks(tracks, noteId) {

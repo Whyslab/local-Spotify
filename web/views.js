@@ -526,14 +526,7 @@ function openShuffleChoice(anchor, plain, smart) {
     menu.querySelector(".row-menu-item").focus();
 }
 
-/* Обычное перемешивание набора: та же очередь, режим «вперемешку» включён —
- * видно и по кнопке в плеере, и выключается ею же. */
-function playShuffled(tracks, source) {
-    const list = (tracks || []).filter((t) => t && t.path);
-    if (!list.length) return;
-    playQueue(list, Math.floor(Math.random() * list.length), "manual", source || null);
-    setShuffle("plain");
-}
+/* Обычное перемешивание набора — playShuffled в player.js, одна на все кнопки. */
 
 /* ---------------- Главная ---------------- */
 
@@ -1333,7 +1326,10 @@ function openPlaylistShuffle(anchor) {
     const name = player.playlist && player.playlist.name;
     if (!name) return;
     openShuffleChoice(anchor,
-        () => loadShuffle("plain", name, "playlistNote"),
+        () => {
+            const note = document.getElementById("playlistNote");
+            playShuffled(player.playlist.entries, { kind: "playlist", name }, (text) => { if (note) note.textContent = text; });
+        },
         () => loadShuffle("smart", name, "playlistNote"));
 }
 

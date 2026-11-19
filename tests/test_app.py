@@ -1081,6 +1081,24 @@ def test_play_keeps_time_it_was_heard(client, app_module, monkeypatch):
     assert listenbrainz.pending_count() == 4
 
 
+def test_a_play_says_whether_its_order_was_shuffled(client, app_module, monkeypatch):
+    """Тасовка в плеере писалась «manual» — вместе с игрой подборки по порядку;
+    теперь у прослушивания отдельное поле (разбор 19.11.2026)."""
+    monkeypatch.setattr(app_module, "_PLAYS_WINDOW", {})
+    monkeypatch.setattr(config, "LISTENBRAINZ_TOKEN", "")
+    for shuffled in (True, False, None):
+        body = {"path": "A/Singles/B.m4a", "played_seconds": 30, "duration": 200}
+        if shuffled is not None:
+            body["shuffled"] = shuffled
+        assert client.post("/api/plays", json=body, headers=auth_headers()).status_code == 200
+    rows = db.db_query("SELECT mode, shuffled FROM plays ORDER BY id")
+    assert [(r["mode"], r["shuffled"]) for r in rows] == [
+        ("manual", 1),
+        ("manual", 0),
+        ("manual", 0),  # старая запись из очереди телефона — без поля
+    ]
+
+
 def test_shuffle_recency_follows_when_heard_not_when_sent(client, app_module, monkeypatch):
     """Прослушивание трёхдневной давности, дошедшее последним (телефон был без
     сети), не делает трек «только что звучавшим» для умного перемешивания."""

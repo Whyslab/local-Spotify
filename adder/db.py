@@ -141,6 +141,10 @@ def db_init():
     # When the device says listening started; a resend of the same play repeats it.
     with suppress(sqlite3.OperationalError):
         db_exec("ALTER TABLE plays ADD COLUMN heard_at REAL")
+    # Порядок был перемешан (плеером или сервером), а не сыгран подряд: «manual»
+    # само по себе не отличает тасовку в плеере от игры подборки по порядку.
+    with suppress(sqlite3.OperationalError):
+        db_exec("ALTER TABLE plays ADD COLUMN shuffled INTEGER DEFAULT 0")
     db_exec(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_plays_heard "
         "ON plays(path, heard_at, played_seconds) WHERE heard_at IS NOT NULL"
