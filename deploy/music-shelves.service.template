@@ -9,6 +9,9 @@ After=music-analysis.service
 Type=oneshot
 WorkingDirectory=%REPO%
 ExecStart="%REPO%/.venv/bin/python" "%REPO%/scripts/export_shelves.py"
+# Граф похожих артистов для умного (adder/artist_graph.py): ListenBrainz и
+# Deezer, только тех, о ком не спрашивали месяц. Сеть может молчать — «-».
+ExecStart=-"%REPO%/.venv/bin/python" "%REPO%/scripts/build_artist_graph.py" --budget 20
 
 # Building a shelf means reading the tags off every file in the library. There
 # is nothing to hurry for -- a shelf rebuilt half an hour later is the same

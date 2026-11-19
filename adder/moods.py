@@ -96,3 +96,68 @@ def collections(rows: list[dict], limit: int = 50, seed: int | None = None) -> l
             )
         )
     return [mood for mood in wanted if mood is not None]
+
+
+def sonic_collections(space, limit: int = 50, seed: int | None = None) -> list[Mood]:
+    """Подборки по настроению из звучания (adder/sonic.py, головы Essentia).
+
+    Те же четверти от самой фонотеки, но по тому, что слышит нейросеть:
+    весёлое, грустное, агрессивное, спокойное, для вечеринки — а не по
+    темпу и громкости, которые «вайба» не описывают (разбор 19.11.2026).
+    Порядок внутри подборки задаёт служба — тем же движком, что умное.
+    """
+    count = len(space.paths)
+    if count < 20:
+        return []
+    mood = space.mood
+    energy = [float(e) for e in space.energy]
+
+    def q(values, part: float) -> float:
+        return _quantile([float(v) for v in values], part)
+
+    party_hi, energy_mid, energy_hi = q(mood["party"], 0.6), q(energy, 0.5), q(energy, 0.75)
+    dance_mid = q(mood["danceable"], 0.5)
+    relaxed_hi, aggressive_mid = q(mood["relaxed"], 0.66), q(mood["aggressive"], 0.5)
+    sad_hi, happy_hi, aggressive_hi = (
+        q(mood["sad"], 0.75),
+        q(mood["happy"], 0.75),
+        q(mood["aggressive"], 0.75),
+    )
+
+    def pick(test, key, name, hint) -> Mood | None:
+        chosen = [space.paths[i] for i in range(count) if test(i)]
+        if len(chosen) < 8:
+            return None
+        rng = random.Random(f"{seed}:{key}" if seed is not None else len(chosen))
+        rng.shuffle(chosen)
+        return Mood(key, name, hint, chosen[:limit])
+
+    wanted = [
+        pick(
+            lambda i: mood["party"][i] >= party_hi and energy[i] >= energy_mid,
+            "car",
+            "В машину",
+            "громко и для компании",
+        ),
+        pick(
+            lambda i: energy[i] >= energy_hi and mood["danceable"][i] >= dance_mid,
+            "run",
+            "Разогнаться",
+            "самая энергичная четверть",
+        ),
+        pick(
+            lambda i: mood["relaxed"][i] >= relaxed_hi and mood["aggressive"][i] < aggressive_mid,
+            "work",
+            "На работу",
+            "спокойное — не тянет на себя внимание",
+        ),
+        pick(lambda i: mood["sad"][i] >= sad_hi, "sad", "Грустное", "самая грустная четверть"),
+        pick(lambda i: mood["happy"][i] >= happy_hi, "happy", "Весёлое", "самая светлая четверть"),
+        pick(
+            lambda i: mood["aggressive"][i] >= aggressive_hi,
+            "hard",
+            "Пожёстче",
+            "самая агрессивная четверть",
+        ),
+    ]
+    return [m for m in wanted if m is not None]

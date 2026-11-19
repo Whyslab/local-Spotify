@@ -147,6 +147,7 @@ def summary(period: Period, rows: list[dict], today: datetime.date) -> dict[str,
 
     return {
         "repeats": shuffle_repeats(),
+        "smart_skips": smart_skips(),
         "period": period,
         "since": since.isoformat() if since else None,
         "plays": total["plays"] or 0,
@@ -177,3 +178,37 @@ def shuffle_repeats(days: int = REPEAT_DAYS) -> dict[str, Any]:
     )[0]
     plays = row["plays"] or 0
     return {"days": days, "plays": plays, "repeats": plays - (row["distinct_tracks"] or 0)}
+
+
+# Окно метрики пропусков в умном.
+SMART_DAYS = 14
+
+
+def smart_skips(days: int = SMART_DAYS) -> dict[str, Any]:
+    """Доля пропусков в умном перемешивании и радио **вместе с чужими**
+    треками (outside_plays) за ``days`` дней.
+
+    Только свои треки — мерило нечестное: «своих пропускают меньше, чем в
+    обычном» было правдой и до нового умного (разбор 19.11.2026). Чужие
+    пропускают чаще, и без них доля выглядит лучше, чем звучит очередь.
+    """
+    since = f"-{int(days)} days"
+    own = db.db_query(
+        "SELECT COUNT(*) AS plays, COALESCE(SUM(skipped), 0) AS skips FROM plays "
+        "WHERE mode IN ('smart', 'radio') AND played_at >= datetime('now', 'localtime', ?)",
+        (since,),
+    )[0]
+    other = db.db_query(
+        "SELECT COUNT(*) AS plays, COALESCE(SUM(skipped), 0) AS skips FROM outside_plays "
+        "WHERE played_at >= datetime('now', 'localtime', ?)",
+        (since,),
+    )[0]
+    plays = (own["plays"] or 0) + (other["plays"] or 0)
+    skips = (own["skips"] or 0) + (other["skips"] or 0)
+    return {
+        "days": days,
+        "plays": plays,
+        "skips": skips,
+        "outside_plays": other["plays"] or 0,
+        "share": round(skips / plays, 3) if plays else None,
+    }

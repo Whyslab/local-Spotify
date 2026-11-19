@@ -819,6 +819,7 @@ function statsContent(data) {
         el("span", "stats-num", listenTime(data.seconds)),
         el("span", "stats-sub", plural(data.plays, "прослушивание", "прослушивания", "прослушиваний"))));
     box.appendChild(statsRepeats(data.repeats));
+    box.appendChild(statsSmartSkips(data.smart_skips));
     box.appendChild(statsChart(data.chart));
 
     const artists = data.artists || [];
@@ -858,6 +859,17 @@ function statsRepeats(r) {
         ? `За ${days} дня обычного перемешивания не было`
         : `Повторов за ${days} дня: ${r.repeats} из ${r.plays} в обычном перемешивании`;
     return el("p", "o-section-note stats-repeats", text);
+}
+
+/* Пропуски в умном и радио — вместе с чужими треками: без них доля выглядит
+ * лучше, чем звучит очередь. Окно своё, 14 дней. */
+function statsSmartSkips(r) {
+    const days = (r && r.days) || 14;
+    const text = !r || !r.plays
+        ? `За ${days} дней умного перемешивания не было`
+        : `Пропущено в умном за ${days} дней: ${r.skips} из ${r.plays} (${Math.round(r.share * 100)} %)`
+            + (r.outside_plays ? `, из них чужих треков сыграно ${r.outside_plays}` : "");
+    return el("p", "o-section-note stats-smart-skips", text);
 }
 
 /* Столбики — блоками с высотой в процентах: цвет из токенов, ширина по

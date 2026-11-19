@@ -761,35 +761,25 @@ function smartHint() {
             : "похожее рядом, только своё";
 }
 
+/* Какое умное играет: по звучанию (с 19.11.2026) или старое, по темпу.
+ * Тоже на сервере; меню показывает рядом с «Подмешивать новое». */
+const ENGINE_CHOICES = [["sonic", "по звуку"], ["classic", "по темпу"]];
+let smartEngine = "sonic";
+
 function renderMixChoice(menu) {
-    for (const b of menu.querySelectorAll(".mix-choice-option")) {
+    for (const b of menu.querySelectorAll(".mix-choice-option[data-level]")) {
         b.setAttribute("aria-pressed", String(b.dataset.level === outsideMix));
+    }
+    for (const b of menu.querySelectorAll(".mix-choice-option[data-engine]")) {
+        b.setAttribute("aria-pressed", String(b.dataset.engine === smartEngine));
     }
     const hint = menu.querySelector(".smart-hint");
     if (hint) hint.textContent = smartHint();
 }
 
 function appendMixChoice(menu) {
-    const row = document.createElement("div");
-    row.className = "mix-choice";
-    row.setAttribute("role", "group");
-    row.setAttribute("aria-label", "Подмешивать новое");
-    const label = document.createElement("span");
-    label.className = "mix-choice-label";
-    label.textContent = "Подмешивать новое";
-    const options = document.createElement("div");
-    options.className = "mix-choice-options";
-    for (const [level, name] of MIX_LEVELS) {
-        const b = document.createElement("button");
-        b.type = "button";
-        b.className = "mix-choice-option";
-        b.dataset.level = level;
-        b.textContent = name;
-        b.onclick = () => setOutsideMix(level, menu);
-        options.appendChild(b);
-    }
-    row.append(label, options);
-    menu.appendChild(row);
+    menu.appendChild(choiceRow("Подмешивать новое", MIX_LEVELS, "level", (level) => setOutsideMix(level, menu)));
+    menu.appendChild(choiceRow("Умное", ENGINE_CHOICES, "engine", (engine) => setSmartEngine(engine, menu)));
     /* Подпись «Умное» — та, что про подмес. */
     const smart = [...menu.querySelectorAll(".row-menu-item")].find(b => b.firstChild && b.firstChild.textContent === "Умное");
     const small = smart && smart.querySelector("small");
@@ -799,13 +789,59 @@ function appendMixChoice(menu) {
     loadOutsideMix().then(() => { if (menu.isConnected) renderMixChoice(menu); });
 }
 
+function choiceRow(title, choices, field, onPick) {
+    const row = document.createElement("div");
+    row.className = "mix-choice";
+    row.setAttribute("role", "group");
+    row.setAttribute("aria-label", title);
+    const label = document.createElement("span");
+    label.className = "mix-choice-label";
+    label.textContent = title;
+    const options = document.createElement("div");
+    options.className = "mix-choice-options";
+    for (const [value, name] of choices) {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "mix-choice-option";
+        b.dataset[field] = value;
+        b.textContent = name;
+        b.onclick = () => onPick(value);
+        options.appendChild(b);
+    }
+    row.append(label, options);
+    return row;
+}
+
 async function loadOutsideMix() {
     try {
         const r = await fetch("/api/settings", { headers: headers() });
         if (!r.ok) return;
         const data = await r.json();
         if (MIX_LEVELS.some(([level]) => level === data.outside_mix)) outsideMix = data.outside_mix;
+        if (ENGINE_CHOICES.some(([engine]) => engine === data.smart_engine)) smartEngine = data.smart_engine;
     } catch (e) { /* без сети — как было */ }
+}
+
+let smartEngineCall = 0;
+
+async function setSmartEngine(engine, menu) {
+    const was = smartEngine;
+    const call = ++smartEngineCall;
+    smartEngine = engine;
+    renderMixChoice(menu);
+    try {
+        const r = await fetch("/api/settings", {
+            method: "PUT",
+            headers: { ...headers(), "Content-Type": "application/json" },
+            body: JSON.stringify({ smart_engine: engine }),
+        });
+        if (!r.ok) throw new Error("Ошибка " + r.status);
+    } catch (e) {
+        if (call !== smartEngineCall) return;
+        smartEngine = was;
+        if (menu.isConnected) renderMixChoice(menu);
+        setPlayerNote("Не сохранилось, какое умное играет — нет связи со службой");
+    }
 }
 
 let outsideMixCall = 0;

@@ -25,6 +25,10 @@ MEMORY_MAX = "1500M"
 NICE = "10"
 
 SCRIPT = runtime.PROJECT.parent / "scripts" / "analyze_audio.py"
+# Звучание для умного перемешивания (adder/sonic.py). Без моделей (их
+# качают отдельно, scripts/fetch_models.py) — не запускается.
+EMBED_SCRIPT = runtime.PROJECT.parent / "scripts" / "embed_audio.py"
+MODELS = runtime.PROJECT / "models"
 PYTHON = runtime.PROJECT.parent / ".venv" / "bin" / "python"
 
 # Новые треки меряются по одному, одним потоком. Каждый разбор — около 376 МБ;
@@ -35,9 +39,13 @@ _worker: threading.Thread | None = None
 _worker_lock = threading.Lock()
 
 
-def _command(args: list[str]) -> list[str]:
+def _command(args: list[str], script=None) -> list[str]:
     """The analyser, bounded (see bounded)."""
-    return bounded([str(PYTHON), str(SCRIPT), *args])
+    return bounded([str(PYTHON), str(script or SCRIPT), *args])
+
+
+def _embedding_ready() -> bool:
+    return EMBED_SCRIPT.exists() and MODELS.is_dir() and any(MODELS.glob("*.onnx"))
 
 
 def bounded(base: list[str]) -> list[str]:
@@ -88,21 +96,21 @@ def _work() -> None:
 
 
 def _run(path: str) -> None:
+    # База и фонотека — те же, что у службы, а не значения по умолчанию
+    # скрипта: иначе копия службы (или тест) писала измерения в настоящую
+    # adder.db.
+    args = ["--only", path, "--db", str(runtime.DB_PATH), "--library", str(config.LIBRARY)]
+    _run_script(path, _command(args), "Analysis")
+    if _embedding_ready():
+        # Новый трек получает звучание сразу (~3 с), а не ночью: иначе новое
+        # умное до утра ставит его только по артисту.
+        _run_script(path, _command([*args, "--models", str(MODELS)], EMBED_SCRIPT), "Embedding")
+
+
+def _run_script(path: str, command: list[str], what: str) -> None:
     try:
         result = subprocess.run(
-            # База и фонотека — те же, что у службы, а не значения по
-            # умолчанию скрипта: иначе копия службы (или тест) писала
-            # измерения в настоящую adder.db.
-            _command(
-                [
-                    "--only",
-                    path,
-                    "--db",
-                    str(runtime.DB_PATH),
-                    "--library",
-                    str(config.LIBRARY),
-                ]
-            ),
+            command,
             capture_output=True,
             text=True,
             timeout=600,
@@ -115,6 +123,6 @@ def _run(path: str) -> None:
             # log lines a week: a failure nobody can find is the silence
             # this was meant to end.
             detail = (result.stdout.strip() or result.stderr.strip())[-200:]
-            logger.warning("Analysis of %s failed: %s", path, detail)
+            logger.warning("%s of %s failed: %s", what, path, detail)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("Analysis of %s could not start: %s", path, exc)
+        logger.warning("%s of %s could not start: %s", what, path, exc)

@@ -109,3 +109,9 @@ adder/snapshots/
 adder/transitions/
 # Файлы, которые ReplayGain не смог измерить (scripts/replaygain.py) — состояние.
 adder/replaygain-failures.json
+
+# Модели Essentia (CC BY-NC-SA, качает scripts/fetch_models.py) и граф
+# артистов ночного прохода — не в публичный git.
+adder/models/
+adder/artist-graph.json
+adder/artist-graph.json.tmp

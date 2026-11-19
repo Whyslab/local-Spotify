@@ -10,8 +10,9 @@
 после пропуска трек не дослушали) радио не предлагает вовсе: раз уж его
 выключили на середине, ставить его снова — значит раздражать.
 
-Переходы — те же, что у умного перемешивания (``shuffle.build_queue``): по
-темпу и энергии, и первым в порции встаёт трек, который продолжает
+Переходы — те же, что у умного перемешивания: с 19.11.2026 по звучанию
+(``sonic``, через ``engine`` от службы), иначе по темпу и энергии
+(``shuffle.build_queue``); первым в порции встаёт трек, который продолжает
 игравший.
 """
 
@@ -20,6 +21,7 @@ from __future__ import annotations
 import dataclasses
 import random
 import time
+from collections.abc import Callable
 
 from . import db, outside, shuffle, similar
 
@@ -79,6 +81,28 @@ def station(seed_artist: str, need: int, tracks: list[shuffle.Track]) -> set[str
     return names
 
 
+# Своя часть порции: (подходящие, сколько, круг станции, за каким продолжать,
+# зерно, артист станции) → треки по порядку. Служба даёт новое умное
+# (app._radio_engine); по умолчанию — старое, по темпу.
+Engine = Callable[
+    [list[shuffle.Track], int, "set[str] | None", "shuffle.Track | None", "int | None", str],
+    list[shuffle.Track],
+]
+
+
+def classic_engine(
+    eligible: list[shuffle.Track],
+    size: int,
+    core: set[str] | None,
+    previous: shuffle.Track | None,
+    seed: int | None,
+    focus_artist: str,
+) -> list[shuffle.Track]:
+    return shuffle.build_queue(
+        eligible, size=size, core=core, outside_share=0.0, previous=previous, seed=seed
+    )
+
+
 def build(
     tracks: list[shuffle.Track],
     seed_artist: str,
@@ -88,6 +112,7 @@ def build(
     have: set[tuple[str, str]] | None = None,
     skipped: set[str] | None = None,
     seed: int | None = None,
+    engine: Engine = classic_engine,
 ) -> tuple[list[shuffle.Track], list[dict]]:
     """Порция радио: свои треки по порядку и найденные со стороны.
 
@@ -147,13 +172,13 @@ def build(
         rest = count - len(opening)
         if rest <= 0:
             return opening[:count]
-        return opening + shuffle.build_queue(
-            eligible,
-            size=rest,
-            core=core or None,
-            outside_share=0.0,
-            previous=before,
-            seed=rng.randrange(2**32),
+        return opening + engine(
+            [t for t in eligible if t.path not in {o.path for o in opening}],
+            rest,
+            core or None,
+            before,
+            rng.randrange(2**32),
+            seed_artist,
         )
 
     local = local_part(size - want)

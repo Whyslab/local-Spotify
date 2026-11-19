@@ -108,6 +108,26 @@ def first_voice(rel_path: str) -> float | None:
     return min(times) if times else None
 
 
+def plain_text(rel_path: str) -> str:
+    """Текст песни из кэша, без сети; пустая строка — текста нет.
+
+    Нужен умному перемешиванию для языка трека (sonic.languages).
+    """
+    try:
+        cached = json.loads(_key(rel_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    if not isinstance(cached, dict) or not cached.get("found"):
+        return ""
+    plain = cached.get("plain")
+    if isinstance(plain, str) and plain.strip():
+        return plain
+    lines = cached.get("synced") or []
+    if not isinstance(lines, list):
+        return ""
+    return "\n".join(str(item.get("line", "")) for item in lines if isinstance(item, dict))
+
+
 def primary_artist(artist: str) -> str:
     """Первый артист из строки.
 

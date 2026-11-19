@@ -512,3 +512,30 @@ service worker'а, которых задержка CDP не касается (д
 только видимая часть окна (ниже первого экрана — нет), список экранов берётся
 из `tests/test_ui.py` рабочей копии. Нужны ffmpeg и Chromium Playwright. Живую
 службу и фонотеку не трогает.
+
+## embed_audio.py, fetch_models.py — звучание для умного перемешивания
+
+Умное перемешивание по звучанию (adder/sonic.py) берёт у каждого трека
+эмбеддинг нейросети Essentia Discogs-EffNet и оценки настроения.
+
+```bash
+.venv/bin/pip install -r scripts/requirements-analysis.txt   # onnxruntime
+.venv/bin/python scripts/fetch_models.py                     # ~25 МБ в adder/models/
+systemd-run --user --scope -p MemoryMax=1500M \
+  nice -n 15 .venv/bin/python scripts/embed_audio.py         # ~2,5 с на трек
+```
+
+Модели под CC BY-NC-SA 4.0: в git их нет, скрипт сверяет sha256. Ночью
+расчёт идёт в music-analysis.service (только новое), новый трек считается
+сразу при добавлении. Первый полный проход 19.11.2026: 1513 треков за 71 мин.
+
+## build_artist_graph.py — граф похожих артистов
+
+ListenBrainz similar-artists + Deezer related в `adder/artist-graph.json`,
+ночью из music-shelves.service. `--budget` — минут на проход.
+
+## backtest_sonic.py — растут ли пропуски с расстоянием по звуку
+
+Только чтение базы. Пары соседних прослушиваний по режимам, доля ранних
+пропусков по четвертям расстояния, облаку, языку, похожести артистов, и
+оценка «что было бы» для трёх видов очереди.

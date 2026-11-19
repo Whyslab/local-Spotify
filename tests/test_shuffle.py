@@ -478,7 +478,7 @@ def test_plain_mode_is_available_for_comparison(client):
 def test_mixing_in_is_off_until_switched_on_and_is_stored(client, monkeypatch):
     """«Подмешивать новое» (разбор 19.11.2026): по умолчанию выключено, и
     умное перемешивание подборки не берёт ни нового, ни своего со стороны."""
-    assert client.get("/api/settings").json() == {"outside_mix": "off"}
+    assert client.get("/api/settings").json()["outside_mix"] == "off"
     (config.LIBRARY / "Вечер.m3u").write_text(
         "\n".join(f"A{i}/Singles/t{i}.m4a" for i in range(4)), encoding="utf-8"
     )
@@ -494,12 +494,12 @@ def test_mixing_in_is_off_until_switched_on_and_is_stored(client, monkeypatch):
     assert {item["path"] for item in body["queue"]} == {"A1/Singles/t1.m4a", "A2/Singles/t2.m4a"}
     assert asked == []  # Deezer даже не спрашивали
 
-    assert client.put("/api/settings", json={"outside_mix": "few"}).json() == {"outside_mix": "few"}
-    assert client.get("/api/settings").json() == {"outside_mix": "few"}
+    assert client.put("/api/settings", json={"outside_mix": "few"}).json()["outside_mix"] == "few"
+    assert client.get("/api/settings").json()["outside_mix"] == "few"
     client.get("/api/shuffle", params={"size": 12, "playlist": "Вечер"})
     assert asked and asked[-1][2] == 2  # 12 / 6
     assert client.put("/api/settings", json={"outside_mix": "all"}).status_code == 422
-    assert client.get("/api/settings").json() == {"outside_mix": "few"}
+    assert client.get("/api/settings").json()["outside_mix"] == "few"
 
 
 def test_shuffling_a_playlist_mixes_in_tracks_it_does_not_contain(client):
@@ -538,15 +538,37 @@ def test_plain_mode_of_a_playlist_stays_inside_it(client):
     assert body["outside"] == 0
 
 
-def test_a_blind_trial_does_not_leak_which_side_is_which(client):
+@pytest.fixture()
+def sound(monkeypatch):
+    """Слепое сравнение с 19.11.2026 — новое умное против старого, и без
+    звучания оно не начинается. Здесь проверяется сама механика сравнения:
+    «новая» сторона — та же сборка по темпу с другим зерном."""
+    from adder import app as app_module
+    from adder import sonic
+
+    monkeypatch.setattr(
+        app_module, "_sonic_space", lambda pool, force=False: object() if force else None
+    )
+    monkeypatch.setattr(app_module, "_sonic_lessons", lambda space: sonic.Lessons())
+    monkeypatch.setattr(
+        sonic,
+        "build_session",
+        lambda pool, space, meta, size=50, seed=None, **kw: shuffle.build_queue(
+            pool, size=size, seed=7
+        ),
+    )
+
+
+def test_a_blind_trial_does_not_leak_which_side_is_which(client, sound):
     body = client.post("/api/shuffle/blind", params={"size": 6}).json()
 
     assert set(body) == {"trial", "A", "B"}
     assert "smart" not in str(body).lower()
+    assert "sonic" not in str(body).lower()
     assert len(body["A"]) == 6 and len(body["B"]) == 6
 
 
-def test_a_blind_trial_records_one_answer(client):
+def test_a_blind_trial_records_one_answer(client, sound):
     trial = client.post("/api/shuffle/blind", params={"size": 4}).json()["trial"]
 
     assert client.post(f"/api/shuffle/blind/{trial}", json={"choice": "A"}).status_code == 200
@@ -555,7 +577,7 @@ def test_a_blind_trial_records_one_answer(client):
     assert client.post(f"/api/shuffle/blind/{trial}", json={"choice": "C"}).status_code == 400
 
 
-def test_blind_plays_keep_their_label_and_skips_reach_the_queue(client):
+def test_blind_plays_keep_their_label_and_skips_reach_the_queue(client, sound):
     """A blind queue's plays are neither smart nor plain in the journal, and a
     skip is read back by the queue builder (plan 4c.4)."""
     from adder import app as app_module
@@ -573,7 +595,7 @@ def test_blind_plays_keep_their_label_and_skips_reach_the_queue(client):
     assert shuffle.taste_weight(tracks[path]) < 1.0
 
 
-def test_blind_results_apply_the_stated_threshold(client, monkeypatch):
+def test_blind_results_apply_the_stated_threshold(client, monkeypatch, sound):
     """Criterion 27: the smart queue chosen in at least 7 of 10."""
     for _ in range(10):
         trial = client.post("/api/shuffle/blind", params={"size": 4}).json()

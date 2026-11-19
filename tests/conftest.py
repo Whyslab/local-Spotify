@@ -85,6 +85,13 @@ def _outside_stays_offline(monkeypatch, tmp_path, request):
     monkeypatch.setattr(repair, "_banned_until", 0.0)
     monkeypatch.setattr(ingest, "LAST_DOWNLOAD", 0.0)
     monkeypatch.setattr(studio, "_KINDS", {})
+    # Граф артистов — файл ночного прохода; у теста свой (пустой). Кэши
+    # звучания и графа — состояние процесса: каждому тесту свои.
+    from adder import artist_graph, sonic
+
+    monkeypatch.setattr(artist_graph, "GRAPH_FILE", tmp_path / "artist-graph.json")
+    sonic.forget()
+    artist_graph.forget()
     # И обход текстов в фоне — тоже сеть.
     from adder import lyrics
 

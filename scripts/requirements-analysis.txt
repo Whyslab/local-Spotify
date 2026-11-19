@@ -6,3 +6,6 @@
 #
 #   .venv/bin/pip install -r scripts/requirements-analysis.txt
 librosa>=1.0,<2
+# Звучание для умного перемешивания (scripts/embed_audio.py): модели Essentia
+# в ONNX. Сами модели — scripts/fetch_models.py (лицензия не пускает их в git).
+onnxruntime>=1.20,<2

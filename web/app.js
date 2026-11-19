@@ -1056,8 +1056,8 @@ async function blindScore() {
         if (!r.ok) return;
         const data = await r.json();
         box.textContent = data.decided
-            ? `Сравнений: ${data.decided}, умную выбрали ${data.smart_chosen}`
-                + (data.decided >= 10 ? (data.passes ? " — умная лучше." : " — пока не лучше.") : ".")
+            ? `Сравнений: ${data.decided}, новую выбрали ${data.smart_chosen}`
+                + (data.decided >= 10 ? (data.passes ? " — новая лучше." : " — пока не лучше.") : ".")
             : "Сравнений пока не было.";
     } catch (e) { /* без сети счёт подождёт */ }
 }

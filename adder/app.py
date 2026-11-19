@@ -14,6 +14,7 @@ import os
 import secrets
 import threading
 import time
+import zlib
 from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -32,6 +33,7 @@ from starlette.datastructures import MutableHeaders
 from starlette.middleware.gzip import GZipMiddleware
 
 from . import (
+    artist_graph,
     artist_photos,
     config,
     covers,
@@ -58,6 +60,7 @@ from . import (
     shuffle,
     signing,
     similar,
+    sonic,
     sources,
     stats,
     sync,
@@ -2126,6 +2129,81 @@ def _shuffle_tracks() -> list[shuffle.Track]:
     )
 
 
+_LESSONS: dict[str, Any] = {"space": None, "at": 0.0, "lessons": None}
+_LESSONS_TTL = 600
+
+
+def _sonic_space(pool: list[shuffle.Track], force: bool = False) -> sonic.Space | None:
+    """Пространство звучания, если новое умное может строить очередь из ``pool``.
+
+    None — старое умное: выбрано в настройках, ночной расчёт ещё не прошёл
+    набор (меньше sonic.MIN_COVERAGE) или пространство не собралось.
+    ``force`` — не смотреть на настройку (слепое сравнение).
+    """
+    if not force and sonic.engine_level() != "sonic":
+        return None
+    try:
+        space = sonic.load_space(library.library_index())
+    except Exception:  # noqa: BLE001 — сломанное звучание не ломает перемешивание
+        logger.exception("Звучание не загрузилось — умное по темпу")
+        return None
+    if sonic.coverage(pool, space) < sonic.MIN_COVERAGE:
+        return None
+    return space
+
+
+def _sonic_lessons(space: sonic.Space) -> sonic.Lessons:
+    """Уроки пропусков по облакам; пересчёт раз в 10 минут или с новым
+    пространством (облака другие — и уроки другие)."""
+    if _LESSONS["space"] is space and time.monotonic() - _LESSONS["at"] < _LESSONS_TTL:
+        return _LESSONS["lessons"]
+    rows = db.db_query(
+        "SELECT path, CAST(strftime('%s', played_at) AS REAL) AS at, skipped, played_seconds, "
+        "(mode = 'manual' AND shuffled = 0) AS ordered "
+        "FROM plays ORDER BY played_at, id"
+    )
+    lessons = sonic.learn(rows, space)
+    _LESSONS.update(space=space, at=time.monotonic(), lessons=lessons)
+    return lessons
+
+
+def _engine_queue(
+    tracks: list[shuffle.Track],
+    size: int,
+    core: set[str] | None = None,
+    previous: shuffle.Track | None = None,
+    seed: int | None = None,
+    focus_artist: str = "",
+    engine: str = "",
+) -> list[shuffle.Track]:
+    """Своя часть умной очереди — новым движком или старым.
+
+    ``core`` — подборка: новое умное перемешивает только её; старое, как и
+    раньше, доигрывает из ``tracks``, когда подборка кончилась.
+    ``engine`` — «sonic» или «classic» насильно (слепое сравнение).
+    """
+    pool = [t for t in tracks if t.path in core] if core is not None else tracks
+    space = None
+    if engine != "classic":
+        space = _sonic_space(pool, force=engine == "sonic")
+    if space is None:
+        return shuffle.build_queue(
+            tracks, size=size, core=core, outside_share=0.0, previous=previous, seed=seed
+        )
+    meta = {row["path"]: row for row in library.library_index()}
+    return sonic.build_session(
+        pool,
+        space,
+        meta,
+        size=size,
+        seed=seed,
+        previous=previous,
+        lessons=_sonic_lessons(space),
+        artist_sim=artist_graph.similarity_function(),
+        focus_artist=focus_artist,
+    )
+
+
 def _queue_payload(queue: list[shuffle.Track], core: set[str] | None = None) -> list[dict]:
     by_path = {row["path"]: row for row in library.library_index()}
     out = []
@@ -2142,6 +2220,45 @@ def _queue_payload(queue: list[shuffle.Track], core: set[str] | None = None) -> 
             # Чтобы в очереди было видно, что пришло со стороны, а не гадать.
             entry["outside"] = track.path not in core
         out.append(entry)
+    return out
+
+
+def _mood_shelves(features: list[dict]) -> list[dict]:
+    """Подборки по настроению: по звучанию и в порядке нового умного, если
+    звучание посчитано, иначе — как раньше, по темпу и громкости."""
+    rows = library.library_index()
+    by_path = {row["path"]: row for row in rows}
+
+    def as_tracks(paths: list[str]) -> list[dict]:
+        return [
+            {k: by_path[p].get(k) for k in ("path", "artist", "title", "album", "duration")}
+            for p in paths
+            if p in by_path
+        ]
+
+    seed = shelves.shelf_seed()
+    tracks = _shuffle_tracks()
+    space = _sonic_space(tracks)
+    if space is None:
+        return [
+            {"key": m.key, "name": m.name, "hint": m.hint, "tracks": as_tracks(m.paths)}
+            for m in moods.collections(features, limit=40, seed=seed)
+        ]
+    out = []
+    for m in moods.sonic_collections(space, limit=40, seed=seed):
+        chosen = set(m.paths)
+        # Зерно — от дня и подборки, не hash(): тот меняется с каждым запуском.
+        ordered = _engine_queue(
+            tracks, len(chosen), core=chosen, seed=zlib.crc32(f"{seed}:{m.key}".encode())
+        )
+        out.append(
+            {
+                "key": m.key,
+                "name": m.name,
+                "hint": m.hint,
+                "tracks": as_tracks([t.path for t in ordered]),
+            }
+        )
     return out
 
 
@@ -2181,10 +2298,7 @@ def home(authenticated: bool = Depends(verify_token)):
     big = sorted((k for k, v in albums.items() if len(v) > 1), key=lambda k: -len(albums[k]))[:12]
 
     return {
-        "moods": [
-            {"key": m.key, "name": m.name, "hint": m.hint, "tracks": as_tracks(m.paths)}
-            for m in moods.collections(features, limit=40, seed=shelves.shelf_seed())
-        ],
+        "moods": _mood_shelves(features),
         "discover": shelves.discover(rows, seed=shelves.shelf_seed()),
         # Новые релизы артистов фонотеки — из файла ночного прохода, без сети.
         "releases": releases.shelf(),
@@ -2327,6 +2441,10 @@ def smart_shuffle(
     else:
         queue, payload = _smart_queue(tracks, size, core)
         body = _shuffle_body(mode, tracks, queue, payload)
+        # Какое умное собрало очередь: новое (по звучанию) или старое — то,
+        # что выбрано, или старое, пока звучание набора не посчитано.
+        pool = [t for t in tracks if core is None or t.path in core]
+        body["engine"] = "sonic" if _sonic_space(pool) is not None else "classic"
     if core is not None:
         body["playlist"] = playlist
         body["core"] = len(core)
@@ -2366,41 +2484,51 @@ def _smart_queue(
         # умное перемешивание подборки (альбома, выдачи) остаётся внутри неё.
         if core is not None:
             tracks = [track for track in tracks if track.path in core]
-        queue = shuffle.build_queue(tracks, size=size, core=core, outside_share=0.0)
+        queue = _engine_queue(tracks, size, core)
         return queue, _queue_payload(queue, core)
     want = round(size * share)
-    local = shuffle.build_queue(tracks, size=size - want, core=core, outside_share=0.0)
+    local = _engine_queue(tracks, size - want, core)
     found = outside.candidates(
         [track.artist for track in local],
         outside.library_keys(library.library_index()),
         want,
     )
     if not found:
-        queue = shuffle.build_queue(tracks, size=size, core=core, outside_share=share)
+        if _sonic_space([t for t in tracks if core is None or t.path in core]) is not None:
+            # Новое умное своё со стороны (треки фонотеки вне подборки) не
+            # подмешивает: блоки строятся из облаков самой подборки.
+            queue = _engine_queue(tracks, size, core)
+        else:
+            queue = shuffle.build_queue(tracks, size=size, core=core, outside_share=share)
         return queue, _queue_payload(queue, core)
     if len(found) < want:
         # Нашлось меньше, чем мест под новое: своих берём больше, чтобы очередь
         # не укорачивалась. Артисты чуть другие — новое всё равно встанет рядом
         # с похожим, а если нет, то просто между своими.
-        local = shuffle.build_queue(tracks, size=size - len(found), core=core, outside_share=0.0)
+        local = _engine_queue(tracks, size - len(found), core)
     outside.remember(found)
     payload = outside.weave(_queue_payload(local, core), found, len(found))
     return local, payload
 
 
 class SettingsRequest(BaseModel):
-    outside_mix: Literal["off", "few", "on"]
+    # Оба поля необязательны: меню меняет одно, второе не трогается.
+    outside_mix: Literal["off", "few", "on"] | None = None
+    smart_engine: Literal["sonic", "classic"] | None = None
 
 
 @app.get("/api/settings")
 def get_settings(authenticated: bool = Depends(verify_token)):
     """Настройки, общие для всех устройств (хранятся на сервере)."""
-    return {"outside_mix": outside.mix_level()}
+    return {"outside_mix": outside.mix_level(), "smart_engine": sonic.engine_level()}
 
 
 @app.put("/api/settings")
 def put_settings(req: SettingsRequest, authenticated: bool = Depends(verify_token)):
-    outside.set_mix_level(req.outside_mix)
+    if req.outside_mix is not None:
+        outside.set_mix_level(req.outside_mix)
+    if req.smart_engine is not None:
+        sonic.set_engine_level(req.smart_engine)
     return get_settings(authenticated)
 
 
@@ -2469,6 +2597,23 @@ def smart_shuffle_of(req: SmartShuffleRequest, authenticated: bool = Depends(ver
     return body
 
 
+def _radio_engine(
+    eligible: list[shuffle.Track],
+    size: int,
+    core: set[str] | None,
+    previous: shuffle.Track | None,
+    seed: int | None,
+    focus_artist: str,
+) -> list[shuffle.Track]:
+    """Радио на том же движке, что умное: круг станции, а если в нём своих
+    меньше порции — вся фонотека с весом похожести на артиста станции."""
+    if core is not None and len(core) < size:
+        core = None
+    return _engine_queue(
+        eligible, size, core=core, previous=previous, seed=seed, focus_artist=focus_artist
+    )
+
+
 class RadioRequest(BaseModel):
     """Радио от трека (``path``) или от артиста (``artist``) — одно из двух.
 
@@ -2516,6 +2661,7 @@ def radio_portion(req: RadioRequest, authenticated: bool = Depends(verify_token)
         size=req.size,
         have=outside.library_keys(library.library_index()),
         skipped=radio.recently_skipped(),
+        engine=_radio_engine,
     )
     outside.remember(found)
     payload = outside.weave(_queue_payload(local), found, len(found))
@@ -2582,6 +2728,10 @@ def outside_ban(key: str, authenticated: bool = Depends(verify_token)):
     return {"banned": key}
 
 
+# Что сравнивает /api/shuffle/blind сейчас (см. blind_trials.kind в db.py).
+BLIND_KIND = "sonic"
+
+
 @app.post("/api/shuffle/blind")
 def start_blind_trial(size: int = 30, authenticated: bool = Depends(verify_token)):
     """Two queues, one of each kind, without saying which is which.
@@ -2595,11 +2745,20 @@ def start_blind_trial(size: int = 30, authenticated: bool = Depends(verify_token
     if len(tracks) < 4:
         raise HTTPException(status_code=400, detail="Not enough tracks to compare")
 
-    smart = shuffle.build_queue(tracks, size=size)
-    plain = shuffle.plain_shuffle(tracks, size=size)
+    # С 19.11.2026 сравниваются новое умное (по звучанию) и старое (по темпу):
+    # старое против обычного уже выиграно. Без звучания сравнивать нечего.
+    if _sonic_space(tracks, force=True) is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Звучание фонотеки ещё не посчитано — сравнивать пока нечего",
+        )
+    smart = _engine_queue(tracks, size, engine="sonic")
+    plain = _engine_queue(tracks, size, engine="classic")
     smart_side = secrets.choice(["A", "B"])
 
-    cur = db.db_exec("INSERT INTO blind_trials(smart_side) VALUES(?)", (smart_side,))
+    cur = db.db_exec(
+        "INSERT INTO blind_trials(smart_side, kind) VALUES(?, ?)", (smart_side, BLIND_KIND)
+    )
 
     def blind(queue: list) -> list[dict]:
         # Без темпа: по нему умную сторону видно сразу — у неё он ровный.
@@ -2647,7 +2806,10 @@ def finish_blind_trial(
 @app.get("/api/shuffle/blind/results")
 def blind_results(authenticated: bool = Depends(verify_token)):
     """How the comparison stands. Acceptance is 7 of 10 or better."""
-    rows = db.db_query("SELECT smart_side, choice FROM blind_trials WHERE choice IS NOT NULL")
+    rows = db.db_query(
+        "SELECT smart_side, choice FROM blind_trials WHERE choice IS NOT NULL AND kind = ?",
+        (BLIND_KIND,),
+    )
     decided = len(rows)
     smart_chosen = sum(1 for row in rows if row["choice"] == row["smart_side"])
     return {

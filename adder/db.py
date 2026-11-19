@@ -10,6 +10,19 @@ from contextlib import suppress
 
 from . import runtime
 
+# Звучание треков: эмбеддинг Essentia EffNet (float32, единичной длины),
+# 400 стилей Discogs (float16), головы настроения, возбуждение и валентность
+# (DEAM, шкала 1–9). Пишет scripts/embed_audio.py, читает adder/sonic.py.
+SONIC_SCHEMA = """CREATE TABLE IF NOT EXISTS sonic(
+    path TEXT PRIMARY KEY,
+    sha256 TEXT NOT NULL,
+    version TEXT NOT NULL,
+    embedding BLOB NOT NULL,
+    styles BLOB NOT NULL,
+    happy REAL, sad REAL, aggressive REAL, relaxed REAL, party REAL,
+    danceable REAL, voice REAL, arousal REAL, valence REAL,
+    analyzed_at TEXT DEFAULT (datetime('now','localtime')))"""
+
 logger = __import__("logging").getLogger(__name__)
 
 
@@ -202,6 +215,15 @@ def db_init():
         smart_side TEXT NOT NULL,
         choice TEXT,
         decided_at TEXT)""")
+    # Что сравнивали. NULL — до 19.11.2026: старое умное против обычного.
+    # «sonic» — новое умное (по звучанию) против старого; smart_side — сторона
+    # нового.
+    with suppress(sqlite3.OperationalError):
+        db_exec("ALTER TABLE blind_trials ADD COLUMN kind TEXT")
+
+    # Звучание треков (scripts/embed_audio.py, adder/sonic.py): служба читает
+    # таблицу и до первого расчёта.
+    db_exec(SONIC_SCHEMA)
 
     # «Клипы» — очередь на починку (adder/repair.py). status: probe (служба
     # смотрит текст, класть ли в «Клипы»), queued, working, ready, failed,
