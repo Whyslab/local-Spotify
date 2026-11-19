@@ -1303,10 +1303,128 @@ async def import_files(
 
 
 class ReplaceRequest(BaseModel):
-    """Какой трек меняем и на что. Ссылка — для замены с YouTube."""
+    """Какой трек меняем и на что. Ссылка — для замены с YouTube.
+
+    ``choice`` — что выбрал человек после предпросмотра (/api/replace/preview):
+    «link» — его ссылка как есть (студийной не подменять), с главой
+    ``start``–``end`` альбомного ролика, если она выбрана; «studio» — найденная
+    студийная ``studio_url``. Без ``choice`` (старая страница) — как раньше.
+    """
 
     path: str
     url: str
+    choice: Literal["link", "studio"] | None = None
+    start: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    end: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    title: str = Field(default="", max_length=300)
+    studio_url: str = Field(default="", max_length=2048)
+
+
+# Глава длиннее не бывает: это уже не трек, а кусок сборника.
+CHAPTER_MAX_SECONDS = 3 * 3600
+# Длиннее — переспросить (одним треком такое обычно не бывает).
+REPLACE_LONG_SECONDS = 600
+
+
+def _canonical_link(url: str) -> str:
+    is_valid, error_msg = ingest.validate_url(url)
+    if not is_valid:
+        raise HTTPException(status_code=400, detail=error_msg)
+    try:
+        return ingest.canonicalize_youtube_url(url)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid YouTube URL: {exc}") from exc
+
+
+def _video_kind(meta: dict, found_chapters: list[dict]) -> str:
+    """album, studio, clip или upload — что за ролик по ссылке."""
+    from . import studio
+
+    if len(found_chapters) >= 3 and (meta.get("duration") or 0) > REPLACE_LONG_SECONDS:
+        return "album"
+    described = None
+    with suppress(Exception):
+        described = studio.describe(meta.get("id") or "")
+    video_type = described["type"] if described else None
+    if video_type == studio.STUDIO:
+        return "studio"
+    if video_type == studio.OFFICIAL_VIDEO or studio.looks_like_clip(meta.get("title") or ""):
+        return "clip"
+    return "upload"
+
+
+@app.get("/api/replace/preview")
+def replace_preview(path: str, url: str, authenticated: bool = Depends(verify_token)):
+    """Что будет скачано по ссылке — до замены (разбор 19.11.2026).
+
+    18.11 замена Cristoforo Colombo ссылкой на ролик с целым альбомом
+    (31 минута) и отметкой времени «прошла», но человек не видел, что именно
+    качается: служба выбросила отметку и молча взяла студийную. Теперь видно
+    название, длину и тип ролика, главу по отметке времени (или по названию
+    трека) и студийную запись — как вариант, а не молчаливую подмену.
+    """
+    from . import studio
+
+    replace_of = library.library_relative(path)
+    link = _canonical_link(url)
+    at = ingest.link_time(url)
+    try:
+        meta = ingest.yt_meta(link)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=502, detail=f"YouTube не ответил: {_one_line(str(exc))[:200]}"
+        ) from exc
+    row = next((r for r in library.library_index() if r.get("path") == replace_of), {}) or {}
+    found = ingest.chapters(meta)
+    chapter = ingest.pick_chapter(found, at, row.get("title") or "") if found else None
+    kind = _video_kind(meta, found)
+    _, _, full_artist, meta_title = ingest.split_artist_title(meta)
+    seconds = (chapter["end"] - chapter["start"]) if chapter else (meta.get("duration") or 0)
+
+    song = None
+    with suppress(Exception):
+        if chapter or kind == "album":
+            title = chapter["title"] if chapter else (row.get("title") or meta_title)
+            artist = full_artist or row.get("artist") or ""
+            song = studio.find(artist, title, seconds if chapter else None, tolerance=15)
+        elif kind in ("clip", "studio"):
+            choice = studio.for_link(
+                meta.get("id") or "", meta.get("title") or "", full_artist, meta_title,
+                meta.get("duration"),
+            )  # fmt: skip
+            song = choice.song if choice else None
+    alternative = (
+        {
+            "url": song.url,
+            "title": song.title,
+            "artist": song.artist,
+            "duration": song.duration,
+            "explicit": song.explicit,
+        }
+        if song is not None and song.video_id != meta.get("id")
+        else None
+    )
+    return {
+        "link": link,
+        "track": {
+            "title": row.get("title") or "",
+            "artist": row.get("artist") or "",
+            "duration": row.get("duration"),
+        },
+        "video": {
+            "id": meta.get("id"),
+            "title": meta.get("title") or "",
+            "channel": meta.get("channel") or meta.get("uploader") or "",
+            "duration": meta.get("duration"),
+            "kind": kind,
+            "chapters": len(found),
+        },
+        "at": at,
+        "chapter": chapter,
+        "seconds": seconds,
+        "long": bool(seconds and seconds > REPLACE_LONG_SECONDS),
+        "studio": alternative,
+    }
 
 
 @app.post("/api/replace")
@@ -1325,20 +1443,26 @@ def replace_track(req: ReplaceRequest, authenticated: bool = Depends(verify_toke
     # здесь, чем узнать об этом через минуту в журнале. И запоминается в том
     # виде, в каком он стоит в подборках, а не как прислан.
     replace_of = library.library_relative(req.path)
-
-    is_valid, error_msg = ingest.validate_url(req.url)
-    if not is_valid:
-        raise HTTPException(status_code=400, detail=error_msg)
-
-    try:
-        link = ingest.canonicalize_youtube_url(req.url)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=f"Invalid YouTube URL: {exc}") from exc
+    link = _canonical_link(req.url)
+    key = link
+    if req.choice == "studio":
+        link = _canonical_link(req.studio_url)
+        key = ingest.task_link(link, keep=True)
+    elif req.choice == "link":
+        if (req.start is None) != (req.end is None):
+            raise HTTPException(status_code=400, detail="Глава: нужны и начало, и конец")
+        if (
+            req.start is not None
+            and req.end is not None
+            and (not 0 <= req.start < req.end or req.end - req.start > CHAPTER_MAX_SECONDS)
+        ):
+            raise HTTPException(status_code=400, detail="Глава: неверные начало и конец")
+        key = ingest.task_link(link, start=req.start, end=req.end, title=req.title, keep=True)
 
     # Трек по этой ссылке уже есть — он и встаёт на место старого, качать
     # нечего. Раньше здесь был отказ 409, и замена «не работала» (05.11.2026:
     # акустическую «КАК ДЕЛИШКИ» меняли ссылкой на обычную, а та уже была).
-    existing = _already_have(link)
+    existing = _already_have(ingest.task_source(key))
     if existing is not None:
         if existing == replace_of:
             raise HTTPException(status_code=409, detail="По этой ссылке и скачан этот трек")
@@ -1349,7 +1473,7 @@ def replace_track(req: ReplaceRequest, authenticated: bool = Depends(verify_toke
             )
         return {"task": None, "replaced_with": existing}
 
-    tid = _queue_source(link, replace_of=replace_of)
+    tid = _queue_source(key, replace_of=replace_of)
     if tid is None:
         raise HTTPException(status_code=409, detail="Эта ссылка уже качается — подожди")
     return {"task": tid}

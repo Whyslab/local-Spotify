@@ -3606,7 +3606,7 @@ function askForReplacement(button, position) {
     picker.accept = ".mp3,.m4a,.flac,.opus,.ogg";
     picker.hidden = true;
     picker.onchange = () => {
-        if (picker.files && picker.files[0]) sendReplacement(entry.path, null, picker.files[0]);
+        if (picker.files && picker.files[0]) sendReplacement(entry.path, null, picker.files[0], {}, entry);
         closeTrackMenu();
     };
     or.appendChild(picker);
@@ -3614,13 +3614,26 @@ function askForReplacement(button, position) {
     const note = document.createElement("span");
     note.className = "row-menu-label";
 
-    form.onsubmit = (event) => {
+    form.onsubmit = async (event) => {
         event.preventDefault();
         const url = field.value.trim();
         /* Пустое молча закрывало окошко — выглядело как «кнопка не работает». */
         if (!url) { showFormError(note, "Вставь ссылку — или выбери файл ниже."); field.focus(); return; }
-        closeTrackMenu();
-        sendReplacement(entry.path, url, null);
+        /* Сначала — что по ссылке (разбор 19.11.2026): 18.11 замена ссылкой на
+         * альбом целиком выглядела как «ничего не произошло». */
+        go.disabled = true;
+        showFormError(note, "");
+        note.textContent = "Смотрю, что по ссылке…";
+        let preview;
+        try {
+            preview = await fetchReplacePreview(entry.path, url);
+        } catch (e) {
+            go.disabled = false;
+            if (form.isConnected) showFormError(note, e.message);
+            return;
+        }
+        if (!form.isConnected) return;  // окошко закрыли, пока ждали
+        showReplaceChoice(form, button, entry, url, preview);
     };
 
     form.append(label, field, note, go, or, cancelItem(button));
@@ -3632,6 +3645,130 @@ function askForReplacement(button, position) {
     document.addEventListener("keydown", menuKeydown, true);
     document.addEventListener("pointerdown", menuPointerDown, true);
     field.focus();
+}
+
+async function fetchReplacePreview(path, url) {
+    const r = await fetch("/api/replace/preview?path=" + encodeURIComponent(path) + "&url=" + encodeURIComponent(url),
+        { headers: headers() });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.detail || ("Ошибка " + r.status));
+    return data;
+}
+
+const VIDEO_KINDS = { album: "альбом целиком", clip: "клип", studio: "студийная запись", upload: "загрузка" };
+
+function lengthText(seconds) {
+    return seconds > 0 ? formatTime(seconds) : "?";
+}
+
+/* Что будет скачано, и выбор: своя ссылка (с главой альбома, если нашлась)
+ * или найденная студийная. Свою ссылку молча не подменяем (разбор 19.11.2026). */
+function showReplaceChoice(form, button, entry, url, p) {
+    const line = (text) => {
+        const span = document.createElement("span");
+        span.className = "row-menu-label";
+        span.textContent = text;
+        return span;
+    };
+    const v = p.video || {};
+    const parts = [line(`По ссылке: «${v.title || "?"}» — ${lengthText(v.duration)}, ${VIDEO_KINDS[v.kind] || "ролик"}`
+        + (v.chapters ? `, глав ${v.chapters}` : ""))];
+    const chapter = p.chapter;
+    if (chapter) {
+        parts.push(line(`Будет взята глава «${chapter.title}» — ${lengthText(chapter.end - chapter.start)}`
+            + (p.at !== null && p.at !== undefined ? ` (по отметке ${formatTime(p.at)})` : " (по названию трека)")));
+    } else if (v.chapters) {
+        parts.push(line(p.at !== null && p.at !== undefined
+            ? "Отметка времени не попала ни в одну главу — скачается весь ролик."
+            : "Глава с названием трека не нашлась — скачается весь ролик. Вставь ссылку с отметкой времени нужного трека."));
+    }
+    if (p.track && p.track.duration) parts.push(line(`Сейчас в фонотеке: ${lengthText(p.track.duration)}`));
+    if (p.long) {
+        const warn = line(`Это ${lengthText(p.seconds)} — длиннее 10 минут. Точно один трек?`);
+        warn.classList.add("is-error");
+        parts.push(warn);
+    }
+    const choose = (label, hint, opts) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "row-menu-item replace-choice";
+        const name = document.createElement("span");
+        name.textContent = label;
+        const small = document.createElement("small");
+        small.textContent = hint;
+        b.append(name, small);
+        b.onclick = () => {
+            closeTrackMenu();
+            sendReplacement(entry.path, url, null, opts, entry);
+        };
+        return b;
+    };
+    const mine = choose(p.long ? "Да, взять мою ссылку" : "Взять мою ссылку",
+        chapter ? `глава «${chapter.title}», ${lengthText(chapter.end - chapter.start)}` : lengthText(p.seconds),
+        chapter ? { choice: "link", start: chapter.start, end: chapter.end, title: chapter.title } : { choice: "link" });
+    parts.push(mine);
+    if (p.studio) {
+        parts.push(choose("Взять студийную",
+            `«${p.studio.title}» — ${lengthText(p.studio.duration)}${p.studio.explicit ? ", 18+" : ""} (YouTube Music)`,
+            { choice: "studio", studio_url: p.studio.url }));
+    }
+    parts.push(cancelItem(button));
+    form.onsubmit = (event) => event.preventDefault();
+    form.replaceChildren(...parts);
+    keepMenuOnScreen(form);
+    mine.focus();
+}
+
+/* Заметная записка, которая сама не исчезает: «Заменено: было 31:28 → стало
+ * 1:35». Под плеером записка стирается при смене трека, и 18.11 итог замены
+ * мелькнул и пропал. Закрывается крестиком или следующей запиской. */
+function showNotice(text) {
+    let box = document.getElementById("replaceNotice");
+    if (!box) {
+        box = document.createElement("div");
+        box.id = "replaceNotice";
+        box.className = "replace-notice";
+        box.setAttribute("role", "status");
+        document.body.appendChild(box);
+    }
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "replace-notice-close";
+    close.setAttribute("aria-label", "Закрыть");
+    close.textContent = "×";
+    close.onclick = () => box.remove();
+    const message = document.createElement("span");
+    message.textContent = text;
+    box.replaceChildren(message, close);
+}
+
+/* Замена доехала: у всего, что звучит или ждёт в очереди под старым путём, —
+ * новый путь и длина, а играющий трек берёт новый звук с того же места
+ * (18.11 после замены продолжал играть старый 31-минутный файл). */
+async function applyReplacement(oldPath, newPath) {
+    let row = null;
+    try {
+        if (typeof labIndex === "function") {
+            labTracks = null;  // список фонотеки — свежий, с новой длиной
+            row = (await labIndex()).find(r => r.path === newPath) || null;
+        }
+    } catch (e) { /* длина останется прежней до перезагрузки */ }
+    const current = player.queue[player.index];
+    const playing = Boolean(current && current.path === oldPath);
+    for (const entry of player.queue) {
+        if (entry.path !== oldPath) continue;
+        entry.path = newPath;
+        if (row) {
+            entry.duration = row.duration;
+            if (row.title) entry.title = row.title;
+        }
+    }
+    if (nextStream && nextStream.path === oldPath) nextStream = null;
+    saveQueueSoon();
+    renderPlayer();
+    renderQueuePanel();
+    if (playing) await reloadCurrentSource();
+    return row;
 }
 
 /* Ход замены — и в заметке подборки, и под плеером: заметка подборки стоит
@@ -3646,7 +3783,7 @@ function tellReplacement(text) {
 const REPLACE_POLL_MS = 4000;
 const REPLACE_POLL_LIMIT = 150; /* десять минут */
 
-async function watchReplacement(tid, name) {
+async function watchReplacement(tid, name, entry = null) {
     for (let i = 0; i < REPLACE_POLL_LIMIT; i++) {
         await new Promise(resolve => setTimeout(resolve, REPLACE_POLL_MS));
         let task;
@@ -3667,14 +3804,22 @@ async function watchReplacement(tid, name) {
             tellReplacement(`Не заменено: ${task.warning || "старый трек остался"}`);
             return;
         }
-        tellReplacement(`Заменено: ${what} на месте старого` + (task.warning ? `. ${task.warning}` : ""));
+        const before = entry && entry.duration;
+        const row = entry && task.result_path ? await applyReplacement(entry.path, task.result_path) : null;
+        const lengths = before && row && row.duration
+            ? ` — было ${lengthText(before)} → стало ${lengthText(row.duration)}` : "";
+        const text = `Заменено: ${what}${lengths}` + (task.warning ? `. ${task.warning}` : "");
+        tellReplacement(text);
+        showNotice(text);
         if (name && playlistOnScreen(name)) await openPlaylist(name);
         return;
     }
 }
 
-async function sendReplacement(path, url, file) {
+async function sendReplacement(path, url, file, choice = {}, entry = null) {
     const name = player.playlist ? player.playlist.name : null;
+    /* Копия: строку подборки перерисуют, а длину «было» надо помнить. */
+    const was = entry ? { path: entry.path, duration: entry.duration } : { path, duration: null };
     tellReplacement("Ставлю в очередь замену…");
     try {
         let r;
@@ -3690,19 +3835,21 @@ async function sendReplacement(path, url, file) {
             r = await fetch("/api/replace", {
                 method: "POST",
                 headers: { ...headers(), "Content-Type": "application/json" },
-                body: JSON.stringify({ path, url }),
+                body: JSON.stringify({ path, url, ...choice }),
             });
         }
         const data = await r.json().catch(() => ({}));
         if (!r.ok) { tellReplacement(data.detail || "Не удалось заменить"); return; }
         if (data.replaced_with) {
             /* Трек по ссылке уже был в фонотеке — он встал на место сразу. */
+            await applyReplacement(was.path, data.replaced_with);
             tellReplacement("Этот трек уже был в фонотеке — он встал на место старого.");
+            showNotice("Этот трек уже был в фонотеке — он встал на место старого.");
             if (name && playlistOnScreen(name)) await openPlaylist(name);
             return;
         }
         tellReplacement("Версия качается. Когда доедет — встанет на это же место.");
-        if (typeof data.task === "number") watchReplacement(data.task, name);
+        if (typeof data.task === "number") watchReplacement(data.task, name, was);
     } catch (e) {
         tellReplacement("Не удалось заменить: " + e.message);
     }

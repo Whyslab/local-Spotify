@@ -97,7 +97,7 @@ def process(tid: int, url: str):
             else:
                 # The file itself says where it came from, so a link already in
                 # the library is recognised even when the task table was lost.
-                existing = library.find_by_source(url)
+                existing = library.find_by_source(ingest.task_source(url))
                 if existing is None:
                     try:
                         downloaded = ingest.download_to_temp(tid, url)

@@ -318,6 +318,151 @@ def canonicalize_youtube_url(url: str) -> str:
     return f"https://www.youtube.com/watch?v={video_id}"
 
 
+# ---------------------------------------------------------------------------
+# «Заменить по ссылке»: отметка времени, главы альбомного ролика, выбор
+# ---------------------------------------------------------------------------
+
+_TIME_PART = re.compile(r"(\d+)([hms])")
+
+
+def link_time(url: str) -> float | None:
+    """Отметка времени из ссылки YouTube (``t=95``, ``t=1m35s``, ``start=95``,
+    ``#t=95``) в секундах, или None.
+
+    canonicalize_youtube_url её выбрасывает, а у альбомного ролика она и есть
+    указание, какой трек нужен (18.11.2026: Cristoforo Colombo).
+    """
+    from urllib.parse import parse_qs
+
+    parsed = urlparse((url or "").strip())
+    found = parse_qs(parsed.query).get("t") or parse_qs(parsed.query).get("start")
+    if not found and parsed.fragment:
+        found = parse_qs(parsed.fragment).get("t")
+    if not found:
+        return None
+    raw = found[0].strip().lower()
+    if re.fullmatch(r"\d+(\.\d+)?s?", raw):
+        return float(raw.rstrip("s"))
+    parts = _TIME_PART.findall(raw)
+    if not parts or "".join(n + u for n, u in parts) != raw:
+        return None
+    scale = {"h": 3600, "m": 60, "s": 1}
+    return float(sum(int(n) * scale[u] for n, u in parts))
+
+
+def chapters(meta: dict) -> list[dict]:
+    """Главы ролика (yt-dlp ``-J``): [{title, start, end}], по порядку."""
+    out = []
+    for item in meta.get("chapters") or []:
+        try:
+            start, end = float(item["start_time"]), float(item["end_time"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if end > start:
+            out.append({"title": str(item.get("title") or "").strip(), "start": start, "end": end})
+    return sorted(out, key=lambda c: c["start"])
+
+
+def pick_chapter(found: list[dict], at: float | None, title: str = "") -> dict | None:
+    """Глава, на которую указывает время ``at``, а без него — глава с тем же
+    названием, что у заменяемого трека; None — ни того, ни другого."""
+    if at is not None:
+        for chapter in found:
+            if chapter["start"] <= at < chapter["end"]:
+                return chapter
+        return None
+    want = enrich.normalize(title) if title else ""
+    if not want:
+        return None
+    same = [c for c in found if enrich.normalize(c["title"]) == want]
+    if not same:
+        # «03. Cristoforo Colombo» — номер в начале главы не часть названия.
+        same = [
+            c
+            for c in found
+            if enrich.normalize(re.sub(r"^\s*\d{1,2}[.)\s-]+", "", c["title"])) == want
+        ]
+    return same[0] if len(same) == 1 else None
+
+
+# Выбор, сделанный при замене, живёт в ссылке задачи (её фрагменте): задачи
+# различаются по ссылке, глава альбома — не весь альбом, а перезапуск службы
+# не должен этот выбор терять.
+_TASK_MARK = "replace:"
+
+
+def task_link(
+    link: str,
+    *,
+    start: float | None = None,
+    end: float | None = None,
+    title: str = "",
+    keep: bool = False,
+) -> str:
+    """Ссылка задачи: ``link`` плюс глава и «качать как прислано» (``keep`` —
+    не подменять студийной: ссылку вставил человек)."""
+    from urllib.parse import urlencode
+
+    fields: dict[str, str] = {}
+    if start is not None and end is not None:
+        fields.update(start=f"{start:g}", end=f"{end:g}", title=title)
+    if keep:
+        fields["keep"] = "1"
+    return f"{link}#{_TASK_MARK}{urlencode(fields)}" if fields else link
+
+
+def split_task_link(url: str) -> tuple[str, dict]:
+    """Обратно: (ссылка без фрагмента, {start, end, title, keep})."""
+    from urllib.parse import parse_qs
+
+    link, _, fragment = url.partition("#")
+    if not fragment.startswith(_TASK_MARK):
+        return url, {}
+    raw = parse_qs(fragment[len(_TASK_MARK) :])
+    opts: dict = {"keep": raw.get("keep") == ["1"]}
+    try:
+        start, end = float(raw["start"][0]), float(raw["end"][0])
+    except (KeyError, IndexError, ValueError):
+        return link, opts
+    if 0 <= start < end:
+        opts.update(start=start, end=end, title=(raw.get("title") or [""])[0])
+    return link, opts
+
+
+def task_source(url: str) -> str:
+    """Какой ссылкой трек этой задачи помечен в фонотеке (тег SOURCE_URL):
+    без служебного фрагмента, а у главы — с её отметкой времени."""
+    link, opts = split_task_link(url)
+    return f"{link}&t={int(opts['start'])}" if "start" in opts else link
+
+
+def cut_section(path: Path, start: float, end: float) -> Path:
+    """Оставить от скачанного только кусок [start, end) — главу альбома.
+
+    Без перекодирования (Opus в .m4a режется по пакетам, по 20 мс). Результат
+    ложится рядом под тем же именем.
+    """
+    partial = path.with_name(path.stem + ".cut.m4a")
+    command = [
+        "ffmpeg", "-v", "error", "-y", "-ss", f"{start:.3f}", "-to", f"{end:.3f}",
+        "-i", str(path), "-map", "0:a:0", "-vn", "-c:a", "copy",
+        "-movflags", "+faststart", "-f", "mp4", str(partial),
+    ]  # fmt: skip
+    try:
+        done = subprocess.run(command, capture_output=True, text=True, timeout=REMUX_TIMEOUT)
+    except (OSError, subprocess.SubprocessError) as exc:
+        partial.unlink(missing_ok=True)
+        raise RuntimeError("Download failed: could not cut the chapter") from exc
+    if done.returncode != 0 or not partial.is_file():
+        partial.unlink(missing_ok=True)
+        raise RuntimeError("Download failed: could not cut the chapter")
+    target = path.with_suffix(".m4a")
+    partial.replace(target)
+    if path != target:
+        path.unlink(missing_ok=True)
+    return target
+
+
 def ytdlp_env() -> dict[str, str]:
     """The environment for yt-dlp: its own and Deno's cache in a writable place."""
     runtime.CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -1449,15 +1594,24 @@ def download_to_temp(tid: int, url: str) -> Downloaded:
         )
 
     db.task_update(tid, status="downloading")
+    url, opts = split_task_link(url)
     meta = yt_meta(url)
     fs_artist, fs_title, full_artist, meta_title = split_artist_title(meta)
+    if "start" in opts:
+        # Глава альбомного ролика: название — её, исполнитель — ролика.
+        meta_title = opts.get("title") or meta_title
+        fs_title = sanitize_filename(meta_title)
     # Name the task now: «Загрузки» otherwise showed the bare link for the
     # whole download (iPhone test 24.10). Tagging may correct it later.
     db.task_update(tid, artist=full_artist, title=meta_title)
 
+    if "start" in opts:
+        return _download_chapter(tid, url, meta, opts, fs_artist, fs_title, full_artist)
+
     # Клип → студийная запись той же песни (решение пользователя 05.11.2026).
-    # До проверки длины: клип на 9 минут даёт трек на 3.
-    instead = _studio_instead(tid, url, meta, full_artist, meta_title)
+    # До проверки длины: клип на 9 минут даёт трек на 3. Ссылку, которую при
+    # замене выбрал человек («твоя ссылка»), не подменяем (разбор 19.11.2026).
+    instead = None if opts.get("keep") else _studio_instead(tid, url, meta, full_artist, meta_title)
     source_url, sent = instead if instead else (None, "")
     sent_meta = meta
     if source_url:
@@ -1504,6 +1658,38 @@ def download_to_temp(tid: int, url: str) -> Downloaded:
         names=TrackNames(fs_artist, fs_title, full_artist, meta_title, names_doubt(meta)),
         thumbnail=meta.get("thumbnail"),
         source_url=source_url,
+    )
+
+
+def _download_chapter(
+    tid: int, url: str, meta: dict, opts: dict, fs_artist: str, fs_title: str, full_artist: str
+) -> Downloaded:
+    """Скачать альбомный ролик и оставить одну главу ([start, end) из ``opts``)."""
+    start, end = opts["start"], opts["end"]
+    existing = library.find_by_source(f"{url}&t={int(start)}")
+    if existing:
+        raise AlreadyInLibrary(existing)
+    check_downloadable({**meta, "duration": end - start})
+    downloaded = yt_download(url, meta["id"])
+    if not downloaded.exists():
+        raise RuntimeError("Downloaded file not found")
+    try:
+        cut = cut_section(downloaded, start, end)
+    except BaseException:
+        downloaded.unlink(missing_ok=True)
+        raise
+    is_valid, error_msg = validate_audio_integrity(cut)
+    if not is_valid:
+        cut.unlink(missing_ok=True)
+        raise RuntimeError(error_msg)
+    title = opts.get("title") or fs_title
+    return Downloaded(
+        temp_path=stage_into_temp(cut, meta["id"]),
+        names=TrackNames(fs_artist, fs_title, full_artist, title, names_doubt(meta)),
+        thumbnail=meta.get("thumbnail"),
+        # Ссылка с отметкой времени: по ней видно, какая глава, и она же
+        # отличает этот трек от других глав того же ролика.
+        source_url=f"{url}&t={int(start)}",
     )
 
 
@@ -1815,7 +2001,7 @@ def _task_source(tid: int) -> str | None:
     """The link a task was queued for, if it is a web link (uploads are not)."""
     rows = db.db_query("SELECT url FROM tasks WHERE id = ?", (tid,))
     url = rows[0]["url"] if rows else None
-    return url if url and url.startswith(("http://", "https://")) else None
+    return task_source(url) if url and url.startswith(("http://", "https://")) else None
 
 
 def ingest_temp_file(

@@ -3014,6 +3014,71 @@ def test_replace_by_link_with_an_empty_field_says_what_to_do(page):
     assert form.count() == 0
 
 
+def test_replace_by_link_shows_what_comes_and_then_the_new_length(page):
+    """18.11 (Cristoforo Colombo): замена прошла, а казалось — ничего: не было
+    видно, что качается, играл старый звук со старой длиной, итог мелькнул и
+    пропал. Теперь — что по ссылке (глава альбома, студийная как вариант),
+    выбор, а после — заметная записка «было → стало» и новая длина в очереди."""
+    loud = "Loud Band/Singles/Loud.opus"
+    preview = {
+        "link": "https://www.youtube.com/watch?v=XWDNhc0lAj0",
+        "track": {"title": "Loud", "artist": "Loud Band", "duration": 1888},
+        "video": {"id": "XWDNhc0lAj0", "title": "Альбом целиком", "duration": 1888,
+                  "kind": "album", "chapters": 4},
+        "at": 100,
+        "chapter": {"title": "Cristoforo Colombo", "start": 95, "end": 190},
+        "seconds": 95,
+        "long": False,
+        "studio": {"url": "https://www.youtube.com/watch?v=studio95", "title": "Cristoforo Colombo",
+                   "artist": "X", "duration": 96, "explicit": True},
+    }  # fmt: skip
+    sent = []
+    page.route("**/api/replace/preview*", lambda route: route.fulfill(json=preview))
+
+    def replace(route):
+        sent.append(route.request.post_data_json)
+        route.fulfill(json={"task": 999})
+
+    page.route("**/api/replace", replace)
+    page.route(
+        "**/api/tasks/999",
+        lambda route: route.fulfill(
+            json={"id": 999, "status": "done", "title": "Cristoforo Colombo",
+                  "result_path": loud, "replace_outcome": 1, "warning": None}
+        ),
+    )  # fmt: skip
+    page.evaluate(
+        f"playQueue([{{path: '{loud}', title: 'Loud', artist: 'Loud Band', duration: 1888}}], 0);"
+        " player.audio.pause();"
+        " const b = document.createElement('button'); b.id = 'replaceAnchor'; document.body.append(b);"
+        " player.playlist = {name: 'x', revision: 'r',"
+        f"  entries: [{{path: '{loud}', title: 'Loud', duration: 1888}}]}};"
+        " askForReplacement(b, 0)"
+    )
+    form = page.locator(".row-menu-form")
+    form.locator("input[type=url]").fill("https://www.youtube.com/watch?v=XWDNhc0lAj0&t=100")
+    # Якорь — в конце страницы, под плеером: жмём Enter в поле, а не мышью.
+    form.locator("input[type=url]").press("Enter")
+    form.get_by_role("button", name="Взять мою ссылку").wait_for()
+    text = form.inner_text()
+    assert "альбом целиком" in text and "31:28" in text
+    assert "глава «Cristoforo Colombo» — 1:35" in text.replace("Будет взята глава", "глава")
+    assert "по отметке 1:40" in text
+    assert form.get_by_role("button", name="Взять студийную").count() == 1
+
+    form.get_by_role("button", name="Взять мою ссылку").dispatch_event("click")
+    page.wait_for_function("document.getElementById('replaceNotice') !== null", timeout=15000)
+    assert sent == [{"path": loud, "url": "https://www.youtube.com/watch?v=XWDNhc0lAj0&t=100",
+                     "choice": "link", "start": 95, "end": 190, "title": "Cristoforo Colombo"}]  # fmt: skip
+    notice = page.locator("#replaceNotice").inner_text()
+    assert "было 31:28 → стало 0:12" in notice
+    assert page.evaluate("player.queue[0].duration") == 12
+    page.wait_for_timeout(500)
+    assert page.locator("#replaceNotice").is_visible()  # само не исчезает
+    page.locator("#replaceNotice .replace-notice-close").click()
+    assert page.locator("#replaceNotice").count() == 0
+
+
 def test_the_phone_keyboard_hides_the_mini_player_and_tabs(page):
     """iPhone test 24.10: with the keyboard open the mini player and the tabs
     floated in the middle of the list and covered the replace-by-link field."""

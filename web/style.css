@@ -794,6 +794,43 @@ button.danger {
 .outside-action:disabled { color: var(--text-3); cursor: default; }
 .outside-action.is-on { border-color: var(--accent); }
 
+/* Выбор при замене: что взять — название и пояснение под ним. */
+.replace-choice { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; }
+.replace-choice small { color: var(--text-3); font-size: 11px; font-weight: 400; }
+
+/* Итог замены — заметно и надолго (сам не исчезает). */
+.replace-notice {
+    position: fixed;
+    top: calc(12px + env(safe-area-inset-top, 0px));
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 90;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    max-width: min(560px, calc(100vw - 32px));
+    padding: 10px 8px 10px 16px;
+    border-radius: 14px;
+    background: var(--accent);
+    color: var(--accent-ink);
+    font-size: 14px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+.replace-notice-close {
+    flex: none;
+    width: 32px;
+    height: 32px;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-size: 20px;
+    line-height: 1;
+    cursor: pointer;
+}
+.replace-notice-close:hover { background: rgba(0, 0, 0, 0.08); }
+
 /* «Подмешивать новое»: три кнопки под пунктами меню. */
 .mix-choice {
     display: flex;
