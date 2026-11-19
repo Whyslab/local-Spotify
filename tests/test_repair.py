@@ -689,3 +689,47 @@ def test_replace_drops_the_old_loudness_tags(examined, lib, monkeypatch):
     repair.process_one()
     repair.replace(TRACK, "upl")
     assert "----:com.apple.iTunes:REPLAYGAIN_TRACK_GAIN" not in MP4(lib).tags
+
+
+def test_without_a_studio_a_cut_file_is_still_named_shorter():
+    """Повторный review: без студийной длина песни — не длина файла, иначе
+    «короче» не срабатывает никогда, а любая полная версия — «со сценами»."""
+    result = repair.assess(
+        190.0,
+        [
+            {
+                "video_id": "u",
+                "kind": "upload",
+                "duration": 210,
+                "compared": compared(0.95, file_s=190, cand_s=210),
+            }
+        ],  # fmt: skip
+        LINES,
+        lyrics_seconds=190.0,
+        song_seconds=None,
+    )
+    assert [p["kind"] for p in result["problems"]] == ["shorter"]
+    assert result["best"] == "u" and result["better"]
+
+
+def test_a_version_with_only_one_of_two_muted_words_is_not_better():
+    lines = [*LINES, {"at": 60.0, "line": "Снова курим"}, {"at": 64.0, "line": "Всё"}]
+    result = repair.assess(
+        233.0,
+        [
+            {
+                "video_id": "half",
+                "kind": "upload",
+                "duration": 234,
+                "compared": compared(0.95, spots=[(30.0, 30.5, "file")]),
+            },
+            {
+                "video_id": "full",
+                "kind": "clip",
+                "duration": 234,
+                "compared": compared(0.95, spots=[(30.0, 30.5, "file"), (61.0, 61.5, "file")]),
+            },
+        ],  # fmt: skip
+        lines,
+    )
+    assert result["best"] == "full" and result["better"]

@@ -298,6 +298,7 @@ def assess(
     compared: list[dict],
     synced: list[dict],
     lyrics_seconds: float | None = None,
+    song_seconds: float | None = None,
 ) -> dict:
     """Что не так с файлом и какая версия лучше — по сравнениям.
 
@@ -306,7 +307,9 @@ def assess(
     ``t - lag``. Синхронный текст размечен по студийной: слово на месте файла
     ищется по сдвигу студийной, а без неё — по сдвигу самого кандидата, если он
     той же длины, что текст (``synced`` взят по длине ``lyrics_seconds``).
-    Без ``lyrics_seconds`` (старые вызовы) — длина первого кандидата.
+    ``song_seconds`` — длина песни (студийная из выдачи) для «короче» и
+    «сцен»; нет — длина первого кандидата. ``lyrics_seconds`` — только для
+    правила «файл сам во времени текста».
     """
     from . import censor
     from .censor_words import drug_hits, hits
@@ -321,8 +324,11 @@ def assess(
     )
     reference = (
         (studio or {}).get("duration")
-        or lyrics_seconds
-        or next((c["duration"] for c in compared if c.get("duration")), None)
+        or song_seconds
+        # Клип за длину песни не годится: у него бывают вступление и сцены.
+        or next(
+            (c["duration"] for c in compared if c.get("duration") and c["kind"] != "clip"), None
+        )
     )
     words_checked = False
     problems: list[dict] = []
@@ -410,7 +416,7 @@ def assess(
                 "muted": [{"at": round(t, 1), "word": w} for t, w in muted_there],
                 # Есть ли у версии слово там, где в файле тишина: сверено, а не
                 # «ничего не нашлось» (копия того же подцензурного звука мест не даёт).
-                "covers": bool(muted_here),
+                "covers": [t for t, _ in muted_here],
                 "unsure": [{"at": round(t, 1), "word": w} for t, w in unsure],
                 "scenes": has_scenes,
             }
@@ -429,6 +435,14 @@ def assess(
             problem("other", "Не совпадает ни с одной версией — другая запись (концерт?)")
 
     words_wanted = "words" in seen
+    # Все места, где в файле тишина на слове (по всем версиям): «лучше» —
+    # только версия, у которой слышно каждое, а не одно из двух.
+    quiet = [t for r in rated for t in r["covers"]]
+
+    def covers_all(r: dict) -> bool:
+        return bool(r["covers"]) and all(
+            any(abs(t - mine) <= 2.0 for mine in r["covers"]) for t in quiet
+        )
 
     def rank(r: dict) -> tuple:
         kind_rank = (
@@ -445,7 +459,7 @@ def assess(
         # Заглушены слова — сначала версии, у которых слово на этом месте
         # слышно (сверено), а не те, где просто нет отличий: перезалив того же
         # подцензурного клипа отличий не даёт. Вид видео — только при равенстве.
-        lacks = words_wanted and not r["covers"]
+        lacks = (words_wanted and not covers_all(r), words_wanted and not r["covers"])
         return (bool(r["muted"]), not r["same"], lacks, r["scenes"], kind_rank, off)
 
     ordered = sorted(rated, key=rank)
@@ -456,7 +470,7 @@ def assess(
         and best["same"]
         and not best["muted"]
         and not best["scenes"]
-        and (not words_wanted or best["covers"])
+        and (not words_wanted or covers_all(best))
     )
     place = None
     if best is not None:
@@ -573,7 +587,9 @@ def examine(path: str) -> dict:
             synced = got
             if not got:
                 lyrics_note = "синхронного текста нет — слова не сверены"
-    result = assess(current_seconds, compared, synced, reference or current_seconds)
+    result = assess(
+        current_seconds, compared, synced, reference or current_seconds, song_seconds=reference
+    )
     result.update(
         {
             "stamp": stamp,
