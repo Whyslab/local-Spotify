@@ -6438,3 +6438,135 @@ def test_a_saved_copy_with_old_tags_gives_way_to_the_server(page):
         startups
     )
     assert "skip=copy1" not in line, startups  # отпечатки разные — перерисовано, не пропущено
+
+
+# ---------------------------------------------------------------------------
+# «Починка» у «Клипов» (web/repair.js, этап 3 плана 19.11.2026)
+# ---------------------------------------------------------------------------
+
+REPAIR_LOUD = "Loud Band/Singles/Loud.opus"
+REPAIR_QUIET = "Quiet Band/Singles/Quiet.m4a"
+REPAIR_ITEMS = [
+    {"path": REPAIR_LOUD, "status": "ready", "auto": False, "reason": "", "error": "",
+     "problems": [{"kind": "words", "text": "Заглушены слова: «Курим» (0:30)", "at": 30.0}],
+     "candidates": [{"video_id": "upl", "kind": "upload", "title": "Loud Band - Loud",
+                     "duration": 12, "muted": [], "unsure": [], "scenes": False}],
+     "best": "upl", "better": True, "place": {"at": 29.0, "candidate_at": 29.0},
+     "listen": {"current": True, "candidate": True}, "failed": [], "lyrics_note": ""},
+    {"path": REPAIR_QUIET, "status": "queued", "auto": True,
+     "reason": "студийная не сверена", "error": ""},
+]  # fmt: skip
+
+
+def _klipy_page(page, items):
+    """«Клипы» с двумя треками и ответом /api/repairs = ``items``."""
+    state = {"items": items, "sent": []}
+    klipy = {"name": "Клипы", "revision": "r1", "cover": False, "entries": [
+        {"index": 0, "path": REPAIR_LOUD, "title": "Loud", "artist": "Loud Band", "album": "",
+         "duration": 12},
+        {"index": 1, "path": REPAIR_QUIET, "title": "Quiet", "artist": "Quiet Band", "album": "",
+         "duration": 12}]}  # fmt: skip
+
+    def tracks(route):
+        route.fulfill(json=klipy)
+
+    def repairs(route):
+        route.fulfill(json={"playlist": "Клипы", "items": state["items"], "ready": 1, "working": 1})
+
+    def action(route):
+        state["sent"].append((route.request.url.rsplit("/", 1)[-1], route.request.post_data_json))
+        state["items"] = state["items"][1:]
+        route.fulfill(json={"path": REPAIR_LOUD, "kept": True})
+
+    page.route("**/api/playlists/%D0%9A%D0%BB%D0%B8%D0%BF%D1%8B/tracks", tracks)
+    page.route("**/api/repairs", repairs)
+    page.route("**/api/repairs/keep", action)
+    page.evaluate("openPlaylist('Клипы')")
+    page.wait_for_function("document.querySelectorAll('.repair-card').length > 0")
+    return state
+
+
+def _unroute_klipy(page):
+    page.unroute("**/api/playlists/%D0%9A%D0%BB%D0%B8%D0%BF%D1%8B/tracks")
+    page.unroute("**/api/repairs")
+    page.unroute("**/api/repairs/keep")
+
+
+def test_klipy_shows_a_repair_card_per_track(page):
+    _klipy_page(page, REPAIR_ITEMS)
+    try:
+        cards = page.locator(".repair-card")
+        assert cards.count() == 2
+        first = cards.nth(0).inner_text()
+        assert "Заглушены слова: «Курим» (0:30)" in first
+        assert "Лучшая версия: чужая загрузка «Loud Band - Loud» · 0:12" in first
+        for name in ("▶ Сейчас (0:29)", "▶ Кандидат", "Заменить", "Вставить ссылку",
+                     "Оставить как есть"):  # fmt: skip
+            assert cards.nth(0).get_by_role("button", name=name).count() == 1, name
+        second = cards.nth(1).inner_text()
+        assert "Положила служба: студийная не сверена" in second and "В очереди" in second
+        assert cards.nth(1).get_by_role("button", name="Заменить").count() == 0
+        grey = page.evaluate(
+            "(() => { const probe = document.createElement('button'); document.body.append(probe);"
+            " const plain = getComputedStyle(probe).backgroundColor; probe.remove();"
+            " return [...document.querySelectorAll('.repair-card button')]"
+            "  .filter(b => getComputedStyle(b).backgroundColor === plain).map(b => b.textContent); })()"
+        )
+        assert grey == []
+    finally:
+        _unroute_klipy(page)
+
+
+def test_keep_as_is_takes_the_card_away(page):
+    state = _klipy_page(page, REPAIR_ITEMS)
+    try:
+        page.locator(".repair-card").nth(0).get_by_role("button", name="Оставить как есть").click()
+        page.wait_for_function("document.querySelectorAll('.repair-card').length === 1")
+        assert state["sent"] == [("keep", {"path": REPAIR_LOUD, "video_id": "upl"})]
+        assert "Оставлен как есть" in page.locator("#playlistNote").inner_text()
+    finally:
+        _unroute_klipy(page)
+
+
+def test_paste_a_link_opens_replace_by_link_under_the_track(page):
+    _klipy_page(page, REPAIR_ITEMS)
+    try:
+        page.locator(".repair-card").nth(0).get_by_role("button", name="Вставить ссылку").click()
+        form = page.locator(".row-menu-form")
+        form.wait_for()
+        assert form.get_by_role("button", name="Заменить по ссылке").count() == 1
+        page.keyboard.press("Escape")
+    finally:
+        _unroute_klipy(page)
+
+
+def test_repair_cards_are_only_on_klipy(page):
+    _klipy_page(page, REPAIR_ITEMS)
+    _unroute_klipy(page)
+    page.evaluate(
+        "player.playlist = {name: 'Другая', revision: 'r', entries: []}; renderPlaylist()"
+    )
+    page.wait_for_function("document.getElementById('playlistRepair').hidden")
+    assert page.locator(".repair-card").count() == 0
+
+
+def test_copies_the_server_named_as_replaced_skip_the_per_pass_limit(page):
+    """«Починка» заменила звук на том же пути: такая копия перекачивается сразу,
+    а не ждёт своей двадцатки — предел только для восстановления из бэкапа."""
+    pad = [f"Pad/Singles/{i}.m4a" for i in range(30)]
+    open_library(page)
+    _controlled(page)
+    _fake_downloads(page, pad, stamp="old")
+    page.evaluate("localStorage.setItem('offlineLibraryCount', '33')")
+    _library_answer(page, extra=30)
+    asked = page.evaluate(
+        "(async () => { let n = 0; const real = downloadTrack, realNamed = fetchReplacedPaths;"
+        " downloadTrack = async () => { n += 1; };"
+        " fetchReplacedPaths = async () => new Set(['Pad/Singles/25.m4a', 'Pad/Singles/26.m4a',"
+        "   'Pad/Singles/27.m4a', 'Pad/Singles/28.m4a', 'Pad/Singles/29.m4a']);"
+        " try { await reconcileDownloads(true); } finally {"
+        "   downloadTrack = real; fetchReplacedPaths = realNamed; }"
+        " return n; })()"
+    )
+    assert asked == 25
+    page.evaluate("removeAllDownloads()")

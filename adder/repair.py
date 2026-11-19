@@ -729,6 +729,20 @@ def listing() -> dict:
     }
 
 
+def counts() -> dict:
+    """Для главной: сколько в «Клипах» разобрано и сколько ещё разбирается."""
+    present = set(playlist_paths())
+    ready = working = 0
+    for row in db.db_query("SELECT path, status FROM repairs"):
+        if row["path"] not in present:
+            continue
+        if row["status"] == "ready":
+            ready += 1
+        elif row["status"] in ("queued", "working"):
+            working += 1
+    return {"ready": ready, "working": working, "playlist": PLAYLIST}
+
+
 def excerpt(path: str, which: str) -> Path:
     if which not in ("current", "candidate"):
         raise Refused("Нет такого куска")

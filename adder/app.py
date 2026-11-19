@@ -2172,6 +2172,8 @@ def home(authenticated: bool = Depends(verify_token)):
         "heard": as_tracks(stats.recently_heard(by_path)),
         # Одинаковые песни фонотеки, ждущие решения (adder/duplicates.py).
         "duplicates": duplicates.open_count(rows),
+        # «Клипы» — очередь на починку (adder/repair.py).
+        "repairs": repair.counts(),
         "albums": [
             {
                 "artist": who,
@@ -2970,6 +2972,7 @@ def index():
         "offline.js",
         "look.js",
         "views.js",
+        "repair.js",
         "fonts/fonts.css",
     ):
         path = web / name

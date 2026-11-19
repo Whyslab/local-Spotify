@@ -257,6 +257,21 @@ async function fetchLibraryRows() {
     }
 }
 
+/* Пути, которые сервер сам назвал заменёнными на месте («Починка», замена
+ * по ссылке на тот же путь): их копия перекачивается без MAX_REFRESHES —
+ * предел защищает от перекачки всего после восстановления из бэкапа, а не от
+ * замены, о которой сервер знает. Пусто — не вышло спросить. */
+async function fetchReplacedPaths() {
+    try {
+        const r = await fetch("/api/library/replaced", { headers: headers(), cache: "no-store" });
+        if (!r.ok) return new Set();
+        const data = await r.json();
+        return new Set((data.replaced || []).map(item => item.path));
+    } catch (e) {
+        return new Set();
+    }
+}
+
 async function hasExtras(path) {
     const extras = await caches.open(OFFLINE_EXTRAS);
     return Boolean(await extras.match(coverKey(path, 600)) || await extras.match(lyricsKey(path)));
@@ -301,6 +316,7 @@ async function reconcileDownloads(force = false) {
             if (Date.now() - lowerSince >= MISSING_GRACE_MS) baseline = rows.length;
         }
         const metas = await caches.open(OFFLINE_META);
+        const replacedHere = await fetchReplacedPaths();
         let refreshed = 0;
         for (const path of [...offline.paths]) {
             if (offline.running) return;  // не мешать скачиванию
@@ -324,11 +340,12 @@ async function reconcileDownloads(force = false) {
             // Копия до отпечатков: сравнить размер; совпал — запомнить отпечаток.
             const changed = meta.stamp ? meta.stamp !== row.stamp : Boolean(meta.size && row.size !== meta.size);
             if (changed) {
-                if (refreshed >= MAX_REFRESHES) continue;  // остальное — в следующий раз
+                const named = replacedHere.has(path);
+                if (!named && refreshed >= MAX_REFRESHES) continue;  // остальное — в следующий раз
                 // Трек в плеере (и на паузе) — не трогать: его звук читается из этой копии.
                 const current = player.queue[player.index];
                 if (current && current.path === path) continue;
-                refreshed += 1;
+                if (!named) refreshed += 1;
                 await yieldToPlayer({ stop: false });
                 try {
                     await downloadTrack({ ...meta, ...row }, true);

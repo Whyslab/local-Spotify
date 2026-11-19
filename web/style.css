@@ -498,6 +498,21 @@ button:disabled { opacity: .5; cursor: default; }
 .dup-side .track-album { display: block; }
 .duplicate .row { margin-top: 10px; flex-wrap: wrap; }
 
+/* «Починка» у «Клипов» (web/repair.js): карточка — не предупреждение, без
+ * красной рамки; названия переносятся, а не обрезаются. */
+.repair-list { display: grid; gap: 10px; margin: 0 0 14px; }
+.repair-head h3 { margin: 0; font-size: 15px; font-weight: 650; }
+.repair-head p { margin: 4px 0 0; font-size: 12px; color: var(--text-2); }
+.repair-card { box-shadow: inset 0 0 0 1px var(--line, rgba(255, 255, 255, 0.12)); min-width: 0; }
+.repair-card .track-title, .repair-card .track-artist { white-space: normal; overflow-wrap: anywhere; }
+.repair-card .repair-problems { margin: 8px 0 0; padding-left: 18px; font-size: 13px; }
+.repair-card .repair-problems li + li { margin-top: 2px; }
+.repair-card p.repair-best { color: var(--text); font-size: 13px; overflow-wrap: anywhere; }
+.repair-card p.repair-status { color: var(--text); font-size: 13px; }
+.repair-card .row { margin-top: 10px; gap: 8px; }
+.repair-card .repair-main { font-weight: 650; }
+.repair-card p.repair-note:empty { display: none; }
+
 /* Правка тегов: подписи над полями, поля во всю ширину. */
 .edit-tags .field { display: flex; flex-direction: column; gap: 4px; margin-top: 10px; }
 .edit-tags .field span { font-size: 12px; color: var(--text-2); }

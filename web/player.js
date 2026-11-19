@@ -3214,6 +3214,8 @@ function renderPlaylist() {
     filterOpenPlaylist();
     markPlayingRow();
     renderPlaylistOffline();
+    /* «Починка» у «Клипов» (web/repair.js); у остальных прячется. */
+    if (typeof renderRepairs === "function") renderRepairs();
     markAppReady();
 }
 

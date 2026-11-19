@@ -7,6 +7,7 @@
 
 import json
 import shutil
+import threading
 import time
 from pathlib import Path
 
@@ -427,7 +428,9 @@ def test_downloads_wait_for_the_users_queue_and_the_pause(monkeypatch):
             repair._last_download = 0.0
         return False
 
-    monkeypatch.setattr(runtime.shutdown_event, "wait", wait)
+    event = threading.Event()  # другой тест мог оставить общий взведённым
+    monkeypatch.setattr(event, "wait", wait)
+    monkeypatch.setattr(runtime, "shutdown_event", event)
     repair._wait_for_turn()
     assert len(waits) == 2
     assert 1.0 <= waits[0] <= repair.PAUSE_SECONDS
@@ -443,7 +446,9 @@ def test_the_hourly_limit_holds_downloads(monkeypatch):
         repair._downloads.clear()
         return False
 
-    monkeypatch.setattr(runtime.shutdown_event, "wait", wait)
+    event = threading.Event()  # другой тест мог оставить общий взведённым
+    monkeypatch.setattr(event, "wait", wait)
+    monkeypatch.setattr(runtime, "shutdown_event", event)
     repair._wait_for_turn()
     assert waits == [30.0]
 

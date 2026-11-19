@@ -333,6 +333,8 @@
         <div class="playlist-progress-bar" role="progressbar" aria-label="Скачано треков" aria-valuemin="0"><div></div></div>
       </div>
       <p id="playlistNote" class="note"></p>
+      <!-- «Починка» — только у «Клипов» (web/repair.js, adder/repair.py). -->
+      <div id="playlistRepair" class="repair-list" hidden></div>
       <div id="playlistTracks" class="rows"></div>
       <!-- Поиск спрятал все строки — сказать об этом и дать сбросить: иначе
            подборка выглядела пустой, хотя в ней сотни треков. -->
@@ -648,3 +650,4 @@
 <script src="/static/offline.js"></script>
 <script src="/static/look.js"></script>
 <script src="/static/views.js"></script>
+<script src="/static/repair.js"></script>

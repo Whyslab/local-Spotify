@@ -555,6 +555,17 @@ function renderLabHome(data) {
                 `${n % 10 === 1 && n % 100 !== 11 ? "Нашлась" : "Нашлось"} ${plural(n, "песня", "песни", "песен")} в нескольких экземплярах — можно оставить по одному.`)));
     }
 
+    /* «Клипы» — очередь на починку (с 19.11.2026): разобранное ждёт решения. */
+    const repairs = data.repairs || {};
+    if (repairs.ready > 0 || repairs.working > 0) {
+        const n = repairs.ready;
+        const text = n > 0
+            ? `В «${repairs.playlist}» ${plural(n, "трек разобран", "трека разобраны", "треков разобрано")} — можно послушать и заменить.`
+            : `В «${repairs.playlist}» ищутся другие версии: ${plural(repairs.working, "трек", "трека", "треков")}.`;
+        parts.push(labSection("Починка", { label: "Открыть", run: () => openPlaylist(repairs.playlist) },
+            el("p", "o-section-note", text)));
+    }
+
     if (moods.length) {
         parts.push(labSection("Под настроение", null, labShelf(moods.map((m) => {
             const first = m.tracks[0];
