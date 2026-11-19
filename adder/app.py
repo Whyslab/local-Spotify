@@ -2601,20 +2601,27 @@ def _top_up(
     size: int,
     core: set[str] | None,
     skip: set[str] | frozenset[str] = frozenset(),
+    focus_artist: str = "",
 ) -> tuple[list[dict], list[shuffle.Track]]:
     """Добрать своих в конец, если чужим не нашлось места на стыках блоков —
-    иначе очередь выходила короче заказанной (рецензия этапа 5)."""
+    иначе очередь выходила короче заказанной (рецензия этапа 5).
+
+    Подборка (``core``) не покидается: кончилась — очередь короче, как и без
+    подмешивания. Пустой добор движок не отмечает — метка очереди та же.
+    """
     short = size - len(payload)
     if short <= 0:
         return payload, []
     used = {entry["path"] for entry in payload} | set(skip)
-    rest = [t for t in tracks if t.path not in used]
+    rest = [t for t in tracks if t.path not in used and (core is None or t.path in core)]
+    if not rest:
+        return payload, []
+    marks = _ENGINE_USED.get()
     more = _engine_queue(
-        rest,
-        short,
-        core=None if core is None else core - used,
-        previous=local[-1] if local else None,
+        rest, short, previous=local[-1] if local else None, focus_artist=focus_artist
     )
+    if not more:
+        _ENGINE_USED.set(marks)
     return payload + _queue_payload(more, core), more
 
 
@@ -2775,6 +2782,7 @@ def radio_portion(req: RadioRequest, authenticated: bool = Depends(verify_token)
                 raise HTTPException(status_code=404, detail="Этого трека нет в фонотеке")
             seed_artist = track.artist
     outside.cleanup_now_and_then()
+    skipped = radio.recently_skipped()
     local, found = radio.build(
         tracks,
         seed_artist,
@@ -2782,7 +2790,7 @@ def radio_portion(req: RadioRequest, authenticated: bool = Depends(verify_token)
         previous=req.recent[-1] if req.recent else None,
         size=req.size,
         have=outside.library_keys(library.library_index()),
-        skipped=radio.recently_skipped(),
+        skipped=skipped,
         engine=_radio_engine,
     )
     slots, language = _block_slots(local)
@@ -2791,8 +2799,17 @@ def radio_portion(req: RadioRequest, authenticated: bool = Depends(verify_token)
     )
     outside.remember(_woven(found, payload))
     if local:
-        # Своё в порции радио — без того, что уже играло (recent).
-        payload, _ = _top_up(payload, local, tracks, req.size, None, skip=set(req.recent))
+        # Добор — с теми же исключениями, что у радио: уже игравшее и недавно
+        # пропущенное, и с весом похожести на артиста станции.
+        payload, _ = _top_up(
+            payload,
+            local,
+            tracks,
+            req.size,
+            None,
+            skip=set(req.recent) | skipped,
+            focus_artist=seed_artist,
+        )
     payload = _stamp(payload)
     return {
         "artist": seed_artist,

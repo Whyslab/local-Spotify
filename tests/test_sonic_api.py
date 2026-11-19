@@ -302,3 +302,24 @@ def test_queue_keeps_its_length_when_outside_only_fits_at_block_joints(client, m
     assert len(body["queue"]) == 30
     external = [e for e in body["queue"] if e.get("external")]
     assert external and len(remembered) == len(external)
+
+
+def test_top_up_never_leaves_the_playlist_and_keeps_the_label(client, monkeypatch):
+    from adder import app as app_module
+    from adder import outside
+
+    _store_sound()
+    client.put("/api/settings", json={"outside_mix": "on"})
+    tracks = app_module._shuffle_tracks()
+    core = {t.path for t in tracks[:12]}
+    found = [
+        {"key": f"k{i}", "artist": f"Чужой{i}", "title": f"Песня{i}", "seed": "x"}
+        for i in range(20)
+    ]
+    monkeypatch.setattr(outside, "candidates", lambda *a, **k: list(found))
+    monkeypatch.setattr(outside, "remember", lambda items: None)
+    app_module._ENGINE_USED.set(())  # тест зовёт напрямую, не из запроса
+    queue, payload = app_module._smart_queue(tracks, 30, core)
+    own = [e["path"] for e in payload if not e.get("external")]
+    assert set(own) <= core
+    assert app_module._engine_used() == "sonic"
