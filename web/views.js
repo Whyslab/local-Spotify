@@ -818,6 +818,7 @@ function statsContent(data) {
     box.appendChild(el("div", "stats-total", "",
         el("span", "stats-num", listenTime(data.seconds)),
         el("span", "stats-sub", plural(data.plays, "прослушивание", "прослушивания", "прослушиваний"))));
+    box.appendChild(statsRepeats(data.repeats));
     box.appendChild(statsChart(data.chart));
 
     const artists = data.artists || [];
@@ -846,6 +847,17 @@ function statsContent(data) {
         box.appendChild(labSection("Треки", null, list));
     }
     return box;
+}
+
+/* «Повторов за 3 дня» — мерило колоды обычного перемешивания: сколько раз
+ * перемешивание вернуло трек, уже звучавший за эти дни. Окно своё, от
+ * выбранного периода не зависит. */
+function statsRepeats(r) {
+    const days = (r && r.days) || 3;
+    const text = !r || !r.plays
+        ? `За ${days} дня обычного перемешивания не было`
+        : `Повторов за ${days} дня: ${r.repeats} из ${r.plays} в обычном перемешивании`;
+    return el("p", "o-section-note stats-repeats", text);
 }
 
 /* Столбики — блоками с высотой в процентах: цвет из токенов, ширина по

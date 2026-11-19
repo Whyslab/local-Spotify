@@ -221,6 +221,12 @@ def db_init():
     db_exec("""CREATE TABLE IF NOT EXISTS replaced_in_place(
         path TEXT PRIMARY KEY,
         at REAL NOT NULL)""")
+    # Колоды обычного перемешивания (adder/deck.py): ключ — «library» или
+    # «playlist:<имя>», state — JSON с перестановкой, сыгранным и номером круга.
+    db_exec("""CREATE TABLE IF NOT EXISTS decks(
+        key TEXT PRIMARY KEY,
+        state TEXT NOT NULL,
+        updated_at REAL)""")
 
     try:
         db_exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_url ON tasks(url)")
@@ -249,4 +255,8 @@ def prune_play_history(days: int) -> int:
         "DELETE FROM outside_plays WHERE played_at < datetime('now', 'localtime', ?)",
         (f"-{int(days)} days",),
     )
+    # Колоды (adder/deck.py) удалённых и переименованных подборок.
+    from . import deck
+
+    deck.prune(max(int(days), 90))
     return cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0

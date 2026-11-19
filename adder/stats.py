@@ -20,6 +20,9 @@ HEARD = "skipped = 0 AND played_seconds >= ?"
 
 TOP = 10
 
+# Окно метрики «повторов за 3 дня».
+REPEAT_DAYS = 3
+
 
 def main_artist(row: dict) -> str:
     """Тот же артист, по которому открывается его страница (mainArtist в views.js)."""
@@ -143,6 +146,7 @@ def summary(period: Period, rows: list[dict], today: datetime.date) -> dict[str,
             bars[row["key"]] = round(row["seconds"] or 0, 1)
 
     return {
+        "repeats": shuffle_repeats(),
         "period": period,
         "since": since.isoformat() if since else None,
         "plays": total["plays"] or 0,
@@ -151,3 +155,25 @@ def summary(period: Period, rows: list[dict], today: datetime.date) -> dict[str,
         "tracks": tracks[:TOP],
         "chart": {"unit": unit, "bars": [{"key": k, "seconds": v} for k, v in bars.items()]},
     }
+
+
+def shuffle_repeats(days: int = REPEAT_DAYS) -> dict[str, Any]:
+    """Сколько раз перемешивание за последние ``days`` дня вернуло трек,
+    который за это окно уже звучал. Мерило колоды (adder/deck.py): до неё
+    за 17–18.11 из 145 прослушиваний разных было 50.
+
+    Считается только обычное перемешивание: mode plain («Перемешать» —
+    колода, альбом, артист) и manual с shuffled (кнопка перемешивания в
+    плеере). Умное и слепое собирают очередь по-своему. И только услышанное:
+    ранний пропуск колода нарочно возвращает позже в круге, это не повтор.
+    Маленькая подборка, прослушанная дважды за три дня, повторы даст честно —
+    их там не избежать.
+    """
+    row = db.db_query(
+        "SELECT COUNT(*) AS plays, COUNT(DISTINCT path) AS distinct_tracks FROM plays "
+        f"WHERE (mode = 'plain' OR (mode = 'manual' AND shuffled = 1)) AND {HEARD} "
+        "AND played_at >= datetime('now', 'localtime', ?)",
+        (MIN_HEARD_SECONDS, f"-{int(days)} days"),
+    )[0]
+    plays = row["plays"] or 0
+    return {"days": days, "plays": plays, "repeats": plays - (row["distinct_tracks"] or 0)}

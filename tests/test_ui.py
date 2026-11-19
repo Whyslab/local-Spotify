@@ -3615,6 +3615,143 @@ def test_plain_shuffle_puts_the_whole_playlist_in_and_a_new_round_differs(page, 
         library.invalidate_library_index()
 
 
+def test_plain_shuffle_of_a_playlist_follows_the_shared_deck(page, server):
+    """«Перемешать → Обычное» у подборки — по общей колоде на сервере
+    (adder/deck.py): маршрут в порядке колоды, прослушивание несёт метку колоды
+    и двигает курсор, а новая сессия продолжает с него."""
+    root = server["root"]
+    folder = root / "Deck2" / "Singles"
+    folder.mkdir(parents=True, exist_ok=True)
+    first = folder / "00.opus"
+    _track(root, "Deck2/Singles/00.opus", "Deck2", "Deck2", 1, gain=None)
+    for i in range(1, 40):
+        shutil.copyfile(first, folder / f"{i:02}.opus")
+    lines = [f"Deck2/Singles/{i:02}.opus" for i in range(40)]
+    (root / "Колода2.m3u").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    library.invalidate_library_index()
+    take = (
+        "fetch('/api/deck/take', {method: 'POST', headers: {...headers(), 'Content-Type': 'application/json'},"
+        " body: JSON.stringify({playlist: 'Колода2', device: deckDevice()})}).then(r => r.json())"
+    )
+    try:
+        page.evaluate("window.__realPlayAt = playAt; playAt = async () => true; true")
+        page.evaluate("openPlaylist('Колода2')")
+        page.wait_for_function("player.playlist && player.playlist.entries.length === 40")
+        page.locator("#viewPlaylist [onclick^='openPlaylistShuffle']").click()
+        page.get_by_role("menuitem").filter(has_text="Обычное").click()
+        page.wait_for_function("player.deck && player.deck.key === 'playlist:Колода2'")
+        assert page.evaluate("player.queue.length") == 40
+        assert page.evaluate("player.shuffle") == "plain"
+        deck_order = page.evaluate(take)["order"]
+        route = page.evaluate("player.order.map(i => player.queue[i].path)")
+        assert route == deck_order
+
+        # Прослушивание первого трека уходит с меткой колоды и двигает курсор.
+        sent = []
+        page.on(
+            "request",
+            lambda r: (
+                sent.append(json.loads(r.post_data)) if r.url.endswith("/api/plays") else None
+            ),
+        )
+        page.evaluate(
+            "player.index = player.order[0]; player.orderAt = 0;"
+            " player.playingDeck = {key: player.deck.key, round: player.deck.round};"
+            " player.started = true; player.reported = false; reportPlay(true); true"
+        )
+        page.wait_for_timeout(500)
+        assert sent and sent[-1]["deck"] == {"key": "playlist:Колода2", "round": 1}
+        assert sent[-1]["path"] == deck_order[0]
+        assert page.evaluate(take)["order"] == deck_order[1:]
+
+        # Новая сессия начинается со следующего по колоде, а не случайно.
+        page.evaluate("setShuffle(false); player.queue = []; player.index = -1; true")
+        page.locator("#viewPlaylist [onclick^='openPlaylistShuffle']").click()
+        page.get_by_role("menuitem").filter(has_text="Обычное").click()
+        page.wait_for_function("player.deck && player.queue.length === 40")
+        # playAt здесь заглушка — первый трек сессии виден по маршруту.
+        assert page.evaluate("player.queue[player.order[0]].path") == deck_order[1]
+        assert deck_order[0] not in page.evaluate("player.order.map(i => player.queue[i].path)")
+    finally:
+        page.evaluate("playAt = window.__realPlayAt; setShuffle(false); true")
+        (root / "Колода2.m3u").unlink()
+        shutil.rmtree(root / "Deck2")
+        library.invalidate_library_index()
+
+
+def test_deck_sync_keeps_the_new_round_and_brings_an_early_skip_back(page):
+    """Сверка с колодой (замечания рецензии 19.11.2026): ответ про прошлый круг,
+    пока сервер не узнал о новом, не возвращает сыгранное; раз пропущенный в
+    начале трек переезжает туда, куда его поставил сервер, — без двойников в
+    маршруте."""
+    open_library(page)
+    result = page.evaluate(
+        """(async () => {
+        const realPlayAt = playAt, realFetch = fetchDeck;
+        playAt = async () => true;
+        const q = ['a', 'b', 'c', 'd', 'e'].map(x => ({path: 'S/' + x + '.m4a', title: x}));
+        const deck = newDeck({kind: 'playlist', name: 'S'}, false);
+        Object.assign(deck, {key: 'playlist:S', round: 2, order: q.map(t => t.path)});
+        player.shuffle = 'plain';
+        playQueue(q, 0, 'plain', {kind: 'playlist', name: 'S'}, {deck});
+        player.index = player.order[0]; player.orderAt = 0;
+        const out = {};
+        try {
+            fetchDeck = async () => ({key: 'playlist:S', round: 1, order: ['S/e.m4a'], next: []});
+            out.stale = await syncDeck();
+            out.afterStale = player.order.map(i => player.queue[i].path);
+            // Сыграли a, b пропустили в начале, сейчас играет c.
+            deck.passed.add('S/a.m4a'); deck.skippedOnce.add('S/b.m4a');
+            player.order = [0, 1, 2, 3, 4]; player.index = 2; player.orderAt = 2;
+            fetchDeck = async () => ({key: 'playlist:S', round: 2, order: ['S/d.m4a', 'S/e.m4a', 'S/b.m4a'], next: []});
+            out.fresh = await syncDeck();
+            out.route = player.order.map(i => player.queue[i].path);
+            out.playing = player.queue[player.order[player.orderAt]].path;
+            // Круг сменился без этого плеера — сыгранное здесь снова законно.
+            fetchDeck = async () => ({key: 'playlist:S', round: 3, order: ['S/a.m4a'], next: []});
+            await syncDeck();
+            out.passedAfterRoll = deck.passed.size;
+            out.routeAfterRoll = player.order.map(i => player.queue[i].path);
+            // Сохранённая очередь — без списков размером с фонотеку.
+            saveQueue();
+            out.saved = JSON.parse(localStorage.getItem(QUEUE_KEY)).deck;
+        } finally { playAt = realPlayAt; fetchDeck = realFetch; setShuffle(false); }
+        return out;
+    })()"""
+    )
+    assert result["stale"] is False
+    assert result["afterStale"] == ["S/a.m4a", "S/b.m4a", "S/c.m4a", "S/d.m4a", "S/e.m4a"]
+    assert result["fresh"] is True
+    assert result["route"] == ["S/a.m4a", "S/c.m4a", "S/d.m4a", "S/e.m4a", "S/b.m4a"]
+    assert result["playing"] == "S/c.m4a"
+    assert result["passedAfterRoll"] == 0
+    # Прозвучавшее в этой сессии (a) в маршрут не возвращается и в новом круге —
+    # это недавний повтор; играющий стоит.
+    assert result["routeAfterRoll"] == ["S/a.m4a", "S/c.m4a"]
+    assert result["saved"]["order"] is None and result["saved"]["round"] == 3
+
+
+def test_starting_a_new_queue_logs_the_unfinished_track_under_its_own_path(page):
+    """Новая очередь посреди трека: недоигранный пишется в журнал под своим
+    путём. Раньше это делал playAt уже после смены очереди — и брал путь
+    трека новой очереди с тем же номером."""
+    open_library(page)
+    sent = []
+    page.on(
+        "request",
+        lambda r: sent.append(json.loads(r.post_data)) if r.url.endswith("/api/plays") else None,
+    )
+    page.evaluate(
+        "window.__realPlayAt = playAt; playAt = async () => true;"
+        " playQueue([{path: 'Old/Singles/a.m4a', title: 'a'}, {path: 'Old/Singles/b.m4a', title: 'b'}], 1);"
+        " player.index = 1; player.started = true; player.reported = false;"
+        " playQueue([{path: 'New/Singles/x.m4a', title: 'x'}, {path: 'New/Singles/y.m4a', title: 'y'}], 0);"
+        " playAt = window.__realPlayAt; true"
+    )
+    page.wait_for_timeout(500)
+    assert [b["path"] for b in sent] == ["Old/Singles/b.m4a"]
+
+
 def test_an_outside_track_has_labelled_keep_and_do_not_offer(page):
     """Значок «+» без подписи не читался (разбор 19.11.2026): у чужого трека —
     «♥ В фонотеку» и «Не предлагать» словами; «Не предлагать» запоминает и

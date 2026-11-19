@@ -42,6 +42,11 @@ const player = {
     beforeSmart: null,   // очередь до умного перемешивания — вернуть при выключении
     smartTicket: 0,      // номер последней сборки умной очереди — см. smartifyQueue
     nextRound: null,     // следующий круг «Повтора» при обычном перемешивании — см. nextRound
+    /* Колода обычного перемешивания подборки или фонотеки (adder/deck.py):
+     * {key, playlist, only, round, order, next, passed, sinceSync, syncedAt}
+     * или null. Порядок маршрута даёт сервер, общий для всех устройств. */
+    deck: null,
+    playingDeck: null,   // {key, round} колоды, из которой включён текущий трек — для журнала
     playingMode: null,   // из какой очереди начал играть текущий трек — для журнала
     repeat: "off",       // "off" | "all" | "one"
     generation: 0,       // номер последнего включения — см. playAt
@@ -127,6 +132,16 @@ function reportPlay(finished) {
          * сети уходит позже (offline.js), и время отправки соврало бы. */
         heard_at: Math.floor(Date.now() / 1000 - played),
     };
+    /* Из какой колоды и какого её круга: по этому сервер двигает курсор. */
+    if (player.playingDeck) body.deck = player.playingDeck;
+    /* Ранний пропуск сервер переносит во вторую половину остатка круга —
+     * значит, трек ещё вернётся, и сюда тоже. Второй ранний пропуск — уже
+     * «сыграно», как и у сервера. */
+    if (player.deck) {
+        const deck = player.deck;
+        if (body.skipped && !deck.skippedOnce.has(current.path)) deck.skippedOnce.add(current.path);
+        else deck.passed.add(current.path);
+    }
     fetch("/api/plays", {
         method: "POST",
         headers: { ...headers(), "Content-Type": "application/json" },
@@ -205,6 +220,7 @@ function peekNext() {
     let at = player.orderAt;
     if (at < 0 || player.order[at] !== player.index) at = player.order.indexOf(player.index);
     if (at + 1 < player.order.length) return player.order[at + 1];
+    if (deckContinues()) return nextRound()[0];
     if (player.repeat === "all") return player.shuffle === "plain" ? nextRound()[0] : player.order[0];
     return -1;
 }
@@ -217,6 +233,12 @@ function peekNext() {
 function nextRound() {
     const cached = player.nextRound;
     if (cached && cached.order === player.order && cached.length === player.order.length) return cached.round;
+    if (deckContinues()) {
+        /* Колода кончилась — следующая уже собрана сервером. */
+        const round = deckIndices(player.deck.next, new Set());
+        player.nextRound = { order: player.order, length: player.order.length, round };
+        return round;
+    }
     const last = player.order[player.order.length - 1];
     const round = [...player.order];
     for (let i = round.length - 1; i > 0; i -= 1) {
@@ -313,6 +335,9 @@ async function playAt(position, skipped = 0, direction = 1, options = {}) {
     /* Добавленное руками — «manual» в любой очереди: такое пропускают реже,
      * и оно приукрасило бы умную или обычную. */
     player.playingMode = track && track.queued ? "manual" : player.queueMode;
+    player.playingDeck = player.deck && player.deck.key && track && !track.queued
+        ? { key: player.deck.key, round: player.deck.round } : null;
+    if (player.playingDeck) deckTick();
     /* Название и строка в списках — сразу, а не когда трек загрузится. Тест на айфоне 24.10:
      * ссылка шла около секунды, всё это время в мини-плеере висел прежний
      * трек, и второй свайп «назад» увёл ещё на один трек — человек видел,
@@ -610,6 +635,16 @@ function buildOrder(startIndex) {
         player.orderAt = at >= 0 ? at : -1;
         return;
     }
+    /* Колода: порядок дал сервер (несыгранное этого круга), играющий —
+     * первым. Чего в колоде нет (сыграно в этом круге или занято другим
+     * устройством), в маршрут не идёт. */
+    if (player.deck && Array.isArray(player.deck.order)) {
+        const skip = new Set([startIndex, ...ahead]);
+        const rest = deckIndices(player.deck.order, skip);
+        player.order = startIndex >= 0 ? [startIndex, ...ahead, ...rest] : [...ahead, ...rest];
+        player.orderAt = startIndex >= 0 ? 0 : -1;
+        return;
+    }
     /* Играющий трек остаётся первым: включать перемешивание не значит
      * перебивать то, что сейчас звучит. Остальные тасуются по Фишеру—Йетсу. */
     const rest = straight.filter(i => i !== startIndex);
@@ -632,6 +667,20 @@ function stepInOrder(delta) {
     if (next >= 0 && next < player.order.length) {
         player.orderAt = next;
         return player.order[next];
+    }
+    if (delta > 0 && deckContinues()) {
+        /* Новый круг колоды — без «Повтора»: колода и есть бесконечный круг. */
+        player.order = nextRound();
+        player.nextRound = null;
+        player.deck.round += 1;
+        player.deck.order = player.deck.next;
+        player.deck.next = null;
+        player.deck.passed = new Set();
+        player.deck.skippedOnce = new Set();
+        player.deck.sinceSync = DECK_SYNC_EVERY;
+        player.orderAt = 0;
+        saveQueueSoon();
+        return player.order[0];
     }
     if (player.repeat === "all" && player.order.length) {
         if (delta > 0 && player.shuffle === "plain") {
@@ -785,6 +834,7 @@ async function setShuffle(mode) {
     const was = player.shuffle;
     if (mode === "smart") {
         player.shuffle = "smart";
+        player.deck = null;
         renderPlayerModes();
         const ok = await smartifyQueue();
         /* null — эту сборку уже сменила другая просьба: состояние не наше. */
@@ -801,8 +851,14 @@ async function setShuffle(mode) {
             setPlayerNote("");
         }
         player.shuffle = mode || false;
+        player.deck = null;
         if (was === "smart" && !mode) restoreBeforeSmart();
         else buildOrder(player.index);
+        /* Обычное у подборки или фонотеки — по колоде: пока сервер отвечает,
+         * играет своё перемешивание, ответ поставит порядок колоды. */
+        /* Не после умного: в умной очереди есть подмешанное не из набора, а
+         * колода знает только набор — подмешанное выпало бы из маршрута. */
+        if (mode === "plain" && was !== "smart" && deckable(player.queueSource)) startDeck(player.queueSource, true);
     }
     renderPlayerModes();
     renderQueuePanel();
@@ -971,6 +1027,13 @@ function playShuffled(tracks, source = null, say = null, mode = "plain") {
         if (say) say(cut ? "Без сети, а скачанного отсюда нет — играть нечего." : "Нечего играть.");
         return false;
     }
+    /* Подборка и фонотека — по общей колоде (adder/deck.py): продолжить с
+     * того места, где остановились, на любом устройстве. Сервер не ответил —
+     * тасует плеер, как раньше. Значок загорится с новой очередью. */
+    if (!cut && mode === "plain" && deckable(source)) {
+        playFromDeck(list, source, say);
+        return true;
+    }
     player.shuffle = "plain";
     /* mode «plain» — как и прежнее перемешивание с сервера: по нему
      * /api/plays/stats сравнивает пропуски обычного и умного. */
@@ -978,6 +1041,175 @@ function playShuffled(tracks, source = null, say = null, mode = "plain") {
     renderPlayerModes();
     if (say) say(cut ? `Без сети — перемешал скачанное: ${list.length}` : "");
     return true;
+}
+
+/* ---------------- Колода (adder/deck.py) ----------------
+ *
+ * Перестановка набора и курсор живут на сервере. Курсор двигают
+ * прослушивания (reportPlay шлёт метку колоды и круга), не выдача; плеер
+ * раз в несколько треков сверяет маршрут с колодой — так второе устройство
+ * и прослушивания без сети не дают повторов. */
+const DECK_SYNC_EVERY = 8;
+const DECK_SYNC_MS = 20 * 60 * 1000;
+const DECK_TIMEOUT_MS = 8000;
+/* Первый ответ ждём недолго: всё это время ничего не играет. Спящий
+ * компьютер (Tailscale, navigator.onLine — true) — перемешивает плеер. */
+const DECK_START_TIMEOUT_MS = 3000;
+
+function deckable(source) {
+    return Boolean(source && (source.kind === "library" || (source.kind === "playlist" && source.name)));
+}
+
+/* Номер этого браузера: два устройства не берут одни и те же ближайшие треки. */
+let deckDeviceId = "";
+function deckDevice() {
+    if (deckDeviceId) return deckDeviceId;
+    try { deckDeviceId = localStorage.getItem("deckDevice") || ""; } catch (e) { /* закрыто */ }
+    if (!deckDeviceId) {
+        deckDeviceId = Math.random().toString(36).slice(2, 12) + Date.now().toString(36);
+        try { localStorage.setItem("deckDevice", deckDeviceId); } catch (e) { /* без памяти — на сессию */ }
+    }
+    return deckDeviceId;
+}
+
+/* Пути колоды → места в очереди. Добавленное руками и убранное — мимо. */
+function deckIndices(paths, skip) {
+    const at = new Map();
+    player.queue.forEach((t, i) => {
+        if (t && !t.queued && !player.dropped.has(i) && !at.has(t.path)) at.set(t.path, i);
+    });
+    const out = [];
+    const seen = new Set(skip);
+    for (const path of paths || []) {
+        const i = at.get(path);
+        if (i === undefined || seen.has(i)) continue;
+        seen.add(i);
+        out.push(i);
+    }
+    return out;
+}
+
+/* Маршрут дошёл до конца круга, а следующий круг уже выдан сервером. */
+function deckContinues() {
+    const deck = player.deck;
+    if (!(player.shuffle === "plain" && deck && Array.isArray(deck.next) && deck.next.length)) return false;
+    /* Ни одного трека следующего круга в очереди (убраны) — дальше как без колоды. */
+    return deckIndices(deck.next, new Set()).length > 0;
+}
+
+async function fetchDeck(action, deck, ms = DECK_TIMEOUT_MS) {
+    const body = { playlist: deck.playlist, device: deckDevice() };
+    if (deck.only) {
+        body.paths = [...new Set(player.queue.filter(t => t && !t.queued && !isOutside(t)).map(t => t.path))];
+    }
+    const r = await fetchWithin("/api/deck/" + action, {
+        method: "POST",
+        headers: { ...headers(), "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+    }, ms);
+    if (!r.ok) throw new Error("Колода: ошибка " + r.status);
+    return r.json();
+}
+
+function newDeck(source, only) {
+    return {
+        key: "", playlist: source.kind === "playlist" ? source.name : "", only,
+        round: 0, order: null, next: null, passed: new Set(), skippedOnce: new Set(), sinceSync: 0, syncedAt: 0,
+    };
+}
+
+function takeDeckAnswer(deck, data) {
+    deck.key = data.key;
+    deck.round = data.round;
+    deck.order = Array.isArray(data.order) ? data.order : [];
+    deck.next = Array.isArray(data.next) && data.next.length ? data.next : null;
+    deck.sinceSync = 0;
+    deck.syncedAt = Date.now();
+}
+
+/* «Перемешать» у подборки или фонотеки: начать с курсора колоды. */
+async function playFromDeck(list, source, say) {
+    const ticket = player.smartTicket;
+    const deck = newDeck(source, false);
+    if (say) say("Перемешиваю…");
+    let data = null;
+    try { data = await fetchDeck("take", deck, DECK_START_TIMEOUT_MS); } catch (e) { data = null; }
+    if (ticket !== player.smartTicket) return;  // пока ждали, включили другое
+    const tracks = list.map(t => t.path);
+    const have = new Set(tracks);
+    const first = data && (data.order || []).find(p => have.has(p));
+    player.shuffle = "plain";
+    if (!first) {
+        playQueue(list, Math.floor(Math.random() * list.length), "plain", source);
+        renderPlayerModes();
+        if (say) say("");
+        return;
+    }
+    takeDeckAnswer(deck, data);
+    playQueue(list, tracks.indexOf(first), "plain", source, { deck });
+    renderPlayerModes();
+    if (say) say("");
+}
+
+/* Кнопка перемешивания в плеере над подборкой или фонотекой: колода по
+ * трекам очереди (only). */
+async function startDeck(source, only) {
+    const deck = newDeck(source, only);
+    player.deck = deck;
+    await syncDeck();
+}
+
+/* Сверить маршрут с колодой: сыгранное здесь и на других устройствах —
+ * мимо, остальное — в порядке колоды. Играющий и добавленное руками стоят. */
+async function syncDeck(action = "take") {
+    const deck = player.deck;
+    if (!deck) return false;
+    const epoch = player.queueEpoch;
+    deck.syncedAt = Date.now();
+    let data;
+    try { data = await fetchDeck(action, deck); } catch (e) { return false; }
+    if (player.deck !== deck || player.queueEpoch !== epoch || player.shuffle !== "plain") return false;
+    /* Плеер уже в новом круге, а сервер ещё не получил ни одного его
+     * прослушивания: ответ про прошлый круг вернул бы сыгранное. */
+    if (data.round === deck.round - 1) return false;
+    /* Круг сменился без этого плеера (доиграло другое устройство, очередь
+     * вернулась через дни): сыгранное здесь в прошлом круге в новом — законно. */
+    if (data.round > deck.round) {
+        deck.passed = new Set();
+        deck.skippedOnce = new Set();
+    }
+    takeDeckAnswer(deck, data);
+    let at = player.orderAt;
+    if (at < 0 || player.order[at] !== player.index) at = player.order.indexOf(player.index);
+    const current = at >= 0 ? player.order[at] : -1;
+    const head = at >= 0 ? player.order.slice(0, at + 1) : [];
+    const ahead = queuedAhead();
+    /* Пройденное здесь не возвращается — кроме раз пропущенного в начале:
+     * его сервер поставил дальше, туда он и переезжает. */
+    const again = new Set(deckIndices([...deck.skippedOnce], new Set()));
+    const skip = new Set([current, ...ahead, ...deckIndices([...deck.passed], new Set())]);
+    for (const i of head) if (!again.has(i)) skip.add(i);
+    const rest = deckIndices(deck.order, skip);
+    const moved = new Set(rest);
+    const kept = head.filter(i => i === current || !moved.has(i));
+    player.order = [...kept, ...ahead, ...rest];
+    player.orderAt = at >= 0 ? kept.length - 1 : -1;
+    player.nextRound = null;
+    saveQueueSoon();
+    renderQueuePanel();
+    return true;
+}
+
+/* Перед каждым треком из колоды: пора ли сверяться. */
+function deckTick() {
+    const deck = player.deck;
+    if (!deck) return;
+    deck.sinceSync += 1;
+    const left = player.order.length - 1 - Math.max(player.orderAt, 0);
+    if (deck.sinceSync >= DECK_SYNC_EVERY || Date.now() - deck.syncedAt > DECK_SYNC_MS || (left < 5 && !deck.next)) {
+        deck.sinceSync = 0;
+        syncDeck();
+    }
 }
 
 /* Сервер отвечает? Только когда есть скачанное — иначе и выбирать не из
@@ -1553,6 +1785,12 @@ function reshuffleQueue() {
         setShuffle("plain");
         return;
     }
+    /* Колода: новый порядок несыгранной части круга (решение 19.11.2026),
+     * сыгранное до конца круга не вернётся. */
+    if (player.deck) {
+        syncDeck("reshuffle").then(ok => setPlayerNote(ok ? "Перемешано заново" : "Не перемешалось — нет связи со службой"));
+        return;
+    }
     buildOrder(player.index);
     renderQueuePanel();
     setPlayerNote("Перемешано заново");
@@ -1683,6 +1921,14 @@ function saveQueue() {
                 queueMode: player.queueMode,
                 queueSource: player.queueSource,
                 beforeSmart: player.beforeSmart,
+                /* Без order/next — это размер фонотеки; маршрут сохранён и так, а
+                 * колоду после возврата плеер сверит с сервером. */
+                deck: player.deck
+                    ? {
+                        ...player.deck, order: null, next: null,
+                        passed: [...player.deck.passed], skippedOnce: [...player.deck.skippedOnce],
+                    }
+                    : null,
             }));
             queueChanged = false;
         }
@@ -1727,6 +1973,15 @@ function restoreQueue() {
     player.queueMode = saved.queueMode || "manual";
     player.queueSource = saved.queueSource || null;
     player.beforeSmart = saved.beforeSmart && Array.isArray(saved.beforeSmart.queue) ? saved.beforeSmart : null;
+    const d = saved.deck;
+    player.deck = player.shuffle === "plain" && d && typeof d.key === "string" && Number.isInteger(d.round)
+        ? {
+            ...d,
+            passed: new Set(Array.isArray(d.passed) ? d.passed : []),
+            skippedOnce: new Set(Array.isArray(d.skippedOnce) ? d.skippedOnce : []),
+            sinceSync: DECK_SYNC_EVERY,
+        }
+        : null;
     const valid = i => Number.isInteger(i) && i >= 0 && i < n;
     const order = Array.isArray(saved.order) ? saved.order : [];
     const orderValid = order.includes(saved.index) && order.every(valid);
@@ -1837,10 +2092,15 @@ function flashTrackRow(path, index) {
 }
 
 function playQueue(tracks, startAt = 0, mode = "manual", source = null, options = {}) {
+    /* Недоигранный трек — в журнал до смены очереди: playAt записал бы его
+     * под путём трека новой очереди с тем же номером (и колода отметила бы
+     * сыгранным не тот трек). */
+    reportPlay(false);
     newQueue(tracks);
     player.queueMode = mode;
     player.queueSource = source;
     player.beforeSmart = null;
+    player.deck = options.deck || null;
     /* Прежняя сборка умной очереди — про прежнюю очередь. */
     player.smartTicket += 1;
     buildOrder(startAt);

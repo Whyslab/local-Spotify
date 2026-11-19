@@ -367,6 +367,9 @@ def carry_history(old: str, new: str) -> None:
         # OR IGNORE: the same play recorded for both copies stays as it is.
         db.db_exec("UPDATE OR IGNORE plays SET path = ? WHERE path = ?", (new, old))
         lyrics.carry_over(old, new)
+        from . import deck
+
+        deck.rename_path(old, new)
         rows = db.db_query("SELECT sha256 FROM audio_features WHERE path = ?", (old,))
         if rows and rows[0]["sha256"] == loudness.file_hash(library_track(new)):
             db.db_exec("UPDATE OR IGNORE audio_features SET path = ? WHERE path = ?", (new, old))

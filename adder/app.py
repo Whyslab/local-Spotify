@@ -36,6 +36,7 @@ from . import (
     config,
     covers,
     db,
+    deck,
     discography,
     duplicates,
     ingest,
@@ -517,6 +518,11 @@ class PlayerEvent(BaseModel):
     detail: str = Field(default="", max_length=300)
 
 
+class DeckTag(BaseModel):
+    key: str = Field(min_length=1, max_length=1100)
+    round: int = Field(ge=1, le=10**9)
+
+
 class PlayRequest(BaseModel):
     path: str = Field(min_length=1, max_length=4096)
     # Не отрицательное и не NaN: по журналу считается доля пропусков, и одна
@@ -539,6 +545,22 @@ class PlayRequest(BaseModel):
     # button or the server. «manual» alone mixed a shuffled playlist with one
     # played top to bottom. Plays queued before the field existed come without it.
     shuffled: bool = False
+    # Из какой колоды обычного перемешивания и какого её круга взят трек
+    # (adder/deck.py). Без неё прослушивание всё равно отмечается во всех
+    # колодах — по времени.
+    deck: DeckTag | None = None
+
+
+class DeckRequest(BaseModel):
+    # Пусто — вся фонотека.
+    playlist: str = Field(default="", max_length=1000)
+    # Устройство (случайный номер в браузере): два устройства сразу не берут
+    # одни и те же ближайшие треки.
+    device: str = Field(default="", max_length=64)
+    # Только эти пути — перемешать очередь, а не весь набор.
+    paths: list[Annotated[str, Field(max_length=4096)]] | None = Field(
+        default=None, max_length=20000
+    )
 
 
 # A client clock this far ahead is still believed (and pulled back to now).
@@ -2389,6 +2411,38 @@ class SmartShuffleRequest(BaseModel):
     size: int = 50
 
 
+def _deck_set(playlist: str) -> tuple[str, list[str], dict[str, dict]]:
+    """Ключ колоды, её набор (без повторов строк, только то, что есть в
+    фонотеке) и теги для баланса."""
+    rows = library.library_index()
+    if not rows:
+        # Диск не смонтирован или папка пуста: по такому набору колода
+        # подборки потеряла бы весь круг. Плеер в ответ тасует сам.
+        raise HTTPException(status_code=503, detail="Library is not readable right now")
+    meta = {row["path"]: row for row in rows}
+    if not playlist:
+        return deck.LIBRARY_KEY, list(dict.fromkeys(meta)), meta
+    # read() сам отвечает 404, если подборки нет.
+    entries = playlists.read(playlist).entries
+    members = list(dict.fromkeys(e.path for e in entries if e.path in meta))
+    return deck.playlist_key(playlist), members, meta
+
+
+@app.post("/api/deck/take")
+def deck_take(req: DeckRequest, authenticated: bool = Depends(verify_token)):
+    """Обычное перемешивание подборки или фонотеки: что играть дальше по
+    общей колоде (adder/deck.py). Курсор двигают прослушивания, не этот запрос."""
+    key, members, meta = _deck_set(req.playlist)
+    return deck.take(key, members, meta, req.device, req.paths)
+
+
+@app.post("/api/deck/reshuffle")
+def deck_reshuffle(req: DeckRequest, authenticated: bool = Depends(verify_token)):
+    """«Перемешать заново»: новый порядок несыгранной части круга."""
+    key, members, meta = _deck_set(req.playlist)
+    return deck.reshuffle(key, members, meta, req.device, req.paths)
+
+
 @app.post("/api/shuffle/smart")
 def smart_shuffle_of(req: SmartShuffleRequest, authenticated: bool = Depends(verify_token)):
     """Умное перемешивание для любого набора треков, а не только подборки.
@@ -2715,6 +2769,21 @@ def record_play(req: PlayRequest, authenticated: bool = Depends(verify_token)):
     )
     if not cur.rowcount:
         return {"recorded": req.path, "duplicate": True}
+    # Колоды обычного перемешивания: прослушивание двигает курсор. Сбой здесь
+    # журнал не роняет — колода просто не узнает об этом треке.
+    try:
+        deck.heard(
+            req.path,
+            started=started,
+            played_seconds=req.played_seconds,
+            skipped=req.skipped,
+            source_key=req.deck.key if req.deck else None,
+            source_round=req.deck.round if req.deck else None,
+        )
+    except Exception:
+        logger.exception(
+            "Deck: play of %s not counted", _one_line(req.path), extra={"task_id": "deck"}
+        )
     # A listen by ListenBrainz's rule is queued for sending; never fails the journal.
     with suppress(Exception):
         listenbrainz.queue_listen(req.path, req.played_seconds, req.duration, started)
