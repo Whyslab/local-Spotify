@@ -281,3 +281,24 @@ def test_small_station_plays_first_and_the_rest_pads(client, monkeypatch, engine
     assert len(paths) == 12
     assert set(paths[: len(station)]) == station
     assert {e["engine"] for e in body["queue"]} == {engine}
+
+
+def test_queue_keeps_its_length_when_outside_only_fits_at_block_joints(client, monkeypatch):
+    """Чужим — только стыки блоков; кому места нет, тех добирают своими,
+    и очередь не короче заказанной (рецензия этапа 5: 24 из 30 вживую)."""
+    from adder import outside
+
+    _store_sound()
+    client.put("/api/settings", json={"outside_mix": "on"})
+    found = [
+        {"key": f"k{i}", "artist": f"Чужой{i}", "title": f"Песня{i}", "seed": "x"}
+        for i in range(20)
+    ]
+    monkeypatch.setattr(outside, "candidates", lambda *a, **k: list(found))
+    remembered = []
+    monkeypatch.setattr(outside, "remember", lambda items: remembered.extend(items))
+    body = client.get("/api/shuffle", params={"size": 30}).json()
+    assert body["engine"] == "sonic"
+    assert len(body["queue"]) == 30
+    external = [e for e in body["queue"] if e.get("external")]
+    assert external and len(remembered) == len(external)

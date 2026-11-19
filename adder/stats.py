@@ -209,9 +209,19 @@ def smart_skips(days: int = SMART_DAYS, engine: str = "sonic") -> dict[str, Any]
     )[0]
     plays = (own["plays"] or 0) + (other["plays"] or 0)
     skips = (own["skips"] or 0) + (other["skips"] or 0)
+    # Мерка для сравнения — обычное перемешивание за те же дни (в разборе
+    # 19.11.2026 у него было 24 % пропусков).
+    plain = db.db_query(
+        "SELECT COUNT(*) AS plays, COALESCE(SUM(skipped), 0) AS skips FROM plays "
+        "WHERE (mode = 'plain' OR (mode = 'manual' AND shuffled = 1)) "
+        "AND played_at >= datetime('now', 'localtime', ?)",
+        (since,),
+    )[0]
     return {
         "days": days,
         "engine": engine,
+        "plain_plays": plain["plays"] or 0,
+        "plain_share": round(plain["skips"] / plain["plays"], 3) if plain["plays"] else None,
         "plays": plays,
         "skips": skips,
         "outside_plays": other["plays"] or 0,

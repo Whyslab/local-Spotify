@@ -2176,7 +2176,26 @@ def _sonic_lessons(space: sonic.Space) -> sonic.Lessons:
 # запросе: «sonic» или «classic». Метка едет с каждым треком очереди и с
 # прослушиванием в журнал (plays.engine) — иначе пропуски нового и старого
 # умного смешались бы под одним mode='smart' (разбор этапа 5).
-_ENGINE_USED: ContextVar[str] = ContextVar("engine_used", default="classic")
+# Кортеж: очередь может собираться в несколько проходов (радио: станция и
+# добор), и метка «sonic» честна, только если все проходы были по звуку.
+_ENGINE_USED: ContextVar[tuple[str, ...]] = ContextVar("engine_used", default=())
+
+
+def _engine_used() -> str | None:
+    """Движок всей очереди запроса: sonic — только если все её части по звуку."""
+    parts = _ENGINE_USED.get()
+    if not parts:
+        return None
+    return "sonic" if all(p == "sonic" for p in parts) else "classic"
+
+
+def _last_engine() -> str | None:
+    parts = _ENGINE_USED.get()
+    return parts[-1] if parts else None
+
+
+def _mark(engine: str) -> None:
+    _ENGINE_USED.set((*_ENGINE_USED.get(), engine))
 
 
 def _engine_queue(
@@ -2212,11 +2231,11 @@ def _engine_queue(
                 artist_sim=artist_graph.similarity_function(),
                 focus_artist=focus_artist,
             )
-            _ENGINE_USED.set("sonic")
+            _mark("sonic")
             return queue
         except Exception:  # noqa: BLE001 — сбой нового движка не ломает перемешивание
             logger.exception("Умное по звуку упало — очередь по темпу")
-    _ENGINE_USED.set("classic")
+    _mark("classic")
     return shuffle.build_queue(
         tracks, size=size, core=core, outside_share=0.0, previous=previous, seed=seed
     )
@@ -2224,7 +2243,9 @@ def _engine_queue(
 
 def _stamp(payload: list[dict]) -> list[dict]:
     """Каждому треку очереди — движок, которым она собрана (см. _ENGINE_USED)."""
-    engine = _ENGINE_USED.get()
+    engine = _engine_used()
+    if engine is None:  # движок не вызывался (порция — один стартовый трек)
+        return payload
     for entry in payload:
         entry["engine"] = engine
     return payload
@@ -2235,7 +2256,7 @@ def _block_slots(queue: list[shuffle.Track]) -> tuple[set[int] | None, Any]:
 
     Очередь старого движка — (None, None): чужое встаёт где угодно, как раньше.
     """
-    if _ENGINE_USED.get() != "sonic":
+    if _last_engine() != "sonic":
         return None, None
     space = sonic.load_space(library.library_index())
     if space is None:
@@ -2496,7 +2517,7 @@ def smart_shuffle(
         body = _shuffle_body(mode, tracks, queue, _stamp(payload))
         # Какое умное собрало очередь на самом деле: новое (по звучанию) или
         # старое — выбранное, или пока звучание набора не посчитано.
-        body["engine"] = _ENGINE_USED.get()
+        body["engine"] = _engine_used()
     if core is not None:
         body["playlist"] = playlist
         body["core"] = len(core)
@@ -2546,7 +2567,7 @@ def _smart_queue(
         want,
     )
     if not found:
-        if _ENGINE_USED.get() == "sonic":
+        if _last_engine() == "sonic":
             # Новое умное своё со стороны (треки фонотеки вне подборки) не
             # подмешивает: блоки строятся из облаков самой подборки.
             queue = _engine_queue(tracks, size, core)
@@ -2558,12 +2579,43 @@ def _smart_queue(
         # не укорачивалась. Артисты чуть другие — новое всё равно встанет рядом
         # с похожим, а если нет, то просто между своими.
         local = _engine_queue(tracks, size - len(found), core)
-    outside.remember(found)
     slots, language = _block_slots(local)
     payload = outside.weave(
         _queue_payload(local, core), found, len(found), slots=slots, language=language
     )
-    return local, payload
+    outside.remember(_woven(found, payload))
+    payload, more = _top_up(payload, local, tracks, size, core)
+    return local + more, payload
+
+
+def _woven(found: list[dict], payload: list[dict]) -> list[dict]:
+    """Только вплетённые кандидаты: невставленных «предложенными» не считать."""
+    paths = {entry["path"] for entry in payload if entry.get("external")}
+    return [item for item in found if outside.PREFIX + item["key"] in paths]
+
+
+def _top_up(
+    payload: list[dict],
+    local: list[shuffle.Track],
+    tracks: list[shuffle.Track],
+    size: int,
+    core: set[str] | None,
+    skip: set[str] | frozenset[str] = frozenset(),
+) -> tuple[list[dict], list[shuffle.Track]]:
+    """Добрать своих в конец, если чужим не нашлось места на стыках блоков —
+    иначе очередь выходила короче заказанной (рецензия этапа 5)."""
+    short = size - len(payload)
+    if short <= 0:
+        return payload, []
+    used = {entry["path"] for entry in payload} | set(skip)
+    rest = [t for t in tracks if t.path not in used]
+    more = _engine_queue(
+        rest,
+        short,
+        core=None if core is None else core - used,
+        previous=local[-1] if local else None,
+    )
+    return payload + _queue_payload(more, core), more
 
 
 class SettingsRequest(BaseModel):
@@ -2647,7 +2699,7 @@ def smart_shuffle_of(req: SmartShuffleRequest, authenticated: bool = Depends(ver
             raise HTTPException(status_code=404, detail="Этих треков нет в фонотеке")
     queue, payload = _smart_queue(tracks, size, core)
     body = _shuffle_body("smart", tracks, queue, _stamp(payload))
-    body["engine"] = _ENGINE_USED.get()
+    body["engine"] = _engine_used()
     if core is not None:
         body["core"] = len(core)
     return body
@@ -2671,7 +2723,6 @@ def _radio_engine(
     queue = _engine_queue(
         eligible, size, core=core, previous=previous, seed=seed, focus_artist=focus_artist
     )
-    used = _ENGINE_USED.get()
     if core is not None and len(queue) < size:
         taken = {t.path for t in queue} | ({previous.path} if previous else set())
         rest = [t for t in eligible if t.path not in taken]
@@ -2682,8 +2733,6 @@ def _radio_engine(
             seed=None if seed is None else seed + 1,
             focus_artist=focus_artist,
         )
-        if used == "sonic":
-            _ENGINE_USED.set(used)
     return queue
 
 
@@ -2736,14 +2785,18 @@ def radio_portion(req: RadioRequest, authenticated: bool = Depends(verify_token)
         skipped=radio.recently_skipped(),
         engine=_radio_engine,
     )
-    outside.remember(found)
     slots, language = _block_slots(local)
-    payload = _stamp(
-        outside.weave(_queue_payload(local), found, len(found), slots=slots, language=language)
+    payload = outside.weave(
+        _queue_payload(local), found, len(found), slots=slots, language=language
     )
+    outside.remember(_woven(found, payload))
+    if local:
+        # Своё в порции радио — без того, что уже играло (recent).
+        payload, _ = _top_up(payload, local, tracks, req.size, None, skip=set(req.recent))
+    payload = _stamp(payload)
     return {
         "artist": seed_artist,
-        "engine": _ENGINE_USED.get(),
+        "engine": _engine_used(),
         "queue": payload,
         "external": sum(1 for entry in payload if entry.get("external")),
     }

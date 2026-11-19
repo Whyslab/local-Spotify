@@ -4,6 +4,7 @@ import os
 import random
 import subprocess
 import sys
+from collections import Counter
 
 import numpy as np
 import pytest
@@ -134,7 +135,7 @@ def test_artist_keeps_six_apart_and_album_nine():
     index, rows = _library(groups=4, artists_per_group=6, per_artist=5)
     space = _space(index, rows)
     meta = _meta(index)
-    for seed in range(10):
+    for seed in range(40):
         queue = sonic.build_session(_tracks(index), space, meta, size=60, seed=seed)
         assert len(queue) == 60
         assert len({t.path for t in queue}) == 60
@@ -362,3 +363,57 @@ def test_every_cloud_is_someones_neighbour():
     assert reachable == set(range(len(space.centers)))
     for c, near in enumerate(space.neighbours):
         assert all(c in space.neighbours[o] for o in near)
+
+
+@pytest.mark.parametrize(
+    ("raw", "names"),
+    [
+        ("Feather Falls", ["feather falls"]),
+        ("A featuring B", ["a", "b"]),
+        ("A feat. B", ["a", "b"]),
+        ("A ft. B • C", ["a", "b", "c"]),
+        ("Featurette", ["featurette"]),
+    ],
+)
+def test_artists_split_only_on_real_feat(raw, names):
+    assert sonic._artists({"artist": raw}) == names
+
+
+def test_brackets_in_title_do_not_decide_language():
+    rows = [
+        {"path": "a", "artist": "Lil Peep", "title": "Benz Truck (гелик)"},
+        {"path": "b", "artist": "Lil Peep", "title": "Star Shopping"},
+        {"path": "c", "artist": "PHARAOH", "title": "Дико, например"},
+        {"path": "d", "artist": "PHARAOH", "title": "Champagne Squirt"},
+    ]
+    assert sonic.languages(rows) == {"a": "other", "b": "other", "c": "ru", "d": "ru"}
+
+
+def test_junction_is_judged_from_the_cloud_being_left():
+    """Якорь сессии русский, последний блок иностранный: возврат в русское
+    платит за смену языка от облака, откуда уходим, а не бесплатно."""
+    index, rows = _library(groups=4, artists_per_group=4, per_artist=10)
+    space = _space(index, rows, clouds=4)
+    assert len(space.centers) == 4
+    space.cloud_language[:] = ["ru", "ru", "other", "other"]
+    ctx = sonic._Ctx(
+        space=space,
+        meta=_meta(index),
+        tracks={},
+        taste={},
+        artist_sim=sonic._no_graph,
+        rng=random.Random(0),
+        focus=[],
+    )
+    members = {c: ["x"] * 30 for c in range(4)}
+    space.neighbours[0] = [1, 2, 3]
+    picks = Counter(
+        sonic._next_cloud(ctx, 0, members, [], sonic.Lessons(), leaving=2) for _ in range(400)
+    )
+    # Из иностранного 2: остаться в иностранном (3) — без штрафа за язык.
+    expected_other = picks[3]
+    ctx.rng = random.Random(0)
+    no_switch = Counter(
+        sonic._next_cloud(ctx, 0, members, [], sonic.Lessons(), leaving=None) for _ in range(400)
+    )
+    assert expected_other > no_switch[3]

@@ -108,6 +108,15 @@ def is_cyrillic_text(text: str) -> float:
     return cyr / len(letters)
 
 
+_BRACKETS = re.compile(r"[(\[][^)\]]*[)\]]")
+
+
+def _bare_title(title: str) -> str:
+    """Название без скобок: «Benz Truck (гелик)» — «Benz Truck». В скобках —
+    чужие пометки (перевод, «prod. by», версия), а не язык песни."""
+    return _BRACKETS.sub(" ", title).strip() or title
+
+
 def languages(rows: Iterable[dict], lyrics: Callable[[str], str] | None = None) -> dict[str, str]:
     """Язык каждого трека: ``ru`` или ``other``.
 
@@ -125,7 +134,7 @@ def languages(rows: Iterable[dict], lyrics: Callable[[str], str] | None = None) 
         verdict: str | None = None
         if text and sum(ch.isalpha() for ch in text) >= 40:
             verdict = RU if is_cyrillic_text(text) >= 0.3 else OTHER
-        elif is_cyrillic_text(row.get("title") or "") >= 0.3:
+        elif is_cyrillic_text(_bare_title(row.get("title") or "")) >= 0.3:
             verdict = RU
         own[path] = verdict
         for artist in _artists(row):
@@ -146,7 +155,9 @@ def languages(rows: Iterable[dict], lyrics: Callable[[str], str] | None = None) 
     return out
 
 
-_FEAT = re.compile(r"\s*(?:•|\bfeat\.?|\bft\.)\s*", re.IGNORECASE)
+# «feat»/«feat.»/«featuring»/«ft.» — только отдельным словом с пробелом после:
+# «Feather Falls» — один артист (как artist_graph.parts).
+_FEAT = re.compile(r"\s*•\s*|\s+(?:feat(?:uring)?\.?|ft\.)\s+", re.IGNORECASE)
 
 
 def _artists(row: dict) -> list[str]:
@@ -464,6 +475,19 @@ def _allowed(ctx: _Ctx, pool: list[str], queue: list[str]) -> list[str]:
     return pool
 
 
+STUCK_LIMIT = 30
+
+
+def _clean(ctx: _Ctx, pool: list[str], queue: list[str]) -> bool:
+    return any(not _blocked(ctx, p, queue, 2) for p in pool)
+
+
+def _clean_elsewhere(
+    ctx: _Ctx, members: dict[int, list[str]], current: int, queue: list[str]
+) -> bool:
+    return any(_clean(ctx, paths, queue) for c, paths in members.items() if c != current)
+
+
 def _cloud_members(ctx: _Ctx, remaining: set[str]) -> dict[int, list[str]]:
     out: dict[int, list[str]] = {}
     # По порядку, не как лежит в множестве: порядок строк в set меняется от
@@ -527,15 +551,20 @@ def _next_cloud(
                 available[int(i)] for i in order[:NEIGHBOUR_CLOUDS] if available[int(i)] != current
             ]
         candidates = near or available
+    # Стык считается от облака, откуда уходим: его близость, урок перехода и
+    # смена языка. Близость к якорю сессии — ещё множитель, против дрейфа.
+    source = leaving if leaving is not None else current
     weights = []
     for c in candidates:
         weight = lessons.sample_cloud(c, ctx.rng) * math.sqrt(len(members[c]))
-        if current is not None:
-            closeness = float(space.centers[c] @ space.centers[current])
+        if source is not None:
+            closeness = float(space.centers[c] @ space.centers[source])
             weight *= max(closeness, 0.05) ** 4
-            weight *= lessons.sample_move(current, c, ctx.rng)
-            if space.cloud_language[c] != space.cloud_language[current]:
+            weight *= lessons.sample_move(source, c, ctx.rng)
+            if space.cloud_language[c] != space.cloud_language[source]:
                 weight *= LANGUAGE_SWITCH
+        if current is not None and current != source:
+            weight *= max(float(space.centers[c] @ space.centers[current]), 0.05) ** 2
         if c in visited[-RECENT_CLOUDS:]:
             weight *= RECENT_CLOUD_PENALTY
         weights.append(max(weight, 1e-9))
@@ -630,6 +659,7 @@ def build_session(
 
     first_block = previous is not None and current is not None and bool(members.get(current))
     around = current  # облако якоря сессии
+    stuck = 0  # блоков подряд без единого трека (страховка от зацикливания)
     blocks_left = rng.randint(*SESSION_BLOCKS)
     while len(queue) - start < size and (any(members.values()) or homeless):
         if not any(members.values()):
@@ -648,15 +678,26 @@ def build_session(
         assert current is not None
         visited.append(current)
         block = rng.randint(BLOCK_MIN, BLOCK_MAX)
+        before = len(queue)
         for _ in range(block):
             pool = members.get(current) or []
             if not pool or len(queue) - start >= size:
+                break
+            if (
+                stuck < STUCK_LIMIT
+                and not _clean(ctx, pool, queue)
+                and _clean_elsewhere(ctx, members, current, queue)
+            ):
+                # Здесь остался только повтор артиста или альбома, а в других
+                # облаках есть чистые треки: блок кончается раньше, правило не
+                # ослабляется (ослабление — только когда чистых нет нигде).
                 break
             path = _pick(ctx, pool, queue, anchor, len(queue) - start, phase)
             pool.remove(path)
             queue.append(path)
             if anchor is None:
                 anchor = path
+        stuck = 0 if len(queue) > before else stuck + 1
         if homeless and rng.random() < 0.5 and len(queue) - start < size:
             homeless_one()
     return [ctx.tracks[p] for p in queue[start:]]

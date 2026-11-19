@@ -217,11 +217,15 @@ def _moods(rows: list[dict], features: list[dict], limit: int, seed: int) -> lis
             space = sonic.load_space(rows)
         except Exception:  # noqa: BLE001 — сломанное звучание: полки по темпу
             logger.exception("Звучание не загрузилось — полки по темпу")
+    tracks = {t.path: t for t in shuffle.tracks_from_rows(rows, features, [], 12)}
+    # Тот же порог, что у главной (app._sonic_space): пока звучание посчитано
+    # меньше чем у 80 % — полки по темпу и там, и тут.
+    if space is not None and sonic.coverage(list(tracks.values()), space) < sonic.MIN_COVERAGE:
+        space = None
     chosen = moods.sonic_collections(space, limit=limit, seed=seed) if space else []
     if space is None or not chosen:
         return moods.collections(features, limit=limit, seed=seed)
     by_path = {row["path"]: row for row in rows}
-    tracks = {t.path: t for t in shuffle.tracks_from_rows(rows, features, [], 12)}
     out = []
     for mood in chosen:
         pool = [tracks[p] for p in mood.paths if p in tracks]
