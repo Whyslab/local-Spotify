@@ -487,12 +487,12 @@
       <!-- Режимы и очередь живут рядом с громкостью, а не в ряду перемотки:
            это переключатели, а не управление воспроизведением. -->
       <div class="player-modes">
-        <!-- Только для трека со стороны: его нет в фонотеке, и это способ
-             оставить его насовсем. Прячется, пока играет своё. -->
-        <button id="playerKeep" class="icon-button" onclick="keepCurrent()" hidden
-                aria-label="В фонотеку" title="В фонотеку">
-          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
-        </button>
+        <!-- Только для трека со стороны: его нет в фонотеке — оставить его
+             насовсем или больше не предлагать. С подписями: значок «+» без
+             слов не читался (разбор 19.11.2026). Прячутся, пока играет своё. -->
+        <button id="playerKeep" class="outside-action" type="button" onclick="keepCurrent()" hidden>♥ В фонотеку</button>
+        <button id="playerBan" class="outside-action" type="button" onclick="banCurrent()" hidden
+                title="Больше не подмешивать этот трек">Не предлагать</button>
         <button id="playerShuffle" class="icon-button" onclick="toggleShuffle()"
                 aria-label="Перемешать" title="Перемешать" aria-pressed="false" aria-haspopup="menu">
             <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M16 3h5v5M4 20 21 3M21 16v5h-5M15 15l6 6M4 4l5 5"/></svg>

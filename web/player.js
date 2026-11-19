@@ -98,12 +98,13 @@ function swapDeck(el) {
  * question "what was playing at this hour" has no source but this one. */
 function reportPlay(finished) {
     const current = player.queue[player.index];
-    /* Трек со стороны в журнал не пишется: журнал — про фонотеку, по нему
-     * перемешивание решает, что давно не звучало, а этого трека в ней нет. */
+    /* Трек со стороны тоже пишется (с 19.11.2026): сервер кладёт его в свой
+     * журнал, не в журнал фонотеки, и в ListenBrainz не отправляет. Без него
+     * доля пропусков умного перемешивания была лучше настоящей. */
     /* Только трек, который правда зазвучал: не скачанный без сети или не
      * загрузившийся иначе записывался бы со временем и длиной предыдущего —
      * как полное прослушивание. */
-    if (!current || player.reported || !player.started || isOutside(current)) return;
+    if (!current || player.reported || !player.started) return;
     player.reported = true;
 
     const played = player.audio.currentTime || 0;
@@ -520,25 +521,47 @@ async function keepOutside(track) {
 
 function keepLabel(track) {
     return track.kept === "queued" ? "Добавляется в фонотеку"
-        : track.kept === "saving" ? "Добавляю…" : "В фонотеку";
+        : track.kept === "saving" ? "Добавляю…" : "♥ В фонотеку";
 }
 
-/* Кнопка в панели плеера — только пока играет трек со стороны. */
+/* Кнопки в панели плеера — только пока играет трек со стороны. */
 function renderKeepButton() {
     const button = document.getElementById("playerKeep");
+    const ban = document.getElementById("playerBan");
     if (!button) return;
     const track = player.queue[player.index];
     button.hidden = !isOutside(track);
+    if (ban) ban.hidden = button.hidden;
     if (button.hidden) return;
     const done = track.kept === "queued";
     button.classList.toggle("is-on", done);
     button.disabled = track.kept === "saving" || done;
-    button.title = keepLabel(track);
-    button.setAttribute("aria-label", keepLabel(track));
+    button.textContent = keepLabel(track);
+    if (ban) ban.disabled = track.banned === true || done;
 }
 
 function keepCurrent() {
     keepOutside(player.queue[player.index]);
+}
+
+/* «Не предлагать»: сервер запоминает трек и больше его не подмешивает
+ * (ни в умное, ни в радио), а сейчас играет следующий. */
+async function banCurrent() {
+    const track = player.queue[player.index];
+    if (!isOutside(track) || track.banned) return;
+    track.banned = true;
+    renderKeepButton();
+    try {
+        const r = await fetch(`/api/outside/${outsideKey(track)}/ban`, { method: "POST", headers: headers() });
+        if (!r.ok) throw new Error("Ошибка " + r.status);
+    } catch (e) {
+        track.banned = false;
+        renderKeepButton();
+        setPlayerNote("Не запомнилось — нет связи со службой");
+        return;
+    }
+    if (player.queue[player.index] === track) nextTrack();
+    setPlayerNote(`«${trackNames(track).title}» больше не будет предлагаться`);
 }
 
 /* ---------------- Порядок обхода, перемешивание и повтор ---------------- */

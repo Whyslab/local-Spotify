@@ -1099,6 +1099,49 @@ def test_a_play_says_whether_its_order_was_shuffled(client, app_module, monkeypa
     ]
 
 
+def test_an_outside_play_goes_to_its_own_journal_and_not_to_listenbrainz(
+    client, app_module, monkeypatch
+):
+    """Трек со стороны пишется (раньше не писался вовсе — доля пропусков умного
+    врала), но в свой журнал: не в plays и не в ListenBrainz (решение 19.11.2026)."""
+    from adder import listenbrainz, outside
+
+    monkeypatch.setattr(app_module, "_PLAYS_WINDOW", {})
+    monkeypatch.setattr(config, "LISTENBRAINZ_TOKEN", "lb-token")
+    key = "ab" * 8
+    monkeypatch.setattr(outside, "read_meta", lambda k: {"artist": "Чужой", "title": "Песня"})
+
+    def play(path, **extra):
+        body = {"path": path, "played_seconds": 12, "duration": 200, "mode": "smart", **extra}
+        return client.post("/api/plays", json=body, headers=auth_headers())
+
+    assert play(outside.PREFIX + key, skipped=True).json()["outside"] is True
+    assert play(outside.PREFIX + key, played_seconds=200).status_code == 200
+    assert play(outside.PREFIX + "not-a-key").status_code == 422
+    assert db.db_query("SELECT COUNT(*) AS n FROM plays")[0]["n"] == 0
+    assert listenbrainz.pending_count() == 0
+    rows = db.db_query("SELECT key, artist, title, skipped, mode FROM outside_plays ORDER BY id")
+    assert [(r["key"], r["artist"], r["title"], r["skipped"], r["mode"]) for r in rows] == [
+        (key, "Чужой", "Песня", 1, "smart"),
+        (key, "Чужой", "Песня", 0, "smart"),
+    ]
+    # Своё в умном — 1 из 1 дослушан; вместе с чужими — 1 пропуск из 3.
+    play("A/Singles/B.m4a", played_seconds=200)
+    stats = client.get("/api/plays/stats", headers=auth_headers()).json()
+    assert stats["by_mode"]["smart"]["skip_rate"] == 0
+    assert stats["outside"]["plays"] == 2
+    assert stats["outside"]["smart_with_outside_skip_rate"] == round(1 / 3, 4)
+
+
+def test_do_not_offer_is_remembered(client):
+    from adder import outside
+
+    drop = outside.key_for("Dropped", "Song")
+    assert client.post(f"/api/outside/{drop}/ban", headers=auth_headers()).status_code == 200
+    assert client.post("/api/outside/bad/ban", headers=auth_headers()).status_code == 400
+    assert outside.banned() == {drop}
+
+
 def test_shuffle_recency_follows_when_heard_not_when_sent(client, app_module, monkeypatch):
     """Прослушивание трёхдневной давности, дошедшее последним (телефон был без
     сети), не делает трек «только что звучавшим» для умного перемешивания."""

@@ -270,6 +270,15 @@ def test_a_track_youtube_did_not_have_is_not_offered_again(deezer):
     assert "Где нас нет" not in titles
 
 
+def test_a_track_marked_do_not_offer_is_not_offered_again(deezer, monkeypatch):
+    """«Не предлагать» (разбор 19.11.2026) — для умного и для радио, навсегда."""
+    key = outside.key_for("Oxxxymiron", "Где нас нет")
+    monkeypatch.setattr(outside, "banned", lambda: {key})
+    titles = {item["title"] for item in outside.candidates(["Markul"], set(), want=10)}
+    assert "Где нас нет" not in titles
+    assert "Это любовь" in titles
+
+
 def test_candidates_stop_at_what_was_asked(deezer):
     assert len(outside.candidates(["Markul", "Баста"], set(), want=2)) == 2
 

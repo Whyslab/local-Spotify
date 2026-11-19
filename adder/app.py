@@ -2343,6 +2343,15 @@ def outside_keep(key: str, authenticated: bool = Depends(verify_token)):
     return {"task": tid, "queued": tid is not None}
 
 
+@app.post("/api/outside/{key}/ban")
+def outside_ban(key: str, authenticated: bool = Depends(verify_token)):
+    """«Не предлагать»: этот трек больше не подмешивается ни в умное, ни в радио."""
+    if outside.track_key(outside.PREFIX + key) is None:
+        raise HTTPException(status_code=400, detail="Bad outside track key")
+    outside.ban(key)
+    return {"banned": key}
+
+
 @app.post("/api/shuffle/blind")
 def start_blind_trial(size: int = 30, authenticated: bool = Depends(verify_token)):
     """Two queues, one of each kind, without saying which is which.
@@ -2505,6 +2514,9 @@ def record_play(req: PlayRequest, authenticated: bool = Depends(verify_token)):
         window.append(now)
         _PLAYS_WINDOW["all"] = window
 
+    if outside.is_outside(req.path):
+        return _record_outside_play(req, started)
+
     # heard_at, exactly as the device sent it, is what makes a resend (a lost
     # answer, two windows flushing one queue) recognisable: a unique index over
     # it ignores the second copy. Without heard_at two plays cannot be told apart.
@@ -2531,6 +2543,39 @@ def record_play(req: PlayRequest, authenticated: bool = Depends(verify_token)):
     with suppress(Exception):
         listenbrainz.queue_listen(req.path, req.played_seconds, req.duration, started)
     return {"recorded": req.path}
+
+
+def _record_outside_play(req: PlayRequest, started: float) -> dict:
+    """Трек со стороны — в свой журнал (outside_plays), не в plays.
+
+    В ListenBrainz не уходит (решение 19.11.2026), во «Вкус», «Статистику» и
+    «Недавно слушали» не попадает: там про фонотеку. Нужен он для честной доли
+    пропусков умного перемешивания — с чужими вместе.
+    """
+    key = outside.track_key(req.path)
+    if key is None:
+        raise HTTPException(status_code=422, detail="Bad outside track key")
+    meta = outside.read_meta(key) or {}
+    cur = db.db_exec(
+        "INSERT OR IGNORE INTO outside_plays"
+        "(key, artist, title, played_at, played_seconds, duration, skipped, mode, heard_at,"
+        " shuffled) VALUES(?, ?, ?, datetime(?, 'unixepoch', 'localtime'), ?, ?, ?, ?, ?, ?)",
+        (
+            key,
+            meta.get("artist") or "",
+            meta.get("title") or "",
+            int(started + req.played_seconds),
+            req.played_seconds,
+            req.duration,
+            1 if req.skipped else 0,
+            req.mode,
+            req.heard_at,
+            1 if req.shuffled else 0,
+        ),
+    )
+    if not cur.rowcount:
+        return {"recorded": req.path, "outside": True, "duplicate": True}
+    return {"recorded": req.path, "outside": True}
 
 
 @app.get("/api/stats")
@@ -2576,12 +2621,32 @@ def play_stats(authenticated: bool = Depends(verify_token)):
     if smart.get("skip_rate") is not None and plain.get("skip_rate") is not None:
         difference = round(plain["skip_rate"] - smart["skip_rate"], 4)
 
+    # Треки со стороны — отдельно и вместе со своими в умном: доля пропусков
+    # умного без них была лучше настоящей (разбор 19.11.2026).
+    out = db.db_query("SELECT COUNT(*) AS total, SUM(skipped) AS skipped FROM outside_plays")[0]
+    out_total, out_skipped = out["total"] or 0, out["skipped"] or 0
+    out_smart = db.db_query(
+        "SELECT COUNT(*) AS total, SUM(skipped) AS skipped FROM outside_plays WHERE mode = 'smart'"
+    )[0]
+    smart_all = smart.get("plays", 0) + (out_smart["total"] or 0)
+    smart_all_skipped = smart.get("skipped", 0) + (out_smart["skipped"] or 0)
+
     return {
         "plays": total,
         "skipped": skipped,
         "skip_rate": round(skipped / total, 4) if total else None,
         "distinct_tracks": overall["distinct_tracks"] or 0,
         "by_mode": by_mode,
+        "outside": {
+            "plays": out_total,
+            "skipped": out_skipped,
+            "skip_rate": round(out_skipped / out_total, 4) if out_total else None,
+            "banned": len(outside.banned()),
+            # Умное вместе с его чужими (радио не в счёт).
+            "smart_with_outside_skip_rate": (
+                round(smart_all_skipped / smart_all, 4) if smart_all else None
+            ),
+        },
         "comparison": {
             "ready": ready,
             "difference": difference,

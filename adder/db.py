@@ -151,6 +151,40 @@ def db_init():
     )
     db_exec("CREATE INDEX IF NOT EXISTS idx_plays_played_at ON plays(played_at)")
 
+    # Прослушивания треков со стороны («outside:», не из фонотеки) — отдельно
+    # от plays (разбор 19.11.2026). Раньше они не писались вовсе, и доля
+    # пропусков умного перемешивания была лучше настоящей. Отдельная таблица —
+    # чтобы чужое не попало туда, где ему не место. Кто читает plays и видит ли
+    # он чужие:
+    #   stats.summary («Статистика»)                 — нет, это про фонотеку;
+    #   listenbrainz.queue_listen (record_play)      — нет: решение 19.11.2026;
+    #   shuffle: вкус и давность (_shuffle_tracks)   — нет, чужих в фонотеке нет;
+    #   «Недавно слушали» (shelves)                  — нет;
+    #   бэктест (scripts/backtest_shuffle.py)        — нет, пока не накопятся;
+    #   /api/plays/stats                             — да, блок «outside».
+    db_exec("""CREATE TABLE IF NOT EXISTS outside_plays(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        key TEXT NOT NULL,
+        artist TEXT,
+        title TEXT,
+        played_at TEXT NOT NULL,
+        played_seconds REAL,
+        duration REAL,
+        skipped INTEGER DEFAULT 0,
+        mode TEXT,
+        heard_at REAL,
+        shuffled INTEGER DEFAULT 0)""")
+    db_exec(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_outside_plays_heard "
+        "ON outside_plays(key, heard_at, played_seconds) WHERE heard_at IS NOT NULL"
+    )
+    # «Не предлагать»: чужой трек, который больше не подмешивать.
+    db_exec("""CREATE TABLE IF NOT EXISTS outside_banned(
+        key TEXT PRIMARY KEY,
+        artist TEXT,
+        title TEXT,
+        at REAL NOT NULL)""")
+
     # Measured by scripts/analyze_audio.py. Kept in the same database as the
     # journal so a queue can be built from one connection.
     db_exec("""CREATE TABLE IF NOT EXISTS audio_features(
@@ -190,6 +224,10 @@ def prune_play_history(days: int) -> int:
     """Drop journal entries older than ``days``. Returns how many went."""
     cur = db_exec(
         "DELETE FROM plays WHERE played_at < datetime('now', 'localtime', ?)",
+        (f"-{int(days)} days",),
+    )
+    db_exec(
+        "DELETE FROM outside_plays WHERE played_at < datetime('now', 'localtime', ?)",
         (f"-{int(days)} days",),
     )
     return cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0

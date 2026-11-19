@@ -3510,6 +3510,35 @@ def test_plain_shuffle_puts_the_whole_playlist_in_and_a_new_round_differs(page, 
         library.invalidate_library_index()
 
 
+def test_an_outside_track_has_labelled_keep_and_do_not_offer(page):
+    """Значок «+» без подписи не читался (разбор 19.11.2026): у чужого трека —
+    «♥ В фонотеку» и «Не предлагать» словами; «Не предлагать» запоминает и
+    переходит к следующему."""
+    key = "cd" * 8
+    page.evaluate(
+        "window.__realPlayAt = playAt; playAt = async () => true;"
+        f" playQueue([{{path: 'outside:{key}', title: 'Чужая', artist: 'Кто-то', outside: true}},"
+        "  {path: 'Loud Band/Singles/Loud.opus', title: 'Loud', artist: 'Loud Band'}], 0);"
+        " player.index = 0; renderPlayer(); renderKeepButton(); true"
+    )
+    try:
+        keep, ban = page.locator("#playerKeep"), page.locator("#playerBan")
+        assert keep.is_visible() and ban.is_visible()
+        assert keep.inner_text() == "♥ В фонотеку"
+        assert ban.inner_text() == "Не предлагать"
+        page.evaluate("playAt = async (i) => { player.index = i; return true; }; true")
+        ban.click()
+        page.wait_for_function("player.index === 1")
+        page.wait_for_function(
+            "fetch('/api/plays/stats', {headers: headers()}).then(r => r.json())"
+            ".then(d => d.outside.banned === 1)"
+        )
+        page.evaluate("renderKeepButton()")
+        assert not keep.is_visible() and not ban.is_visible()  # своё — без них
+    finally:
+        page.evaluate("playAt = window.__realPlayAt; true")
+
+
 def test_shuffle_offers_plain_and_smart(page):
     open_library(page)
     page.locator("#libraryShuffle").click()

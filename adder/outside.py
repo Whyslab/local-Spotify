@@ -75,6 +75,22 @@ def set_mix_level(level: str) -> None:
     db.db_exec("INSERT OR REPLACE INTO settings(key, value) VALUES(?, ?)", (_MIX_KEY, level))
 
 
+def ban(key: str) -> None:
+    """«Не предлагать»: этот трек больше не подмешивается."""
+    meta = read_meta(key) or {}
+    db.db_exec(
+        "INSERT OR REPLACE INTO outside_banned(key, artist, title, at) VALUES(?, ?, ?, ?)",
+        (key, meta.get("artist") or "", meta.get("title") or "", time.time()),
+    )
+
+
+def banned() -> set[str]:
+    try:
+        return {row["key"] for row in db.db_query("SELECT key FROM outside_banned")}
+    except sqlite3.Error:
+        return set()
+
+
 def mix_share() -> float:
     """Доля очереди, отданная треками не из подборки (и не из фонотеки)."""
     return MIX_SHARES[mix_level()]
@@ -336,10 +352,13 @@ def candidates(
     подобран (``seed``), — по этому его и ставят рядом с нужным треком.
 
     ``skip`` — ключи, которых не предлагать. Отсекаются до ``want``: иначе
-    уже предложенное занимало бы места, и новых доставалось бы меньше.
+    уже предложенное занимало бы места, и новых доставалось бы меньше. К ним
+    всегда добавляются отмеченные «Не предлагать» (``banned``).
     """
     budget_end = time.monotonic() + budget
     cache = _similar_cache()
+    # «Не предлагать» — навсегда, для умного и для радио.
+    skip = (skip or set()) | banned()
 
     seeds: list[str] = []
     for artist in seed_artists:
