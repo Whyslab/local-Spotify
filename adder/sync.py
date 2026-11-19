@@ -80,6 +80,18 @@ FRESH_SECONDS = 7 * 24 * 3600
 _REMOTE: dict[str, set[str]] = {}
 
 _LAST: dict[str, Any] = {"at": 0.0, "result": None, "error": None}
+
+
+class EmptiedHere(RuntimeError):
+    """Файл пуст, а Navidrome ещё держит треки.
+
+    Это не правка с телефона: подборку из файла Navidrome 0.64 с телефона
+    править не даёт, а пустой .m3u читает, не стирая старых треков. «Клипы»
+    19.11.2026: опустошены здесь, через полчаса 9 треков вписаны обратно.
+    """
+
+    def __init__(self, remote: int):
+        super().__init__(f"the file is empty, Navidrome still lists {remote} track(s)")
 _LOCK = threading.Lock()
 _stop = threading.Event()
 
@@ -188,6 +200,8 @@ def _merged(name: str, entry: dict, local: list[str]) -> tuple[list[str], int, s
     remote = [path for path in remote if path]
     if not remote and local:
         raise RuntimeError("Navidrome returned an empty playlist for a file that is not empty")
+    if remote and not local:
+        raise EmptiedHere(len(remote))
 
     known = {row["path"] for row in library.library_index()}
     stray = [path for path in remote if path not in known]
@@ -266,6 +280,14 @@ def check(apply: bool = True) -> dict:
             # looked at again rather than written off as reconciled.
             if not row.get("changed"):
                 _SEEN[name] = str(entry.get("updatedAt"))
+        except EmptiedHere as exc:
+            # Файл прав. Navidrome чистится удалением подборки там (и так же
+            # для подборки, опустошённой до этой правки).
+            row.update({"changed": False, "declined": str(exc)})
+            _SEEN[name] = str(entry.get("updatedAt"))
+            if apply and not navidrome.pending("clear", name):
+                navidrome.enqueue("clear", name)
+                logger.info("Playlist %r: file is empty, clearing it in Navidrome", name)
         except Exception as exc:  # noqa: BLE001 -- reported, never raised into the loop
             row["error"] = str(exc)[:300]
             logger.warning("Could not pull %r back from Navidrome: %s", name, exc)

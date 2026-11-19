@@ -277,7 +277,29 @@ def write(name: str, paths: list[str], expected_revision: str | None) -> Playlis
         _archive(path)
         _atomic_write(path, render(paths))
         logger.info("Playlist %r written: %d entries", name, len(paths))
+        if on_disk and not paths:
+            _emptied(name)
     return read(name)
+
+
+def _emptied(name: str) -> None:
+    """Файл подборки стал пустым — Navidrome этого не увидит.
+
+    Пустой .m3u он читает, но старые треки не стирает (0.64.2, persistence/
+    playlist_repository.go: Put обновляет треки, только если список не пуст),
+    а править треки подборки из файла не даёт. Так 19.11.2026 опустошённые
+    «Клипы» остались в Navidrome с 9 треками, и adder.sync вписал их обратно.
+    Очистить можно, только удалив подборку там; файл она прочтёт заново, когда
+    в нём что-то появится. Сама запись уже сделана — сбой здесь не ошибка.
+    """
+    from . import navidrome
+
+    if not navidrome.configured():
+        return
+    try:
+        navidrome.enqueue("clear", name)
+    except Exception:
+        logger.exception("Navidrome: очистка подборки %r не поставлена в очередь", name)
 
 
 def _same_track(line: str, old_path: str) -> bool:
@@ -379,6 +401,8 @@ def _rewrite_everywhere(old_path: str, new_path: str | None) -> int:
                     continue
                 _archive(path)
                 _atomic_write(path, render(rewritten))
+            if paths and not rewritten:
+                _emptied(name)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Playlist %r: правка строки %s не записана: %s", name, old_path, exc)
             continue

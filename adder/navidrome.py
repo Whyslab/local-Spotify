@@ -275,6 +275,19 @@ def _run(op: str, name: str, payload: dict) -> bool:
     if op == "delete":
         delete_playlist(name)
         return True
+    if op == "clear":
+        # Файл опустел (playlists._emptied). Пока ждали очереди, в нём могло
+        # что-то появиться — тогда Navidrome прочтёт его сам, удалять нельзя.
+        from . import playlists as playlist_files
+
+        try:
+            path = playlist_files.playlist_path(name)
+            empty = path.exists() and not playlist_files.parse(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, ValueError):
+            empty = False
+        if empty:
+            delete_playlist(name)
+        return True
     if op == "cover":
         from . import covers
 
@@ -353,6 +366,15 @@ def drain(now: float | None = None) -> dict:
         )
     remaining = db.db_query("SELECT COUNT(*) AS n FROM navidrome_ops")[0]["n"]
     return {"pending": remaining, "done": done}
+
+
+def pending(op: str, name: str) -> bool:
+    """Стоит ли в очереди ``op`` для подборки ``name``."""
+    try:
+        rows = db.db_query("SELECT name FROM navidrome_ops WHERE op = ?", (op,))
+    except Exception:
+        return False
+    return any((row["name"] or "").strip() == name.strip() for row in rows)
 
 
 def pending_count() -> int:

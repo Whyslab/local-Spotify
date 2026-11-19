@@ -505,3 +505,78 @@ def test_a_line_differing_from_its_file_only_in_case_does_not_grow_the_playlist(
         sync.pull_back("p", _entry("p", playlists.playlist_path("p"), 3))
 
     assert [e.path for e in playlists.read("p").entries] == ["a.m4a", real, "b.m4a"]
+
+
+# ---------------------------------------------------------------------------
+# A playlist emptied here (19.11.2026: «Клипы» came back with 9 tracks)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def nd_configured(monkeypatch):
+    from adder import config, db
+
+    monkeypatch.setattr(config, "NAVIDROME_USER", "u")
+    monkeypatch.setattr(config, "NAVIDROME_PASSWORD", "p")
+    db.db_init()
+
+
+def test_an_emptied_file_is_not_refilled_from_navidrome(temp_library, monkeypatch, nd_configured):
+    """Navidrome 0.64 reads an empty .m3u but keeps the old tracks, and its
+    stamp moves on. That is not a phone edit: the file stays empty."""
+    monkeypatch.setattr(library, "library_index", lambda: _index("a.m4a", "b.m4a"))
+    playlists.create("Клипы", ["a.m4a", "b.m4a"])
+    current = playlists.read("Клипы")
+    playlists.write("Клипы", [], expected_revision=current.revision)
+    monkeypatch.setattr(navidrome, "remote_tracks", lambda _id, _n: ["a.m4a", "b.m4a"])
+    entry = _entry("Клипы", playlists.playlist_path("Клипы"), 2)
+    monkeypatch.setattr(navidrome, "playlists", lambda: [entry])
+
+    result = sync.check(apply=True)
+
+    assert playlists.read("Клипы").entries == []
+    assert result["playlists"][0]["declined"]
+    assert "error" not in result["playlists"][0]
+    assert navidrome.pending("clear", "Клипы")
+
+
+def test_emptying_a_playlist_queues_clearing_it_in_navidrome(
+    temp_library, monkeypatch, nd_configured
+):
+    monkeypatch.setattr(library, "library_index", lambda: _index("a.m4a"))
+    playlists.create("p", ["a.m4a"])
+    assert not navidrome.pending("clear", "p")  # created with a track: nothing to clear
+
+    playlists.write("p", [], expected_revision=None)
+
+    assert navidrome.pending("clear", "p")
+
+
+def test_a_track_deleted_from_the_library_empties_its_playlist_in_navidrome_too(
+    temp_library, monkeypatch, nd_configured
+):
+    monkeypatch.setattr(library, "library_index", lambda: _index("a.m4a"))
+    playlists.create("p", ["a.m4a"])
+
+    playlists.drop_everywhere("a.m4a")
+
+    assert navidrome.pending("clear", "p")
+
+
+def test_clearing_deletes_the_navidrome_playlist_only_while_the_file_is_empty(
+    temp_library, monkeypatch, nd_configured
+):
+    monkeypatch.setattr(library, "library_index", lambda: _index("a.m4a"))
+    deleted: list[str] = []
+    monkeypatch.setattr(navidrome, "delete_playlist", lambda name: deleted.append(name) or True)
+    playlists.create("p", ["a.m4a"])
+    playlists.write("p", [], expected_revision=None)
+    playlists.create("q", ["a.m4a"])
+    playlists.write("q", [], expected_revision=None)
+    playlists.write("q", ["a.m4a"], expected_revision=None)  # refilled before the queue ran
+
+    navidrome.drain()
+
+    assert deleted == ["p"]
+    assert not navidrome.pending("clear", "p")
+    assert not navidrome.pending("clear", "q")
