@@ -314,6 +314,21 @@ def test_a_small_circle_reaches_neighbours_of_neighbours_then_the_library(deezer
     assert sum(1 for t in local if t.artist != "Far1") == 7
 
 
+@pytest.fixture(autouse=True)
+def mixing_in_on(monkeypatch):
+    """Подмес нового в радио — по выключателю «Подмешивать новое» (по умолчанию
+    выкл); тесты этого файла про то, как подмешивается, — включено «треть»."""
+    monkeypatch.setattr(outside, "mix_share", lambda: outside.MIX_SHARES["on"])
+
+
+def test_radio_mixes_in_nothing_new_while_mixing_is_off(deezer, monkeypatch):
+    monkeypatch.setattr(outside, "mix_share", lambda: outside.MIX_SHARES["off"])
+    monkeypatch.setattr(outside, "candidates", candidates_from([f"{i:016x}" for i in range(30)]))
+    local, found = radio.build(library_tracks(), "Seed", [], size=20, have=set())
+    assert found == []
+    assert len(local) == 20
+
+
 def candidates_from(keys):
     def fake(seed_artists, have, want, budget=0):
         return [

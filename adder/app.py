@@ -2162,7 +2162,15 @@ def _smart_queue(
     из фонотеки: перемешивание не должно ломаться от чужого сервиса.
     """
     outside.cleanup_now_and_then()
-    want = round(size * outside.SHARE)
+    share = outside.mix_share()
+    if not share:
+        # «Подмешивать новое» выключено: ни нового, ни своего со стороны —
+        # умное перемешивание подборки (альбома, выдачи) остаётся внутри неё.
+        if core is not None:
+            tracks = [track for track in tracks if track.path in core]
+        queue = shuffle.build_queue(tracks, size=size, core=core, outside_share=0.0)
+        return queue, _queue_payload(queue, core)
+    want = round(size * share)
     local = shuffle.build_queue(tracks, size=size - want, core=core, outside_share=0.0)
     found = outside.candidates(
         [track.artist for track in local],
@@ -2170,7 +2178,7 @@ def _smart_queue(
         want,
     )
     if not found:
-        queue = shuffle.build_queue(tracks, size=size, core=core)
+        queue = shuffle.build_queue(tracks, size=size, core=core, outside_share=share)
         return queue, _queue_payload(queue, core)
     if len(found) < want:
         # Нашлось меньше, чем мест под новое: своих берём больше, чтобы очередь
@@ -2180,6 +2188,22 @@ def _smart_queue(
     outside.remember(found)
     payload = outside.weave(_queue_payload(local, core), found, len(found))
     return local, payload
+
+
+class SettingsRequest(BaseModel):
+    outside_mix: Literal["off", "few", "on"]
+
+
+@app.get("/api/settings")
+def get_settings(authenticated: bool = Depends(verify_token)):
+    """Настройки, общие для всех устройств (хранятся на сервере)."""
+    return {"outside_mix": outside.mix_level()}
+
+
+@app.put("/api/settings")
+def put_settings(req: SettingsRequest, authenticated: bool = Depends(verify_token)):
+    outside.set_mix_level(req.outside_mix)
+    return get_settings(authenticated)
 
 
 class SmartShuffleRequest(BaseModel):

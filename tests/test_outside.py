@@ -221,6 +221,13 @@ def test_fewer_found_than_asked_is_fine():
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def mixing_in_on(monkeypatch):
+    """Подмес — по выключателю «Подмешивать новое» (по умолчанию выкл); тесты
+    этого файла про то, как подмешивается, — включено «треть»."""
+    monkeypatch.setattr(outside, "mix_share", lambda: outside.MIX_SHARES["on"])
+
+
 @pytest.fixture
 def deezer(monkeypatch):
     monkeypatch.setattr(outside, "candidates", REAL_CANDIDATES)

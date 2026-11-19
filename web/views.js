@@ -509,7 +509,8 @@ function openShuffleChoice(anchor, plain, smart) {
         menu.appendChild(b);
     };
     item("Обычное", "тот же список вперемешку", plain);
-    item("Умное", "похожее рядом, примерно треть новых", smart);
+    item("Умное", smartHint(), smart);
+    appendMixChoice(menu);
     document.body.appendChild(menu);
     const box = anchor.getBoundingClientRect();
     menu.style.left = Math.round(Math.max(8, Math.min(box.left, window.innerWidth - menu.offsetWidth - 8))) + "px";

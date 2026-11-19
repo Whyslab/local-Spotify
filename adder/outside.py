@@ -34,6 +34,7 @@ import os
 import queue
 import random
 import re
+import sqlite3
 import threading
 import time
 from collections import deque
@@ -42,13 +43,42 @@ from pathlib import Path
 
 import httpx
 
-from . import config, ingest, runtime, similar
+from . import config, db, ingest, runtime, similar
 
 logger = logging.getLogger(__name__)
 
 PREFIX = "outside:"
-# Доля очереди, отданная трекам не из фонотеки.
-SHARE = 1 / 3
+# Сколько подмешивать в умное перемешивание и радио — выключатель
+# «Подмешивать новое» (разбор 19.11.2026). Одна настройка на всё: и на новое
+# (чего нет в фонотеке), и на своё со стороны, когда перемешивают подборку.
+# По умолчанию выключено: за две недели из 107 подкачанных чужих треков в
+# фонотеку не взяли ни одного, а треть очереди чужого делала умное
+# неслушабельным. «Треть» — как было до выключателя.
+MIX_SHARES = {"off": 0.0, "few": 1 / 6, "on": 1 / 3}
+MIX_DEFAULT = "off"
+_MIX_KEY = "outside_mix"
+
+
+def mix_level() -> str:
+    """Выбранное «Подмешивать новое»: off, few или on."""
+    try:
+        rows = db.db_query("SELECT value FROM settings WHERE key = ?", (_MIX_KEY,))
+    except sqlite3.Error:
+        return MIX_DEFAULT
+    value = rows[0]["value"] if rows else MIX_DEFAULT
+    return value if value in MIX_SHARES else MIX_DEFAULT
+
+
+def set_mix_level(level: str) -> None:
+    if level not in MIX_SHARES:
+        raise ValueError(level)
+    db.db_exec("INSERT OR REPLACE INTO settings(key, value) VALUES(?, ?)", (_MIX_KEY, level))
+
+
+def mix_share() -> float:
+    """Доля очереди, отданная треками не из подборки (и не из фонотеки)."""
+    return MIX_SHARES[mix_level()]
+
 
 KEEP_SECONDS = 30 * 24 * 3600
 # Неудача запоминается на неделю: ролик с проверкой возраста завтра не

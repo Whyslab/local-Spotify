@@ -3,7 +3,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from adder import config, covers, db, library, navidrome, playlists, runtime, shuffle
+from adder import config, covers, db, library, navidrome, outside, playlists, runtime, shuffle
 
 
 def track(path, artist, tempo=None, energy=0.5, rank=None, affinity=0.0):
@@ -475,8 +475,36 @@ def test_plain_mode_is_available_for_comparison(client):
     assert len(body["queue"]) == 5
 
 
+def test_mixing_in_is_off_until_switched_on_and_is_stored(client, monkeypatch):
+    """«Подмешивать новое» (разбор 19.11.2026): по умолчанию выключено, и
+    умное перемешивание подборки не берёт ни нового, ни своего со стороны."""
+    assert client.get("/api/settings").json() == {"outside_mix": "off"}
+    (config.LIBRARY / "Вечер.m3u").write_text(
+        "\n".join(f"A{i}/Singles/t{i}.m4a" for i in range(4)), encoding="utf-8"
+    )
+    asked = []
+    monkeypatch.setattr(outside, "candidates", lambda *a, **k: asked.append(a) or [])
+    body = client.get("/api/shuffle", params={"size": 12, "playlist": "Вечер"}).json()
+    assert {item["path"] for item in body["queue"]} == {f"A{i}/Singles/t{i}.m4a" for i in range(4)}
+    assert body["outside"] == 0
+    # Набор (альбом, выдача) — так же.
+    body = client.post(
+        "/api/shuffle/smart", json={"paths": ["A1/Singles/t1.m4a", "A2/Singles/t2.m4a"]}
+    ).json()
+    assert {item["path"] for item in body["queue"]} == {"A1/Singles/t1.m4a", "A2/Singles/t2.m4a"}
+    assert asked == []  # Deezer даже не спрашивали
+
+    assert client.put("/api/settings", json={"outside_mix": "few"}).json() == {"outside_mix": "few"}
+    assert client.get("/api/settings").json() == {"outside_mix": "few"}
+    client.get("/api/shuffle", params={"size": 12, "playlist": "Вечер"})
+    assert asked and asked[-1][2] == 2  # 12 / 6
+    assert client.put("/api/settings", json={"outside_mix": "all"}).status_code == 422
+    assert client.get("/api/settings").json() == {"outside_mix": "few"}
+
+
 def test_shuffling_a_playlist_mixes_in_tracks_it_does_not_contain(client):
-    """Главное, ради чего это делалось: очередь шире подборки."""
+    """Главное, ради чего это делалось: очередь шире подборки — если подмес включён."""
+    client.put("/api/settings", json={"outside_mix": "on"})
     (config.LIBRARY / "Вечер.m3u").write_text(
         "\n".join(f"A{i}/Singles/t{i}.m4a" for i in range(4)), encoding="utf-8"
     )

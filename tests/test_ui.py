@@ -3515,6 +3515,24 @@ def test_shuffle_offers_plain_and_smart(page):
     page.locator("#libraryShuffle").click()
     items = page.get_by_role("menuitem").all_inner_texts()
     assert [i.split("\n")[0] for i in items] == ["Обычное", "Умное"]
+    # «Подмешивать новое» — в том же меню, по умолчанию выключено.
+    mix = page.get_by_role("group", name="Подмешивать новое")
+    mix.locator("[aria-pressed=true]").filter(has_text="выкл").wait_for()
+    assert "только своё" in items[1]
+    try:
+        mix.get_by_role("button", name="мало").click()
+        page.wait_for_function(
+            "fetch('/api/settings', {headers: headers()}).then(r => r.json())"
+            ".then(d => d.outside_mix === 'few')"
+        )
+        assert mix.locator("[aria-pressed=true]").inner_text() == "мало"
+        assert "немного нового" in page.locator(".smart-hint").inner_text()
+    finally:
+        page.evaluate(
+            "fetch('/api/settings', {method: 'PUT', headers: {...headers(),"
+            " 'Content-Type': 'application/json'}, body: JSON.stringify({outside_mix: 'off'})})"
+            ".then(() => { outsideMix = 'off'; })"
+        )
     page.keyboard.press("Escape")
     assert page.get_by_role("menuitem").count() == 0
 

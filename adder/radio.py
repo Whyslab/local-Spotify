@@ -113,7 +113,7 @@ def build(
     if not eligible:
         return [], []
 
-    want = round(size * outside.SHARE) if have is not None else 0
+    want = round(size * outside.mix_share()) if have is not None else 0
     names = station(seed_artist, size, eligible)
     core = {t.path for t in eligible if _name(t.artist) in names}
 

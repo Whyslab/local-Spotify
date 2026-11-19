@@ -614,8 +614,8 @@ function stepInOrder(delta) {
 }
 
 /* Кнопка перемешивания. Выключено — нажатие спрашивает, какое: обычное
- * (тот же список вперемешку) или умное (похожее рядом, примерно треть новых,
- * которых нет в фонотеке). Включено — нажатие выключает. */
+ * (тот же список вперемешку) или умное (похожее рядом; новое — по выключателю
+ * «Подмешивать новое»). Включено — нажатие выключает. */
 function toggleShuffle() {
     const button = document.getElementById("playerShuffle");
     if (player.shuffle) {
@@ -648,8 +648,9 @@ function openShuffleMenu(button) {
     };
     menu.append(
         item("Обычное", "тот же список вперемешку", "plain"),
-        item("Умное", "похожее рядом, примерно треть новых", "smart"),
+        item("Умное", smartHint(), "smart"),
     );
+    appendMixChoice(menu);
     document.body.appendChild(menu);
 
     /* Панель плеера внизу — меню встаёт над кнопкой и не вылезает за край. */
@@ -665,6 +666,83 @@ function openShuffleMenu(button) {
     document.addEventListener("keydown", menuKeydown, true);
     document.addEventListener("pointerdown", menuPointerDown, true);
     menu.querySelector(".row-menu-item").focus();
+}
+
+/* «Подмешивать новое» в умное перемешивание и радио: выкл, мало (≈1/6),
+ * треть (как было до 19.11.2026). Настройка хранится на сервере — общая для
+ * ноутбука и телефона; меню перемешивания её показывает и меняет. */
+const MIX_LEVELS = [["off", "выкл"], ["few", "мало"], ["on", "треть"]];
+let outsideMix = "off";
+
+function smartHint() {
+    return outsideMix === "on" ? "похожее рядом, примерно треть новых"
+        : outsideMix === "few" ? "похожее рядом, немного нового"
+            : "похожее рядом, только своё";
+}
+
+function renderMixChoice(menu) {
+    for (const b of menu.querySelectorAll(".mix-choice-option")) {
+        b.setAttribute("aria-pressed", String(b.dataset.level === outsideMix));
+    }
+    const hint = menu.querySelector(".smart-hint");
+    if (hint) hint.textContent = smartHint();
+}
+
+function appendMixChoice(menu) {
+    const row = document.createElement("div");
+    row.className = "mix-choice";
+    row.setAttribute("role", "group");
+    row.setAttribute("aria-label", "Подмешивать новое");
+    const label = document.createElement("span");
+    label.className = "mix-choice-label";
+    label.textContent = "Подмешивать новое";
+    const options = document.createElement("div");
+    options.className = "mix-choice-options";
+    for (const [level, name] of MIX_LEVELS) {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "mix-choice-option";
+        b.dataset.level = level;
+        b.textContent = name;
+        b.onclick = () => setOutsideMix(level, menu);
+        options.appendChild(b);
+    }
+    row.append(label, options);
+    menu.appendChild(row);
+    /* Подпись «Умное» — та, что про подмес. */
+    const smart = [...menu.querySelectorAll(".row-menu-item")].find(b => b.firstChild && b.firstChild.textContent === "Умное");
+    const small = smart && smart.querySelector("small");
+    if (small) small.classList.add("smart-hint");
+    renderMixChoice(menu);
+    /* Сохранённое на сервере могло смениться на другом устройстве. */
+    loadOutsideMix().then(() => { if (menu.isConnected) renderMixChoice(menu); });
+}
+
+async function loadOutsideMix() {
+    try {
+        const r = await fetch("/api/settings", { headers: headers() });
+        if (!r.ok) return;
+        const data = await r.json();
+        if (MIX_LEVELS.some(([level]) => level === data.outside_mix)) outsideMix = data.outside_mix;
+    } catch (e) { /* без сети — как было */ }
+}
+
+async function setOutsideMix(level, menu) {
+    const was = outsideMix;
+    outsideMix = level;
+    renderMixChoice(menu);
+    try {
+        const r = await fetch("/api/settings", {
+            method: "PUT",
+            headers: { ...headers(), "Content-Type": "application/json" },
+            body: JSON.stringify({ outside_mix: level }),
+        });
+        if (!r.ok) throw new Error("Ошибка " + r.status);
+    } catch (e) {
+        outsideMix = was;
+        if (menu.isConnected) renderMixChoice(menu);
+        setPlayerNote("Не сохранилось «Подмешивать новое» — нет связи со службой");
+    }
 }
 
 async function setShuffle(mode) {

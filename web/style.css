@@ -777,6 +777,31 @@ button.danger {
     padding: 7px 12px;
 }
 .shuffle-menu .row-menu-item small { color: var(--text-3); font-size: 11px; font-weight: 400; }
+/* «Подмешивать новое»: три кнопки под пунктами меню. */
+.mix-choice {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px 12px 6px;
+    margin-top: 4px;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+.mix-choice-label { color: var(--text-3); font-size: 11px; }
+.mix-choice-options { display: flex; gap: 4px; }
+.mix-choice-option {
+    flex: 1;
+    min-height: 32px;
+    padding: 4px 10px;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 999px;
+    background: transparent;
+    color: var(--text-2);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+}
+.mix-choice-option:hover { background: rgba(255, 255, 255, 0.08); }
+.mix-choice-option[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 .repeat-one {
     position: absolute;
     right: 4px;
