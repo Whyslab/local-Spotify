@@ -239,6 +239,10 @@ class Models:
             )
         options = ort.SessionOptions()
         options.intra_op_num_threads = 1
+        # Без пула памяти: он растёт под каждый новый размер пачки, и полный
+        # проход 19.11.2026 дошёл до 1,1 ГБ + 0,8 ГБ свопа. Без пула на 40
+        # треках — 0,53 ГБ против 1,2 ГБ, числа те же до бита, даже быстрее.
+        options.enable_cpu_mem_arena = False
         options.inter_op_num_threads = 1
         options.log_severity_level = 3
 
