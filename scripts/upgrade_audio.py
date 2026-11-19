@@ -66,7 +66,7 @@ if TYPE_CHECKING:  # numpy comes with the analysis extras, imported only when a 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-from adder import config, ingest, library, loudness  # noqa: E402
+from adder import censor, config, ingest, library, loudness  # noqa: E402
 
 logger = logging.getLogger("upgrade_audio")
 
@@ -85,7 +85,6 @@ MIN_CORRELATION = 0.97
 MIN_WINDOW_CORRELATION = 0.8
 WINDOW_SECONDS = 1
 QUIET_WINDOW = 0.05  # RMS below 5 % of the track's own is left out of the window check
-LAG_EXCERPT_SECONDS = 120
 DURATION_SLACK = 3.0
 SEARCH_RESULTS = 5
 PAUSE_SECONDS = 4.0
@@ -132,33 +131,12 @@ class Unreachable(RuntimeError):
 
 
 def decode_mono(path: Path, rate: int = RATE) -> np.ndarray:
-    import numpy as np
-
-    out = subprocess.run(
-        ["ffmpeg", "-v", "error", "-i", str(path), "-ac", "1", "-ar", str(rate),
-         "-f", "f32le", "-"],
-        capture_output=True, timeout=600,
-    ).stdout  # fmt: skip
-    return np.frombuffer(out, np.float32)
+    return censor.decode_mono(path, rate)
 
 
 def find_lag(a: np.ndarray, b: np.ndarray, limit: int) -> int:
-    """Offset of b against a, in samples, within +-limit, from the openings only.
-
-    A full-length FFT of a 40-minute mix needs gigabytes; the offset between two
-    copies of one recording is a matter of seconds and shows in the first two
-    minutes as well as anywhere.
-    """
-    import numpy as np
-
-    n_excerpt = LAG_EXCERPT_SECONDS * RATE
-    x = a[: n_excerpt + limit].astype(np.float64)
-    y = b[: n_excerpt + limit].astype(np.float64)
-    n = 1 << int(np.ceil(np.log2(len(x) + len(y))))
-    c = np.fft.irfft(np.fft.rfft(x, n) * np.conj(np.fft.rfft(y, n)), n)
-    lags = np.concatenate([np.arange(0, limit + 1), np.arange(-limit, 0)])
-    values = np.concatenate([c[: limit + 1], c[n - limit :]])
-    return int(lags[int(np.argmax(values))])
+    """Offset of b against a, in samples (see adder.censor.find_lag)."""
+    return censor.find_lag(a, b, limit, RATE)
 
 
 def similarity(old: Path, new: Path) -> tuple[float, float, float]:

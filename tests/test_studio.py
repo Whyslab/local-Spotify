@@ -366,7 +366,10 @@ def test_a_shared_clip_is_filed_as_the_studio_track(app, monkeypatch):
     assert task["status"] == "done", task["error"]
     assert downloaded == [watch("PLm8E_wyKZM")]
     assert task["result_path"] == "SQWOZ BAB/Singles/TOKYO.m4a"
-    assert task["warning"] == "Взята студийная версия вместо клипа"
+    assert (
+        task["warning"]
+        == "Взята студийная версия вместо клипа (синхронного текста нет — не сверена)"
+    )
     tags = MP4(config.LIBRARY / task["result_path"]).tags
     assert tags["----:com.apple.iTunes:SOURCE_URL"][0].decode() == watch("PLm8E_wyKZM")
 
@@ -569,7 +572,7 @@ def test_a_studio_track_that_will_not_download_falls_back_to_the_clip(app, monke
     real = ingest.yt_download
 
     def refuse_studio(url, vid):
-        if vid == "PLm8E_wyKZM":
+        if vid.startswith("PLm8E_wyKZM"):  # временное имя — «<id>_t<задача>»
             raise RuntimeError("Video unavailable in your country")
         return real(url, vid)
 
@@ -709,7 +712,7 @@ def test_a_rate_limit_on_the_studio_track_is_not_swallowed(app, monkeypatch):
     real = ingest.yt_download
 
     def limited(url, vid):
-        if vid == "PLm8E_wyKZM":
+        if vid.startswith("PLm8E_wyKZM"):  # временное имя — «<id>_t<задача>»
             raise RuntimeError("HTTP Error 429: Too Many Requests")
         return real(url, vid)
 
@@ -725,3 +728,77 @@ def test_a_song_of_several_tagged_artists_is_found():
     songs = [studio._song(song("c", "CRUSH", ["Playboi Carti", "Travis Scott"], 174, True))]
     found = studio.pick(songs, "Playboi Carti • Travis Scott", "CRUSH (with Travis Scott)")
     assert found is songs[0]
+
+
+# ---------------------------------------------------------------------------
+# Сверка перед подменой (решение владельца 19.11.2026: «студийная после сверки»)
+# ---------------------------------------------------------------------------
+
+TOKYO = {
+    "j1O0qKwqQEo": {"title": "SQWOZ BAB - TOKYO (Премьера клипа 2025)", "duration": 465},
+    "PLm8E_wyKZM": {"title": "TOKYO", "artist": "SQWOZ BAB", "track": "TOKYO", "duration": 161},
+}
+
+
+def _tokyo(monkeypatch, lines, compared=None):
+    from adder import censor
+
+    music(
+        monkeypatch,
+        [song("PLm8E_wyKZM", "TOKYO", ["SQWOZ BAB"], 161, True)],
+        {"j1O0qKwqQEo": studio.OFFICIAL_VIDEO},
+    )
+    downloaded = youtube(monkeypatch, TOKYO)
+    monkeypatch.setattr(censor, "synced_lyrics", lambda artist, title, duration: lines)
+    monkeypatch.setattr(censor, "compare", lambda clip, studio_file: compared)
+    return downloaded
+
+
+def test_a_studio_recording_muted_on_a_drug_line_loses_to_the_clip(app, monkeypatch):
+    lines = [{"at": 10.0, "line": "Всё хорошо"}, {"at": 29.5, "line": "Курим дурь до утра"},
+             {"at": 33.0, "line": "Конец"}]  # fmt: skip
+    downloaded = _tokyo(monkeypatch, lines, {"overall": 0.95, "lag": 0.0,
+                                             "spots": [[30.0, 30.5, "studio"]]})  # fmt: skip
+
+    task = run(watch("j1O0qKwqQEo"))
+
+    assert task["status"] == "done", task["error"]
+    assert downloaded == [watch("PLm8E_wyKZM"), watch("j1O0qKwqQEo")]  # обе — для сверки
+    assert "Оставлен звук клипа" in task["warning"] and "Курим" in task["warning"]
+    tags = MP4(config.LIBRARY / task["result_path"]).tags
+    assert tags["----:com.apple.iTunes:SOURCE_URL"][0].decode() == watch("j1O0qKwqQEo")
+    assert list(runtime.TMP_DIR.glob("PLm8E_wyKZM*")) == []  # студийная не осталась в tmp
+
+
+def test_without_drug_words_the_clip_is_not_downloaded_at_all(app, monkeypatch):
+    downloaded = _tokyo(monkeypatch, [{"at": 10.0, "line": "Токио ночью"}])
+
+    task = run(watch("j1O0qKwqQEo"))
+
+    assert task["status"] == "done", task["error"]
+    assert downloaded == [watch("PLm8E_wyKZM")]
+    assert task["warning"] == "Взята студийная версия вместо клипа"
+
+
+def test_a_clean_check_keeps_the_studio_and_says_it_was_checked(app, monkeypatch):
+    lines = [{"at": 29.5, "line": "Курим дурь до утра"}]
+    downloaded = _tokyo(monkeypatch, lines, {"overall": 0.97, "lag": 0.0, "spots": []})
+
+    task = run(watch("j1O0qKwqQEo"))
+
+    assert task["status"] == "done", task["error"]
+    assert downloaded == [watch("PLm8E_wyKZM"), watch("j1O0qKwqQEo")]
+    assert "сверена" in task["warning"]
+    tags = MP4(config.LIBRARY / task["result_path"]).tags
+    assert tags["----:com.apple.iTunes:SOURCE_URL"][0].decode() == watch("PLm8E_wyKZM")
+    assert list(runtime.TMP_DIR.glob("j1O0qKwqQEo*")) == []
+
+
+def test_when_the_lyrics_catalogue_is_down_the_studio_is_taken_unchecked(app, monkeypatch):
+    downloaded = _tokyo(monkeypatch, None)
+
+    task = run(watch("j1O0qKwqQEo"))
+
+    assert task["status"] == "done", task["error"]
+    assert downloaded == [watch("PLm8E_wyKZM")]
+    assert "не сверена" in task["warning"]

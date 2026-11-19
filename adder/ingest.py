@@ -1565,6 +1565,80 @@ def _studio_instead(
     return choice.song.url, choice.sent
 
 
+def _keep_clip_if_censored(
+    tid: int,
+    url: str,
+    sent: str,
+    sent_meta: dict,
+    studio_meta: dict,
+    studio_file: Path,
+    artist: str,
+    title: str,
+) -> Path | None:
+    """Сверка студийной с клипом (решение владельца 19.11.2026: «студийная,
+    но только после сверки»). Путь к звуку клипа — если брать его; None —
+    студийная остаётся.
+
+    Сначала текст: если в нём нет слов про наркотики, сверять нечего — глушат
+    именно их, а одно «тише» без слова ничего не доказывает. Так второй ролик
+    качается только у таких песен, а не у каждой. Любой сбой сверки — студийная,
+    как раньше, с пометкой «не сверено».
+    """
+    from . import censor
+
+    if sent != "клип":
+        return None  # чистая → 18+ той же записи: сверять не с чем
+    unchecked = "Взята студийная версия вместо клипа (не сверена: {})"
+    try:
+        synced = censor.synced_lyrics(artist, title, studio_meta.get("duration"))
+    except Exception as exc:  # noqa: BLE001 — текст необязателен
+        logger.info("Текст для сверки не получен: %s", exc, extra={"task_id": tid})
+        synced = None
+    if synced is None:
+        db.task_update(tid, warning=unchecked.format("каталог текстов не ответил"))
+        return None
+    if not censor.drug_lines(synced):
+        db.task_update(
+            tid,
+            warning="Взята студийная версия вместо клипа"
+            + ("" if synced else " (синхронного текста нет — не сверена)"),
+        )
+        return None
+    if not censor.available():
+        db.task_update(tid, warning=unchecked.format("нет numpy/scipy"))
+        return None
+    clip = None
+    try:
+        check_downloadable(sent_meta)
+        clip = yt_download(url, f"{sent_meta.get('id') or 'clip'}_t{tid}")
+        verdict = censor.judge(censor.compare(clip, studio_file), synced)
+    except runtime.ShutdownRequested:
+        # Задача вернётся в очередь и скачает всё заново.
+        studio_file.unlink(missing_ok=True)
+        if clip is not None:
+            clip.unlink(missing_ok=True)
+        raise
+    except Exception as exc:  # noqa: BLE001
+        if clip is not None:
+            clip.unlink(missing_ok=True)
+        if classify_error(str(exc)) == "rate_limited":
+            studio_file.unlink(missing_ok=True)
+            raise
+        logger.warning("Сверка со студийной не удалась: %s", exc, extra={"task_id": tid})
+        db.task_update(
+            tid,
+            warning=unchecked.format("клип не скачался" if clip is None else "сверка не удалась"),
+        )
+        return None
+    db.task_update(tid, warning=verdict.why)
+    logger.info("Сверка: %s", verdict.why, extra={"task_id": tid})
+    if verdict.take_studio:
+        clip.unlink(missing_ok=True)
+        return None
+    studio_file.unlink(missing_ok=True)
+    return clip
+
+
 def stage_into_temp(source: Path, key: str) -> Path:
     """Move an already-obtained audio file into the processing directory.
 
@@ -1614,6 +1688,7 @@ def download_to_temp(tid: int, url: str) -> Downloaded:
     instead = None if opts.get("keep") else _studio_instead(tid, url, meta, full_artist, meta_title)
     source_url, sent = instead if instead else (None, "")
     sent_meta = meta
+    downloaded = None
     if source_url:
         existing = library.find_by_source(source_url)
         if existing:
@@ -1621,7 +1696,8 @@ def download_to_temp(tid: int, url: str) -> Downloaded:
         try:
             meta = yt_meta(source_url)
             check_downloadable(meta)
-            downloaded = yt_download(source_url, meta["id"])
+            # Своё имя у задачи: та же студийная может качаться и другой задачей.
+            downloaded = yt_download(source_url, f"{meta['id']}_t{tid}")
         except runtime.ShutdownRequested:
             raise
         except Exception as exc:  # noqa: BLE001 — сбой подмены = качать присланное
@@ -1636,14 +1712,22 @@ def download_to_temp(tid: int, url: str) -> Downloaded:
             )
             taken = "чистая версия" if sent == "чистая" else "звук клипа"
             db.task_update(tid, warning=f"Замена не скачалась — взята {taken}")
-            source_url, meta = None, sent_meta
+            source_url, meta, downloaded = None, sent_meta, None
         else:
-            fs_artist, fs_title, full_artist, meta_title = split_artist_title(meta)
-            db.task_update(tid, artist=full_artist, title=meta_title)
+            # Текст ищется по именам студийной: у клипа в названии «(Премьера клипа)».
+            studio_names = split_artist_title(meta)
+            clip = _keep_clip_if_censored(
+                tid, url, sent, sent_meta, meta, downloaded, studio_names[2], studio_names[3]
+            )
+            if clip is not None:
+                downloaded, source_url, meta = clip, None, sent_meta
+            else:
+                fs_artist, fs_title, full_artist, meta_title = studio_names
+                db.task_update(tid, artist=full_artist, title=meta_title)
     # Задача со своим выбором («моя ссылка») может идти одновременно с обычной
     # задачей той же ссылки — у неё свои временные файлы.
     own = f"{meta['id']}_t{tid}" if opts else meta["id"]
-    if not source_url:
+    if downloaded is None:
         check_downloadable(meta)
         downloaded = yt_download(url, own)
     if not downloaded.exists():

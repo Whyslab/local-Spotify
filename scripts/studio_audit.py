@@ -64,7 +64,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import upgrade_audio as ua  # noqa: E402  (the swap and the YouTube client)
 
-from adder import config, library, studio  # noqa: E402
+from adder import censor, config, library, studio  # noqa: E402
 
 if TYPE_CHECKING:
     import numpy as np
@@ -80,25 +80,13 @@ REPORT = DATA / "report.html"
 LOCK = DATA / "lock"
 RESCAN_PENDING = DATA / "rescan-pending"
 
-RATE = 16000
-STEP = RATE // 4  # a quarter of a second
-DIFFERENT = 0.6  # correlation under which a window does not match
-AUDIBLE = 0.1  # of the track's own RMS: quieter windows are not judged
-# Padding before or after the song: about -40 dB under it. A clip's quiet
-# outro (wind, a room, «КТО ТЕБЕ ЭТО СКАЗАЛ»: 5 s at some -20 dB) is louder.
-SILENCE = 0.01
+RATE = censor.RATE  # the comparison itself lives in adder.censor
 SAME_OVERALL = 0.97
 EDGE_SECONDS = 1.5  # more than this before or after the song is the clip's
-MUTED_DB = 6.0
-WHOLE_MUTE_DB = 10.0
-SPOT_GAP = 0.5
 MANY_OTHER_SECONDS = 3.0
-EDGE_ZONE = 3.0  # a dip this close to the start or end of the song is not a muted word
-LONGEST_MUTE = 3.0
 MOST_MUTES = 25
 SAME_SONG = 0.9  # overall correlation under which it is another mix
 WRONG_RATIO = 1.6
-LAG_LIMIT_SECONDS = 300
 # Между скачиваниями. С 3 с YouTube закрыл загрузки на час после ~370
 # роликов за 50 минут (06.11.2026) — и службе тоже: адрес у них один.
 PAUSE_SECONDS = 15.0
@@ -132,121 +120,12 @@ GROUPS = {
 
 
 def _decode(path: Path) -> np.ndarray:
-    return ua.decode_mono(path, RATE)
+    return censor.decode_mono(path, RATE)
 
 
 def compare(old: Path, new: Path) -> dict:
-    """How the file differs from the studio recording, aligned.
-
-    ``head``/``tail``: seconds the file has before and after the song;
-    ``spots``: [start, end, kind] in the file's own time, kind being "file"
-    (muted in the file), "studio" (muted in the studio recording) or "other".
-    """
-    import numpy as np
-    from scipy.signal import butter, sosfiltfilt
-
-    a, b = _decode(old), _decode(new)
-    result: dict = {
-        "file_seconds": round(len(a) / RATE, 1),
-        "studio_seconds": round(len(b) / RATE, 1),
-    }
-    if not len(a) or not len(b):
-        return {**result, "overall": 0.0, "head": 0.0, "tail": 0.0, "spots": []}
-    half = 2  # find_lag works at upgrade_audio's 8 kHz
-    limit = int(min(LAG_LIMIT_SECONDS, abs(len(a) - len(b)) / RATE + 5) * ua.RATE)
-    lag = ua.find_lag(a[::half], b[::half], limit) * half
-    x, y = (a[lag:], b) if lag >= 0 else (a, b[-lag:])
-    m = min(len(x), len(y))
-    x, y = x[:m].astype(np.float64), y[:m].astype(np.float64)
-    voice = butter(4, [300, 3400], btype="band", fs=RATE, output="sos")
-    bass = butter(4, 150, btype="low", fs=RATE, output="sos")
-    xv, yv = sosfiltfilt(voice, x), sosfiltfilt(voice, y)
-    xb, yb = sosfiltfilt(bass, x), sosfiltfilt(bass, y)
-
-    def rms(s: np.ndarray) -> float:
-        return float(np.sqrt(np.mean(s * s))) + 1e-9
-
-    def db(p: np.ndarray, q: np.ndarray) -> float:
-        return 20 * float(np.log10(rms(p) / rms(q)))
-
-    def corr(p: np.ndarray, q: np.ndarray) -> float:
-        d = float(np.sqrt(np.dot(p, p) * np.dot(q, q)))
-        return float(np.dot(p, q)) / d if d else 0.0
-
-    level = max(rms(x), rms(y))
-    voice_level = max(rms(xv), rms(yv))
-    windows = []
-    for start in range(0, m - STEP + 1, STEP):
-        cut = slice(start, start + STEP)
-        p, q = x[cut], y[cut]
-        if max(rms(p), rms(q)) < AUDIBLE * level:
-            continue
-        voiced = max(rms(xv[cut]), rms(yv[cut])) >= AUDIBLE * voice_level
-        windows.append(
-            (
-                start,
-                corr(p, q),
-                corr(xv[cut], yv[cut]) if voiced else 1.0,
-                db(p, q),
-                db(xv[cut], yv[cut]) if voiced else None,
-                db(xb[cut], yb[cut]),
-            )
-        )
-    # Two copies of one song are rarely equally loud: the usual difference is
-    # taken out, so that only a place that drops against it counts.
-    usual = float(np.median([w[3] for w in windows])) if windows else 0.0
-    voiced_db = [w[4] for w in windows if w[4] is not None]
-    usual_voice = float(np.median(voiced_db)) if voiced_db else 0.0
-    marks = []
-    for start, whole_corr, voice_corr, whole, in_voice, in_bass in windows:
-        whole -= usual
-        in_bass -= usual
-        in_voice = in_voice - usual_voice if in_voice is not None else 0.0
-        # Only where the sound itself differs: a level alone moves by several
-        # dB between two masters of one song (a premiere against the release,
-        # «Дом Периньон»). Under a loud beat a muted word leaves the whole mix
-        # almost as it was, so the voice band is asked on its own too: the
-        # instruments left in it change its shape.
-        if whole_corr >= DIFFERENT and voice_corr >= DIFFERENT:
-            continue
-        if whole <= -WHOLE_MUTE_DB or (in_voice <= -MUTED_DB and in_voice - in_bass <= -4):
-            kind = "file"
-        elif whole >= WHOLE_MUTE_DB or (in_voice >= MUTED_DB and in_voice - in_bass >= 4):
-            kind = "studio"
-        else:
-            kind = "other"
-        marks.append((start / RATE, kind))
-
-    spots: list[list] = []
-    for at, kind in marks:
-        file_at = at + max(lag, 0) / RATE
-        if spots and file_at - spots[-1][1] <= SPOT_GAP and spots[-1][2] == kind:
-            spots[-1][1] = round(file_at + STEP / RATE, 2)
-        else:
-            spots.append([round(file_at, 2), round(file_at + STEP / RATE, 2), kind])
-    # A muted word is a short dip inside the song. At the very start or end it
-    # is another intro or fade («Альтуха»: the upload's first two seconds), and
-    # a long one is another mix, not a bleep.
-    song_end = max(lag, 0) / RATE + m / RATE
-    for spot in spots:
-        near_edge = spot[0] < max(lag, 0) / RATE + EDGE_ZONE or spot[1] > song_end - EDGE_ZONE
-        if spot[2] != "other" and (near_edge or spot[1] - spot[0] > LONGEST_MUTE):
-            spot[2] = "other"
-    head = max(lag, 0) / RATE
-    tail = (len(a) - max(lag, 0)) / RATE - len(b) / RATE + max(-lag, 0) / RATE
-    # Silence before or after the song is padding, not the clip's own sound.
-    if head > 0 and rms(a[: max(lag, 0)].astype(np.float64)) < SILENCE * level:
-        head = 0.0
-    end = max(lag, 0) + len(b) - max(-lag, 0)
-    if tail > 0 and rms(a[end:].astype(np.float64)) < SILENCE * level:
-        tail = 0.0
-    return {
-        **result,
-        "overall": round(corr(x, y), 3),
-        "head": round(head, 1),
-        "tail": round(tail, 1),
-        "spots": spots,
-    }
+    """See adder.censor.compare (moved there 19.11.2026: the service uses it too)."""
+    return censor.compare(old, new, decode=_decode)
 
 
 def _seconds(spots: list, kind: str) -> float:
@@ -275,8 +154,17 @@ def verdict(clip: bool, compared: dict, explicit: bool = True) -> tuple[str, str
     # Another mix all the way through («Манхэттен», 0.52): its quiet places
     # are not muted words.
     different = compared["overall"] < SAME_SONG or len(muted_file) + len(muted_studio) > MOST_MUTES
-    if muted_studio and not muted_file and not explicit and not different:
-        # The studio recording is the clean one and the file keeps the words:
+    if clip and explicit and muted_studio:
+        # A clip and an «18+» studio recording quieter somewhere. It used to
+        # count as the clip's own ad-lib and the clip was replaced — but since
+        # autumn 2025 the «18+» is muted too (drug words, 19.11.2026), and the
+        # two cannot be told apart without the lyrics: not replaced
+        # automatically, left to listen. Whatever else differs.
+        return "listen", "в студийной (18+) тише: " + places(
+            muted_studio
+        ) + " — может быть заглушено"
+    if muted_studio and not muted_file and not different:
+        # The studio recording is the muted one and the file keeps the words:
         # even a clip is the better copy then.
         return "yours-uncensored", "в студийной заглушено: " + places(muted_studio)
     if clip:
@@ -369,7 +257,19 @@ def audit_one(
             or (KEEP / f"{song.video_id}.m4a").is_file()
         )
     ):
-        return {**previous, "rechecked": True}
+        # Возвращённое вручную — решение владельца; «replaced» — уже сделанная
+        # замена (её compared — про старый файл, пересчёт стёр бы историю).
+        if (
+            "restored" in previous
+            or "compared" not in previous
+            or previous.get("group") not in GROUPS
+        ):
+            return {**previous, "rechecked": True}
+        # Правила вердикта меняются (19.11.2026): старое «заменить» не должно
+        # пережить их — сравнение то же, пересчитать дёшево.
+        group, why = verdict(previous.get("clip", False), previous["compared"],
+                             previous.get("explicit", False))  # fmt: skip
+        return {**previous, "group": group, "why": why, "rechecked": True}
     got = ua.download(client, song.video_id)
     if got is None:
         return {"group": "failed", "why": "студийная запись не скачалась", "video": song.video_id}
@@ -487,6 +387,12 @@ def apply(root: Path, state: dict, args: argparse.Namespace) -> int:
             continue
         if args.only and relative != args.only:
             continue
+        if "compared" in entry and "clip" in entry:
+            # Вердикт по нынешним правилам, а не по тем, что были при аудите.
+            group, why = verdict(entry["clip"], entry["compared"], entry.get("explicit", False))
+            if GROUPS.get(group, ("keep",))[0] != "replace":
+                logger.warning("%s: now %s (%s), not swapped", relative, group, why)
+                continue
         # Чужая загрузка — выбор пользователя, даже если звук из клипа (06.11.2026).
         if entry.get("video_type") == studio.UPLOAD and not args.uploads_too:
             continue

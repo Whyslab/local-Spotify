@@ -23,6 +23,16 @@ spec.loader.exec_module(audit)
 RATE = audit.RATE
 
 
+@pytest.fixture(autouse=True)
+def _no_real_audit_folders(monkeypatch, tmp_path):
+    """apply пишет state.json, бэкапы и пометку пересканирования; по умолчанию
+    это настоящие файлы (19.11.2026 тест так затёр state.json)."""
+    for name in ("STATE", "BACKUP", "RESCAN_PENDING", "KEEP", "WORK"):
+        monkeypatch.setattr(audit, name, tmp_path / "audit-real-guard" / name.lower())
+    monkeypatch.setattr(audit.ua, "BACKUP", tmp_path / "ua-backup")
+    monkeypatch.setattr(audit.ua, "RESCAN_PENDING", tmp_path / "ua-rescan")
+
+
 def song(seconds=30.0, seed=1):
     """(beat, voice): the beat is a pulsing bass and a chord in the voice's
     own band, as instruments are; the voice is band-limited noise."""
@@ -74,10 +84,11 @@ def test_a_clip_that_differs_in_the_voice_is_a_clip_maybe_muted(monkeypatch):
     group, why = audit.verdict(True, compared)
     assert group == "clip"
     assert "возможно, заглушено: 0:10" in why
-    # The file's voice louder than the explicit studio track: the clip's own
-    # ad-lib, not a censored studio recording.
+    # The file's voice louder than the explicit studio track: a clip's own
+    # ad-lib or a muted «18+» studio recording (autumn 2025, 19.11.2026) —
+    # not told apart without the lyrics, so not replaced: left to listen.
     louder = compare(monkeypatch, beat + voice, beat + mute(voice, (12, 12.5)))
-    assert audit.verdict(True, louder, explicit=True)[0] == "clip"
+    assert audit.verdict(True, louder, explicit=True)[0] == "listen"
 
 
 def test_the_same_audio_is_the_same(monkeypatch):
