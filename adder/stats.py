@@ -184,7 +184,7 @@ def shuffle_repeats(days: int = REPEAT_DAYS) -> dict[str, Any]:
 SMART_DAYS = 14
 
 
-def smart_skips(days: int = SMART_DAYS) -> dict[str, Any]:
+def smart_skips(days: int = SMART_DAYS, engine: str = "sonic") -> dict[str, Any]:
     """Доля пропусков в умном перемешивании и радио **вместе с чужими**
     треками (outside_plays) за ``days`` дней.
 
@@ -193,20 +193,25 @@ def smart_skips(days: int = SMART_DAYS) -> dict[str, Any]:
     пропускают чаще, и без них доля выглядит лучше, чем звучит очередь.
     """
     since = f"-{int(days)} days"
+    # Только очереди этого движка (plays.engine): прослушивания до метки и
+    # старым движком сюда не попадают — иначе сравнивать было бы нечего.
+    where = (
+        "WHERE mode IN ('smart', 'radio') AND engine = ? "
+        "AND played_at >= datetime('now', 'localtime', ?)"
+    )
     own = db.db_query(
-        "SELECT COUNT(*) AS plays, COALESCE(SUM(skipped), 0) AS skips FROM plays "
-        "WHERE mode IN ('smart', 'radio') AND played_at >= datetime('now', 'localtime', ?)",
-        (since,),
+        f"SELECT COUNT(*) AS plays, COALESCE(SUM(skipped), 0) AS skips FROM plays {where}",
+        (engine, since),
     )[0]
     other = db.db_query(
-        "SELECT COUNT(*) AS plays, COALESCE(SUM(skipped), 0) AS skips FROM outside_plays "
-        "WHERE played_at >= datetime('now', 'localtime', ?)",
-        (since,),
+        "SELECT COUNT(*) AS plays, COALESCE(SUM(skipped), 0) AS skips FROM outside_plays " + where,
+        (engine, since),
     )[0]
     plays = (own["plays"] or 0) + (other["plays"] or 0)
     skips = (own["skips"] or 0) + (other["skips"] or 0)
     return {
         "days": days,
+        "engine": engine,
         "plays": plays,
         "skips": skips,
         "outside_plays": other["plays"] or 0,

@@ -132,6 +132,9 @@ function reportPlay(finished) {
          * сети уходит позже (offline.js), и время отправки соврало бы. */
         heard_at: Math.floor(Date.now() / 1000 - played),
     };
+    /* Каким движком собрана умная очередь или радио (метка у каждого трека
+     * от сервера): пропуски нового и старого не должны смешаться. */
+    if (current.engine === "sonic" || current.engine === "classic") body.engine = current.engine;
     /* Из какой колоды и какого её круга: по этому сервер двигает курсор. */
     if (player.playingDeck) body.deck = player.playingDeck;
     /* Ранний пропуск сервер переносит во вторую половину остатка круга —

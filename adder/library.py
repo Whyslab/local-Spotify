@@ -373,6 +373,10 @@ def carry_history(old: str, new: str) -> None:
         rows = db.db_query("SELECT sha256 FROM audio_features WHERE path = ?", (old,))
         if rows and rows[0]["sha256"] == loudness.file_hash(library_track(new)):
             db.db_exec("UPDATE OR IGNORE audio_features SET path = ? WHERE path = ?", (new, old))
+        # Звучание (scripts/embed_audio.py) — так же: то же содержимое, новый путь.
+        rows = db.db_query("SELECT sha256 FROM sonic WHERE path = ?", (old,))
+        if rows and rows[0]["sha256"] == loudness.file_hash(library_track(new)):
+            db.db_exec("UPDATE OR IGNORE sonic SET path = ? WHERE path = ?", (new, old))
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "History of %s not moved to %s: %s", old, new, exc, extra={"task_id": "system"}

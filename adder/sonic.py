@@ -15,8 +15,9 @@ Discogs-EffNet и оценки настроения (``scripts/embed_audio.py``,
 2. **Блоки.** Очередь идёт блоками по 4–6 треков из одного облака. Первый
    трек блока — якорь; остальные выбираются по близости к якорю, а не к
    предыдущему треку: так нет дрейфа.
-3. **Переходы.** Следующий блок — в соседнее облако (ближайшие центры), с
-   поправкой на то, как такие переходы пропускали раньше.
+3. **Переходы.** Следующий блок — в облако рядом с якорем сессии (оно само
+   или ближайшие центры), с поправкой на то, как такие переходы пропускали
+   раньше. Раз в 3–4 блока якорем сессии становится текущее облако.
 4. **Ограничения.** Артист не чаще раза в 6 треков, альбом — раз в 9;
    совместные треки («A • B») сторожат обоих.
 5. **Волна энергии.** Мягкая синусоида возбуждения с периодом около
@@ -41,6 +42,7 @@ from __future__ import annotations
 import logging
 import math
 import random
+import re
 import threading
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
@@ -60,10 +62,16 @@ KMEANS_ITERATIONS = 30
 BLOCK_MIN, BLOCK_MAX = 4, 6
 # Сколько ближайших к якорю кандидатов разыгрывается по весам. Не один —
 # иначе от того же якоря всегда та же очередь.
-TOP_CANDIDATES = 8
+# 16, не 8: с 8 за 30 очередей играло 730 разных треков из 1513, с 16 — 773
+# (у старого умного ~950); шаг по звуку почти тот же (медиана 0,199 против 0,186).
+TOP_CANDIDATES = 16
 # Соседние облака: столько ближайших центров рассматривается для перехода.
 NEIGHBOUR_CLOUDS = 4
 # Только что пройденные облака: их вес при выборе следующего умножается на это.
+# Якорь сессии: 3–4 блока следующее облако берётся рядом с ним, а не рядом с
+# последним — иначе очередь блуждает и через 5 блоков где угодно (ТЗ:
+# «раз в 3–4 блока — новый якорь»). Потом якорем становится текущее облако.
+SESSION_BLOCKS = (3, 4)
 RECENT_CLOUD_PENALTY = 0.15
 RECENT_CLOUDS = 3
 # Смена языка на стыке блоков разрешена, но реже, чем шаг внутри языка.
@@ -138,9 +146,13 @@ def languages(rows: Iterable[dict], lyrics: Callable[[str], str] | None = None) 
     return out
 
 
+_FEAT = re.compile(r"\s*(?:•|\bfeat\.?|\bft\.)\s*", re.IGNORECASE)
+
+
 def _artists(row: dict) -> list[str]:
+    """Участники трека: «A • B», «A feat. B», «A ft. B» — как artist_graph.parts."""
     raw = row.get("artist") or row.get("albumartist") or ""
-    names = [" ".join(part.lower().split()) for part in raw.split("•")]
+    names = [" ".join(part.lower().split()) for part in _FEAT.split(raw)]
     return [name for name in names if name]
 
 
@@ -270,10 +282,17 @@ def build_space(
     centers = np.stack(centers_list).astype(np.float32)
 
     similarity = centers @ centers.T
-    neighbours = []
+    neighbours: list[list[int]] = []
     for c in range(len(centers)):
         order = [int(i) for i in np.argsort(-similarity[c]) if int(i) != c]
         neighbours.append(order[:NEIGHBOUR_CLOUDS])
+    # Соседство — в обе стороны: облако, которое ни у кого не в ближайших,
+    # иначе недостижимо (19.11.2026 облако в 106 треков не попало ни в одну
+    # из 30 очередей).
+    for c, near in enumerate([list(n) for n in neighbours]):
+        for other in near:
+            if c not in neighbours[other]:
+                neighbours[other].append(c)
 
     # Медиана расстояния по случайным парам: делит «звук», чтобы его доля в
     # расстоянии была сравнима с остальными (у EffNet косинусы сидят у 0,8–1).
@@ -447,7 +466,9 @@ def _allowed(ctx: _Ctx, pool: list[str], queue: list[str]) -> list[str]:
 
 def _cloud_members(ctx: _Ctx, remaining: set[str]) -> dict[int, list[str]]:
     out: dict[int, list[str]] = {}
-    for path in remaining:
+    # По порядку, не как лежит в множестве: порядок строк в set меняется от
+    # запуска к запуску, и очередь с тем же зерном выходила бы другой.
+    for path in sorted(remaining):
         cloud = _home_cloud(ctx, path)
         if cloud is not None:
             out.setdefault(cloud, []).append(path)
@@ -482,14 +503,23 @@ def _next_cloud(
     members: dict[int, list[str]],
     visited: list[int],
     lessons: Lessons,
+    leaving: int | None = None,
 ) -> int:
-    """Соседнее облако с треками; если соседи пусты — ближайшее непустое."""
+    """Облако рядом с ``current`` (якорем сессии): оно само или соседнее, но не
+    ``leaving`` — то, где только что был блок; если все пусты — ближайшее
+    непустое."""
     available = [c for c, paths in members.items() if paths]
+    if leaving is not None and len(available) > 1:
+        available = [c for c in available if c != leaving]
     space = ctx.space
     if current is None:
         candidates = available
     else:
-        near = [c for c in space.neighbours[current] if c in members and members[c]]
+        near = [
+            c
+            for c in [current, *space.neighbours[current]]
+            if c in members and members[c] and c in available
+        ]
         if not near:
             # Соседи кончились (маленькая подборка): ближайшие из оставшихся.
             order = np.argsort(-(space.centers[[*available]] @ space.centers[current]))
@@ -523,15 +553,19 @@ def _pick(
     allowed = _allowed(ctx, pool, queue)
     if anchor is None:
         weights = [_standing(ctx, p) * _wave(ctx, p, position, phase) for p in allowed]
-        return ctx.rng.choices(allowed, weights=[max(w, 1e-9) for w in weights], k=1)[0]
-    near = sorted(allowed, key=lambda p: distance(ctx, p, anchor))[:TOP_CANDIDATES]
+        return ctx.rng.choices(allowed, weights=_finite(weights, 1e-9), k=1)[0]
+    gaps = sorted((distance(ctx, p, anchor), p) for p in allowed)[:TOP_CANDIDATES]
     weights = [
-        math.exp(-distance(ctx, p, anchor) / TEMPERATURE)
-        * _standing(ctx, p)
-        * _wave(ctx, p, position, phase)
-        for p in near
+        math.exp(-gap / TEMPERATURE) * _standing(ctx, p) * _wave(ctx, p, position, phase)
+        for gap, p in gaps
     ]
-    return ctx.rng.choices(near, weights=[max(w, 1e-12) for w in weights], k=1)[0]
+    return ctx.rng.choices([p for _, p in gaps], weights=_finite(weights, 1e-12), k=1)[0]
+
+
+def _finite(weights: list[float], floor: float) -> list[float]:
+    """NaN или бесконечность в весах (битая строка звучания) — как самый малый вес:
+    random.choices на них падает, а очередь должна собраться."""
+    return [w if math.isfinite(w) and w > floor else floor for w in weights]
 
 
 def build_session(
@@ -575,7 +609,7 @@ def build_session(
     members = _cloud_members(ctx, remaining)
     # Совсем без облака (ни звучания, ни артиста со звучанием) — в общий хвост:
     # такие треки встают по одному между блоками, чтобы не пропасть.
-    homeless = [p for p in remaining if _home_cloud(ctx, p) is None]
+    homeless = [p for p in sorted(remaining) if _home_cloud(ctx, p) is None]
 
     queue: list[str] = [previous.path] if previous else []
     start = len(queue)
@@ -588,16 +622,29 @@ def build_session(
         e = float(space.energy[space.index[anchor]]) / WAVE_AMPLITUDE
         phase = math.asin(max(-1.0, min(1.0, e)))
 
+    def homeless_one() -> None:
+        # Без облака — тоже с правилом «артист раз в 6, альбом раз в 9».
+        path = _pick(ctx, homeless, queue, None, len(queue) - start, phase)
+        homeless.remove(path)
+        queue.append(path)
+
     first_block = previous is not None and current is not None and bool(members.get(current))
+    around = current  # облако якоря сессии
+    blocks_left = rng.randint(*SESSION_BLOCKS)
     while len(queue) - start < size and (any(members.values()) or homeless):
         if not any(members.values()):
-            path = homeless.pop(rng.randrange(len(homeless)))
-            queue.append(path)
+            homeless_one()
             continue
         if not first_block:
-            current = _next_cloud(ctx, current, members, visited, lessons)
+            if blocks_left <= 0:
+                around = current
+                blocks_left = rng.randint(*SESSION_BLOCKS)
+            current = _next_cloud(ctx, around, members, visited, lessons, leaving=current)
+            if around is None:
+                around = current
             anchor = None
         first_block = False
+        blocks_left -= 1
         assert current is not None
         visited.append(current)
         block = rng.randint(BLOCK_MIN, BLOCK_MAX)
@@ -611,7 +658,7 @@ def build_session(
             if anchor is None:
                 anchor = path
         if homeless and rng.random() < 0.5 and len(queue) - start < size:
-            queue.append(homeless.pop(rng.randrange(len(homeless))))
+            homeless_one()
     return [ctx.tracks[p] for p in queue[start:]]
 
 
@@ -652,19 +699,38 @@ def report(queue: list[shuffle.Track], space: Space, meta: dict[str, dict]) -> d
 
 _CACHE: dict = {"key": None, "space": None}
 _CACHE_LOCK = threading.Lock()
+_BUILD_LOCK = threading.Lock()
 
 
 def load_space(index_rows: list[dict]) -> Space | None:
     """Пространство звучания текущей фонотеки; пересчёт — когда меняется
     таблица ``sonic`` или набор путей фонотеки."""
-    from . import db, lyrics
+    from . import db
 
     signature = db.db_query("SELECT COUNT(*) AS n, MAX(analyzed_at) AS at FROM sonic")
     present = {row["path"] for row in index_rows}
-    key = (signature[0]["n"], signature[0]["at"], len(present), hash(frozenset(present)))
+    # Артист — в ключе: правка тегов меняет язык и облака артиста.
+    tags = frozenset((row["path"], row.get("artist") or "") for row in index_rows)
+    key = (signature[0]["n"], signature[0]["at"], len(present), hash(tags))
     with _CACHE_LOCK:
         if _CACHE["key"] == key:
             return _CACHE["space"]
+    # Пересборку делает один запрос: остальные ждут его и берут готовое, а не
+    # считают k-means каждый сам (главная строит шесть подборок разом).
+    with _BUILD_LOCK:
+        with _CACHE_LOCK:
+            if _CACHE["key"] == key:
+                return _CACHE["space"]
+        space = _build_from_db(index_rows, present)
+        with _CACHE_LOCK:
+            _CACHE["key"] = key
+            _CACHE["space"] = space
+    return space
+
+
+def _build_from_db(index_rows: list[dict], present: set[str]) -> Space | None:
+    from . import db, lyrics
+
     rows = [
         row
         for row in db.db_query(
@@ -674,11 +740,7 @@ def load_space(index_rows: list[dict]) -> Space | None:
         if row["path"] in present
     ]
     language_of = languages(index_rows, lyrics.plain_text)
-    space = build_space(rows, language_of)
-    with _CACHE_LOCK:
-        _CACHE["key"] = key
-        _CACHE["space"] = space
-    return space
+    return build_space(rows, language_of)
 
 
 def forget() -> None:
@@ -702,9 +764,9 @@ def engine_level() -> str:
 
     try:
         rows = db.db_query("SELECT value FROM settings WHERE key = ?", (ENGINE_KEY,))
-    except Exception:  # noqa: BLE001 — нет базы: как по умолчанию
+        value = rows[0]["value"] if rows else ENGINE_DEFAULT
+    except Exception:  # noqa: BLE001 — нет базы или она не та: как по умолчанию
         return ENGINE_DEFAULT
-    value = rows[0]["value"] if rows else ENGINE_DEFAULT
     return value if value in ENGINES else ENGINE_DEFAULT
 
 

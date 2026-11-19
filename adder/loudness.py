@@ -13,6 +13,7 @@ ffmpeg is already a hard dependency, so nothing new is installed.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import logging
 import os
@@ -232,10 +233,18 @@ def backfill(
             if failures is not None:
                 failures.pop(relative, None)
             if analysis is not None:
+                after = file_hash(path)
                 analysis.execute(
                     "UPDATE audio_features SET sha256 = ? WHERE path = ? AND sha256 = ?",
-                    (file_hash(path), str(path.relative_to(root)), before),
+                    (after, str(path.relative_to(root)), before),
                 )
+                # Звучание тоже не пересчитывать: метка ReplayGain звук не меняет.
+                # Таблицы sonic может не быть (база старее этапа 5).
+                with contextlib.suppress(sqlite3.OperationalError):
+                    analysis.execute(
+                        "UPDATE sonic SET sha256 = ? WHERE path = ? AND sha256 = ?",
+                        (after, str(path.relative_to(root)), before),
+                    )
                 analysis.commit()
             logger.info("%+.2f dB  %s", gain, path.relative_to(root))
     finally:

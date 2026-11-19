@@ -78,3 +78,10 @@ def test_fetch_keeps_a_good_file_and_drops_a_bad_one(tmp_path, monkeypatch):
     assert not fetch_models.fetch("x/bad.onnx", expected, tmp_path)
     assert not (tmp_path / "bad.onnx").exists()
     assert not list(tmp_path.glob("*.part"))
+
+
+def test_service_waits_for_exactly_the_models_the_fetcher_downloads():
+    from adder import analysis
+    from scripts import fetch_models
+
+    assert set(analysis.MODEL_NAMES) == {r.rsplit("/", 1)[-1] for r in fetch_models.FILES}

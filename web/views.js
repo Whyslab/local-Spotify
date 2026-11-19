@@ -866,8 +866,8 @@ function statsRepeats(r) {
 function statsSmartSkips(r) {
     const days = (r && r.days) || 14;
     const text = !r || !r.plays
-        ? `За ${days} дней умного перемешивания не было`
-        : `Пропущено в умном за ${days} дней: ${r.skips} из ${r.plays} (${Math.round(r.share * 100)} %)`
+        ? `За ${days} дней умного по звуку не было`
+        : `Пропущено в умном по звуку за ${days} дней: ${r.skips} из ${r.plays} (${Math.round(r.share * 100)} %)`
             + (r.outside_plays ? `, из них чужих треков сыграно ${r.outside_plays}` : "");
     return el("p", "o-section-note stats-smart-skips", text);
 }

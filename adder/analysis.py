@@ -44,8 +44,25 @@ def _command(args: list[str], script=None) -> list[str]:
     return bounded([str(PYTHON), str(script or SCRIPT), *args])
 
 
+# Модели звучания — те же, что качает scripts/fetch_models.py (тест сверяет).
+MODEL_NAMES = (
+    "discogs-effnet-bsdynamic-1.onnx",
+    "msd-musicnn-1.onnx",
+    "deam-msd-musicnn-2.onnx",
+    "mood_happy-discogs-effnet-1.onnx",
+    "mood_sad-discogs-effnet-1.onnx",
+    "mood_aggressive-discogs-effnet-1.onnx",
+    "mood_relaxed-discogs-effnet-1.onnx",
+    "mood_party-discogs-effnet-1.onnx",
+    "danceability-discogs-effnet-1.onnx",
+    "voice_instrumental-discogs-effnet-1.onnx",
+)
+
+
 def _embedding_ready() -> bool:
-    return EMBED_SCRIPT.exists() and MODELS.is_dir() and any(MODELS.glob("*.onnx"))
+    # Все модели, а не какая-нибудь: с неполным набором каждый добавленный
+    # трек писал бы в журнал «расчёт звучания не удался».
+    return EMBED_SCRIPT.exists() and all((MODELS / name).is_file() for name in MODEL_NAMES)
 
 
 def bounded(base: list[str]) -> list[str]:

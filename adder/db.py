@@ -191,6 +191,11 @@ def db_init():
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_outside_plays_heard "
         "ON outside_plays(key, heard_at, played_seconds) WHERE heard_at IS NOT NULL"
     )
+    # Каким движком собрана умная очередь или радио («sonic»/«classic»); NULL —
+    # до этапа 5 или не умное. Без метки пропуски нового и старого смешались бы.
+    for table in ("plays", "outside_plays"):
+        with suppress(sqlite3.OperationalError):
+            db_exec(f"ALTER TABLE {table} ADD COLUMN engine TEXT")
     # «Не предлагать»: чужой трек, который больше не подмешивать.
     db_exec("""CREATE TABLE IF NOT EXISTS outside_banned(
         key TEXT PRIMARY KEY,

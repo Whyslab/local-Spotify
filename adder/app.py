@@ -16,6 +16,7 @@ import threading
 import time
 import zlib
 from contextlib import asynccontextmanager, suppress
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
@@ -548,6 +549,10 @@ class PlayRequest(BaseModel):
     # button or the server. «manual» alone mixed a shuffled playlist with one
     # played top to bottom. Plays queued before the field existed come without it.
     shuffled: bool = False
+    # Каким движком собрана умная очередь или радио: «sonic» — по звучанию,
+    # «classic» — по темпу. Нужен, чтобы пропуски нового и старого не
+    # смешались в журнале (stats.smart_skips, backtest_sonic).
+    engine: Literal["sonic", "classic"] | None = None
     # Из какой колоды обычного перемешивания и какого её круга взят трек
     # (adder/deck.py). Без неё прослушивание всё равно отмечается во всех
     # колодах — по времени.
@@ -2167,6 +2172,13 @@ def _sonic_lessons(space: sonic.Space) -> sonic.Lessons:
     return lessons
 
 
+# Каким движком на самом деле собрана последняя своя часть очереди в этом
+# запросе: «sonic» или «classic». Метка едет с каждым треком очереди и с
+# прослушиванием в журнал (plays.engine) — иначе пропуски нового и старого
+# умного смешались бы под одним mode='smart' (разбор этапа 5).
+_ENGINE_USED: ContextVar[str] = ContextVar("engine_used", default="classic")
+
+
 def _engine_queue(
     tracks: list[shuffle.Track],
     size: int,
@@ -2186,22 +2198,62 @@ def _engine_queue(
     space = None
     if engine != "classic":
         space = _sonic_space(pool, force=engine == "sonic")
-    if space is None:
-        return shuffle.build_queue(
-            tracks, size=size, core=core, outside_share=0.0, previous=previous, seed=seed
-        )
-    meta = {row["path"]: row for row in library.library_index()}
-    return sonic.build_session(
-        pool,
-        space,
-        meta,
-        size=size,
-        seed=seed,
-        previous=previous,
-        lessons=_sonic_lessons(space),
-        artist_sim=artist_graph.similarity_function(),
-        focus_artist=focus_artist,
+    if space is not None:
+        try:
+            meta = {row["path"]: row for row in library.library_index()}
+            queue = sonic.build_session(
+                pool,
+                space,
+                meta,
+                size=size,
+                seed=seed,
+                previous=previous,
+                lessons=_sonic_lessons(space),
+                artist_sim=artist_graph.similarity_function(),
+                focus_artist=focus_artist,
+            )
+            _ENGINE_USED.set("sonic")
+            return queue
+        except Exception:  # noqa: BLE001 — сбой нового движка не ломает перемешивание
+            logger.exception("Умное по звуку упало — очередь по темпу")
+    _ENGINE_USED.set("classic")
+    return shuffle.build_queue(
+        tracks, size=size, core=core, outside_share=0.0, previous=previous, seed=seed
     )
+
+
+def _stamp(payload: list[dict]) -> list[dict]:
+    """Каждому треку очереди — движок, которым она собрана (см. _ENGINE_USED)."""
+    engine = _ENGINE_USED.get()
+    for entry in payload:
+        entry["engine"] = engine
+    return payload
+
+
+def _block_slots(queue: list[shuffle.Track]) -> tuple[set[int] | None, Any]:
+    """Стыки блоков новой умной очереди и язык трека — для outside.weave.
+
+    Очередь старого движка — (None, None): чужое встаёт где угодно, как раньше.
+    """
+    if _ENGINE_USED.get() != "sonic":
+        return None, None
+    space = sonic.load_space(library.library_index())
+    if space is None:
+        return None, None
+    clouds = [space.cloud_of(t.path) for t in queue]
+    slots = {i for i in range(len(queue) - 1) if clouds[i] != clouds[i + 1]}
+    slots.add(len(queue) - 1)
+    tongue = {t.path: space.language[space.index[t.path]] for t in queue if t.path in space}
+
+    def language(item: dict) -> str | None:
+        if item.get("path") in tongue:
+            return tongue[item["path"]]
+        if "seed" in item:  # чужой кандидат: по названию и имени
+            text = f"{item.get('artist') or ''} {item.get('title') or ''}"
+            return sonic.RU if sonic.is_cyrillic_text(text) >= 0.3 else sonic.OTHER
+        return None
+
+    return slots, language
 
 
 def _queue_payload(queue: list[shuffle.Track], core: set[str] | None = None) -> list[dict]:
@@ -2239,13 +2291,14 @@ def _mood_shelves(features: list[dict]) -> list[dict]:
     seed = shelves.shelf_seed()
     tracks = _shuffle_tracks()
     space = _sonic_space(tracks)
-    if space is None:
+    chosen_moods = moods.sonic_collections(space, limit=40, seed=seed) if space else []
+    if not chosen_moods:
         return [
             {"key": m.key, "name": m.name, "hint": m.hint, "tracks": as_tracks(m.paths)}
             for m in moods.collections(features, limit=40, seed=seed)
         ]
     out = []
-    for m in moods.sonic_collections(space, limit=40, seed=seed):
+    for m in chosen_moods:
         chosen = set(m.paths)
         # Зерно — от дня и подборки, не hash(): тот меняется с каждым запуском.
         ordered = _engine_queue(
@@ -2440,11 +2493,10 @@ def smart_shuffle(
         body = _shuffle_body(mode, tracks, queue, _queue_payload(queue))
     else:
         queue, payload = _smart_queue(tracks, size, core)
-        body = _shuffle_body(mode, tracks, queue, payload)
-        # Какое умное собрало очередь: новое (по звучанию) или старое — то,
-        # что выбрано, или старое, пока звучание набора не посчитано.
-        pool = [t for t in tracks if core is None or t.path in core]
-        body["engine"] = "sonic" if _sonic_space(pool) is not None else "classic"
+        body = _shuffle_body(mode, tracks, queue, _stamp(payload))
+        # Какое умное собрало очередь на самом деле: новое (по звучанию) или
+        # старое — выбранное, или пока звучание набора не посчитано.
+        body["engine"] = _ENGINE_USED.get()
     if core is not None:
         body["playlist"] = playlist
         body["core"] = len(core)
@@ -2494,7 +2546,7 @@ def _smart_queue(
         want,
     )
     if not found:
-        if _sonic_space([t for t in tracks if core is None or t.path in core]) is not None:
+        if _ENGINE_USED.get() == "sonic":
             # Новое умное своё со стороны (треки фонотеки вне подборки) не
             # подмешивает: блоки строятся из облаков самой подборки.
             queue = _engine_queue(tracks, size, core)
@@ -2507,7 +2559,10 @@ def _smart_queue(
         # с похожим, а если нет, то просто между своими.
         local = _engine_queue(tracks, size - len(found), core)
     outside.remember(found)
-    payload = outside.weave(_queue_payload(local, core), found, len(found))
+    slots, language = _block_slots(local)
+    payload = outside.weave(
+        _queue_payload(local, core), found, len(found), slots=slots, language=language
+    )
     return local, payload
 
 
@@ -2591,7 +2646,8 @@ def smart_shuffle_of(req: SmartShuffleRequest, authenticated: bool = Depends(ver
         if not core:
             raise HTTPException(status_code=404, detail="Этих треков нет в фонотеке")
     queue, payload = _smart_queue(tracks, size, core)
-    body = _shuffle_body("smart", tracks, queue, payload)
+    body = _shuffle_body("smart", tracks, queue, _stamp(payload))
+    body["engine"] = _ENGINE_USED.get()
     if core is not None:
         body["core"] = len(core)
     return body
@@ -2605,13 +2661,30 @@ def _radio_engine(
     seed: int | None,
     focus_artist: str,
 ) -> list[shuffle.Track]:
-    """Радио на том же движке, что умное: круг станции, а если в нём своих
-    меньше порции — вся фонотека с весом похожести на артиста станции."""
-    if core is not None and len(core) < size:
-        core = None
-    return _engine_queue(
+    """Радио на том же движке, что умное: сначала круг станции, а когда он
+    кончился — добор из остальной фонотеки с весом похожести на артиста.
+
+    Старый движок добирает сам (build_queue с core); новый перемешивает только
+    круг, и недостачу добираем вторым проходом, продолжая от последнего трека
+    станции. Раньше маленький круг выбрасывался целиком (разбор этапа 5).
+    """
+    queue = _engine_queue(
         eligible, size, core=core, previous=previous, seed=seed, focus_artist=focus_artist
     )
+    used = _ENGINE_USED.get()
+    if core is not None and len(queue) < size:
+        taken = {t.path for t in queue} | ({previous.path} if previous else set())
+        rest = [t for t in eligible if t.path not in taken]
+        queue += _engine_queue(
+            rest,
+            size - len(queue),
+            previous=queue[-1] if queue else previous,
+            seed=None if seed is None else seed + 1,
+            focus_artist=focus_artist,
+        )
+        if used == "sonic":
+            _ENGINE_USED.set(used)
+    return queue
 
 
 class RadioRequest(BaseModel):
@@ -2664,9 +2737,13 @@ def radio_portion(req: RadioRequest, authenticated: bool = Depends(verify_token)
         engine=_radio_engine,
     )
     outside.remember(found)
-    payload = outside.weave(_queue_payload(local), found, len(found))
+    slots, language = _block_slots(local)
+    payload = _stamp(
+        outside.weave(_queue_payload(local), found, len(found), slots=slots, language=language)
+    )
     return {
         "artist": seed_artist,
+        "engine": _ENGINE_USED.get(),
         "queue": payload,
         "external": sum(1 for entry in payload if entry.get("external")),
     }
@@ -2914,8 +2991,8 @@ def record_play(req: PlayRequest, authenticated: bool = Depends(verify_token)):
     # it ignores the second copy. Without heard_at two plays cannot be told apart.
     cur = db.db_exec(
         "INSERT OR IGNORE INTO plays"
-        "(path, played_at, played_seconds, duration, skipped, source, mode, heard_at, shuffled) "
-        "VALUES(?, datetime(?, 'unixepoch', 'localtime'), ?, ?, ?, ?, ?, ?, ?)",
+        "(path, played_at, played_seconds, duration, skipped, source, mode, heard_at, shuffled,"
+        " engine) VALUES(?, datetime(?, 'unixepoch', 'localtime'), ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             req.path,
             # played_at has always been when the play ended: kept so.
@@ -2927,6 +3004,7 @@ def record_play(req: PlayRequest, authenticated: bool = Depends(verify_token)):
             req.mode,
             req.heard_at,
             1 if req.shuffled else 0,
+            _engine_of(req),
         ),
     )
     if not cur.rowcount:
@@ -2952,6 +3030,11 @@ def record_play(req: PlayRequest, authenticated: bool = Depends(verify_token)):
     return {"recorded": req.path}
 
 
+def _engine_of(req: PlayRequest) -> str | None:
+    """Метка движка — только у умного и радио: у остального её нет по смыслу."""
+    return req.engine if req.mode in ("smart", "radio") else None
+
+
 def _record_outside_play(req: PlayRequest, started: float) -> dict:
     """Трек со стороны — в свой журнал (outside_plays), не в plays.
 
@@ -2966,7 +3049,8 @@ def _record_outside_play(req: PlayRequest, started: float) -> dict:
     cur = db.db_exec(
         "INSERT OR IGNORE INTO outside_plays"
         "(key, artist, title, played_at, played_seconds, duration, skipped, mode, heard_at,"
-        " shuffled) VALUES(?, ?, ?, datetime(?, 'unixepoch', 'localtime'), ?, ?, ?, ?, ?, ?)",
+        " shuffled, engine) VALUES(?, ?, ?, datetime(?, 'unixepoch', 'localtime'),"
+        " ?, ?, ?, ?, ?, ?, ?)",
         (
             key,
             meta.get("artist") or "",
@@ -2978,6 +3062,7 @@ def _record_outside_play(req: PlayRequest, started: float) -> dict:
             req.mode,
             req.heard_at,
             1 if req.shuffled else 0,
+            _engine_of(req),
         ),
     )
     if not cur.rowcount:

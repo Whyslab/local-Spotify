@@ -12,9 +12,10 @@ WorkingDirectory=%REPO%
 # analysis rows of the files it retags to their new hash (see the script).
 ExecStart="%REPO%/.venv/bin/python" "%REPO%/scripts/analyze_audio.py" --jobs %JOBS%
 # Звучание для умного перемешивания (scripts/embed_audio.py): один поток,
-# только новое и изменённое. «-»: без моделей или onnxruntime оно падает, и
+# только новое и изменённое, не дольше 40 мин (TimeoutStartSec ниже общий
+# на весь проход; недосчитанное — следующей ночью). «-»: без моделей или onnxruntime оно падает, и
 # это не должно останавливать ReplayGain за ним.
-ExecStart=-"%REPO%/.venv/bin/python" "%REPO%/scripts/embed_audio.py"
+ExecStart=-"%REPO%/.venv/bin/python" "%REPO%/scripts/embed_audio.py" --budget 40
 ExecStart="%REPO%/.venv/bin/python" "%REPO%/scripts/replaygain.py"
 # The home shelves are built from these measurements. Their own timer is 04:30,
 # an hour after this one, but after a night asleep both catch up at boot in no

@@ -728,3 +728,51 @@ def test_only_a_real_jpeg_or_png_becomes_the_cover(tmp_path, monkeypatch, pictur
     else:
         assert [bytes(c) for c in covers_now] == [picture]
         assert covers_now[0].imageformat == embedded
+
+
+def test_one_outside_artist_gets_one_track_and_one_song_one_version(monkeypatch):
+    """19.11.2026: из десяти чужих шесть были DJ Anemia, три — одна песня."""
+    from adder import similar
+
+    monkeypatch.setattr(outside, "candidates", REAL_CANDIDATES)
+    monkeypatch.setattr(
+        similar, "similar_artists", lambda name, cache, limit=12: ["DJ Anemia", "LONOWN"]
+    )
+    tops = {
+        "DJ Anemia": [
+            {"artist": "DJ Anemia", "title": t}
+            for t in ["archangel (Slowed)", "archangel (Ultra Slowed)", "deadrose", "THIS FEELING"]
+        ],
+        "LONOWN": [
+            {"artist": "LONOWN", "title": "addiction"},
+            {"artist": "LONOWN", "title": "addiction (Slowed)"},
+        ],
+        "Seed": [{"artist": "Seed", "title": "Big"}],
+    }
+    monkeypatch.setattr(similar, "top_tracks", lambda name, cache, limit=5: tops.get(name, []))
+    found = outside.candidates(["Seed"], set(), 10)
+    artists = [f["artist"] for f in found]
+    assert sorted(artists) == ["DJ Anemia", "LONOWN", "Seed"]
+
+
+def test_song_key_drops_the_version_not_the_name():
+    assert outside.song_key("archangel (Ultra Slowed)") == outside.song_key("archangel")
+    assert outside.song_key("worry - Slowed") == "worry"
+    assert outside.song_key("Wake Up") == "wake up"
+    assert outside.song_key("Up (Remix)") == "up"
+
+
+def test_weave_puts_outside_only_at_given_slots_and_same_language():
+    local = [
+        {"path": f"p{i}", "artist": f"A{i}", "lang": "ru" if i < 3 else "other"} for i in range(6)
+    ]
+    found = [
+        {"key": "k1", "artist": "Foreign", "title": "Song", "seed": "A0", "lang": "other"},
+        {"key": "k2", "artist": "Русский", "title": "Песня", "seed": "A0", "lang": "ru"},
+    ]
+    out = outside.weave(
+        local, found, 2, seed=1, slots={2, 5}, language=lambda item: item.get("lang")
+    )
+    order = [e["artist"] if e.get("external") else e["path"] for e in out]
+    # После p2 (русский блок) — русское, после p5 (иностранный) — иностранное.
+    assert order == ["p0", "p1", "p2", "Русский", "p3", "p4", "p5", "Foreign"]

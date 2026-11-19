@@ -2,6 +2,7 @@
 подборки по настроению, статистика, расчёт звучания новых треков."""
 
 import sqlite3
+import time
 
 import numpy as np
 import pytest
@@ -165,14 +166,19 @@ def test_home_moods_come_from_sound(client):
 
 
 def test_smart_skips_count_outside_tracks_too(client):
+    """Только новое умное (engine='sonic'), вместе с чужими; старое умное,
+    ручная игра и чужое не из умного — мимо."""
     db.db_exec(
-        "INSERT INTO plays(path, played_at, played_seconds, duration, skipped, mode) "
-        "VALUES('a', datetime('now','localtime'), 200, 200, 0, 'smart'), "
-        "('b', datetime('now','localtime'), 3, 200, 1, 'manual')"
+        "INSERT INTO plays(path, played_at, played_seconds, duration, skipped, mode, engine) "
+        "VALUES('a', datetime('now','localtime'), 200, 200, 0, 'smart', 'sonic'), "
+        "('b', datetime('now','localtime'), 3, 200, 1, 'manual', NULL), "
+        "('c', datetime('now','localtime'), 3, 200, 1, 'smart', 'classic'), "
+        "('d', datetime('now','localtime'), 3, 200, 1, 'smart', NULL)"
     )
     db.db_exec(
-        "INSERT INTO outside_plays(key, played_at, played_seconds, skipped, mode) "
-        "VALUES('k', datetime('now','localtime'), 4, 1, 'smart')"
+        "INSERT INTO outside_plays(key, played_at, played_seconds, skipped, mode, engine) "
+        "VALUES('k', datetime('now','localtime'), 4, 1, 'smart', 'sonic'), "
+        "('m', datetime('now','localtime'), 4, 1, 'manual', NULL)"
     )
     result = stats.smart_skips()
     assert (result["plays"], result["skips"], result["outside_plays"]) == (2, 1, 1)
@@ -182,7 +188,8 @@ def test_smart_skips_count_outside_tracks_too(client):
 def test_new_track_gets_its_sound_right_away(monkeypatch, tmp_path):
     models = tmp_path / "models"
     models.mkdir()
-    (models / "x.onnx").write_bytes(b"")
+    for name in analysis.MODEL_NAMES:
+        (models / name).write_bytes(b"")
     monkeypatch.setattr(analysis, "MODELS", models)
     commands = []
 
@@ -230,3 +237,47 @@ def test_old_blind_table_gets_the_kind_column(tmp_path, monkeypatch):
     ]
     assert "kind" in cols
     assert db.db_query("SELECT kind FROM blind_trials")[0]["kind"] is None
+
+
+def test_partial_model_set_does_not_run_the_embedding(monkeypatch, tmp_path):
+    models = tmp_path / "models"
+    models.mkdir()
+    (models / analysis.MODEL_NAMES[0]).write_bytes(b"")
+    monkeypatch.setattr(analysis, "MODELS", models)
+    assert not analysis._embedding_ready()
+
+
+def test_play_keeps_the_engine_only_for_smart_and_radio(client):
+    for path, mode in (("x/a.m4a", "smart"), ("x/b.m4a", "manual")):
+        r = client.post(
+            "/api/plays",
+            json={
+                "path": path,
+                "played_seconds": 100,
+                "duration": 200,
+                "mode": mode,
+                "engine": "sonic",
+                "heard_at": time.time() - 300 - len(mode),
+            },
+        )
+        assert r.status_code == 200, r.text
+    rows = {r["path"]: r["engine"] for r in db.db_query("SELECT path, engine FROM plays")}
+    assert rows == {"x/a.m4a": "sonic", "x/b.m4a": None}
+
+
+@pytest.mark.parametrize("engine", ["sonic", "classic"])
+def test_small_station_plays_first_and_the_rest_pads(client, monkeypatch, engine):
+    """Круг станции меньше порции: раньше он выбрасывался целиком, и радио
+    шло из всей фонотеки (разбор этапа 5) — теперь сначала вся станция."""
+    _store_sound()
+    from adder import radio
+
+    client.put("/api/settings", json={"smart_engine": engine})
+    monkeypatch.setattr(radio, "station", lambda artist, need, tracks: {radio._name(artist)})
+    body = client.post("/api/radio", json={"artist": "Артист0_0", "size": 12}).json()
+    station = {r["path"] for r in INDEX if r["artist"] == "Артист0_0"}
+    assert 0 < len(station) < 12
+    paths = [e["path"] for e in body["queue"] if not e.get("external")]
+    assert len(paths) == 12
+    assert set(paths[: len(station)]) == station
+    assert {e["engine"] for e in body["queue"]} == {engine}

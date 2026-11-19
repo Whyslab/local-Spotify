@@ -199,6 +199,39 @@ def external(rows: list[dict], want: int = 12, seed: int | None = None) -> list[
     return ordered
 
 
+def _moods(rows: list[dict], features: list[dict], limit: int, seed: int) -> list:
+    """Те же подборки, что на главной (app._mood_shelves): по звучанию, если
+    выбрано умное по звуку и звучание посчитано, иначе — по темпу.
+
+    Порядок — тем же движком, но без уроков пропусков и графа артистов: состав
+    у полки на телефоне и на ноутбуке одинаковый, порядок может отличаться.
+    """
+    import dataclasses  # noqa: PLC0415
+    import zlib  # noqa: PLC0415
+
+    from . import shuffle, sonic  # noqa: PLC0415
+
+    space = None
+    if sonic.engine_level() == "sonic":
+        try:
+            space = sonic.load_space(rows)
+        except Exception:  # noqa: BLE001 — сломанное звучание: полки по темпу
+            logger.exception("Звучание не загрузилось — полки по темпу")
+    chosen = moods.sonic_collections(space, limit=limit, seed=seed) if space else []
+    if space is None or not chosen:
+        return moods.collections(features, limit=limit, seed=seed)
+    by_path = {row["path"]: row for row in rows}
+    tracks = {t.path: t for t in shuffle.tracks_from_rows(rows, features, [], 12)}
+    out = []
+    for mood in chosen:
+        pool = [tracks[p] for p in mood.paths if p in tracks]
+        ordered = sonic.build_session(
+            pool, space, by_path, size=len(pool), seed=zlib.crc32(f"{seed}:{mood.key}".encode())
+        )
+        out.append(dataclasses.replace(mood, paths=[t.path for t in ordered]))
+    return out
+
+
 def export(limit: int = 40) -> list[dict]:
     """Записать полки главной в подборки `.m3u` и рассказать, что вышло.
 
@@ -218,9 +251,7 @@ def export(limit: int = 40) -> list[dict]:
     known = {row["path"] for row in rows}
 
     seed = shelf_seed()
-    shelves = [
-        (mood.name, mood.paths) for mood in moods.collections(features, limit=limit, seed=seed)
-    ]
+    shelves = [(mood.name, mood.paths) for mood in _moods(rows, features, limit, seed)]
     shelves.append(
         (DISCOVER_NAME, [track["path"] for track in discover(rows, seed=seed)["tracks"]])
     )

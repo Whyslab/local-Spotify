@@ -38,6 +38,7 @@ import sqlite3
 import threading
 import time
 from collections import deque
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, wait
 from pathlib import Path
 
@@ -411,14 +412,48 @@ def candidates(
     rng = random.Random()
     for items in per_seed.values():
         rng.shuffle(items)
+    # Один артист со стороны — один трек на очередь, и одна песня — одной
+    # версией: 19.11.2026 на живой копии из десяти чужих шесть были DJ Anemia,
+    # три из них — «archangel» в разных «slowed». Своим трекам правило «артист
+    # раз в 6» держит очередь, чужим — этот отбор.
     ordered: list[dict] = []
+    artists: set[str] = set()
+    songs: set[tuple[str, str]] = set()
     while len(ordered) < want and any(per_seed.values()):
         for seed in seeds:
-            if per_seed[seed]:
-                ordered.append(per_seed[seed].pop())
-                if len(ordered) >= want:
-                    break
+            while per_seed[seed]:
+                item = per_seed[seed].pop()
+                who = {_norm(a).strip() for a in item["artist"].split("•")} - {""}
+                song = (_norm(similar.primary(item["artist"])).strip(), song_key(item["title"]))
+                if who & artists or song in songs:
+                    continue
+                artists |= who
+                songs.add(song)
+                ordered.append(item)
+                break
+            if len(ordered) >= want:
+                break
     return ordered
+
+
+_VERSION_WORDS = re.compile(
+    r"\b(ultra|super|slowed|reverb|sped|speed|up|nightcore|remix|ремикс|version|edit|"
+    r"extended|radio|remastered|remaster|bass|boosted|8d|tiktok)\b"
+)
+
+
+def song_key(title: str) -> str:
+    """Название песни без версии: «archangel (Ultra Slowed)» — «archangel».
+
+    Только скобки и тире-приписки: «Up» в самом названии («Wake Up») не
+    трогается, если он не в скобках и не после тире.
+    """
+    base = core_title(title).lower()
+    tail = re.split(r"\s[-–—]\s|[(\[]", base, maxsplit=1)
+    head = tail[0]
+    extra = base[len(head) :]
+    extra = _VERSION_WORDS.sub(" ", _norm(extra))
+    return " ".join((_norm(head) + " " + extra).split())
 
 
 def entry(item: dict) -> dict:
@@ -434,26 +469,49 @@ def entry(item: dict) -> dict:
     }
 
 
-def weave(local: list[dict], found: list[dict], count: int, seed: int | None = None) -> list[dict]:
+def weave(
+    local: list[dict],
+    found: list[dict],
+    count: int,
+    seed: int | None = None,
+    slots: set[int] | None = None,
+    language: Callable[[dict], str | None] | None = None,
+) -> list[dict]:
     """Вплести ``count`` треков со стороны в готовую очередь своих.
 
     Первым всегда играет своё, два чужих подряд не встают. Место распределяется
     равномерно по всей очереди, а трек на него берётся тот, что подобран к
     артисту перед ним, — так новое звучит рядом с тем, на что похоже.
+
+    ``slots`` — после каких своих (номера в ``local``) можно вставить чужое:
+    новое умное отдаёт стыки своих блоков, чтобы чужое не рвало блок.
+    ``language`` — язык трека (свой — из записи, чужой — по названию): чужое
+    встаёт только за своим того же языка, русское и иностранное в одном
+    месте не мешаются (решение 19.11.2026). Без них — как раньше, где угодно.
     """
     rng = random.Random(seed)
     pool = list(found)
-    count = min(count, len(pool), len(local))
+    places = [i for i in range(len(local)) if slots is None or i in slots]
+    count = min(count, len(pool), len(places))
     out: list[dict] = []
     left = count
     for position, item in enumerate(local):
         out.append(item)
-        slots = len(local) - position
-        if left <= 0 or rng.random() >= left / slots:
+        if slots is not None and position not in slots:
+            continue
+        remaining = sum(1 for i in places if i >= position)
+        if left <= 0 or rng.random() >= left / remaining:
+            continue
+        if language is not None:
+            tongue = language(item)
+            pool_here = [c for c in pool if tongue is None or language(c) in (None, tongue)]
+        else:
+            pool_here = pool
+        if not pool_here:
             continue
         before = similar.primary(item.get("artist") or "").lower()
-        other = [c for c in pool if similar.primary(c["artist"]).lower() != before]
-        fits = [c for c in other if c["seed"].lower() == before] or other or pool
+        other = [c for c in pool_here if similar.primary(c["artist"]).lower() != before]
+        fits = [c for c in other if c["seed"].lower() == before] or other or pool_here
         chosen = fits[0]
         pool.remove(chosen)
         out.append(entry(chosen))

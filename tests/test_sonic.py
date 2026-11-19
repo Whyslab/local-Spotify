@@ -1,6 +1,9 @@
 """Умное перемешивание по звучанию (adder/sonic.py): облака, блоки, правила."""
 
+import os
 import random
+import subprocess
+import sys
 
 import numpy as np
 import pytest
@@ -293,14 +296,40 @@ def test_radio_focus_pulls_towards_the_station_artist():
             return 1.0
         return 0.9 if "артист0_1" in second and "артист0_2" in first else 0.0
 
-    hits = 0
-    for seed in range(20):
-        queue = sonic.build_session(
-            _tracks(index), space, meta, size=12, seed=seed, artist_sim=sim, focus_artist=fan
-        )
-        hits += sum(1 for t in queue if t.artist in {fan, "Артист0_2"})
-    # Без фокуса — 2 артиста из 8, около четверти; с фокусом — заметно больше.
-    assert hits / (20 * 12) > 0.3
+    def hits(focus: str) -> int:
+        total = 0
+        for seed in range(40):
+            queue = sonic.build_session(
+                _tracks(index), space, meta, size=12, seed=seed, artist_sim=sim, focus_artist=focus
+            )
+            total += sum(1 for t in queue if t.artist in {fan, "Артист0_2"})
+        return total
+
+    # Потолок — 4 из 12 (артист раз в 6), без фокуса — около четверти.
+    assert hits(fan) > 1.15 * hits("")
+
+
+def test_same_seed_same_queue_in_any_process():
+    """Порядок обхода set меняется между запусками Python (PYTHONHASHSEED):
+    с тем же зерном очередь обязана выйти той же — подборки главной на нём."""
+    code = (
+        "import tests.test_sonic as t; from adder import sonic;"
+        "index, rows = t._library(groups=3, artists_per_group=4, per_artist=4);"
+        "space = t._space(index, rows, clouds=3);"
+        "print([x.path for x in sonic.build_session(t._tracks(index), space, t._meta(index),"
+        " size=20, seed=7)])"
+    )
+    outs = {
+        subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            check=True,
+            env={**os.environ, "PYTHONHASHSEED": str(h), "API_TOKEN": "x"},
+        ).stdout
+        for h in (1, 2, 3)
+    }
+    assert len(outs) == 1
 
 
 def test_report_counts_close_repeats():
@@ -324,3 +353,12 @@ def test_empty_or_tiny_inputs():
 @pytest.mark.parametrize("text,expected", [("", 0.0), ("abc", 0.0), ("абв", 1.0), ("аб cd", 0.5)])
 def test_cyrillic_share(text, expected):
     assert sonic.is_cyrillic_text(text) == expected
+
+
+def test_every_cloud_is_someones_neighbour():
+    index, rows = _library(groups=6, artists_per_group=4, per_artist=5)
+    space = _space(index, rows, clouds=6)
+    reachable = {c for near in space.neighbours for c in near}
+    assert reachable == set(range(len(space.centers)))
+    for c, near in enumerate(space.neighbours):
+        assert all(c in space.neighbours[o] for o in near)
