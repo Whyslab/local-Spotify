@@ -2566,6 +2566,7 @@ def _smart_queue(
         outside.library_keys(library.library_index()),
         want,
     )
+    found = outside.one_per_artist(found)
     if not found:
         if _last_engine() == "sonic":
             # Новое умное своё со стороны (треки фонотеки вне подборки) не

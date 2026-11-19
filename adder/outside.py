@@ -412,22 +412,19 @@ def candidates(
     rng = random.Random()
     for items in per_seed.values():
         rng.shuffle(items)
-    # Один артист со стороны — один трек на очередь, и одна песня — одной
-    # версией: 19.11.2026 на живой копии из десяти чужих шесть были DJ Anemia,
-    # три из них — «archangel» в разных «slowed». Своим трекам правило «артист
-    # раз в 6» держит очередь, чужим — этот отбор.
+    # Одна песня — одной версией: 19.11.2026 на живой копии три чужих были
+    # «archangel» в разных «slowed». Один трек на чужого артиста — уже в
+    # очередях умного и радио (one_per_artist), не здесь: подборке недели
+    # нужно 25 чужих.
     ordered: list[dict] = []
-    artists: set[str] = set()
     songs: set[tuple[str, str]] = set()
     while len(ordered) < want and any(per_seed.values()):
         for seed in seeds:
             while per_seed[seed]:
                 item = per_seed[seed].pop()
-                who = {_norm(a).strip() for a in item["artist"].split("•")} - {""}
                 song = (_norm(similar.primary(item["artist"])).strip(), song_key(item["title"]))
-                if who & artists or song in songs:
+                if song in songs:
                     continue
-                artists |= who
                 songs.add(song)
                 ordered.append(item)
                 break
@@ -440,6 +437,23 @@ _VERSION_WORDS = re.compile(
     r"\b(ultra|super|slowed|reverb|sped|speed|up|nightcore|remix|ремикс|version|edit|"
     r"extended|radio|remastered|remaster|bass|boosted|8d|tiktok)\b"
 )
+
+
+def one_per_artist(found: list[dict]) -> list[dict]:
+    """Один чужой артист — один трек на очередь (умное, радио).
+
+    19.11.2026 на живой копии из десяти чужих шесть были DJ Anemia. Подборке
+    недели это не нужно: там чужое и есть вся подборка.
+    """
+    seen: set[str] = set()
+    out = []
+    for item in found:
+        who = {_norm(a).strip() for a in (item.get("artist") or "").split("•")} - {""}
+        if who & seen:
+            continue
+        seen |= who
+        out.append(item)
+    return out
 
 
 def song_key(title: str) -> str:

@@ -186,7 +186,7 @@ def build(
     if want:
         gone = {outside.track_key(p) for p in banned if outside.is_outside(p)}
         artists = [seed_artist, *(t.artist for t in local)]
-        asked = outside.candidates(artists, have or set(), want * 3)
+        asked = outside.one_per_artist(outside.candidates(artists, have or set(), want * 3))
         found = [c for c in asked if c["key"] not in gone][:want]
         if len(found) < want:
             # Нашлось меньше, чем мест под новое, — своих больше, чтобы порция

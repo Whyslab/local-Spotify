@@ -751,7 +751,9 @@ def test_one_outside_artist_gets_one_track_and_one_song_one_version(monkeypatch)
     }
     monkeypatch.setattr(similar, "top_tracks", lambda name, cache, limit=5: tops.get(name, []))
     found = outside.candidates(["Seed"], set(), 10)
-    artists = [f["artist"] for f in found]
+    # Одна песня — одной версией всегда (подборке недели тоже).
+    assert len(found) == 5
+    artists = [f["artist"] for f in outside.one_per_artist(found)]
     assert sorted(artists) == ["DJ Anemia", "LONOWN", "Seed"]
 
 
