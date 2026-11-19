@@ -123,7 +123,7 @@ function repairCard(item) {
                 list.appendChild(li);
             }
             card.appendChild(list);
-        } else {
+        } else if (item.compared) {
             card.appendChild(repairLine("repair-status", "Явных проблем не нашлось."));
         }
         if (item.lyrics_note) card.appendChild(repairLine("repair-why", "Текст: " + item.lyrics_note));
@@ -137,8 +137,11 @@ function repairCard(item) {
             const listen = item.listen || {};
             const at = item.place ? " (" + formatTime(item.place.at) + ")" : "";
             if (listen.current) row.appendChild(repairButton("▶ Сейчас" + at, "ghost", () => repairListen(item.path, "current", note)));
-            if (listen.candidate) row.appendChild(repairButton("▶ Кандидат", "ghost", () => repairListen(item.path, "candidate", note)));
-            row.appendChild(repairButton("Заменить", "ghost repair-main", () => repairAction("replace", item, card, note)));
+            /* Не совпала по звуку — её «то же место» посчитано по случайному
+             * сдвигу: кусок кандидата был бы не про то. */
+            const matched = best.same !== false;
+            if (listen.candidate && matched) row.appendChild(repairButton("▶ Кандидат", "ghost", () => repairListen(item.path, "candidate", note)));
+            row.appendChild(repairButton("Заменить", item.better ? "ghost repair-main" : "ghost", () => repairAction("replace", item, card, note)));
         } else {
             card.appendChild(repairLine("repair-status", "Других версий не нашлось — вставь ссылку сам."));
         }

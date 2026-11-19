@@ -286,10 +286,13 @@ def check(apply: bool = True) -> dict:
             # Файл прав. Navidrome чистится удалением подборки там (и так же
             # для подборки, опустошённой до этой правки).
             row.update({"changed": False, "declined": str(exc)})
-            _SEEN[name] = str(entry.get("updatedAt"))
-            if apply and not navidrome.pending("clear", name):
-                navidrome.enqueue("clear", name)
-                logger.info("Playlist %r: file is empty, clearing it in Navidrome", name)
+            if apply:
+                # Только в настоящем проходе: проверка статуса не должна
+                # «отметить» подборку, не поставив очистку.
+                if not navidrome.pending("clear", name):
+                    navidrome.enqueue("clear", name)
+                    logger.info("Playlist %r: file is empty, clearing it in Navidrome", name)
+                _SEEN[name] = str(entry.get("updatedAt"))
         except Exception as exc:  # noqa: BLE001 -- reported, never raised into the loop
             row["error"] = str(exc)[:300]
             logger.warning("Could not pull %r back from Navidrome: %s", name, exc)

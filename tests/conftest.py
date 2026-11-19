@@ -82,6 +82,7 @@ def _outside_stays_offline(monkeypatch, tmp_path, request):
     monkeypatch.setattr(repair, "BACKUP_DIR", tmp_path / "repair-backup")
     monkeypatch.setattr(repair, "_downloads", collections.deque())
     monkeypatch.setattr(repair, "_last_download", 0.0)
+    monkeypatch.setattr(repair, "_banned_until", 0.0)
     monkeypatch.setattr(ingest, "LAST_DOWNLOAD", 0.0)
     monkeypatch.setattr(studio, "_KINDS", {})
     # И обход текстов в фоне — тоже сеть.

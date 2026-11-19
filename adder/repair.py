@@ -65,6 +65,9 @@ _LOCK = threading.RLock()
 _downloads: deque[float] = deque()
 _last_download = 0.0
 _thread: threading.Thread | None = None
+# После «YouTube ограничил» фон молчит час целиком, а не до следующего трека
+# (общая пауза службы — минута: человеку ждать час незачем).
+_banned_until = 0.0
 _wake = threading.Event()
 
 
@@ -110,7 +113,8 @@ def _drop_files(path: str) -> None:
 
 def _stamp(file: Path) -> str:
     st = file.stat()
-    return f"{st.st_mtime_ns:x}-{st.st_size:x}-{st.st_ino:x}"
+    # ctime: правка тегов на месте сохраняет mtime и часто размер.
+    return f"{st.st_mtime_ns:x}-{st.st_size:x}-{st.st_ino:x}-{st.st_ctime_ns:x}"
 
 
 def _library_row(path: str) -> dict | None:
@@ -134,7 +138,9 @@ def _video_id(url: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def playlist_paths() -> list[str]:
+def playlist_paths() -> list[str] | None:
+    """Треки «Клипов»; нет файла — пусто; None — не прочиталась (это не
+    «пусто»: разборы из-за сбоя чтения не стираются)."""
     from . import playlists
 
     try:
@@ -143,7 +149,7 @@ def playlist_paths() -> list[str]:
         return [entry.path for entry in playlists.read(PLAYLIST).entries]
     except Exception as exc:  # noqa: BLE001
         logger.info("Починка: «%s» не прочитана: %s", PLAYLIST, exc)
-        return []
+        return None
 
 
 def _remove_from_playlist(*paths: str) -> None:
@@ -175,6 +181,8 @@ def refresh() -> None:
     руками — забыть, заменённый мимо починки файл — разобрать заново."""
     with _LOCK:
         paths = playlist_paths()
+        if paths is None:
+            return
         present = set(paths)
         rows = {r["path"]: dict(r) for r in db.db_query("SELECT * FROM repairs")}
         for path in dict.fromkeys(paths):
@@ -182,12 +190,7 @@ def refresh() -> None:
             if row is None or row["status"] in ("done", "kept", "probe"):
                 # Положенное заново после «Оставить» — разобрать снова. «probe»
                 # человек опередил: он сам положил трек в «Клипы».
-                _insert(
-                    path,
-                    "queued",
-                    auto=bool(row and row["status"] == "probe" and row["auto"]),
-                    reason=(row or {}).get("reason") or "",
-                )
+                _insert(path, "queued", auto=False, reason=(row or {}).get("reason") or "")
                 _wake.set()
             elif row["status"] == "ready":
                 result = json.loads(row["result"] or "{}")
@@ -214,7 +217,11 @@ def refresh() -> None:
 
 def _users_turn() -> bool:
     """Очередь добавления занята — фоновая починка ждёт."""
-    return bool(runtime.PROCESSING_URLS) or runtime.youtube_pause_left() > 0
+    return (
+        bool(runtime.PROCESSING_URLS)
+        or runtime.youtube_pause_left() > 0
+        or time.monotonic() < _banned_until
+    )
 
 
 def _wait_for_turn() -> None:
@@ -286,14 +293,20 @@ def _clock(seconds: float) -> str:
     return f"{minute}:{second:02d}"
 
 
-def assess(current_seconds: float, compared: list[dict], synced: list[dict]) -> dict:
+def assess(
+    current_seconds: float,
+    compared: list[dict],
+    synced: list[dict],
+    lyrics_seconds: float | None = None,
+) -> dict:
     """Что не так с файлом и какая версия лучше — по сравнениям.
 
     ``compared`` — [{"video_id", "kind", "duration", "compared": censor.compare
     (файл, кандидат)}]. Время мест в сравнении — время файла; время кандидата —
     ``t - lag``. Синхронный текст размечен по студийной: слово на месте файла
     ищется по сдвигу студийной, а без неё — по сдвигу самого кандидата, если он
-    той же длины, что текст (``synced`` взят по его длине).
+    той же длины, что текст (``synced`` взят по длине ``lyrics_seconds``).
+    Без ``lyrics_seconds`` (старые вызовы) — длина первого кандидата.
     """
     from . import censor
     from .censor_words import drug_hits, hits
@@ -306,9 +319,12 @@ def assess(current_seconds: float, compared: list[dict], synced: list[dict]) -> 
         ),
         None,
     )
-    reference = (studio or {}).get("duration") or next(
-        (c["duration"] for c in compared if c.get("duration")), None
+    reference = (
+        (studio or {}).get("duration")
+        or lyrics_seconds
+        or next((c["duration"] for c in compared if c.get("duration")), None)
     )
+    words_checked = False
     problems: list[dict] = []
     seen: set[str] = set()
 
@@ -324,6 +340,10 @@ def assess(current_seconds: float, compared: list[dict], synced: list[dict]) -> 
         lag = c.get("lag", 0.0)
         if studio is not None:
             shift = studio["compared"].get("lag", 0.0)
+        elif lyrics_seconds and abs(current_seconds - lyrics_seconds) <= UPLOAD_SLACK:
+            # Файл сам длиной с текст (студийная из YouTube Music, а её
+            # видео в кандидаты не берётся): его время — время текста.
+            shift = 0.0
         elif (
             same
             and reference
@@ -339,6 +359,7 @@ def assess(current_seconds: float, compared: list[dict], synced: list[dict]) -> 
         muted_there: list[tuple[float, str]] = []
         unsure: list[tuple[float, str]] = []
         if same and shift is not None and synced:
+            words_checked = True
             for start, end, kind in c.get("spots", []):
                 if kind == "file":
                     word = censor.word_in_lines(synced, start - shift, end - shift, hits)
@@ -387,6 +408,9 @@ def assess(current_seconds: float, compared: list[dict], synced: list[dict]) -> 
                 "same": same,
                 "lag": lag,
                 "muted": [{"at": round(t, 1), "word": w} for t, w in muted_there],
+                # Есть ли у версии слово там, где в файле тишина: сверено, а не
+                # «ничего не нашлось» (копия того же подцензурного звука мест не даёт).
+                "covers": bool(muted_here),
                 "unsure": [{"at": round(t, 1), "word": w} for t, w in unsure],
                 "scenes": has_scenes,
             }
@@ -418,7 +442,11 @@ def assess(current_seconds: float, compared: list[dict], synced: list[dict]) -> 
         # сходством 0,06, а клип 0,98 — и есть оригинал). «unsure» — места,
         # где версия отличается от файла на словах про наркотики, — не минус:
         # у подцензурного файла так выглядит именно оригинал.
-        return (bool(r["muted"]), not r["same"], r["scenes"], kind_rank, off)
+        # Заглушены слова — сначала версии, у которых слово на этом месте
+        # слышно (сверено), а не те, где просто нет отличий: перезалив того же
+        # подцензурного клипа отличий не даёт. Вид видео — только при равенстве.
+        lacks = words_wanted and not r["covers"]
+        return (bool(r["muted"]), not r["same"], lacks, r["scenes"], kind_rank, off)
 
     ordered = sorted(rated, key=rank)
     best = ordered[0] if ordered else None
@@ -428,6 +456,7 @@ def assess(current_seconds: float, compared: list[dict], synced: list[dict]) -> 
         and best["same"]
         and not best["muted"]
         and not best["scenes"]
+        and (not words_wanted or best["covers"])
     )
     place = None
     if best is not None:
@@ -451,6 +480,7 @@ def assess(current_seconds: float, compared: list[dict], synced: list[dict]) -> 
                     "muted",
                     "unsure",
                     "scenes",
+                    "same",
                 )
             }
             | {"overall": r["compared"].get("overall")}
@@ -459,6 +489,7 @@ def assess(current_seconds: float, compared: list[dict], synced: list[dict]) -> 
         "best": best["video_id"] if best else None,
         "better": better,
         "place": place,
+        "words_checked": words_checked,
     }
 
 
@@ -516,7 +547,9 @@ def examine(path: str) -> dict:
             from . import ingest
 
             if ingest.classify_error(str(exc)) == "rate_limited":
+                global _banned_until
                 runtime.pause_youtube(config.RATE_LIMIT_BACKOFF)
+                _banned_until = time.monotonic() + RETRY_SECONDS
                 raise Retry("YouTube ограничил скачивания") from exc
             failed.append({**info, "error": str(exc)[-200:]})
             continue
@@ -527,6 +560,9 @@ def examine(path: str) -> dict:
             downloaded.unlink(missing_ok=True)
             continue
         compared.append(info)
+    if chosen and not compared:
+        # Сеть, yt-dlp, возрастной замок: «проблем нет» тут было бы неправдой.
+        raise RuntimeError("ни одну версию не удалось скачать и сравнить: " + failed[0]["error"])
     synced: list[dict] = []
     lyrics_note = ""
     if compared:
@@ -537,7 +573,7 @@ def examine(path: str) -> dict:
             synced = got
             if not got:
                 lyrics_note = "синхронного текста нет — слова не сверены"
-    result = assess(current_seconds, compared, synced)
+    result = assess(current_seconds, compared, synced, reference or current_seconds)
     result.update(
         {
             "stamp": stamp,
@@ -659,7 +695,12 @@ def process_one() -> bool:
         if not current or current["status"] != "working":
             _drop_files(path)  # пока разбирали, трек убрали или оставили
             return True
-        if current["auto"] and result.get("compared") and not result["problems"]:
+        if (
+            current["auto"]
+            and result.get("compared")
+            and result.get("words_checked")
+            and not result["problems"]
+        ):
             _set(path, status="kept", result=json.dumps(result, ensure_ascii=False), error=None)
             _drop_files(path)
             _remove_from_playlist(path)
@@ -693,10 +734,17 @@ def _loop() -> None:
             runtime.shutdown_event.wait(POLL_SECONDS)
 
 
+def _reset_working() -> None:
+    """Перезапуск посреди разбора (поток — daemon) оставил бы «working»
+    навсегда: «Ищу и сравниваю…» без конца и без «Повторить»."""
+    db.db_exec("UPDATE repairs SET status = 'queued' WHERE status = 'working'")
+
+
 def start() -> threading.Thread | None:
     global _thread
     if runtime.under_test():
         return None
+    _reset_working()
     _thread = threading.Thread(target=_loop, name="repair", daemon=True)
     _thread.start()
     return _thread
@@ -715,7 +763,7 @@ def listing() -> dict:
     """Карточки для страницы «Клипов» и счётчик для главной."""
     refresh()
     items = []
-    for path in dict.fromkeys(playlist_paths()):
+    for path in dict.fromkeys(playlist_paths() or []):
         row = _row(path)
         if row is None:
             continue
@@ -739,6 +787,7 @@ def listing() -> dict:
                     "listen": result.get("listen") or {},
                     "failed": result.get("failed", []),
                     "lyrics_note": result.get("lyrics_note", ""),
+                    "compared": result.get("compared", 0),
                 }
             )
         items.append(item)
@@ -752,7 +801,7 @@ def listing() -> dict:
 
 def counts() -> dict:
     """Для главной: сколько в «Клипах» разобрано и сколько ещё разбирается."""
-    present = set(playlist_paths())
+    present = set(playlist_paths() or [])
     ready = working = 0
     for row in db.db_query("SELECT path, status FROM repairs"):
         if row["path"] not in present:
@@ -791,8 +840,11 @@ def _swap_in_place(rel: str, new: Path, url: str, expected_stamp: str) -> None:
     assert fresh.tags is not None
     fresh.tags.clear()
     for key, value in (source.tags or {}).items():
-        if key.lower() == "----:com.apple.itunes:itunsmpb":
+        low = key.lower()
+        if low == "----:com.apple.itunes:itunsmpb":
             continue  # задержка кодера AAC — для Opus неверна
+        if "replaygain" in low or "itunnorm" in low:
+            continue  # громкость старого звука; loudness.apply меряет новый
         fresh.tags[key] = value
     fresh.save()
     ingest.write_source(new, url)
@@ -803,14 +855,20 @@ def _swap_in_place(rel: str, new: Path, url: str, expected_stamp: str) -> None:
         before = target.stat()
         if _stamp(target) != expected_stamp:
             raise Refused("Трек изменился после разбора — разберу заново")
-        if not backup.exists():
-            shutil.copy2(target, backup)
+        if not backup.exists() or backup.stat().st_size == 0:
+            # Через .part: оборванная копия не должна сойти за бэкап.
+            part = backup.with_name(backup.name + ".part")
+            shutil.copy2(target, part)
+            os.replace(part, backup)
         os.chmod(new, before.st_mode & 0o7777)
         staged = target.with_name(f".{target.name}.repairing")
-        shutil.move(str(new), staged)
-        # Дата добавления в фонотеку — mtime: её не трогаем.
-        os.utime(staged, ns=(before.st_atime_ns, before.st_mtime_ns))
-        os.replace(staged, target)
+        try:
+            shutil.move(str(new), staged)
+            # Дата добавления в фонотеку — mtime: её не трогаем.
+            os.utime(staged, ns=(before.st_atime_ns, before.st_mtime_ns))
+            os.replace(staged, target)
+        finally:
+            staged.unlink(missing_ok=True)
     _after_swap(rel)
 
 
@@ -869,7 +927,11 @@ def replace(path: str, video_id: str) -> dict:
         result["outcome"] = note
         _set(path, status="done", result=json.dumps(result, ensure_ascii=False))
         _drop_files(path)
-        _remove_from_playlist(path)
+        try:
+            _remove_from_playlist(path)
+        except Exception as exc:  # noqa: BLE001 — файл уже заменён: это успех
+            logger.warning("Починка: %s заменён, но не убран из «%s»: %s", path, PLAYLIST, exc)
+            note += " (из «Клипов» убери сам)"
     logger.info("Починка: %s — %s", path, note)
     return {"path": path, "replaced": True, "note": note}
 
@@ -883,7 +945,10 @@ def keep(path: str) -> dict:
         else:
             _set(path, status="kept")
         _drop_files(path)
-        _remove_from_playlist(path)
+        try:
+            _remove_from_playlist(path)
+        except Exception as exc:  # noqa: BLE001 — «оставлен» уже записано
+            logger.warning("Починка: %s не убран из «%s»: %s", path, PLAYLIST, exc)
     return {"path": path, "kept": True}
 
 
@@ -902,7 +967,7 @@ def after_replacement(old_path: str, new_path: str) -> None:
     «Клипов» он уходит сам. Ошибка здесь замену не отменяет."""
     try:
         with _LOCK:
-            in_list = set(playlist_paths())
+            in_list = set(playlist_paths() or [])
             if old_path not in in_list and new_path not in in_list:
                 return
             for path in {old_path, new_path}:
@@ -935,7 +1000,10 @@ def probe_later(path: str, reason: str) -> None:
     """Студийная добавлена без сверки с клипом: посмотреть текст позже."""
     try:
         with _LOCK:
-            if _row(path) is not None:
+            row = _row(path)
+            # «done»/«kept» — прошлый разбор другого файла на этом пути: новый
+            # (например, студийная по «Вставить ссылку») проверить заново.
+            if row is not None and row["status"] not in ("done", "kept"):
                 return
             _insert(path, "probe", auto=True, reason=reason)
         _wake.set()

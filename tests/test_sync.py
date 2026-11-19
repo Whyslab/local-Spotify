@@ -540,6 +540,25 @@ def test_an_emptied_file_is_not_refilled_from_navidrome(temp_library, monkeypatc
     assert navidrome.pending("clear", "Клипы")
 
 
+def test_a_status_look_does_not_swallow_the_clearing_of_an_old_empty_file(
+    temp_library, monkeypatch, nd_configured
+):
+    """Опустошена до этой правки (очистка не ставилась): проверка статуса
+    после перезапуска не должна «отметить» подборку без очистки."""
+    monkeypatch.setattr(library, "library_index", lambda: _index("a.m4a", "b.m4a"))
+    playlists.create("Клипы", ["a.m4a", "b.m4a"])
+    playlists.playlist_path("Клипы").write_text("#EXTM3U\n", encoding="utf-8")
+    monkeypatch.setattr(navidrome, "remote_tracks", lambda _id, _n: ["a.m4a", "b.m4a"])
+    entry = _entry("Клипы", playlists.playlist_path("Клипы"), 2)
+    monkeypatch.setattr(navidrome, "playlists", lambda: [entry])
+    assert not navidrome.pending("clear", "Клипы")
+
+    sync.check(apply=False)
+    sync.check(apply=True)
+
+    assert navidrome.pending("clear", "Клипы")
+
+
 def test_emptying_a_playlist_queues_clearing_it_in_navidrome(
     temp_library, monkeypatch, nd_configured
 ):
