@@ -3591,6 +3591,20 @@ def test_plain_shuffle_puts_the_whole_playlist_in_and_a_new_round_differs(page, 
             " return got; })()"
         )
         assert called == {"pl": ""}
+
+        # И список фонотеки, который не отвечает, этого не задерживает: сначала
+        # — отвечает ли сервер (раньше висело «Перемешиваю…» минутами).
+        called = page.evaluate(
+            "(async () => { const was = [offline.supported, offline.paths, serverReachable, shuffleDownloads];"
+            " let got = null; offline.supported = true; offline.paths = new Set(['Deck/Singles/001.opus']);"
+            " serverReachable = async () => false;"
+            " shuffleDownloads = async (pl) => { got = {pl}; };"
+            " try { await Promise.race([shuffleWhole(() => new Promise(() => {}), 'Колода', null),"
+            "   new Promise(ok => setTimeout(ok, 3000))]); } finally {"
+            "  [offline.supported, offline.paths, serverReachable, shuffleDownloads] = was; }"
+            " return got; })()"
+        )
+        assert called == {"pl": "Колода"}
     finally:
         page.evaluate(
             "playAt = window.__realPlayAt; player.repeat = 'off'; setShuffle(false); true"
@@ -3621,6 +3635,7 @@ def test_an_outside_track_has_labelled_keep_and_do_not_offer(page):
         ban.click()
         page.wait_for_function("player.index === 1")
         assert page.evaluate("player.order") == [0, 1]  # копия дальше в очереди — прочь
+        assert page.evaluate("[...player.dropped]") == [2]  # и новый круг её не вернёт
         page.wait_for_function(
             "fetch('/api/plays/stats', {headers: headers()}).then(r => r.json())"
             ".then(d => d.outside.banned === 1)"

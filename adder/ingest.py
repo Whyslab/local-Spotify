@@ -1683,7 +1683,9 @@ def _chapter_names(
         row = next((r for r in library.library_index() if r.get("path") == old), None) or {}
         if len(old_path.parts) >= 2:
             fs_artist = old_path.parts[0]
-        full_artist = row.get("artist") or full_artist
+        # В списке фонотеки соавторы склеены « • », а split_artists делит по
+        # запятой: иначе в тег лёг бы один исполнитель «A • B».
+        full_artist = (row.get("artist") or "").replace(" • ", ", ") or full_artist
         if enrich.normalize(row.get("title") or "") == enrich.normalize(title):
             title, fs_title = row.get("title") or title, old_path.stem
     return fs_artist, fs_title, full_artist, title

@@ -382,3 +382,20 @@ def test_a_failure_without_a_title_names_the_link_without_the_choice(app, monkey
     assert said == [
         f"https://www.youtube.com/watch?v={ALBUM_ID}&t=95"
     ]  # с отметкой — понятно, какая глава
+
+
+def test_a_chapter_for_a_track_with_two_artists_keeps_both(app, monkeypatch):
+    """Список фонотеки склеивает соавторов « • »: для поиска и тегов это два
+    исполнителя через запятую, а не один «A • B»."""
+    tid = db.db_exec(
+        "INSERT INTO tasks (url, status, replace_of) VALUES ('x', 'queued', ?)",
+        ("A/Singles/Song.m4a",),
+    ).lastrowid
+    monkeypatch.setattr(
+        library,
+        "library_index",
+        lambda: [{"path": "A/Singles/Song.m4a", "artist": "A • B", "title": "Song"}],
+    )
+    names = ingest._chapter_names(tid, {"title": "02. Song"}, "Chan", "Chan - Topic", "Video")
+    assert names == ("A", "Song", "A, B", "Song")
+    assert enrich.split_artists(names[2]) == ["A", "B"]

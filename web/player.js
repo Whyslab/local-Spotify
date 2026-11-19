@@ -562,8 +562,12 @@ async function banCurrent() {
     }
     /* Копии того же трека дальше в очереди — тоже прочь. */
     const key = outsideKey(track);
-    player.order = player.order.filter(i => i === player.index || !(isOutside(player.queue[i]) && outsideKey(player.queue[i]) === key));
+    const copy = (i) => i !== player.index && isOutside(player.queue[i]) && outsideKey(player.queue[i]) === key;
+    /* В dropped — иначе новый круг или «Перемешать заново» вернули бы их. */
+    player.queue.forEach((t, i) => { if (copy(i)) player.dropped.add(i); });
+    player.order = player.order.filter(i => !copy(i));
     player.orderAt = player.order.indexOf(player.index);
+    saveQueueSoon();
     if (player.queue[player.index] === track) nextTrack();
     renderQueuePanel();
     setPlayerNote(`«${trackNames(track).title}» больше не будет предлагаться`);
@@ -992,15 +996,19 @@ async function serverReachable() {
 async function shuffleWhole(getTracks, playlist, say) {
     const ticket = player.smartTicket;
     if (say) say("Перемешиваю…");
-    let tracks = [];
-    try { tracks = (await getTracks()) || []; } catch (e) { tracks = []; }
     const downloads = offline.supported && offline.paths.size > 0;
+    const toDownloads = () => shuffleDownloads(playlist, null, say || (() => {}), ticket);
+    /* Сначала — отвечает ли сервер (4 с): список фонотеки без предела времени
+     * висел бы минутами, пока компьютер спит. */
     const unreachable = !navigator.onLine || (downloads && !(await serverReachable()));
     if (ticket !== player.smartTicket) { if (say) say(""); return; }  // включили другое
-    if ((unreachable || !tracks.length) && downloads) {
-        await shuffleDownloads(playlist, null, say || (() => {}), ticket);
-        return;
-    }
+    if (unreachable && downloads) { await toDownloads(); return; }
+    let tracks = [];
+    try {
+        tracks = (await Promise.race([getTracks(), new Promise(ok => setTimeout(() => ok([]), 20000))])) || [];
+    } catch (e) { tracks = []; }
+    if (ticket !== player.smartTicket) { if (say) say(""); return; }
+    if (!tracks.length && downloads) { await toDownloads(); return; }
     playShuffled(tracks, playlist ? { kind: "playlist", name: playlist } : { kind: "library" }, say);
 }
 
