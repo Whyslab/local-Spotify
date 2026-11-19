@@ -802,3 +802,89 @@ def test_when_the_lyrics_catalogue_is_down_the_studio_is_taken_unchecked(app, mo
     assert task["status"] == "done", task["error"]
     assert downloaded == [watch("PLm8E_wyKZM")]
     assert "не сверена" in task["warning"]
+
+
+# ---------------------------------------------------------------------------
+# Что не сверено — на починку в «Клипы» (ответы владельца 19.11.2026)
+# ---------------------------------------------------------------------------
+
+
+def _repair_rows():
+    return {r["path"]: dict(r) for r in db.db_query("SELECT * FROM repairs")}
+
+
+def _klipy():
+    from adder import playlists, repair
+
+    if not playlists.playlist_path(repair.PLAYLIST).exists():
+        return []
+    return [e.path for e in playlists.read(repair.PLAYLIST).entries]
+
+
+def test_a_studio_muted_on_a_drug_line_keeps_the_clip_and_needs_no_repair(app, monkeypatch):
+    lines = [{"at": 29.5, "line": "Курим дурь до утра"}, {"at": 33.0, "line": "Конец"}]
+    _tokyo(monkeypatch, lines, {"overall": 0.95, "lag": 0.0, "spots": [[30.0, 30.5, "studio"]]})
+
+    task = run(watch("j1O0qKwqQEo"))
+
+    assert task["status"] == "done", task["error"]
+    assert _repair_rows() == {} and _klipy() == []
+
+
+def test_a_clip_that_cannot_be_checked_against_the_studio_goes_to_repair(app, monkeypatch):
+    """Ни клипу, ни студийной верить нельзя — искать другие источники."""
+    lines = [{"at": 29.5, "line": "Курим дурь до утра"}]
+    _tokyo(monkeypatch, lines, {"overall": 0.4, "lag": 0.0, "spots": [],
+                                "file_seconds": 170, "studio_seconds": 161})  # fmt: skip
+
+    task = run(watch("j1O0qKwqQEo"))
+
+    assert task["status"] == "done", task["error"]
+    row = _repair_rows()[task["result_path"]]
+    assert row["status"] == "queued" and row["auto"] == 1
+    assert "проверь" in row["reason"]
+    assert _klipy() == [task["result_path"]]
+
+
+def test_a_much_longer_clip_leaves_an_unchecked_studio_for_repair(app, monkeypatch):
+    lines = [{"at": 29.5, "line": "Курим дурь до утра"}]
+    _tokyo(monkeypatch, lines, {"overall": 0.3, "lag": 0.0, "spots": [],
+                                "file_seconds": 465, "studio_seconds": 161})  # fmt: skip
+
+    task = run(watch("j1O0qKwqQEo"))
+
+    assert task["status"] == "done", task["error"]
+    assert "не сверена" in task["warning"]
+    assert _repair_rows()[task["result_path"]]["status"] == "queued"
+    assert _klipy() == [task["result_path"]]
+
+
+def test_an_unchecked_studio_for_want_of_lyrics_is_looked_at_later(app, monkeypatch):
+    _tokyo(monkeypatch, None)
+
+    task = run(watch("j1O0qKwqQEo"))
+
+    row = _repair_rows()[task["result_path"]]
+    assert row["status"] == "probe" and row["auto"] == 1
+    assert _klipy() == []  # в «Клипы» — только если в тексте найдутся такие слова
+
+
+def test_a_studio_link_added_directly_is_looked_at_later(app, monkeypatch):
+    """Поиск, «по артисту», «♥ В фонотеку»: клипа под рукой нет."""
+    music(monkeypatch, [], {"PLm8E_wyKZM": studio.STUDIO})
+    youtube(monkeypatch, TOKYO)
+
+    task = run(watch("PLm8E_wyKZM"))
+
+    assert task["status"] == "done", task["error"]
+    assert _repair_rows()[task["result_path"]]["status"] == "probe"
+
+
+def test_an_upload_added_directly_is_left_alone(app, monkeypatch):
+    music(monkeypatch, [], {"PLm8E_wyKZM": studio.UPLOAD})
+    youtube(monkeypatch, TOKYO)
+
+    task = run(watch("PLm8E_wyKZM"))
+
+    assert task["status"] == "done", task["error"]
+    assert _repair_rows() == {}

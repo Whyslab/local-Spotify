@@ -64,6 +64,21 @@ def _task_names(tid: int) -> tuple[str, str]:
     return row.get("artist") or "", row.get("title") or ""
 
 
+def _hand_to_repair(tid: int, hint: tuple[str, str]) -> None:
+    """Трек лёг в фонотеку, но звуку нельзя верить (adder.repair)."""
+    from . import repair
+
+    rows = db.db_query("SELECT result_path FROM tasks WHERE id = ?", (tid,))
+    path = rows[0]["result_path"] if rows else None
+    if not path:
+        return
+    how, why = hint
+    if how == "queue":
+        repair.queue_auto(path, why)
+    else:
+        repair.probe_later(path, why)
+
+
 def _notify_added(tid: int) -> None:
     with suppress(Exception):
         artist, title = _task_names(tid)
@@ -130,6 +145,11 @@ def process(tid: int, url: str):
             logger.info("Task finished: %s", outcome, extra={"task_id": tid})
             if outcome == "stored":
                 _notify_added(tid)
+                if downloaded.repair:
+                    try:
+                        _hand_to_repair(tid, downloaded.repair)
+                    except Exception as exc:  # noqa: BLE001 — трек уже в фонотеке
+                        logger.warning("Починка не получила трек: %s", exc, extra={"task_id": tid})
             if url.startswith("file:"):
                 ingest.forget_upload(url)
             # Released here too, not only after a failure: /api/add skips any

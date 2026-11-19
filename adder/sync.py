@@ -92,6 +92,8 @@ class EmptiedHere(RuntimeError):
 
     def __init__(self, remote: int):
         super().__init__(f"the file is empty, Navidrome still lists {remote} track(s)")
+
+
 _LOCK = threading.Lock()
 _stop = threading.Event()
 

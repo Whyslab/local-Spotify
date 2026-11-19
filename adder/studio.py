@@ -215,10 +215,26 @@ def describe(video_id: str) -> dict | None:
     }
 
 
+_KINDS: dict[str, tuple[float, str]] = {}
+KIND_TTL = 600.0
+
+
 def kind(video_id: str) -> str | None:
-    """Тип ролика по YouTube Music, None — не узнали."""
+    """Тип ролика по YouTube Music, None — не узнали.
+
+    Узнанное помнится десять минут: при добавлении тип спрашивают дважды —
+    подменять ли студийной (for_link) и проверять ли текст (repair).
+    """
+    known = _KINDS.get(video_id)
+    if known and time.monotonic() - known[0] < KIND_TTL:
+        return known[1]
     described = describe(video_id)
-    return described["type"] if described else None
+    found = described["type"] if described else None
+    if found:
+        if len(_KINDS) > 256:
+            _KINDS.clear()
+        _KINDS[video_id] = (time.monotonic(), found)
+    return found
 
 
 # ---------------------------------------------------------------------------
@@ -431,3 +447,96 @@ def for_link(
     if song is None:
         return Choice(None, "Студийной версии не нашлось — взят звук клипа")
     return Choice(song, "Взята студийная версия вместо клипа")
+
+
+# ---------------------------------------------------------------------------
+# Кандидаты для починки («Клипы», этап 3 плана 19.11.2026)
+# ---------------------------------------------------------------------------
+
+KINDS = {STUDIO: "studio", OFFICIAL_VIDEO: "clip", UPLOAD: "upload"}
+
+# Чужие ролики с тем же названием, но не та песня: «… (PARODY)», «Пародия»
+# (выдача на «Champagne Squirt», 19.11.2026), реакции, разборы.
+_NOT_THE_SONG = re.compile(
+    r"\b(parody|пароди\w*|reaction|реакци\w*|разбор\w*|обзор\w*|type\s+beat|tutorial"
+    r"|как\s+сделать|piano|пианино|guitar|гитар\w*)\b",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True)
+class Found:
+    """Ролик-кандидат: студийная запись, официальный клип или чужая загрузка."""
+
+    video_id: str
+    title: str
+    artists: tuple[str, ...]
+    duration: float | None
+    kind: str  # "studio" | "clip" | "upload"
+    explicit: bool = False
+
+    @property
+    def url(self) -> str:
+        return f"https://www.youtube.com/watch?v={self.video_id}"
+
+
+def _found_video(item: dict) -> Found | None:
+    video_id = item.get("videoId")
+    if not video_id or not isinstance(video_id, str) or item.get("isAvailable") is False:
+        return None
+    kind = KINDS.get(item.get("videoType") or "")
+    if kind not in ("clip", "upload"):
+        return None
+    title = str(item.get("title") or "")
+    # Клип на канале артиста YouTube Music часто числит обычным роликом.
+    if kind == "upload" and looks_like_clip(title):
+        kind = "clip"
+    duration = item.get("duration_seconds")
+    return Found(
+        video_id=video_id,
+        title=title,
+        artists=tuple(
+            str(a.get("name") or "") for a in item.get("artists") or [] if isinstance(a, dict)
+        ),
+        duration=float(duration) if isinstance(duration, int | float) else None,
+        kind=kind,
+    )
+
+
+def same_video_song(found: Found, artist: str, title: str) -> bool:
+    """Ролик — та же песня. У роликов в названии обычно «Артист - Песня
+    (Official Video)», а в «артистах» — канал загрузившего: артист ищется и
+    там, и в начале названия."""
+    if _NOT_THE_SONG.search(found.title) and not _NOT_THE_SONG.search(title):
+        return False
+    left, sep, right = found.title.partition(" - ")
+    song_title = right if sep else found.title
+    wanted = _title_key(title)
+    if not wanted or _title_key(song_title) != wanted or not same_version(song_title, title):
+        return False
+    names = (*found.artists, left) if sep else found.artists
+    return same_artist(Song(found.video_id, song_title, names, found.duration, False), artist)
+
+
+def candidates(artist: str, title: str, limit: int = SEARCH_LIMIT) -> list[Found] | None:
+    """Все версии песни на YouTube Music: студийные, клипы, чужие загрузки — в
+    порядке выдачи. None — YouTube Music не ответил ни на один из поисков."""
+    query = f"{similar.primary(artist)} {title}".strip()
+    songs = _search(query, limit)
+    try:
+        videos = _paced(lambda yt: yt.search(query, filter="videos", limit=limit))
+    except Exception as exc:  # noqa: BLE001 — сбой = «не знаю»
+        logger.info("YouTube Music: поиск роликов %r не удался: %s", query, exc)
+        videos = None
+    if songs is None and videos is None:
+        return None
+    found = [
+        Found(s.video_id, s.title, s.artists, s.duration, "studio", s.explicit)
+        for s in songs or []
+        if same_song(s, artist, title)
+    ]
+    for item in videos or []:
+        video = _found_video(item) if isinstance(item, dict) else None
+        if video is not None and same_video_song(video, artist, title):
+            found.append(video)
+    return found

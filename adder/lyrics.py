@@ -423,6 +423,21 @@ def carry_over(old: str, new: str) -> None:
         _mark_search_dirty(old, new)  # после переноса, как в _write
 
 
+def forget(rel_path: str) -> None:
+    """Звук трека заменён другой записью: найденный по старой длине текст
+    (и его разметка по времени) может не подойти — спросить заново. Выбранное
+    руками остаётся."""
+    path = _key(rel_path)
+    try:
+        cached = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        cached = {}
+    if cached.get("chosen"):
+        return
+    path.unlink(missing_ok=True)
+    _mark_search_dirty(rel_path)
+
+
 def _write(rel_path: str, result: dict) -> dict:
     try:
         CACHE_DIR.mkdir(parents=True, exist_ok=True)

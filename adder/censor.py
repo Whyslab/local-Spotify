@@ -234,20 +234,10 @@ def judge(compared: dict, synced: list[dict]) -> Verdict:
             False, "Оставлен звук клипа: другое сведение, сверить со студийной нельзя — проверь"
         )
     lag = compared.get("lag", 0.0)
-    # Конец последней строки — не «до конца песни»: иначе любое тихое место в
-    # концовке легло бы на её слово.
-    following = synced[1:] + [{"at": synced[-1]["at"] + LAST_LINE_SECONDS}] if synced else []
-    ends = [(line["at"], nxt["at"]) for line, nxt in zip(synced, following, strict=True)]
-
     studio_len = compared.get("studio_seconds") or 0.0
 
     def word_at(start: float, end: float, find) -> str | None:
-        a, b = start - lag - LINE_SLACK, end - lag + LINE_SLACK
-        for line, (at, until) in zip(synced, ends, strict=True):
-            words = find(line.get("line") or "")
-            if words and at < b and until > a:
-                return words[0]
-        return None
+        return word_in_lines(synced, start - lag, end - lag, find)
 
     for start, end, kind in compared.get("spots", []):
         if kind == "studio":
@@ -270,6 +260,20 @@ def judge(compared: dict, synced: list[dict]) -> Verdict:
     return Verdict(
         True, "Взята студийная версия вместо клипа — сверена: тихих мест на строках со словами нет"
     )
+
+
+def word_in_lines(synced: list[dict], start: float, end: float, find) -> str | None:
+    """Первое слово, которое ``find`` находит в строке текста на отрезке
+    [start, end] (время текста, с запасом LINE_SLACK); None — нет такой."""
+    # Конец последней строки — не «до конца песни»: иначе любое тихое место в
+    # концовке легло бы на её слово.
+    following = synced[1:] + [{"at": synced[-1]["at"] + LAST_LINE_SECONDS}] if synced else []
+    a, b = start - LINE_SLACK, end + LINE_SLACK
+    for line, nxt in zip(synced, following, strict=True):
+        words = find(line.get("line") or "")
+        if words and line["at"] < b and nxt["at"] > a:
+            return words[0]
+    return None
 
 
 def synced_lyrics(artist: str, title: str, duration: float | None) -> list[dict] | None:

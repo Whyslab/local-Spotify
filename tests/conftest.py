@@ -73,6 +73,17 @@ def _outside_stays_offline(monkeypatch, tmp_path, request):
     monkeypatch.setattr(studio, "_search", lambda query, limit: None)
     monkeypatch.setattr(studio, "kind", lambda video_id: None)
     monkeypatch.setattr(studio, "describe", lambda video_id: None)
+    # «Починка» («Клипы»): скачанные версии и бэкапы — в папку теста, а
+    # счётчики скачиваний — свои у каждого теста. Поток в тестах не стартует
+    # (repair.start смотрит runtime.under_test), шаг зовут напрямую.
+    from adder import repair
+
+    monkeypatch.setattr(repair, "DIR", tmp_path / "repair")
+    monkeypatch.setattr(repair, "BACKUP_DIR", tmp_path / "repair-backup")
+    monkeypatch.setattr(repair, "_downloads", collections.deque())
+    monkeypatch.setattr(repair, "_last_download", 0.0)
+    monkeypatch.setattr(ingest, "LAST_DOWNLOAD", 0.0)
+    monkeypatch.setattr(studio, "_KINDS", {})
     # И обход текстов в фоне — тоже сеть.
     from adder import lyrics
 

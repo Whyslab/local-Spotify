@@ -789,7 +789,21 @@ def ensure_m4a(path: Path) -> Path:
 YTDLP_LEFTOVERS = {".part", ".ytdl", ".temp", ".tmp"}
 
 
+# Когда служба в последний раз качала с YouTube (monotonic): фоновая починка
+# (adder/repair.py) держит паузу и после чужих скачиваний.
+LAST_DOWNLOAD = 0.0
+
+
 def yt_download(url: str, vid: str) -> Path:
+    global LAST_DOWNLOAD
+    LAST_DOWNLOAD = time.monotonic()
+    try:
+        return _yt_download(url, vid)
+    finally:
+        LAST_DOWNLOAD = time.monotonic()
+
+
+def _yt_download(url: str, vid: str) -> Path:
     command = [
         *ytdlp_base(),
         "-f",
@@ -1522,6 +1536,9 @@ class Downloaded:
     # Откуда звук на самом деле, если не из ссылки задачи: ссылку на клип
     # меняют на студийную запись (studio.for_link). В тег SOURCE_URL идёт она.
     source_url: str | None = None
+    # Для adder.repair: ("queue", почему) — сразу в «Клипы» на починку;
+    # ("probe", почему) — посмотреть текст и при словах про наркотики туда же.
+    repair: tuple[str, str] | None = None
 
 
 class AlreadyInLibrary(Exception):
@@ -1574,10 +1591,11 @@ def _keep_clip_if_censored(
     studio_file: Path,
     artist: str,
     title: str,
-) -> Path | None:
+) -> tuple[Path | None, tuple[str, str] | None]:
     """Сверка студийной с клипом (решение владельца 19.11.2026: «студийная,
     но только после сверки»). Путь к звуку клипа — если брать его; None —
-    студийная остаётся.
+    студийная остаётся. Второе — что сказать починке (``Downloaded.repair``):
+    не годятся ни клип, ни студийная или сверить не вышло.
 
     Сначала текст: если в нём нет слов про наркотики, сверять нечего — глушат
     именно их, а одно «тише» без слова ничего не доказывает. Так второй ролик
@@ -1587,7 +1605,8 @@ def _keep_clip_if_censored(
     from . import censor
 
     if sent != "клип":
-        return None  # чистая → 18+ той же записи: сверять не с чем
+        # Чистая → 18+ той же записи: сверять не с чем, но «18+» тоже глушат.
+        return None, ("probe", "студийная «18+» без сверки с клипом")
     unchecked = "Взята студийная версия вместо клипа (не сверена: {})"
     try:
         synced = censor.synced_lyrics(artist, title, studio_meta.get("duration"))
@@ -1596,17 +1615,17 @@ def _keep_clip_if_censored(
         synced = None
     if synced is None:
         db.task_update(tid, warning=unchecked.format("каталог текстов не ответил"))
-        return None
+        return None, ("probe", "студийная не сверена: каталог текстов не ответил")
     if not censor.drug_lines(synced):
         db.task_update(
             tid,
             warning="Взята студийная версия вместо клипа"
             + ("" if synced else " (синхронного текста нет — не сверена)"),
         )
-        return None
+        return None, None
     if not censor.available():
         db.task_update(tid, warning=unchecked.format("нет numpy/scipy"))
-        return None
+        return None, None
     clip = None
     try:
         check_downloadable(sent_meta)
@@ -1625,18 +1644,23 @@ def _keep_clip_if_censored(
             studio_file.unlink(missing_ok=True)
             raise
         logger.warning("Сверка со студийной не удалась: %s", exc, extra={"task_id": tid})
-        db.task_update(
-            tid,
-            warning=unchecked.format("клип не скачался" if clip is None else "сверка не удалась"),
-        )
-        return None
+        why = "клип не скачался" if clip is None else "сверка не удалась"
+        db.task_update(tid, warning=unchecked.format(why))
+        return None, ("queue", f"студийная не сверена ({why}), а в тексте слова про наркотики")
     db.task_update(tid, warning=verdict.why)
     logger.info("Сверка: %s", verdict.why, extra={"task_id": tid})
+    # Не сверено или «проверь» — ни клипу, ни студийной верить нельзя: искать
+    # другие источники (ответ владельца 19.11.2026).
+    doubt = (
+        ("queue", verdict.why)
+        if ("не сверена" in verdict.why or "проверь" in verdict.why)
+        else None
+    )
     if verdict.take_studio:
         clip.unlink(missing_ok=True)
-        return None
+        return None, doubt
     studio_file.unlink(missing_ok=True)
-    return clip
+    return clip, doubt
 
 
 def stage_into_temp(source: Path, key: str) -> Path:
@@ -1689,6 +1713,7 @@ def download_to_temp(tid: int, url: str) -> Downloaded:
     source_url, sent = instead if instead else (None, "")
     sent_meta = meta
     downloaded = None
+    repair_hint: tuple[str, str] | None = None
     if source_url:
         existing = library.find_by_source(source_url)
         if existing:
@@ -1716,7 +1741,7 @@ def download_to_temp(tid: int, url: str) -> Downloaded:
         else:
             # Текст ищется по именам студийной: у клипа в названии «(Премьера клипа)».
             studio_names = split_artist_title(meta)
-            clip = _keep_clip_if_censored(
+            clip, repair_hint = _keep_clip_if_censored(
                 tid, url, sent, sent_meta, meta, downloaded, studio_names[2], studio_names[3]
             )
             if clip is not None:
@@ -1724,6 +1749,11 @@ def download_to_temp(tid: int, url: str) -> Downloaded:
             else:
                 fs_artist, fs_title, full_artist, meta_title = studio_names
                 db.task_update(tid, artist=full_artist, title=meta_title)
+    if not source_url and repair_hint is None and _is_studio(sent_meta.get("id") or ""):
+        # Студийная по ссылке — из поиска, «по артисту», «♥ В фонотеку», «моя
+        # ссылка» при замене: клипа под рукой нет, сверять не с чем. Проверка
+        # текста — потом, в фоне (ответ владельца 19.11.2026).
+        repair_hint = ("probe", "студийная без сверки с клипом")
     # Задача со своим выбором («моя ссылка») может идти одновременно с обычной
     # задачей той же ссылки — у неё свои временные файлы.
     own = f"{meta['id']}_t{tid}" if opts else meta["id"]
@@ -1745,7 +1775,17 @@ def download_to_temp(tid: int, url: str) -> Downloaded:
         names=TrackNames(fs_artist, fs_title, full_artist, meta_title, names_doubt(meta)),
         thumbnail=meta.get("thumbnail"),
         source_url=source_url,
+        repair=repair_hint,
     )
+
+
+def _is_studio(video_id: str) -> bool:
+    from . import studio
+
+    try:
+        return bool(video_id) and studio.kind(video_id) == studio.STUDIO
+    except Exception:  # noqa: BLE001 — не узнали: не проверяем
+        return False
 
 
 _CHAPTER_NUMBER = re.compile(r"^\s*\d{1,2}[.)\s-]+")
@@ -2109,6 +2149,10 @@ def replace_with_existing(tid: int, existing: str) -> None:
                 warning="Трек уже был в фонотеке, но старый не заменён: см. журнал",
             )
         return
+    if replaced:
+        from . import repair
+
+        repair.after_replacement(old_path, existing)
     with suppress(Exception):
         if replaced:
             db.task_update(
@@ -2324,6 +2368,19 @@ def ingest_temp_file(
             "the replacement outcome",
             lambda: db.task_update(tid, replace_outcome=int(outcome["replaced"])),
         )
+        if outcome["replaced"]:
+            from . import repair
+
+            if relative == replace_of:
+                # Тот же путь — телефон перекачает его без общего предела.
+                best_effort(
+                    "the in-place mark",
+                    lambda: db.db_exec(
+                        "INSERT OR REPLACE INTO replaced_in_place(path, at) VALUES (?, ?)",
+                        (relative, time.time()),
+                    ),
+                )
+            repair.after_replacement(replace_of, relative)
 
     # Текст — сразу, чтобы он был уже при первом включении. В своём потоке:
     # на промахе это несколько запросов к чужому каталогу, и ждать их незачем

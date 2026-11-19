@@ -203,6 +203,25 @@ def db_init():
         choice TEXT,
         decided_at TEXT)""")
 
+    # «Клипы» — очередь на починку (adder/repair.py). status: probe (служба
+    # смотрит текст, класть ли в «Клипы»), queued, working, ready, failed,
+    # done (заменён), kept (оставлен как есть). result — JSON разбора.
+    db_exec("""CREATE TABLE IF NOT EXISTS repairs(
+        path TEXT PRIMARY KEY,
+        status TEXT NOT NULL,
+        auto INTEGER DEFAULT 0,
+        reason TEXT,
+        result TEXT,
+        error TEXT,
+        attempts INTEGER DEFAULT 0,
+        next_at REAL DEFAULT 0,
+        updated_at REAL)""")
+    # Файлы, заменённые на том же пути: телефон перекачивает их без общего
+    # предела (offline.js MAX_REFRESHES), остальное — как раньше.
+    db_exec("""CREATE TABLE IF NOT EXISTS replaced_in_place(
+        path TEXT PRIMARY KEY,
+        at REAL NOT NULL)""")
+
     try:
         db_exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_url ON tasks(url)")
     except sqlite3.Error as e:

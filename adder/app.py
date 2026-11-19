@@ -51,6 +51,7 @@ from . import (
     playlists,
     radio,
     releases,
+    repair,
     runtime,
     shelves,
     shuffle,
@@ -140,6 +141,9 @@ async def lifespan(app: FastAPI):
 
     # «Артист целиком»: то, что ждало поиска на YouTube до перезапуска.
     discography.start(_queue_artist_track)
+
+    # «Клипы» — очередь на починку: версии ищутся и сравниваются в фоне.
+    repair.start()
 
     # Задачи, упавшие из-за ограничения YouTube, через час пробуют снова сами.
     threading.Thread(target=_auto_requeue_loop, name="auto-requeue", daemon=True).start()
@@ -1351,6 +1355,52 @@ def _video_kind(meta: dict, found_chapters: list[dict]) -> str:
     if video_type == studio.OFFICIAL_VIDEO or studio.looks_like_clip(meta.get("title") or ""):
         return "clip"
     return "upload"
+
+
+class RepairRequest(BaseModel):
+    path: str = Field(..., min_length=1, max_length=1024)
+    video_id: str = Field("", max_length=32)
+
+
+def _repair_call(call):
+    try:
+        return call()
+    except repair.Refused as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get("/api/repairs")
+def repairs_listing(authenticated: bool = Depends(verify_token)):
+    """Карточки «Починки» для страницы «Клипов» и счётчик для главной."""
+    return repair.listing()
+
+
+@app.get("/api/repairs/listen")
+def repairs_listen(path: str, which: str, authenticated: bool = Depends(verify_token)):
+    """Кусок «послушать место» — нынешней версии или кандидата."""
+    file = _repair_call(lambda: repair.excerpt(path, which))
+    return FileResponse(file, media_type="audio/mpeg", headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/repairs/replace")
+def repairs_replace(req: RepairRequest, authenticated: bool = Depends(verify_token)):
+    return _repair_call(lambda: repair.replace(req.path, req.video_id))
+
+
+@app.post("/api/repairs/keep")
+def repairs_keep(req: RepairRequest, authenticated: bool = Depends(verify_token)):
+    return _repair_call(lambda: repair.keep(req.path))
+
+
+@app.post("/api/repairs/retry")
+def repairs_retry(req: RepairRequest, authenticated: bool = Depends(verify_token)):
+    return _repair_call(lambda: repair.retry(req.path))
+
+
+@app.get("/api/library/replaced")
+def library_replaced(since: float = 0.0, authenticated: bool = Depends(verify_token)):
+    """Пути, заменённые на месте: телефон перекачивает их без общего предела."""
+    return {"replaced": repair.replaced_since(since), "now": time.time()}
 
 
 @app.get("/api/replace/preview")
