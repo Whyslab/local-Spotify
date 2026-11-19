@@ -808,6 +808,9 @@ button.danger {
     display: flex;
     align-items: center;
     gap: 10px;
+    /* max-content: у left:50% браузер даёт блоку лишь половину ширины, и
+       записка на телефоне сжималась в узкий столбик. */
+    width: max-content;
     max-width: min(560px, calc(100vw - 32px));
     padding: 10px 8px 10px 16px;
     border-radius: 14px;
@@ -1465,6 +1468,11 @@ html.sheet-lock, html.sheet-lock body { overflow: hidden; }
 .app.player-open .player-controls .icon-button:active { background: rgba(255, 255, 255, 0.12); transform: scale(0.92); }
 
 .app.player-open .player-modes { grid-area: modes; justify-content: space-between; margin: 0; padding-top: 6px; }
+/* Трек со стороны: «♥ В фонотеку» и «Не предлагать» — своей строкой над
+   значками, иначе на телефоне значки уезжали за край. */
+.app.player-open .player-modes:has(.outside-action:not([hidden])) { flex-wrap: wrap; row-gap: 10px; }
+.app.player-open .player-modes .outside-action { flex: 1 1 calc(50% - 6px); min-height: 40px; font-size: 14px; }
+.app.player-open .player-modes .outside-action + .icon-button { margin-left: 0; }
 .app.player-open .player-modes .icon-button { color: rgba(255, 255, 255, 0.62); }
 .app.player-open .player-modes .icon-button.is-on { color: #fff; background: rgba(255, 255, 255, 0.16); }
 .app.player-open .player-volume { grid-area: volume; padding-top: 10px; }

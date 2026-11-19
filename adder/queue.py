@@ -73,7 +73,7 @@ def _notify_added(tid: int) -> None:
 def _notify_failed(tid: int, url: str, error_type: str | None) -> None:
     with suppress(Exception):
         artist, title = _task_names(tid)
-        name = f"{artist} — {title}" if title else url
+        name = f"{artist} — {title}" if title else ingest.task_source(url)
         notify.track_failed(name, _FAILURE_WORDS.get(error_type or "", "ошибка, см. панель"))
 
 

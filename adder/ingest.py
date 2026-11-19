@@ -405,7 +405,7 @@ def task_link(
 
     fields: dict[str, str] = {}
     if start is not None and end is not None:
-        fields.update(start=f"{start:g}", end=f"{end:g}", title=title)
+        fields.update(start=f"{start:.3f}", end=f"{end:.3f}", title=title)
     if keep:
         fields["keep"] = "1"
     return f"{link}#{_TASK_MARK}{urlencode(fields)}" if fields else link
@@ -1598,15 +1598,15 @@ def download_to_temp(tid: int, url: str) -> Downloaded:
     meta = yt_meta(url)
     fs_artist, fs_title, full_artist, meta_title = split_artist_title(meta)
     if "start" in opts:
-        # Глава альбомного ролика: название — её, исполнитель — ролика.
-        meta_title = opts.get("title") or meta_title
-        fs_title = sanitize_filename(meta_title)
+        fs_artist, fs_title, full_artist, meta_title = _chapter_names(
+            tid, opts, fs_artist, full_artist, meta_title
+        )
     # Name the task now: «Загрузки» otherwise showed the bare link for the
     # whole download (iPhone test 24.10). Tagging may correct it later.
     db.task_update(tid, artist=full_artist, title=meta_title)
 
     if "start" in opts:
-        return _download_chapter(tid, url, meta, opts, fs_artist, fs_title, full_artist)
+        return _download_chapter(tid, url, meta, opts, fs_artist, fs_title, full_artist, meta_title)
 
     # Клип → студийная запись той же песни (решение пользователя 05.11.2026).
     # До проверки длины: клип на 9 минут даёт трек на 3. Ссылку, которую при
@@ -1640,9 +1640,12 @@ def download_to_temp(tid: int, url: str) -> Downloaded:
         else:
             fs_artist, fs_title, full_artist, meta_title = split_artist_title(meta)
             db.task_update(tid, artist=full_artist, title=meta_title)
+    # Задача со своим выбором («моя ссылка») может идти одновременно с обычной
+    # задачей той же ссылки — у неё свои временные файлы.
+    own = f"{meta['id']}_t{tid}" if opts else meta["id"]
     if not source_url:
         check_downloadable(meta)
-        downloaded = yt_download(url, meta["id"])
+        downloaded = yt_download(url, own)
     if not downloaded.exists():
         raise RuntimeError("Downloaded file not found")
 
@@ -1654,23 +1657,60 @@ def download_to_temp(tid: int, url: str) -> Downloaded:
         raise RuntimeError(error_msg)
 
     return Downloaded(
-        temp_path=stage_into_temp(downloaded, meta["id"]),
+        temp_path=stage_into_temp(downloaded, own),
         names=TrackNames(fs_artist, fs_title, full_artist, meta_title, names_doubt(meta)),
         thumbnail=meta.get("thumbnail"),
         source_url=source_url,
     )
 
 
+_CHAPTER_NUMBER = re.compile(r"^\s*\d{1,2}[.)\s-]+")
+
+
+def _chapter_names(
+    tid: int, opts: dict, fs_artist: str, full_artist: str, meta_title: str
+) -> tuple[str, str, str, str]:
+    """Имена трека-главы. Название — главы, без номера («03. …»). Если это
+    замена, исполнитель и папка — заменяемого трека (канал ролика бывает
+    «… - Topic»), а совпало название — и имя файла его: замена ложится на тот
+    же путь (звёзды Navidrome и скачанное на айфоне остаются)."""
+    title = _CHAPTER_NUMBER.sub("", opts.get("title") or "").strip() or meta_title
+    fs_title = sanitize_filename(title)
+    rows = db.db_query("SELECT replace_of FROM tasks WHERE id = ?", (tid,))
+    old = (rows[0]["replace_of"] if rows else None) or ""
+    if old:
+        old_path = Path(old)
+        row = next((r for r in library.library_index() if r.get("path") == old), None) or {}
+        if len(old_path.parts) >= 2:
+            fs_artist = old_path.parts[0]
+        full_artist = row.get("artist") or full_artist
+        if enrich.normalize(row.get("title") or "") == enrich.normalize(title):
+            title, fs_title = row.get("title") or title, old_path.stem
+    return fs_artist, fs_title, full_artist, title
+
+
 def _download_chapter(
-    tid: int, url: str, meta: dict, opts: dict, fs_artist: str, fs_title: str, full_artist: str
+    tid: int,
+    url: str,
+    meta: dict,
+    opts: dict,
+    fs_artist: str,
+    fs_title: str,
+    full_artist: str,
+    title: str,
 ) -> Downloaded:
-    """Скачать альбомный ролик и оставить одну главу ([start, end) из ``opts``)."""
+    """Скачать альбомный ролик и оставить одну главу ([start, end) из ``opts``).
+
+    Временные файлы — свои у задачи: две замены из одного альбомного ролика
+    (две главы) иначе писали бы в один и тот же <id>.m4a.
+    """
     start, end = opts["start"], opts["end"]
     existing = library.find_by_source(f"{url}&t={int(start)}")
     if existing:
         raise AlreadyInLibrary(existing)
     check_downloadable({**meta, "duration": end - start})
-    downloaded = yt_download(url, meta["id"])
+    own = f"{meta['id']}_t{tid}"
+    downloaded = yt_download(url, own)
     if not downloaded.exists():
         raise RuntimeError("Downloaded file not found")
     try:
@@ -1682,9 +1722,8 @@ def _download_chapter(
     if not is_valid:
         cut.unlink(missing_ok=True)
         raise RuntimeError(error_msg)
-    title = opts.get("title") or fs_title
     return Downloaded(
-        temp_path=stage_into_temp(cut, meta["id"]),
+        temp_path=stage_into_temp(cut, own),
         names=TrackNames(fs_artist, fs_title, full_artist, title, names_doubt(meta)),
         thumbnail=meta.get("thumbnail"),
         # Ссылка с отметкой времени: по ней видно, какая глава, и она же

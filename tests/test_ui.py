@@ -3053,7 +3053,9 @@ def test_replace_by_link_shows_what_comes_and_then_the_new_length(page):
         " const b = document.createElement('button'); b.id = 'replaceAnchor'; document.body.append(b);"
         " player.playlist = {name: 'x', revision: 'r',"
         f"  entries: [{{path: '{loud}', title: 'Loud', duration: 1888}}]}};"
-        " askForReplacement(b, 0)"
+        " askForReplacement(b, 0);"
+        " window.__from = []; const realReload = reloadCurrentSource;"
+        " reloadCurrentSource = (from) => { window.__from.push(from); return realReload(from); }"
     )
     form = page.locator(".row-menu-form")
     form.locator("input[type=url]").fill("https://www.youtube.com/watch?v=XWDNhc0lAj0&t=100")
@@ -3073,10 +3075,18 @@ def test_replace_by_link_shows_what_comes_and_then_the_new_length(page):
     notice = page.locator("#replaceNotice").inner_text()
     assert "было 31:28 → стало 0:12" in notice
     assert page.evaluate("player.queue[0].duration") == 12
+    # Играл 31-минутный файл, стала версия на 0:12 — с начала, а не с прежней
+    # минуты за концом новой (она бы сразу «доиграла»).
+    assert page.evaluate("window.__from.at(-1)") == 0  # раньше — защита от зависаний
     page.wait_for_timeout(500)
     assert page.locator("#replaceNotice").is_visible()  # само не исчезает
     page.locator("#replaceNotice .replace-notice-close").click()
     assert page.locator("#replaceNotice").count() == 0
+    # В панели задач сбой без названия — голой ссылкой, без служебного «#replace:…».
+    assert (
+        page.evaluate("taskTitle({status: 'error', url: 'https://youtu.be/x#replace:keep=1'})")
+        == "https://youtu.be/x"
+    )
 
 
 def test_the_phone_keyboard_hides_the_mini_player_and_tabs(page):
@@ -3541,6 +3551,8 @@ def test_plain_shuffle_puts_the_whole_playlist_in_and_a_new_round_differs(page, 
         assert page.evaluate("new Set(player.queue.map(t => t.path)).size") == 300
         assert page.evaluate("player.order.length") == 300
         assert page.evaluate("player.shuffle") == "plain"
+        # mode «plain»: по нему /api/plays/stats сравнивает пропуски с умным.
+        assert page.evaluate("player.queueMode") == "plain"
         assert page.evaluate("player.queueSource.name") == "Колода"
         assert page.locator("#playerShuffle.is-on").count() == 1
 
@@ -3566,6 +3578,19 @@ def test_plain_shuffle_puts_the_whole_playlist_in_and_a_new_round_differs(page, 
         assert total > 300
         assert page.evaluate("player.queue.length") == total
         assert page.evaluate("player.shuffle") == "plain"
+
+        # Сервер спит (Tailscale, navigator.onLine — true), а скачанное есть —
+        # перемешивается скачанное, как раньше, а не список, который не сыграет.
+        called = page.evaluate(
+            "(async () => { const was = [offline.supported, offline.paths, serverReachable, shuffleDownloads];"
+            " let got = null; offline.supported = true; offline.paths = new Set(['Deck/Singles/001.opus']);"
+            " serverReachable = async () => false;"
+            " shuffleDownloads = async (pl, paths, say, ticket) => { got = {pl}; };"
+            " try { await playPlainShuffle(); } finally {"
+            "  [offline.supported, offline.paths, serverReachable, shuffleDownloads] = was; }"
+            " return got; })()"
+        )
+        assert called == {"pl": ""}
     finally:
         page.evaluate(
             "playAt = window.__realPlayAt; player.repeat = 'off'; setShuffle(false); true"
@@ -3583,7 +3608,8 @@ def test_an_outside_track_has_labelled_keep_and_do_not_offer(page):
     page.evaluate(
         "window.__realPlayAt = playAt; playAt = async () => true;"
         f" playQueue([{{path: 'outside:{key}', title: 'Чужая', artist: 'Кто-то', outside: true}},"
-        "  {path: 'Loud Band/Singles/Loud.opus', title: 'Loud', artist: 'Loud Band'}], 0);"
+        "  {path: 'Loud Band/Singles/Loud.opus', title: 'Loud', artist: 'Loud Band'},"
+        f"  {{path: 'outside:{key}', title: 'Чужая', artist: 'Кто-то', outside: true}}], 0);"
         " player.index = 0; renderPlayer(); renderKeepButton(); true"
     )
     try:
@@ -3594,6 +3620,7 @@ def test_an_outside_track_has_labelled_keep_and_do_not_offer(page):
         page.evaluate("playAt = async (i) => { player.index = i; return true; }; true")
         ban.click()
         page.wait_for_function("player.index === 1")
+        assert page.evaluate("player.order") == [0, 1]  # копия дальше в очереди — прочь
         page.wait_for_function(
             "fetch('/api/plays/stats', {headers: headers()}).then(r => r.json())"
             ".then(d => d.outside.banned === 1)"
@@ -3629,6 +3656,36 @@ def test_shuffle_offers_plain_and_smart(page):
         )
     page.keyboard.press("Escape")
     assert page.get_by_role("menuitem").count() == 0
+
+
+def test_a_late_failed_mix_choice_does_not_undo_the_later_one(page):
+    """Быстро «мало» → «треть»: первый ответ пришёл поздно и с ошибкой — он не
+    возвращает «выкл» поверх уже выбранной «трети»."""
+    calls = []
+
+    def settings(route):
+        if route.request.method != "PUT":
+            route.continue_()
+            return
+        calls.append(route.request.post_data_json["outside_mix"])
+        if len(calls) == 1:
+            page.wait_for_timeout(400)
+            route.fulfill(status=500, json={})
+        else:
+            route.fulfill(json={"outside_mix": "on"})
+
+    page.route("**/api/settings", settings)
+    try:
+        page.evaluate(
+            "outsideMix = 'off'; const m = document.createElement('div');"
+            " setOutsideMix('few', m); setOutsideMix('on', m); true"
+        )
+        page.wait_for_timeout(1200)
+        assert calls == ["few", "on"]
+        assert page.evaluate("outsideMix") == "on"
+    finally:
+        page.unroute("**/api/settings")
+        page.evaluate("outsideMix = 'off'; true")
 
 
 def test_back_after_switching_tabs_returns_to_that_tab(page, server):

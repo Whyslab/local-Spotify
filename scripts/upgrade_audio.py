@@ -255,8 +255,11 @@ def known_links(db_path: Path) -> tuple[dict[str, str], list[tuple[str, str]]]:
     for url, artist, title, path in rows:
         if (url or "").startswith("file:"):
             uploads.append(((artist or "").lower(), (title or "").lower()))
+        elif "#replace:start=" in (url or ""):
+            # Глава альбомного ролика: по ссылке скачался бы весь альбом.
+            continue
         elif path and youtube_id(url or ""):
-            links[path] = url
+            links[path] = url.split("#", 1)[0]
     return links, uploads
 
 
@@ -538,7 +541,9 @@ def candidates_for(
         links.get(relative, ""),
         by_name.get((tags["artist"].split(" • ")[0].lower(), tags["title"].lower()), ""),
     ):
-        if youtube_id(url) and url not in urls:
+        # Ссылка с отметкой времени — глава альбомного ролика: скачался бы
+        # весь альбом и был бы отвергнут по длине (лишняя загрузка с YouTube).
+        if youtube_id(url) and url not in urls and not re.search(r"[?&#]t=", url):
             urls.append(url)
     return urls
 

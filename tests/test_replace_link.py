@@ -298,3 +298,87 @@ def test_a_chapter_must_have_both_ends_in_order(client):
     assert (
         client.post("/api/replace", json={**base, "start": 0, "end": 4 * 3600}).status_code == 400
     )
+
+
+def _replace_chapter(client, start, end, title):
+    response = client.post(
+        "/api/replace",
+        json={
+            "path": OLD,
+            "url": f"https://www.youtube.com/watch?v={ALBUM_ID}&t={start}",
+            "choice": "link",
+            "start": start,
+            "end": end,
+            "title": title,
+        },
+    )
+    assert response.status_code == 200, response.text
+    tid = response.json()["task"]
+    return tid, db.db_query("SELECT url FROM tasks WHERE id = ?", (tid,))[0]["url"]
+
+
+def test_two_chapters_of_one_album_do_not_share_a_temp_file(client, monkeypatch):
+    """Две замены из одного альбомного ролика идут разом (два работника): у
+    каждой свои временные файлы, иначе вторая резала бы уже отрезанное."""
+    names = []
+    monkeypatch.setattr(ingest, "yt_meta", lambda url: dict(ALBUM_META))
+
+    def download(url, vid):
+        names.append(vid)
+        target = runtime.TMP_DIR / f"{vid}.m4a"
+        shutil.copy(FIXTURE, target)
+        return target
+
+    monkeypatch.setattr(ingest, "yt_download", download)
+    monkeypatch.setattr(ingest, "cut_section", lambda path, start, end: path)
+    monkeypatch.setattr(ingest, "stage_into_temp", _stop)  # дальше скачивания незачем
+    for start, title in ((0, "Cristoforo Colombo"), (1, "Bugatti")):
+        tid, url = _replace_chapter(client, start, start + 1, title)
+        with pytest.raises(_Stop):
+            ingest.download_to_temp(tid, url)
+    assert len(names) == 2 and names[0] != names[1], names
+    assert all(n.startswith(ALBUM_ID) for n in names)
+
+
+class _Stop(Exception):
+    pass
+
+
+def _stop(*args, **kwargs):
+    raise _Stop
+
+
+def test_a_numbered_chapter_from_a_topic_channel_lands_on_the_same_path(client, monkeypatch):
+    """Глава «03. Cristoforo Colombo» с канала «… - Topic»: номер и канал не
+    уводят замену на новый путь — она ложится на место старого трека."""
+    album_video(monkeypatch, seconds=30)
+    monkeypatch.setattr(
+        ingest, "yt_meta", lambda url: {**ALBUM_META, "uploader": "Friendly Thug - Topic"}
+    )
+    tid, url = _replace_chapter(client, 10, 20, "03. Cristoforo Colombo")
+    runtime.PROCESSING_URLS.discard(url)
+    adder_queue.process(tid, url)
+    task = db.db_query("SELECT * FROM tasks WHERE id = ?", (tid,))[0]
+    assert task["status"] == "done", task["error"]
+    assert task["result_path"] == OLD
+    library.invalidate_library_index()
+    row = next(r for r in library.library_index() if r["path"] == OLD)
+    assert row["title"] == "Cristoforo Colombo"
+    assert "Topic" not in (row["artist"] or "")
+
+
+def test_a_failure_without_a_title_names_the_link_without_the_choice(app, monkeypatch):
+    """Сбой до того, как YouTube назвал ролик: в уведомлении — ссылка, а не
+    «…#replace:start=95.000&end=…» (служебное, для задачи)."""
+    from adder import notify
+
+    said = []
+    monkeypatch.setattr(notify, "track_failed", lambda name, why: said.append(name))
+    link = ingest.task_link(
+        f"https://www.youtube.com/watch?v={ALBUM_ID}", start=95, end=190, title="C", keep=True
+    )
+    assert "#replace:" in link
+    adder_queue._notify_failed(424242, link, None)  # задачи нет — названия тоже
+    assert said == [
+        f"https://www.youtube.com/watch?v={ALBUM_ID}&t=95"
+    ]  # с отметкой — понятно, какая глава

@@ -560,7 +560,12 @@ async function banCurrent() {
         setPlayerNote("Не запомнилось — нет связи со службой");
         return;
     }
+    /* Копии того же трека дальше в очереди — тоже прочь. */
+    const key = outsideKey(track);
+    player.order = player.order.filter(i => i === player.index || !(isOutside(player.queue[i]) && outsideKey(player.queue[i]) === key));
+    player.orderAt = player.order.indexOf(player.index);
     if (player.queue[player.index] === track) nextTrack();
+    renderQueuePanel();
     setPlayerNote(`«${trackNames(track).title}» больше не будет предлагаться`);
 }
 
@@ -750,8 +755,11 @@ async function loadOutsideMix() {
     } catch (e) { /* без сети — как было */ }
 }
 
+let outsideMixCall = 0;
+
 async function setOutsideMix(level, menu) {
     const was = outsideMix;
+    const call = ++outsideMixCall;
     outsideMix = level;
     renderMixChoice(menu);
     try {
@@ -762,6 +770,7 @@ async function setOutsideMix(level, menu) {
         });
         if (!r.ok) throw new Error("Ошибка " + r.status);
     } catch (e) {
+        if (call !== outsideMixCall) return;  // уже выбрали другое — не откатывать его
         outsideMix = was;
         if (menu.isConnected) renderMixChoice(menu);
         setPlayerNote("Не сохранилось «Подмешивать новое» — нет связи со службой");
@@ -937,7 +946,9 @@ async function shuffleDownloads(playlist, paths, say, ticket) {
     }
     if (ticket !== player.smartTicket) { say(""); return; }
     if (!tracks.length) { say("Без сети, а скачанного отсюда нет — играть нечего."); return; }
-    playShuffled(tracks, playlist ? { kind: "playlist", name: playlist } : null);
+    /* «manual»: скачанное — набор, выбранный руками, его пропускают реже, и
+     * сравнение пропусков умного с обычным он бы приукрасил. */
+    playShuffled(tracks, playlist ? { kind: "playlist", name: playlist } : null, null, "manual");
     say(`Без сети — перемешал скачанное: ${tracks.length}, новых нет`);
 }
 
@@ -947,7 +958,7 @@ async function shuffleDownloads(playlist, paths, say, ticket) {
  * выключается им же. Раньше подборка и фонотека брали очередь с сервера —
  * 50 треков из тысячи, и они крутились по кругу (разбор 19.11.2026).
  * Повторы строк подборки — один трек. Без сети — только скачанное. */
-function playShuffled(tracks, source = null, say = null) {
+function playShuffled(tracks, source = null, say = null, mode = "plain") {
     const seen = new Set();
     let list = (tracks || []).filter(t => t && t.path && !isOutside(t) && !seen.has(t.path) && seen.add(t.path));
     const cut = !navigator.onLine && offline.supported;
@@ -957,10 +968,40 @@ function playShuffled(tracks, source = null, say = null) {
         return false;
     }
     player.shuffle = "plain";
-    playQueue(list, Math.floor(Math.random() * list.length), "manual", source);
+    /* mode «plain» — как и прежнее перемешивание с сервера: по нему
+     * /api/plays/stats сравнивает пропуски обычного и умного. */
+    playQueue(list, Math.floor(Math.random() * list.length), mode, source);
     renderPlayerModes();
     if (say) say(cut ? `Без сети — перемешал скачанное: ${list.length}` : "");
     return true;
+}
+
+/* Сервер отвечает? Только когда есть скачанное — иначе и выбирать не из
+ * чего. navigator.onLine при спящем компьютере (Tailscale) — true. */
+async function serverReachable() {
+    try {
+        const r = await fetchWithin("/health", {}, 4000);
+        return !unreachableStatus(r.status);
+    } catch (e) {
+        return false;
+    }
+}
+
+/* «Перемешать → Обычное» у подборки и фонотеки: весь набор, а сервер
+ * недоступен или набора не узнать — скачанное, как раньше (shuffleDownloads). */
+async function shuffleWhole(getTracks, playlist, say) {
+    const ticket = player.smartTicket;
+    if (say) say("Перемешиваю…");
+    let tracks = [];
+    try { tracks = (await getTracks()) || []; } catch (e) { tracks = []; }
+    const downloads = offline.supported && offline.paths.size > 0;
+    const unreachable = !navigator.onLine || (downloads && !(await serverReachable()));
+    if (ticket !== player.smartTicket) { if (say) say(""); return; }  // включили другое
+    if ((unreachable || !tracks.length) && downloads) {
+        await shuffleDownloads(playlist, null, say || (() => {}), ticket);
+        return;
+    }
+    playShuffled(tracks, playlist ? { kind: "playlist", name: playlist } : { kind: "library" }, say);
 }
 
 /* Умная очередь длиной не больше двухсот. Подборка бывает на тысячу — тогда,
@@ -1881,7 +1922,7 @@ async function loadShuffle(mode, playlist = "", noteId = "shuffleNote", paths = 
 function playSmartShuffle() { loadShuffle("smart"); }
 function playPlainShuffle() {
     const note = document.getElementById("shuffleNote");
-    labIndex().then(rows => playShuffled(rows, { kind: "library" }, text => { if (note) note.textContent = text; }));
+    return shuffleWhole(() => labIndex(), "", text => { if (note) note.textContent = text; });
 }
 
 /* Умно перемешать альбом (или любой другой набор треков). */
@@ -2103,11 +2144,11 @@ onAudio("error", async () => {
 /* Тот же трек по новой ссылке и с того же места — когда прежняя ссылка
  * перестала годиться: скачанную копию удалили посреди трека, и ссылка на неё
  * (sig=offline) сервер не пустит. */
-async function reloadCurrentSource() {
+async function reloadCurrentSource(from = null) {
     const track = player.queue[player.index];
     if (!track) return;
     const generation = player.generation;
-    const at = player.audio.currentTime;
+    const at = from === null ? player.audio.currentTime : from;
     const wasPlaying = !player.audio.paused;
     try {
         const { url } = await streamUrlFor(track.path, true);
@@ -3755,6 +3796,11 @@ async function applyReplacement(oldPath, newPath) {
     } catch (e) { /* длина останется прежней до перезагрузки */ }
     const current = player.queue[player.index];
     const playing = Boolean(current && current.path === oldPath);
+    /* Длина другая — с начала: минута 10 старого 31-минутного файла лежит за
+     * концом новой версии на 1:35, и она сразу «доиграла» бы. */
+    const newLength = row ? row.duration || 0 : 0;
+    const oldLength = (current && current.duration) || player.audio.duration || 0;
+    const fromStart = playing && row && (player.audio.currentTime > newLength - 2 || Math.abs(newLength - oldLength) > 2);
     for (const entry of player.queue) {
         if (entry.path !== oldPath) continue;
         entry.path = newPath;
@@ -3767,7 +3813,7 @@ async function applyReplacement(oldPath, newPath) {
     saveQueueSoon();
     renderPlayer();
     renderQueuePanel();
-    if (playing) await reloadCurrentSource();
+    if (playing) await reloadCurrentSource(fromStart ? 0 : null);
     return row;
 }
 

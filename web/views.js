@@ -1329,7 +1329,8 @@ function openPlaylistShuffle(anchor) {
     openShuffleChoice(anchor,
         () => {
             const note = document.getElementById("playlistNote");
-            playShuffled(player.playlist.entries, { kind: "playlist", name }, (text) => { if (note) note.textContent = text; });
+            const entries = player.playlist.entries;
+            shuffleWhole(() => entries, name, (text) => { if (note) note.textContent = text; });
         },
         () => loadShuffle("smart", name, "playlistNote"));
 }

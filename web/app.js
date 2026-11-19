@@ -507,7 +507,8 @@ const RECENT_DONE_LIMIT = 5;
  * названия — ссылкой: иначе не понять, что именно не скачалось. */
 function taskTitle(t) {
     if (t.title) return t.title;
-    if (t.status === "error" || !QUEUE_STATUSES.has(t.status)) return t.url || "—";
+    /* Служебная часть ссылки замены («#replace:…» — глава, «моя ссылка») — не для глаз. */
+    if (t.status === "error" || !QUEUE_STATUSES.has(t.status)) return (t.url || "").split("#replace:")[0] || "—";
     return "Узнаю название…";
 }
 

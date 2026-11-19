@@ -422,3 +422,30 @@ def test_a_failed_navidrome_scan_does_not_leak_the_credential(monkeypatch):
 def test_no_path_under_data_is_left_unpatched(dirs):
     for name in ("DATA", "BACKUP", "STATE", "DRY_STATE", "WORK", "LOCK", "RESCAN_PENDING"):
         assert str(getattr(upgrade, name)).startswith(str(dirs.parent)), name
+
+
+def test_a_chapter_of_an_album_video_is_not_a_known_link(tmp_path):
+    """Трек-глава: и задача, и тег SOURCE_URL ведут на весь альбомный ролик —
+    его не качать (разбор 19.11.2026)."""
+    db = tmp_path / "adder.db"
+    album = "https://www.youtube.com/watch?v=XWDNhc0lAj0"
+    with sqlite3.connect(db) as con:
+        con.execute(
+            "CREATE TABLE tasks(url TEXT, status TEXT, artist TEXT, title TEXT, result_path TEXT)"
+        )
+        con.executemany(
+            "INSERT INTO tasks VALUES (?, 'done', ?, ?, ?)",
+            [
+                (album + "#replace:start=95.000&end=190.000&title=C", "F", "C", "F/S/C.m4a"),
+                (
+                    "https://www.youtube.com/watch?v=x1234567890#replace:keep=1",
+                    "A",
+                    "s",
+                    "A/S/s.m4a",
+                ),
+            ],
+        )
+    links, _ = upgrade.known_links(db)
+    assert links == {"A/S/s.m4a": "https://www.youtube.com/watch?v=x1234567890"}
+    tags = {"source": album + "&t=95", "artist": "F", "title": "C"}
+    assert upgrade.candidates_for("F/S/C.m4a", tags, links, {}) == []
