@@ -332,6 +332,41 @@ def test_backup_rotation_removes_wal_and_shm(tmp_path):
     assert sides == ["adder_20260919_030000.db-shm"]
 
 
+def test_backup_keeps_the_playlists_of_the_library(tmp_path):
+    """Подборки (*.m3u в корне фонотеки) — в ночной снимок: свежая правка
+    жила только в недельной копии borg (разбор 19.11.2026)."""
+    import shutil
+    import subprocess
+    import tarfile
+
+    project = tmp_path / "project"
+    (project / "deploy").mkdir(parents=True)
+    (project / "adder").mkdir()
+    shutil.copy(Path(__file__).resolve().parent.parent / "deploy" / "backup.sh", project / "deploy")
+    library = tmp_path / "Моя фонотека"
+    (library / "Artist" / "Singles").mkdir(parents=True)
+    (library / "Monday.m3u").write_text("Artist/Singles/a.m4a\n", encoding="utf-8")
+    (library / "Вечер с пробелом.m3u").write_text("Artist/Singles/b.m4a\n", encoding="utf-8")
+    (library / "Artist" / "nested.m3u").write_text("x\n", encoding="utf-8")  # не подборка
+    (project / "adder" / ".env").write_text(
+        f'API_TOKEN=x\nLIBRARY_PATH="{library}"  # фонотека\n', encoding="utf-8"
+    )
+    backups = tmp_path / "backups"
+
+    run = subprocess.run(
+        ["bash", str(project / "deploy" / "backup.sh")],
+        env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "BACKUP_DIR": str(backups)},
+        capture_output=True,
+        text=True,
+    )
+    assert run.returncode == 0, run.stderr
+    (archive,) = backups.glob("m3u_*.tar.gz")
+    with tarfile.open(archive) as tar:
+        assert sorted(tar.getnames()) == ["Monday.m3u", "Вечер с пробелом.m3u"]
+        member = tar.extractfile("Monday.m3u")
+        assert member is not None and member.read() == b"Artist/Singles/a.m4a\n"
+
+
 def test_install_env_value_matches_dotenv(tmp_path):
     """install.sh writes LIBRARY_PATH into the unit; it must read .env as the service does.
 

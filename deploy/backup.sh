@@ -18,6 +18,9 @@ echo "Backup directory: $BACKUP_DIR"
 # Create backup directory
 mkdir -p "$BACKUP_DIR"
 
+PYTHON="$PROJECT_ROOT/.venv/bin/python"
+[[ -x "$PYTHON" ]] || PYTHON=python3
+
 # Backup SQLite database (Problem #20)
 if [ -f "$ADDER_DIR/adder.db" ]; then
     # The online backup API copies a consistent snapshot even while the
@@ -25,8 +28,6 @@ if [ -f "$ADDER_DIR/adder.db" ]; then
     # adder.db-wal. Always through Python: the sqlite3 CLI's ".backup '$path'"
     # broke on a path with a quote in it. The copy is then read back in full:
     # a snapshot nobody has opened is not yet a backup.
-    PYTHON="$PROJECT_ROOT/.venv/bin/python"
-    [[ -x "$PYTHON" ]] || PYTHON=python3
     "$PYTHON" - "$ADDER_DIR/adder.db" "$BACKUP_DIR/adder_$TIMESTAMP.db" <<'PY'
 import sqlite3
 import sys
@@ -69,12 +70,46 @@ if [ ${#PLAYLIST_STATE[@]} -gt 0 ]; then
     echo "✓ Playlist covers and history backed up: playlists_$TIMESTAMP.tar.gz"
 fi
 
+# Подборки — файлы .m3u в корне фонотеки. Служба правит их на месте, и
+# свежая правка (порядок, удалённое) жила только в недельной копии borg
+# (разбор 19.11.2026). Путь к фонотеке — из adder/.env, как читает служба.
+LIBRARY_DIR="$("$PYTHON" - "$ADDER_DIR/.env" 2>/dev/null <<'PY' || true
+import os
+import re
+import sys
+from pathlib import Path
+
+value = os.environ.get("LIBRARY_PATH") or ""  # как config.py: окружение первым
+if not value and Path(sys.argv[1]).exists():
+    try:
+        from dotenv import dotenv_values
+
+        value = dotenv_values(sys.argv[1]).get("LIBRARY_PATH") or ""
+    except ImportError:  # системный python без python-dotenv — простое чтение
+        for line in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
+            m = re.match(r"\s*(?:export\s+)?LIBRARY_PATH\s*=\s*(.*)$", line)
+            if m:
+                raw = m.group(1).strip()
+                q = re.match(r"""(["'])(.*?)\1""", raw)
+                value = q.group(2) if q else raw.split(" #", 1)[0].strip()
+print(value, end="")
+PY
+)"
+LIBRARY_DIR="${LIBRARY_DIR:-$HOME/Music/Normalized Library}"
+if [ -d "$LIBRARY_DIR" ] && find "$LIBRARY_DIR" -maxdepth 1 -type f -name '*.m3u' -print -quit | grep -q .; then
+    find "$LIBRARY_DIR" -maxdepth 1 -type f -name '*.m3u' -printf '%f\0' \
+        | tar -czf "$BACKUP_DIR/m3u_$TIMESTAMP.tar.gz" -C "$LIBRARY_DIR" --null -T -
+    echo "✓ Playlists (.m3u) backed up: m3u_$TIMESTAMP.tar.gz"
+else
+    echo "ℹ No .m3u playlists found in $LIBRARY_DIR"
+fi
+
 # Keep only last 10 backups (cleanup old ones). With pipefail an `ls` that
 # matched nothing (a first run, no .env) used to abort the script.
 cd "$BACKUP_DIR"
 # Only regular files of this script's own naming, newest first by mtime, and
 # names passed NUL-separated: parsing ls split names on spaces and quotes.
-for pattern in 'adder_[0-9]*.db' 'env_[0-9]*' 'playlists_[0-9]*.tar.gz'; do
+for pattern in 'adder_[0-9]*.db' 'env_[0-9]*' 'playlists_[0-9]*.tar.gz' 'm3u_[0-9]*.tar.gz'; do
     find . -maxdepth 1 -type f -name "$pattern" -printf '%T@\t%p\0' \
         | sort -zrn | tail -zn +11 | cut -zf2- | xargs -0r rm --
 done
@@ -89,7 +124,7 @@ echo ""
 echo "=== Backup Summary ==="
 echo "Music Library = primary data (backed up separately)"
 echo "SQLite DB = tasks, play journal, audio measurements, blind trials (backed up above)"
-echo "Playlist covers and history = backed up above"
+echo "Playlist covers and history, playlists (.m3u) = backed up above"
 echo ".env = configuration/secrets (backed up above)"
 echo ""
 echo "Latest backups:"
