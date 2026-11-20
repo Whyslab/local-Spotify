@@ -1685,11 +1685,13 @@ function coverUrl(key, url, signal) {
         .then(r => {
             /* Только картинка: после «нет» задача может спросить другую
              * (фото артиста → обложка трека), и та шла бы без места. */
+            /* 204 — «картинки нет», как 404 (фото артиста отвечает так, чтобы
+             * в консоли не было ошибок): пустой blob был бы битой картинкой. */
+            if (r.status === 404 || r.status === 204) return Date.now() + COVER_MISS_MS;
             if (r.ok) {
                 coverSlotFree(signal);
                 return r.blob();
             }
-            if (r.status === 404) return Date.now() + COVER_MISS_MS;
             return null;
         })
         .then(got => {
@@ -2491,11 +2493,7 @@ function openLibraryMenu(button, card, t, rows) {
     menu.appendChild(line);
     item("Удалить…", () => askRemove(card, t)).classList.add("is-danger");
 
-    if (button.closest(".o-picks")) placeMenuBy(menu, button);
-    else {
-        button.insertAdjacentElement("afterend", menu);
-        keepMenuOnScreen(menu);
-    }
+    placeMenuBy(menu, button);
     button.setAttribute("aria-expanded", "true");
     openMenu = { menu, button };
     document.addEventListener("keydown", menuKeydown, true);

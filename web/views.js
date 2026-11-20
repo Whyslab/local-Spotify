@@ -595,7 +595,7 @@ function yourPlaylistsSection() {
     if (!lists.length) return null;
     const section = labSection("Ваши подборки", { label: "Все", run: () => switchView("viewPlaylists") },
         el("div", "o-quick-grid", "", ...lists.map((p) => {
-            const tile = button("o-quick", () => openPlaylist(p.name), labPlaylistCover(p.name), el("span", "o-quick-name", playlistLabel(p.name)));
+            const tile = button("o-quick", () => openPlaylist(p.name), labPlaylistCover(p.name), el("span", "o-quick-name", playlistTitle(p.name)));
             tile.setAttribute("aria-label", playlistLabel(p.name));
             return tile;
         })));
@@ -1011,12 +1011,19 @@ function renderAlbumGrid(box, groups) {
     return albums.length;
 }
 
+/* Фонотека в порядке списка на экране: «Свежие сверху» — как пришла
+ * (sort=new), «По имени» — по артисту и названию. */
+function libraryInListOrder(rows) {
+    if (!Array.isArray(rows)) return [];
+    return librarySort === "name"
+        ? [...rows].sort((a, b) => RU_ORDER.compare(a.artist || "", b.artist || "") || RU_ORDER.compare(a.title || "", b.title || ""))
+        : rows;
+}
+
 /* «Слушать» в фонотеке — вся фонотека по порядку списка. */
 function playWholeLibrary() {
     labIndex().then((rows) => {
-        const list = librarySort === "name"
-            ? [...rows].sort((a, b) => RU_ORDER.compare(a.artist || "", b.artist || "") || RU_ORDER.compare(a.title || "", b.title || ""))
-            : rows;
+        const list = libraryInListOrder(rows);
         if (list.length) playQueue(list, 0, "manual", { kind: "library" });
     });
 }
@@ -1336,7 +1343,7 @@ function renderPlaylistsGrid(force) {
     }
     const grid = el("div", "o-grid");
     for (const p of list) {
-        grid.appendChild(labCard(labPlaylistCover(p.name), playlistLabel(p.name), tracksWord(p.tracks), () => openPlaylist(p.name)));
+        grid.appendChild(labCard(labPlaylistCover(p.name), playlistTitle(p.name), playlistSubtitle(p.name, p.tracks), () => openPlaylist(p.name)));
     }
     body.replaceChildren(grid);
 }
@@ -1392,12 +1399,56 @@ function foldedTrack(t) {
     return folded;
 }
 
+/* Недавние запросы под пустым полем (аудит 19.11, п. 14). Запрос
+ * запоминается, когда им воспользовались: Enter или нажатие на найденное, —
+ * а не на каждую букву, иначе список забивали бы «Ска», «Скр», «Скри». */
+const RECENT_SEARCHES_KEY = "recentSearches";
+const RECENT_SEARCHES_MAX = 5;
+
+function recentSearches() {
+    try {
+        const list = JSON.parse(localStorage.getItem(RECENT_SEARCHES_KEY) || "[]");
+        return Array.isArray(list) ? list.filter((q) => typeof q === "string" && q.trim()).slice(0, RECENT_SEARCHES_MAX) : [];
+    } catch (e) {
+        return [];
+    }
+}
+
+function rememberSearch(text) {
+    const q = String(text || "").trim();
+    if (q.length < 2) return;
+    const key = foldText(q);
+    const list = [q, ...recentSearches().filter((old) => foldText(old) !== key)].slice(0, RECENT_SEARCHES_MAX);
+    try { localStorage.setItem(RECENT_SEARCHES_KEY, JSON.stringify(list)); } catch (e) { /* приватное окно */ }
+}
+
+function forgetSearches() {
+    try { localStorage.removeItem(RECENT_SEARCHES_KEY); } catch (e) { /* приватное окно */ }
+    fillSearch();
+}
+
+function searchFor(text) {
+    searchQueryText = text;
+    const input = document.getElementById("searchEverywhere");
+    if (input) input.value = text;
+    const side = document.getElementById("sideSearch");
+    if (side) side.value = text;
+    fillSearch();
+}
+
+function recentSearchesSection() {
+    const list = recentSearches();
+    if (!list.length) return null;
+    return labSection("Недавние запросы", { label: "Очистить", run: forgetSearches },
+        el("div", "o-recent", "", ...list.map((q) => button("o-recent-item", () => searchFor(q), labIcon("search"), el("span", "", q)))));
+}
+
 async function fillSearch() {
     const body = document.getElementById("searchBody");
     const q = foldText(searchQueryText.trim());
     if (!q) {
         const moods = (homeDataForMoods || homeCache || {}).moods || [];
-        put(body, moods.length ? labSection("Под настроение", null, el("div", "o-browse-grid", "",
+        put(body, recentSearchesSection(), moods.length ? labSection("Под настроение", null, el("div", "o-browse-grid", "",
             ...moods.filter((m) => m.tracks.length).map((m) =>
                 button("o-browse", () => openMoodPage(m.key), labCover(m.tracks[0].path, THUMB_LARGE, m.name), el("span", "", m.name))))) : null);
         return;
@@ -1458,6 +1509,15 @@ async function fillSearch() {
                 fillSearch();
             }, SEARCH_DEBOUNCE_MS);
         });
+        input.addEventListener("keydown", (e) => { if (e.key === "Enter") rememberSearch(input.value); });
+    }
+    /* Нажали на найденное — запрос пригодился. Пустое поле — это нажатие на
+     * недавний запрос или настроение, их не запоминаем. */
+    const results = document.getElementById("searchBody");
+    if (results) {
+        results.addEventListener("click", (e) => {
+            if (searchQueryText.trim() && e.target instanceof Element && e.target.closest("button, .track, a")) rememberSearch(searchQueryText);
+        }, true);
     }
     if (side) {
         /* Поле в левой панели — тот же поиск: набор сразу открывает его. */
@@ -1467,7 +1527,7 @@ async function fillSearch() {
             else renderSearch(false);
         });
         side.addEventListener("keydown", (e) => {
-            if (e.key === "Enter") { searchQueryText = side.value; switchView("viewSearch"); }
+            if (e.key === "Enter") { searchQueryText = side.value; rememberSearch(side.value); switchView("viewSearch"); }
         });
     }
 })();

@@ -245,10 +245,13 @@ def test_own_header_wins_over_deezer_and_can_be_dropped(client, auth, monkeypatc
     assert client.get("/api/artist-photo", params={"name": "Lizer"}, headers=auth).content == JPEG
 
 
-def test_no_photo_anywhere_is_a_404(client, auth, monkeypatch):
+def test_no_photo_anywhere_is_an_empty_answer_not_an_error(client, auth, monkeypatch):
+    # Аудит 19.11, п. 19: 404 браузер писал в консоль на каждый показ списка
+    # артистов. «Фото нет» — обычный ответ: 204 без тела.
     monkeypatch.setattr(similar, "artist_picture", lambda name, cache: "")
     response = client.get("/api/artist-photo", params={"name": "Nobody"}, headers=auth)
-    assert response.status_code == 404
+    assert response.status_code == 204
+    assert response.content == b""
 
 
 def test_an_upload_that_is_not_a_picture_is_refused(client, auth):

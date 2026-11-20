@@ -6201,9 +6201,12 @@ def test_a_track_menu_on_an_artist_page_opens_at_its_row(page):
     page.locator("#viewArtist .track").first.get_by_role(
         "button", name="Что сделать с треком"
     ).click()
+    # У строки — вплотную сверху или снизу, а если меню (с 20.11 в нём до 14
+    # пунктов) не помещается ни там, ни там — поверх неё, но не вдали.
     gap = page.evaluate("""() => {
         const m = document.querySelector('.row-menu').getBoundingClientRect();
         const r = document.querySelector('#viewArtist .track').getBoundingClientRect();
+        if (m.top < r.bottom && r.top < m.bottom) return 0;
         return Math.min(Math.abs(m.top - r.bottom), Math.abs(r.top - m.bottom));
     }""")
     assert gap < 12
@@ -6918,8 +6921,10 @@ def test_the_players_more_menu_has_the_track_actions(page):
 
 
 def test_monday_is_shown_as_favourites_first_with_hearts_in_rows(page, server):
-    """Решение 20.11.2026: файл остаётся Monday.m3u, на экране — «Любимое ♥»,
-    первой в списке; у трека из неё в списках маленькое ♥ (в ней самой — нет)."""
+    """Решение 20.11.2026: файл остаётся Monday.m3u, на экране — «Любимое»,
+    первой в списке; у трека из неё в списках маленькое ♥ (в ней самой — нет).
+    Рядом с обложкой — без ♥: обложка без картинки и так сердце, и было два
+    сердца подряд (просьба 20.11)."""
     monday = server["root"] / "Monday.m3u"
     (server["root"] / "Аааа.m3u").write_text(LOUD_PATH + "\n", encoding="utf-8")
     monday.write_text(QUIET_PATH + "\n", encoding="utf-8")
@@ -6928,7 +6933,7 @@ def test_monday_is_shown_as_favourites_first_with_hearts_in_rows(page, server):
         page.wait_for_function("knownPlaylists.length >= 2 && favouritePaths !== null")
         assert page.evaluate("knownPlaylists[0].name") == "Monday"
         page.wait_for_function(
-            "document.querySelector('#railPlaylists .rail-item b')?.textContent === 'Любимое ♥'"
+            "document.querySelector('#railPlaylists .rail-item b')?.textContent === 'Любимое'"
         )
         open_library(page)
         page.wait_for_function("document.querySelectorAll('#library .track-love').length === 1")
@@ -6936,7 +6941,7 @@ def test_monday_is_shown_as_favourites_first_with_hearts_in_rows(page, server):
         assert row(page, "Loud").locator(".track-love").count() == 0
         page.evaluate("openPlaylist('Monday')")
         page.wait_for_selector("#playlistTracks .playlist-track")
-        assert page.locator("#playlistName").inner_text() == "Любимое ♥"
+        assert page.locator("#playlistName").inner_text() == "Любимое"
         assert page.locator("#playlistTracks .track-love").count() == 0
         # Рецензия: «Переименовать» подставляло «Monday» — исправишь на
         # «Любимое», и сердце молча отвяжется. У неё правки имени и удаления нет.
@@ -7159,3 +7164,332 @@ def test_offline_the_next_deck_round_plays_whole_not_only_its_head(page):
     assert result["route"][:2] == ["S/3.m4a", "S/5.m4a"]
     assert sorted(result["route"]) == sorted(f"S/{i}.m4a" for i in range(8))
     assert result["deckOrder"] == 8
+
+
+# --- 20.11: аудит 13–19 и мелочи после этапов 6–8 ---
+
+
+def test_energy_is_shown_as_a_word(page):
+    """Аудит 19.11, п. 17: «0.53 энергия» слушателю ничего не говорит."""
+    words = page.evaluate("[0.2, 0.42, 0.6, null, NaN].map(energyWord)")
+    assert words == ["спокойная", "средняя", "бодрая", None, None]
+
+
+def test_the_tabbar_is_nearly_opaque(page):
+    """Аудит 19.11, п. 16: при 0,86 сквозь вкладки читались строки списка."""
+    page.set_viewport_size({"width": 390, "height": 844})
+    alpha = page.evaluate(
+        "(() => { const c = getComputedStyle(document.querySelector('.tabbar'), '::before')"
+        ".backgroundColor; const m = c.match(/rgba?\\(([^)]+)\\)/)[1].split(',');"
+        " return m.length > 3 ? parseFloat(m[3]) : 1; })()"
+    )
+    assert alpha >= 0.95
+
+
+def test_the_collapse_button_focus_ring_hugs_the_handle(page):
+    """Аудит 19.11, п. 18: рамка фокуса кнопки «свернуть» шла через весь экран."""
+    page.set_viewport_size({"width": 1266, "height": 603})
+    open_library(page)
+    page.evaluate(f"playQueue([{LOUD}], 0)")
+    page.wait_for_function("player.started")
+    page.evaluate("player.audio.pause(); expandPlayer(); true")
+    page.wait_for_function("document.querySelector('.app').classList.contains('player-open')")
+    page.keyboard.press("Shift")  # последним было нажатие клавиши — фокус «виден»
+    page.evaluate("document.getElementById('playerGrab').focus()")
+    assert page.evaluate("document.getElementById('playerGrab').matches(':focus-visible')")
+    ring = page.evaluate(
+        """() => { const g = document.getElementById('playerGrab'), i = g.querySelector('i');
+        const own = getComputedStyle(g).outlineStyle !== 'none';
+        return {own, handle: getComputedStyle(i).outlineStyle !== 'none',
+                width: (own ? g : i).getBoundingClientRect().width}; }"""
+    )
+    # Рамка одна — у кнопки или у ручки — и не шире 64 точек.
+    assert ring["own"] != ring["handle"], ring
+    assert ring["width"] <= 64, ring
+    page.set_viewport_size({"width": 390, "height": 844})  # телефон: полоса, рамка у ручки
+    assert (
+        page.evaluate("getComputedStyle(document.querySelector('#playerGrab i')).outlineStyle")
+        == "solid"
+    )
+    page.evaluate("collapsePlayer(); true")
+
+
+def test_a_missing_artist_photo_answered_204_is_a_miss_not_a_broken_picture(page):
+    """Аудит 19.11, п. 19: служба отвечает 204 вместо 404 (нет ошибки в
+    консоли) — страница должна понять это как «фото нет», а не рисовать
+    пустую картинку."""
+    url = page.evaluate(
+        """async () => {
+        const real = window.fetch;
+        window.fetch = (u, o) => String(u).startsWith('/api/artist-photo?')
+            ? Promise.resolve(new Response(null, {status: 204})) : real(u, o);
+        try { return await artistPhotoUrl('Никто 204', 96); } finally { window.fetch = real; }
+    }"""
+    )
+    assert url is None
+
+
+def test_offline_card_says_nothing_is_downloaded_yet(page):
+    """Аудит 19.11, п. 17: «Скачано треков: 0 · занято 0.00 ГБ» выглядело поломкой."""
+    _controlled(page)
+    page.evaluate("switchView('viewService')")
+    page.wait_for_function("!document.getElementById('offlineCard').hidden")
+    page.evaluate("renderOfflineCard()")
+    page.wait_for_function(
+        "document.getElementById('offlineFacts').textContent === 'Пока ничего не скачано'"
+    )
+    page.evaluate("switchView('viewHome')")
+
+
+def test_auto_playlists_explain_the_star_and_counts_agree_in_number(page, server):
+    """Аудит 19.11, п. 13: «★» нигде не объяснялась. И «2 треков» в шапке."""
+    _playlist(server, page, "★ Звёздная", QUIET_PATH, LOUD_PATH)
+    try:
+        page.evaluate("openPlaylist('★ Звёздная')")
+        page.wait_for_selector("#playlistTracks .playlist-track")
+        count = page.locator("#playlistCount").inner_text()
+        assert count.startswith("2 трека") and "обновляется сама каждую ночь" in count
+        page.evaluate("switchView('viewPlaylists')")
+        page.wait_for_function(
+            "[...document.querySelectorAll('#playlistsBody .o-card')].some(c => "
+            "c.textContent.includes('Звёздная') && c.textContent.includes('обновляется сама'))"
+        )
+    finally:
+        (server["root"] / "★ Звёздная.m3u").unlink()
+        page.evaluate("playlists(); true")
+
+
+def test_on_a_phone_small_controls_get_a_finger_sized_target(server, browser):
+    """Аудит 19.11, п. 15: «Свежие сверху» — 21 точка в высоту, «онлайн» — 29,
+    ручка очереди — 32 в ширину. Цель пальца — от 44."""
+    context, phone = _phone(server, browser)
+    try:
+        open_library(phone)
+        sort_height = phone.evaluate(
+            "document.getElementById('librarySort').getBoundingClientRect().height"
+        )
+        assert sort_height >= 44
+        # «онлайн» видом прежний (29 точек), а нажимается и на 7 выше и ниже.
+        pill = phone.evaluate(
+            """() => { const b = document.getElementById('statusPill'), r = b.getBoundingClientRect();
+            const at = (y) => { const n = document.elementFromPoint(r.left + r.width / 2, y); return !!n && b.contains(n); };
+            return [r.height < 44, at(r.top - 7), at(r.bottom + 7)]; }"""
+        )
+        assert pill == [True, True, True]
+        width = phone.evaluate(
+            """() => { const row = el('div', 'queue-row');
+            const h = el('button', 'icon-button small queue-handle', '≡'); row.appendChild(h);
+            document.body.appendChild(row); const w = h.getBoundingClientRect().width; row.remove(); return w; }"""
+        )
+        assert width >= 44
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize("how", ["next", "prev", "queue"])
+def test_a_track_chosen_by_hand_after_a_sound_failure_stop_may_skip_again(page, how):
+    """Рецензия этапа 8: после остановки «подряд 4 не играют» счётчик сбрасывали
+    только «играть» и заигравший трек. «Вперёд», «назад» и выбор трека — тоже
+    руками: следующий сбой должен снова пропускать, а не останавливать сразу."""
+    result = page.evaluate(
+        """async (how) => {
+        const fake = Array.from({length: 12}, (_, i) => ({path: `x/${i}.m4a`, title: `T${i}`, artist: 'A'}));
+        player.queue = fake;
+        player.order = fake.map((_, i) => i);
+        player.orderAt = 0;
+        player.index = 0;
+        player.switching = false;
+        const realPlayAt = playAt;
+        let jumps = 0;
+        playAt = async (i) => { jumps += 1; player.index = i; return true; };
+        Object.defineProperty(player.audio, 'error', {configurable: true, get: () => ({code: 4, message: ''})});
+        try {
+            for (let n = 0; n < 4; n += 1) {
+                player.audio.dispatchEvent(new Event('error'));
+                await new Promise((r) => setTimeout(r, 30));
+            }
+            const stopped = jumps;
+            // выбор руками (eval страница не разрешает — CSP)
+            ({next: () => nextTrack(), prev: () => prevTrack(), queue: () => playQueue(player.queue.slice(), 2)})[how]();
+            await new Promise((r) => setTimeout(r, 30));
+            const chosen = jumps;
+            player.audio.dispatchEvent(new Event('error'));  // и этот не заиграл
+            await new Promise((r) => setTimeout(r, 30));
+            return {stopped, chosen, after: jumps};
+        } finally {
+            playAt = realPlayAt;
+            delete player.audio.error;
+        }
+    }""",
+        how,
+    )
+    assert result["stopped"] == 3, result
+    assert result["after"] == result["chosen"] + 1, result
+
+
+def test_in_order_after_a_smart_library_queue_follows_the_chosen_sort(page):
+    """Просьба 20.11: «По порядку» после умной очереди фонотеки давало
+    «свежие сверху», хотя список отсортирован «По имени»."""
+    paths = page.evaluate(
+        """async () => {
+        const realIndex = labIndex, realLoad = loadShuffle, realSort = librarySort;
+        let ordered = null;
+        labIndex = () => Promise.resolve([
+            {path: 'b', artist: 'Бета', title: '1'}, {path: 'a', artist: 'Альфа', title: '2'},
+            {path: 'c', artist: 'Гамма', title: '3'}]);
+        loadShuffle = (mode, playlist, note, list, order) => { ordered = order; };
+        librarySort = 'name';
+        try {
+            playSmartShuffle();
+            return (await ordered).map((t) => t.path);
+        } finally { labIndex = realIndex; loadShuffle = realLoad; librarySort = realSort; }
+    }"""
+    )
+    assert paths == ["a", "b", "c"]
+
+
+def _menu_box(page):
+    return page.evaluate(
+        """() => { const m = document.querySelector('.row-menu');
+        const b = m.getBoundingClientRect();
+        const floor = Math.min(innerHeight, ...[...document.querySelectorAll('#player, .tabbar')]
+            .map(n => n.getBoundingClientRect()).filter(r => r.height && r.top > innerHeight / 2).map(r => r.top));
+        // Последний пункт («Удалить…», «Убрать из подборки») виден и нажимается
+        // сразу: меню, сжатое с прокруткой внутри, на айфоне выглядит
+        // обрезанным снизу — полосы прокрутки там нет.
+        const items = m.querySelectorAll('.row-menu-item');
+        const e = items[items.length - 1].getBoundingClientRect();
+        const top = document.elementFromPoint(e.left + e.width / 2, e.top + e.height / 2);
+        return {top: b.top, bottom: b.bottom, floor, whole: m.scrollHeight <= m.clientHeight + 1,
+                lastReachable: !!top && m.contains(top)}; }"""
+    )
+
+
+def test_on_a_phone_a_long_row_menu_stays_between_the_notch_and_the_player(page, server):
+    """Просьба 20.11: на телефоне меню «⋯» строки обрезалось снизу. В меню
+    теперь до 14 пунктов, а у строки, наполовину скрытой мини-плеером, оно
+    открывалось вверх низом под плеер; у строки в середине — за верх экрана."""
+    page.set_viewport_size({"width": 390, "height": 844})
+    _playlist(server, page, "Длинная", *([QUIET_PATH, LOUD_PATH] * 20))
+    try:
+        page.evaluate("openPlaylist('Длинная')")
+        page.wait_for_selector("#playlistTracks .playlist-track")
+        page.evaluate(f"playQueue([{LOUD}], 0)")
+        page.wait_for_function("!document.getElementById('player').hidden && player.started")
+        page.evaluate("player.audio.pause()")
+        for where in ("half-hidden", "middle"):
+            page.evaluate(
+                """(where) => {
+                const floor = document.getElementById('player').getBoundingClientRect().top;
+                const rows = [...document.querySelectorAll('#playlistTracks .playlist-track')];
+                const r = rows[20].getBoundingClientRect();
+                const want = where === 'middle' ? innerHeight * 0.45 : floor - r.height / 2;
+                window.scrollBy(0, r.top - want);
+            }""",
+                where,
+            )
+            # Прокрутка приходит событием позже — меню закрылось бы ею.
+            page.wait_for_timeout(200)
+            page.evaluate(
+                "document.querySelectorAll('#playlistTracks .playlist-track')[20]"
+                ".querySelector('button.row-more').click()"
+            )
+            page.wait_for_selector(".row-menu")
+            box = _menu_box(page)
+            assert box["top"] >= 0, (where, box)
+            assert box["bottom"] <= box["floor"], (where, box)
+            assert box["whole"] and box["lastReachable"], (where, box)
+            page.keyboard.press("Escape")
+            page.wait_for_function("!document.querySelector('.row-menu')")
+    finally:
+        (server["root"] / "Длинная.m3u").unlink()
+        page.evaluate("playlists(); true")
+
+
+def test_on_a_phone_a_library_row_menu_stays_on_screen(page):
+    """То же для строк фонотеки (меню в app.js): строка в середине экрана
+    открывала меню вверх за край, а у нижней оно уходило под плеер."""
+    page.set_viewport_size({"width": 390, "height": 844})
+    open_library(page)
+    page.evaluate(f"playQueue([{LOUD}], 0)")
+    page.wait_for_function("!document.getElementById('player').hidden && player.started")
+    page.evaluate("player.audio.pause()")
+    page.evaluate(
+        """async () => {
+        const r = await fetch('/api/library?limit=50', { headers: headers() });
+        const all = await r.json();
+        // Совместный трек с альбомом — в меню 12 пунктов, как у настоящих.
+        const tracks = Array.from({ length: 40 }, (_, i) => ({
+            ...all[i % all.length], artist: 'Первый • Второй • Третий', album: 'Альбом'}));
+        const box = document.getElementById('library');
+        box.replaceChildren(...tracks.map((t) => libraryRow(t, tracks)));
+    }"""
+    )
+    for where in ("half-hidden", "middle"):
+        page.evaluate(
+            """(where) => {
+            const floor = document.getElementById('player').getBoundingClientRect().top;
+            const rows = [...document.querySelectorAll('#library .track')];
+            const r = rows[20].getBoundingClientRect();
+            const want = where === 'middle' ? innerHeight * 0.45 : floor - r.height / 2;
+            window.scrollBy(0, r.top - want);
+        }""",
+            where,
+        )
+        page.wait_for_timeout(200)
+        page.evaluate(
+            "document.querySelectorAll('#library .track')[20].querySelector('button.row-more').click()"
+        )
+        page.wait_for_selector(".row-menu")
+        box = _menu_box(page)
+        assert box["top"] >= 0, (where, box)
+        assert box["bottom"] <= box["floor"], (where, box)
+        assert box["whole"] and box["lastReachable"], (where, box)
+        page.keyboard.press("Escape")
+        page.wait_for_function("!document.querySelector('.row-menu')")
+
+
+def test_search_remembers_used_queries_and_says_it_finds_lyrics(page):
+    """Аудит 19.11, п. 14: подсказка не говорила, что ищет и по строчкам песен;
+    недавних запросов не было. Запоминается использованное (Enter, нажатие на
+    найденное), а не каждая буква."""
+    page.evaluate("localStorage.removeItem('recentSearches'); switchView('viewSearch')")
+    field = page.locator("#searchEverywhere")
+    assert "строчка" in field.get_attribute("placeholder")
+    field.fill("Qui")  # набрано, но не использовано
+    page.wait_for_timeout(400)
+    field.fill("Quiet")
+    field.press("Enter")
+    field.fill("")
+    page.wait_for_function(
+        "[...document.querySelectorAll('#searchBody .o-recent-item')].map(b => b.textContent) + '' === 'Quiet'"
+    )
+    page.locator("#searchBody .o-recent-item").first.click()
+    assert field.input_value() == "Quiet"
+    page.wait_for_selector("#searchBody .track")
+    for n in range(7):
+        page.evaluate(f"rememberSearch('запрос {n}')")
+    assert page.evaluate("recentSearches().length") == 5
+    page.evaluate("forgetSearches(); searchFor(''); switchView('viewHome')")
+
+
+def test_a_row_menu_survives_the_scroll_that_happened_before_it_opened(page, server):
+    """Событие прокрутки приходит позже нажатия: докатилась инерция — и меню,
+    поставленное поверх страницы, закрывалось, едва открывшись (тест «низкое
+    окно» плавал из-за этого). Прокрутка после открытия по-прежнему закрывает."""
+    page.set_viewport_size({"width": 390, "height": 844})
+    _playlist(server, page, "Прокрутка", *([QUIET_PATH, LOUD_PATH] * 20))
+    try:
+        page.evaluate("openPlaylist('Прокрутка')")
+        page.wait_for_selector("#playlistTracks .playlist-track")
+        page.evaluate(
+            """() => { window.scrollBy(0, 300);
+            document.querySelectorAll('#playlistTracks .playlist-track')[12].querySelector('button.row-more').click(); }"""
+        )
+        page.wait_for_timeout(300)
+        assert page.locator(".row-menu").count() == 1
+        page.evaluate("window.scrollBy(0, 120)")
+        page.wait_for_function("!document.querySelector('.row-menu')")
+    finally:
+        (server["root"] / "Прокрутка.m3u").unlink()
+        page.evaluate("playlists(); true")

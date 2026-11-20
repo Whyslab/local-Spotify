@@ -717,9 +717,10 @@ async function renderOfflineCard() {
     let used = "";
     try {
         const estimate = navigator.storage && navigator.storage.estimate ? await navigator.storage.estimate() : null;
-        if (estimate && estimate.usage) used = ` · занято ${(estimate.usage / 1e9).toFixed(2)} ГБ`;
+        /* Меньше 0,01 ГБ — «занято 0.00 ГБ» выглядело поломкой (аудит 19.11, п. 17). */
+        if (estimate && estimate.usage >= 0.005e9) used = ` · занято ${(estimate.usage / 1e9).toFixed(2)} ГБ`;
     } catch (e) { /* без цифр */ }
-    facts.textContent = `Скачано треков: ${offline.paths.size}${used}`;
+    facts.textContent = offline.paths.size ? `Скачано треков: ${offline.paths.size}${used}` : "Пока ничего не скачано";
     // Надёжно ли хранится — всегда на виду: на айфоне от этого зависит, доживёт ли скачанное до завтра.
     let kept = null;
     try {

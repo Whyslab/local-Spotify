@@ -1734,6 +1734,7 @@ function renderQueuePanel() {
         row.dataset.position = String(position);
         row.onclick = () => {
             if (row.swipedAt && performance.now() - row.swipedAt < 600) return;  // это был свайп
+            errorSkips = 0;
             player.orderAt = position; playAt(queueIndex); renderQueuePanel();
         };
 
@@ -2269,6 +2270,7 @@ function playQueue(tracks, startAt = 0, mode = "manual", source = null, options 
      * под путём трека новой очереди с тем же номером (и колода отметила бы
      * сыгранным не тот трек). */
     reportPlay(false);
+    errorSkips = 0;  // новая очередь, включённая руками, — сбои прежней не в счёт
     newQueue(tracks);
     player.queueMode = mode;
     player.queueSource = source;
@@ -2368,8 +2370,10 @@ async function loadShuffle(mode, playlist = "", noteId = "shuffleNote", paths = 
     }
 }
 
+/* «По порядку» после умной очереди фонотеки — в порядке списка, как
+ * выбран («По имени»), а не всегда «свежие сверху» (просьба 20.11). */
 function playSmartShuffle() {
-    loadShuffle("smart", "", "shuffleNote", null, typeof labIndex === "function" ? labIndex(true) : null);
+    loadShuffle("smart", "", "shuffleNote", null, typeof labIndex === "function" ? labIndex(true).then(libraryInListOrder) : null);
 }
 function playPlainShuffle() {
     const note = document.getElementById("shuffleNote");
@@ -2413,11 +2417,17 @@ function togglePlay() {
     renderPlayer();
 }
 
+/* «Вперёд», «назад» и выбор трека — руками: счётчик сбоев звука с нуля.
+ * Иначе после остановки «подряд 4 не играют» каждый следующий выбранный
+ * трек, не заигравший с первого раза, останавливал всё снова, без попытки
+ * пропустить (рецензия этапа 8). */
 function nextTrack() {
+    errorSkips = 0;
     const next = stepInOrder(1);
     if (next >= 0) playAt(next);
 }
 function prevTrack() {
+    errorSkips = 0;
     /* Restart the track first, like every other player: pressing back three
      * seconds in means "from the top", not "the previous song". */
     /* Пока новый трек грузится, время — прежнего: «назад» тогда значит
@@ -2898,7 +2908,7 @@ function renderNowPanel(track) {
             renderFacts([
                 [f.tempo ? Math.round(f.tempo) : null, "BPM"],
                 [key, "тональность"],
-                [typeof f.energy === "number" ? f.energy.toFixed(2) : null, "энергия"],
+                [energyWord(f.energy), "энергия"],
             ]);
         })
         .catch(() => { /* the panel simply stays without numbers */ });
@@ -3324,6 +3334,17 @@ function watchLyricsScroll() {
 
 watchLyricsScroll();
 
+/* Энергия словом, а не числом (аудит 19.11, п. 17): «0.53 энергия»
+ * слушателю ничего не говорит. Пороги — трети фонотеки 20.11.2026
+ * (audio_features: 0,39 и 0,475), так каждое слово встречается одинаково
+ * часто. */
+const ENERGY_CALM = 0.39;
+const ENERGY_LIVELY = 0.475;
+function energyWord(energy) {
+    if (typeof energy !== "number" || !Number.isFinite(energy)) return null;
+    return energy < ENERGY_CALM ? "спокойная" : energy < ENERGY_LIVELY ? "средняя" : "бодрая";
+}
+
 function renderFacts(facts) {
     const box = document.getElementById("nowFacts");
     box.replaceChildren();
@@ -3499,9 +3520,9 @@ function renderRail(data) {
         const text = document.createElement("span");
         text.className = "rail-text";
         const name = document.createElement("b");
-        name.textContent = label;
+        name.textContent = playlistTitle(p.name);
         const count = document.createElement("small");
-        count.textContent = p.tracks === 1 ? "1 трек" : `${p.tracks} треков`;
+        count.textContent = playlistSubtitle(p.name, p.tracks);
         text.append(name, count);
 
         item.append(art, text);
@@ -3665,13 +3686,13 @@ function renderPlaylist() {
     // Monday открыта и, может, поправлена в ней же — сердце в плеере с ней заодно.
     if (pl.name === FAVOURITES) syncFavourites(pl);
 
-    document.getElementById("playlistName").textContent = playlistLabel(pl.name);
+    document.getElementById("playlistName").textContent = playlistTitle(pl.name);
     const editToggle = document.getElementById("playlistEditToggle");
     if (editToggle) editToggle.hidden = pl.name === FAVOURITES;
     const seconds = pl.entries.reduce((sum, e) => sum + (e.duration > 0 ? e.duration : 0), 0);
     document.getElementById("playlistCount").textContent =
-        (pl.entries.length === 1 ? "1 трек" : `${pl.entries.length} треков`)
-        + (seconds ? ", " + humanLength(seconds) : "");
+        tracksWord(pl.entries.length) + (seconds ? ", " + humanLength(seconds) : "")
+        + (isAutoPlaylist(pl.name) ? " · " + AUTO_PLAYLIST_NOTE : "");
 
     const art = document.getElementById("playlistCover");
     art.replaceChildren();
@@ -3916,29 +3937,68 @@ function menuFloor() {
     return floor;
 }
 
-/* Меню строки, которую обрезает прокрутка вбок (полоса «Похоже на любимое»
- * на главной), — поверх страницы, у самой кнопки: внутри полосы оно уходило
- * под мини-плеер, а вверх его срезал край полосы. Под кнопкой, если до
- * плеера помещается, иначе над ней, иначе — сколько влезет над плеером. */
+/* Меню «⋯» строки — поверх страницы, у своей строки. Сначала так было только
+ * в полосе «Похоже на любимое» (внутри полосы меню уходило под мини-плеер, а
+ * вверх его срезал край полосы). С 20.11 — у всех строк: в меню стало 10–14
+ * пунктов, и у строки на телефоне оно вылезало за верх экрана или низом под
+ * плеер и вкладки (у строки, наполовину скрытой плеером, — всегда).
+ * Под строкой, если до плеера помещается, иначе над ней, иначе — сколько
+ * влезет над плеером; не влезает и так — прокручивается внутри себя. */
 function placeMenuBy(menu, button) {
     menu.classList.add("more-menu");
     document.body.appendChild(menu);
-    const box = button.getBoundingClientRect();
+    // По высоте — от строки (меню не закрывает её саму), вбок — от кнопки.
+    const box = (button.closest(".track") || button).getBoundingClientRect();
+    const own = button.getBoundingClientRect();
     const floor = menuFloor() - 8;
-    const height = menu.offsetHeight;
     const ceiling = menuCeiling();
-    let top = box.bottom + 6;
-    if (top + height > floor) top = box.top - 6 - height;
-    if (top < ceiling) top = Math.max(ceiling, floor - height);
-    menu.style.left = Math.round(Math.max(8, Math.min(box.right - menu.offsetWidth, window.innerWidth - menu.offsetWidth - 8))) + "px";
+    /* Предел .more-menu (520 точек) рассчитан на длинные списки; меню строки
+     * пусть занимает всё место между «чёлкой» и плеером — 14 пунктов на
+     * телефоне видны целиком, без прокрутки внутри. */
+    menu.style.maxHeight = Math.max(floor - ceiling, 120) + "px";
+    const height = menu.offsetHeight;
+    // Строка, наполовину скрытая плеером: «над ней» — это над плеером.
+    const below = Math.max(box.bottom + 6, ceiling);
+    const above = Math.min(box.top - 6, floor);
+    let top;
+    if (below + height <= floor) top = below;
+    else if (above - height >= ceiling) top = above - height;
+    // Ни под строкой, ни над ней не помещается — целиком, поверх строки:
+    // прокрутка внутри меню на телефоне прятала нижние пункты («Удалить»).
+    else top = floor - height;
+    top = Math.max(ceiling, Math.min(top, floor - height));
+    /* Меню появляется из scale(.96) — пусть растёт от строки: над ней —
+     * снизу вверх, иначе первый кадр отрывал его от строки. */
+    menu.style.transformOrigin = top + height <= box.top ? "bottom right" : "top right";
+    menu.style.left = Math.round(Math.max(8, Math.min(own.right - menu.offsetWidth, window.innerWidth - menu.offsetWidth - 8))) + "px";
     menu.style.top = Math.round(top) + "px";
     /* Колесо мыши прокручивает страницу без pointerdown — меню осталось бы
-     * висеть над чужими строками. Прокрутка внутри самого меню — не повод. */
+     * висеть над чужими строками. Прокрутка внутри самого меню — не повод.
+     * И событие прокрутки, сделанной ещё до открытия (докатилась инерция,
+     * строку подвинули к глазам), — тоже: оно приходит позже нажатия, и меню
+     * пропадало, едва открывшись. Закрывает только сдвиг того, что держит
+     * строку, с минуты открытия. */
+    menu._scrolledFrom = scrollPositions(button);
     document.addEventListener("scroll", menuScrolled, true);
 }
 
+function scrollPositions(node) {
+    const at = new Map([[document, [window.scrollX, window.scrollY]]]);
+    for (let n = node.parentElement; n; n = n.parentElement) at.set(n, [n.scrollLeft, n.scrollTop]);
+    return at;
+}
+
 function menuScrolled(event) {
-    if (openMenu && !openMenu.menu.contains(event.target)) closeTrackMenu();
+    if (!openMenu || openMenu.menu.contains(event.target)) return;
+    const from = openMenu.menu._scrolledFrom;
+    if (from) {
+        const target = event.target === document.documentElement ? document : event.target;
+        const was = from.get(target);
+        if (!was) return;  // прокрутилось то, в чём строки нет
+        const now = target === document ? [window.scrollX, window.scrollY] : [target.scrollLeft, target.scrollTop];
+        if (Math.abs(now[0] - was[0]) < 2 && Math.abs(now[1] - was[1]) < 2) return;
+    }
+    closeTrackMenu();
 }
 
 /* Верх, выше которого меню не встаёт: под «чёлкой» и часами пункты не нажать. */
@@ -4045,8 +4105,7 @@ function openTrackMenu(button, position) {
     menu.appendChild(item("Убрать из подборки", "", () => removeAt(position)));
     menu.lastChild.classList.add("is-danger");
 
-    button.insertAdjacentElement("afterend", menu);
-    keepMenuOnScreen(menu);
+    placeMenuBy(menu, button);
     button.setAttribute("aria-expanded", "true");
     openMenu = { menu, button };
     document.addEventListener("keydown", menuKeydown, true);
@@ -5574,6 +5633,25 @@ const FAVOURITES_LABEL = "Любимое ♥";
 
 function playlistLabel(name) {
     return name === FAVOURITES ? FAVOURITES_LABEL : name;
+}
+
+/* Имя рядом с обложкой: там ♥ уже нарисовано (обложка «Любимого» без своей
+ * картинки — сердце), и «Любимое ♥» давало два сердца подряд. В тексте без
+ * обложки (меню, записки) — playlistLabel, с сердцем. */
+function playlistTitle(name) {
+    return name === FAVOURITES ? "Любимое" : name;
+}
+
+/* «★ …» собирает служба каждую ночь (shelves) — звёздочку нигде не
+ * объясняли (аудит 19.11, п. 13). Пояснение — под названием. */
+const AUTO_PLAYLIST_NOTE = "обновляется сама каждую ночь";
+function isAutoPlaylist(name) {
+    return typeof name === "string" && name.startsWith("★");
+}
+/* Под карточкой места на одну короткую строку: у «★» число треков всегда
+ * одно и то же, важнее сказать, что она собирается сама. */
+function playlistSubtitle(name, tracks) {
+    return isAutoPlaylist(name) ? "обновляется сама" : tracksWord(tracks);
 }
 
 function favouritesFirst(list) {

@@ -41,6 +41,9 @@
 
     /* Материал: то, под чем видна прокрутка (вкладки, мини-плеер, меню). */
     --material: rgba(28, 28, 30, 0.86);
+    /* Вкладки внизу — плотнее: при 0,86 сквозь них читались строки списка
+       (аудит 19.11, п. 16; «ДОМ (Лондон, Прага…)» на главной 20.11). */
+    --material-solid: rgba(24, 24, 26, 0.97);
     --blur: blur(24px) saturate(1.8);
     /* Пружина листов iOS: быстрый старт, долгий мягкий конец. */
     --spring: cubic-bezier(0.32, 0.72, 0, 1);
@@ -590,7 +593,7 @@ code {
     inset: 0;
     z-index: -1;
     border-radius: inherit;
-    background: var(--material);
+    background: var(--material-solid);
     -webkit-backdrop-filter: var(--blur);
     backdrop-filter: var(--blur);
     pointer-events: none;
@@ -1420,6 +1423,11 @@ html.sheet-lock, html.sheet-lock body { overflow: hidden; }
     cursor: grab;
 }
 .player-grab i { display: block; width: 38px; height: 5px; border-radius: 3px; background: rgba(255, 255, 255, 0.4); }
+/* Кнопка «свернуть» — во всю ширину (за неё тянут вниз), и рамка фокуса
+   шла розовой полосой через весь экран (аудит 19.11, п. 18). Рамка — у
+   самой ручки. */
+.app.player-open .player-grab:focus-visible { outline: none; }
+.app.player-open .player-grab:focus-visible i { outline: 2px solid var(--accent); outline-offset: 6px; }
 
 .app.player-open .player-art {
     width: min(100%, 44vh);
@@ -2423,7 +2431,7 @@ html.sheet-lock, html.sheet-lock body { overflow: hidden; }
    высоту 46, поля и серый фон. Сбрасываем до нуля; дальше их рисуют
    перенесённые правила (они ниже и того же веса). */
 .o-card, .o-mood-open, .o-artist-row, .o-back, .o-link, .o-browse, .o-col-sub,
-.o-yt-ask, .o-seg-item, .side-item, .o-play-round, .o-mood-play {
+.o-yt-ask, .o-seg-item, .side-item, .o-play-round, .o-mood-play, .o-recent-item {
     min-height: 0;
     padding: 0;
     border: 0;
@@ -2546,6 +2554,12 @@ html.sheet-lock, html.sheet-lock body { overflow: hidden; }
 .o-browse .o-cover { position: absolute; inset: 0; width: 100%; height: 100%; aspect-ratio: auto; border-radius: 0; filter: saturate(1.2); }
 .o-browse::after { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, rgba(0, 0, 0, 0.75), rgba(0, 0, 0, 0.1)); }
 .o-browse span { position: absolute; left: 12px; bottom: 10px; z-index: 1; font-weight: 700; font-size: 17px; }
+/* Недавние запросы — строками, как в поиске телефона: значок и текст. */
+.o-recent { display: flex; flex-direction: column; padding: 0 16px; }
+.o-recent-item { display: flex; align-items: center; gap: 12px; min-height: 44px; text-align: left;
+  color: var(--text); font-size: 16px; border-bottom: 0.5px solid var(--line); }
+.o-recent-item .icon { flex: none; width: 18px; height: 18px; color: var(--text-3); }
+.o-recent-item span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .o-yt { margin: 22px 16px 0; }
 .o-yt-ask { display: flex; align-items: center; gap: 10px; width: 100%; padding: 14px; border-radius: 12px; background: var(--fill-2); color: var(--accent); font-size: 16px; }
 .o-yt .o-section { margin-left: -16px; margin-right: -16px; }
@@ -2711,9 +2725,14 @@ html.sheet-lock, html.sheet-lock body { overflow: hidden; }
         column-gap: 72px;
         padding: 0 56px 32px;
     }
-    .app.player-open .player-grab { justify-content: start; height: 52px; }
+    /* Здесь «свернуть» — кнопка-галочка, а не полоса, за которую тянут:
+       квадрат у галочки, а не вся ширина (рамка фокуса шла через весь экран). */
+    .app.player-open .player-grab { justify-self: start; width: 52px; height: 52px; border-radius: 12px; }
     .app.player-open .player-grab i { width: 22px; height: 22px; background: none; border: solid rgba(255, 255, 255, 0.7);
         border-width: 0 2.5px 2.5px 0; transform: rotate(45deg) translate(-4px, -4px); border-radius: 1px; }
+    /* Рамка — у квадрата кнопки: вокруг повёрнутой галочки она была ромбом. */
+    .app.player-open .player-grab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+    .app.player-open .player-grab:focus-visible i { outline: none; }
     .app.player-open .player-art,
     .app.player-open .player.is-lyrics .player-art,
     .app.player-open .player.is-queue .player-art { display: block; grid-area: art; width: min(100%, 52vh); align-self: end; }
@@ -3086,6 +3105,15 @@ input:placeholder-shown + .search-clear { display: none; }
         line-height: 14px;
         vertical-align: 1px;
     }
+    /* Цели пальца — не меньше 44 точек (аудит 19.11, п. 15): ручка и
+       «откуда играет» были по 32, «Свежие сверху» — 21, «онлайн» — 29.
+       Ручка, «откуда играет» и «Свежие сверху» — сами выше и шире (под
+       «Свежими» сразу строка трека: невидимое поле попадало бы на неё);
+       у «онлайн» — невидимое поле вокруг, рядом с ним ничего нет. */
+    .queue-row .queue-handle, .queue-row .queue-reveal { width: 44px; min-width: 44px; min-height: 44px; }
+    #librarySort { display: inline-flex; align-items: center; min-height: 44px; }
+    #statusPill { position: relative; }
+    #statusPill::before { content: ""; position: absolute; inset: -8px -4px; }
     /* «+ в фонотеку» — кругом с «+», цель 40 px; подпись — в aria-label. */
     .queue-keep.is-round {
         width: 40px; min-width: 40px; height: 40px; min-height: 40px;

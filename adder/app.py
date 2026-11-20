@@ -2479,7 +2479,9 @@ def web_cover(url: str, size: int = 0, authenticated: bool = Depends(verify_toke
 def artist_photo(name: str, size: int = 0, authenticated: bool = Depends(verify_token)):
     """Шапка артиста: своя, если поставлена, иначе фото из Deezer.
 
-    404 — ни того, ни другого: тогда страница берёт обложку трека, как раньше.
+    204 — ни того, ни другого: тогда страница берёт обложку трека, как раньше.
+    Не 404: «фото нет» — обычный ответ, а 404 браузер пишет в консоль ошибкой
+    на каждый показ списка артистов (аудит 19.11, п. 19).
     no-cache: свою шапку меняют, и браузер не должен показывать прежнюю.
     """
     art = artist_photos.read(name)
@@ -2487,7 +2489,7 @@ def artist_photo(name: str, size: int = 0, authenticated: bool = Depends(verify_
         url = similar.artist_picture(name, runtime.PROJECT / "similar-cache")
         art = webcovers.fetch(url) if url else None
     if art is None:
-        raise HTTPException(status_code=404, detail="Фото артиста нет")
+        return Response(status_code=204, headers={"Cache-Control": "private, no-cache"})
     return _picture_response(art, size, "private, no-cache")
 
 
