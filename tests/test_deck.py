@@ -546,3 +546,33 @@ def test_a_rename_onto_the_name_of_a_deleted_playlist_drops_its_old_deck(client)
     state = db.db_query("SELECT state FROM decks WHERE key = ?", (deck.playlist_key("Б"),))
     assert '"round": 7' not in state[0]["state"]
     assert not db.db_query("SELECT 1 FROM decks WHERE key = ?", (deck.playlist_key("А"),))
+
+
+def test_repeats_count_only_the_deck_and_within_one_deck(client):
+    """Разбор 20.11.2026: кнопка перемешивания у артиста тасует без колоды, и
+    артист, слушанный по кругу, давал «повторы колоды». Тот же трек из двух
+    разных колод — тоже не её промах."""
+    first = take(client)
+    a = first["order"][0]
+    play(client, a, deck_tag={"key": first["key"], "round": 1}, heard_at=time.time() - 3 * 3600)
+    play(
+        client, a, deck_tag={"key": "playlist:Другая", "round": 1}, heard_at=time.time() - 2 * 3600
+    )
+    # Перемешивание артиста в плеере: manual + shuffled, без колоды — дважды.
+    for hours in (1.5, 1):
+        r = client.post(
+            "/api/plays",
+            json={
+                "path": a,
+                "played_seconds": 170.0,
+                "duration": 180.0,
+                "mode": "manual",
+                "shuffled": True,
+                "heard_at": time.time() - hours * 3600,
+            },
+        )
+        assert r.status_code == 200, r.text
+    repeats = client.get("/api/stats?period=month").json()["repeats"]
+    assert repeats == {"days": 3, "plays": 2, "repeats": 0}
+    deck_column = db.db_query("SELECT deck FROM plays WHERE path = ? ORDER BY id", (a,))
+    assert [r["deck"] for r in deck_column] == [first["key"], "playlist:Другая", None, None]

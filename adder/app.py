@@ -3106,7 +3106,8 @@ def record_play(req: PlayRequest, authenticated: bool = Depends(verify_token)):
     cur = db.db_exec(
         "INSERT OR IGNORE INTO plays"
         "(path, played_at, played_seconds, duration, skipped, source, mode, heard_at, shuffled,"
-        " engine) VALUES(?, datetime(?, 'unixepoch', 'localtime'), ?, ?, ?, ?, ?, ?, ?, ?)",
+        " engine, deck)"
+        " VALUES(?, datetime(?, 'unixepoch', 'localtime'), ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             req.path,
             # played_at has always been when the play ended: kept so.
@@ -3119,6 +3120,7 @@ def record_play(req: PlayRequest, authenticated: bool = Depends(verify_token)):
             req.heard_at,
             1 if req.shuffled else 0,
             _engine_of(req),
+            req.deck.key if req.deck else None,
         ),
     )
     if not cur.rowcount:

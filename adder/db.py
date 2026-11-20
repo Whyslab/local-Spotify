@@ -158,6 +158,11 @@ def db_init():
     # само по себе не отличает тасовку в плеере от игры подборки по порядку.
     with suppress(sqlite3.OperationalError):
         db_exec("ALTER TABLE plays ADD COLUMN shuffled INTEGER DEFAULT 0")
+    # Из какой колоды обычного перемешивания взят трек (ключ adder/deck.py).
+    # Без неё «Повторов за 3 дня» смешивало колоду с перемешиванием артиста
+    # и альбома в плеере — те тасуют без колоды (разбор 20.11.2026).
+    with suppress(sqlite3.OperationalError):
+        db_exec("ALTER TABLE plays ADD COLUMN deck TEXT")
     db_exec(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_plays_heard "
         "ON plays(path, heard_at, played_seconds) WHERE heard_at IS NOT NULL"

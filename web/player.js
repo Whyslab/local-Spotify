@@ -3865,9 +3865,12 @@ function menuKeydown(event) {
         /* Меню лежит в конце страницы: Tab с последнего пункта уходил в
          * адресную строку, Shift+Tab с первого — в конец страницы. С края —
          * назад к «⋯», откуда открыли; внутри формы Tab ходит как обычно. */
-        const stops = [...menu.querySelectorAll("button:not([disabled]), input, select, textarea, a[href]")];
+        /* Фокус не в меню (открыли мышью и ушли) — Tab идёт как обычно. */
+        if (!menu.contains(document.activeElement)) { closeTrackMenu(); return; }
+        const stops = [...menu.querySelectorAll(
+            "button:not([disabled]), input:not([type=hidden]):not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href]")];
         const edge = event.shiftKey ? stops[0] : stops[stops.length - 1];
-        if (!stops.length || document.activeElement === edge || !menu.contains(document.activeElement)) {
+        if (!stops.length || document.activeElement === edge) {
             event.preventDefault();
             closeTrackMenu();
             if (button.isConnected) button.focus();
