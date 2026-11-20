@@ -567,7 +567,7 @@ function refreshContinue() {
     /* Зовётся и из renderPlayer: перерисовать только когда сменился трек или
      * «играет/пауза» — иначе кнопка теряла бы фокус на каждом обновлении. */
     const track = player.queue[player.index];
-    const key = track ? `${track.path}|${player.audio.paused}` : "";
+    const key = track ? `${track.path}|${audioPaused()}` : "";
     if (old && old.dataset.key === key) return;
     const now = continueSection();
     if (now) now.dataset.key = key;
@@ -582,8 +582,11 @@ function refreshContinue() {
 function homePlaylists() {
     if (typeof knownPlaylists === "undefined" || !knownPlaylists.length) return [];
     const fav = knownPlaylists.filter(p => p.name === FAVOURITES);
+    /* «★ …» пересобираются каждую ночь — по дате они всегда «свежие» и
+     * вытесняли свои подборки. Свои — первыми, «★» — после. */
+    const auto = (p) => (p.name.startsWith("★") ? 1 : 0);
     const rest = knownPlaylists.filter(p => p.name !== FAVOURITES)
-        .sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0));
+        .sort((a, b) => auto(a) - auto(b) || (b.updated_at || 0) - (a.updated_at || 0));
     return [...fav, ...rest].slice(0, 6);
 }
 

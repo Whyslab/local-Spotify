@@ -4046,23 +4046,27 @@ function openPlaylistMenu(button) {
     if (offlineButton && !offlineButton.hidden) {
         item(offlineButton.textContent, () => offlineButton.click()).disabled = offlineButton.disabled;
     }
-    item("Переименовать…", () => {
+    /* «Любимое ♥» (Monday) не переименовывается и не удаляется — пунктов нет. */
+    const editable = !(player.playlist && player.playlist.name === FAVOURITES);
+    if (editable) item("Переименовать…", () => {
         togglePlaylistEdit(true);
         const field = document.getElementById("playlistRename");
         if (field) { field.focus(); field.select(); }
     });
     item("Назад", () => leavePlaylist());
-    const line = document.createElement("div");
-    line.className = "row-menu-line";
-    menu.appendChild(line);
-    item("Удалить подборку…", () => {
-        togglePlaylistEdit(true);
-        const del = document.getElementById("playlistDelete");
-        if (del && del.isConnected) {
-            askDeletePlaylist(del);
-            document.getElementById("playlistEdit").scrollIntoView({ block: "nearest" });
-        }
-    }).classList.add("is-danger");
+    if (editable) {
+        const line = document.createElement("div");
+        line.className = "row-menu-line";
+        menu.appendChild(line);
+        item("Удалить подборку…", () => {
+            togglePlaylistEdit(true);
+            const del = document.getElementById("playlistDelete");
+            if (del && del.isConnected) {
+                askDeletePlaylist(del);
+                document.getElementById("playlistEdit").scrollIntoView({ block: "nearest" });
+            }
+        }).classList.add("is-danger");
+    }
 
     document.body.appendChild(menu);
     const box = button.getBoundingClientRect();

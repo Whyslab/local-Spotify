@@ -583,8 +583,11 @@ function floatingHost(label) {
     const close = () => {
         watch.disconnect();
         document.removeEventListener("pointerdown", outside, true);
+        /* До удаления: после него фокус уже на body. Ушёл из окошка —
+         * человек сам переставил фокус, не перехватывать. */
+        const had = host.contains(document.activeElement) || document.activeElement === document.body;
         host.remove();
-        if (back && back.isConnected && host.contains(document.activeElement) !== false) back.focus();
+        if (had && back && back.isConnected) back.focus({ preventScroll: true });
     };
     const watch = new MutationObserver(() => {
         const first = host.firstElementChild;

@@ -6938,6 +6938,10 @@ def test_monday_is_shown_as_favourites_first_with_hearts_in_rows(page, server):
         # Рецензия: «Переименовать» подставляло «Monday» — исправишь на
         # «Любимое», и сердце молча отвяжется. У неё правки имени и удаления нет.
         assert page.locator("#playlistEditToggle").is_hidden()
+        page.locator("#playlistMore").click()
+        menu = page.locator(".row-menu").inner_text()
+        assert "Переименовать" not in menu and "Удалить подборку" not in menu
+        page.keyboard.press("Escape")
         page.evaluate("togglePlaylistEdit(true)")
         assert page.locator("#playlistEdit").is_hidden()
         assert page.locator("#playlistCover").inner_text().startswith("♥") or page.evaluate(
@@ -7053,6 +7057,9 @@ def test_home_shows_the_recently_changed_playlists_and_follows_renames(page, ser
     old.write_text(LOUD_PATH + "\n", encoding="utf-8")
     new.write_text(QUIET_PATH + "\n", encoding="utf-8")
     os.utime(old, (time.time() - 86400 * 400, time.time() - 86400 * 400))
+    # «★» пересобираются каждую ночь: свежие по дате, но идут после своих.
+    star = server["root"] / "★ Авто.m3u"
+    star.write_text(LOUD_PATH + "\n", encoding="utf-8")
     try:
         page.evaluate("playlists(); switchView('viewHome'); true")
         page.wait_for_function(
@@ -7060,6 +7067,8 @@ def test_home_shows_the_recently_changed_playlists_and_follows_renames(page, ser
         )
         names = page.locator("#homeBody .o-quick-name").all_inner_texts()
         assert names.index("Яя свежая") < (names.index("Аа старая") if "Аа старая" in names else 99)
+        if "★ Авто" in names and "Аа старая" in names:
+            assert names.index("Аа старая") < names.index("★ Авто")
         new.rename(server["root"] / "Яя другая.m3u")
         page.evaluate("playlists(); true")
         page.wait_for_function(
@@ -7067,6 +7076,7 @@ def test_home_shows_the_recently_changed_playlists_and_follows_renames(page, ser
         )
     finally:
         old.unlink(missing_ok=True)
+        star.unlink(missing_ok=True)
         new.unlink(missing_ok=True)
         (server["root"] / "Яя другая.m3u").unlink(missing_ok=True)
     page.evaluate("playlists(); true")
