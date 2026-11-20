@@ -522,11 +522,24 @@ function openPlayerMore(button) {
         for (const name of splitArtists(trackNames(track).artist).slice(0, 3)) {
             item(`К артисту «${name}»`, () => goToArtist(name));
         }
-        item("К альбому", () => goToAlbumOf(track));
+        if (track.album) item("К альбому", () => goToAlbumOf(track));
         item("Показать, откуда играет", () => { collapsePlayer(); revealTrack(track); });
         if (offline.supported) {
             item(isDownloaded(track.path) ? "Убрать с телефона" : "Скачать на телефон", () => toggleTrackDownload(track));
         }
+        /* Неверную версию замечают, пока она играет (рецензия этапа 6). */
+        item("Заменить другой версией…", () => {
+            const host = floatingHost("Заменить другой версией");
+            askForReplacement(button, -1, { entry: track, host });
+        });
+        item("Изменить теги…", () => {
+            const slot = floatingSlot("Теги трека");
+            askEdit(slot, track, []);
+        });
+        const line = document.createElement("div");
+        line.className = "row-menu-line";
+        menu.appendChild(line);
+        item("Удалить…", () => askRemove(floatingSlot("Удалить трек"), track)).classList.add("is-danger");
     }
     if (!menu.childElementCount) return;
     document.body.appendChild(menu);
@@ -552,16 +565,60 @@ function openPlayerMore(button) {
  * выбор подборки (askAddToPlaylist меняет строку на окошко). Строкой служит
  * пустое место в окошке поверх плеера; окошко вернуло его — убираем окошко. */
 function askAddToPlaylistFloating(track) {
+    askAddToPlaylist(floatingSlot("В какую подборку?"), track);
+}
+
+/* Окошко поверх плеера. Закрывается само, когда опустело (удаление, меню
+ * закрыли), когда в него вернулась пустая строка-место («Отмена») или встала
+ * строка трека (теги сохранены). Esc и нажатие мимо — как «Отмена». Второе
+ * окошко прежнее убирает: раньше они ложились одно на другое. */
+function floatingHost(label) {
+    document.querySelectorAll(".floating-ask").forEach(old => old.remove());
     const host = document.createElement("div");
     host.className = "floating-ask";
-    const slot = document.createElement("div");
-    host.appendChild(slot);
+    host.setAttribute("role", "dialog");
+    host.setAttribute("aria-label", label);
     document.body.appendChild(host);
+    const back = document.getElementById("playerMore");
+    const close = () => {
+        watch.disconnect();
+        document.removeEventListener("pointerdown", outside, true);
+        host.remove();
+        if (back && back.isConnected && host.contains(document.activeElement) !== false) back.focus();
+    };
     const watch = new MutationObserver(() => {
-        if (host.contains(slot)) { watch.disconnect(); host.remove(); }
+        const first = host.firstElementChild;
+        if (!first || first.matches(".floating-slot, .track")) close();
     });
     watch.observe(host, { childList: true });
-    askAddToPlaylist(slot, track);
+    host.addEventListener("keydown", (event) => {
+        if (event.key !== "Escape") return;
+        event.stopPropagation();
+        event.preventDefault();
+        if (typeof closeTrackMenu === "function") closeTrackMenu();
+        close();
+    });
+    const outside = (event) => {
+        if (!host.isConnected) { document.removeEventListener("pointerdown", outside, true); return; }
+        if (host.contains(event.target) || event.target.closest(".row-menu")) return;
+        close();
+    };
+    /* Не тем же нажатием, что открыло окошко. */
+    setTimeout(() => document.addEventListener("pointerdown", outside, true), 0);
+    /* Фокус — внутрь, когда содержимое встанет. */
+    setTimeout(() => {
+        const target = host.querySelector("input, button, select, textarea");
+        if (target) target.focus();
+    }, 0);
+    return host;
+}
+
+function floatingSlot(label) {
+    const host = floatingHost(label);
+    const slot = document.createElement("div");
+    slot.className = "floating-slot";
+    host.appendChild(slot);
+    return slot;
 }
 
 /* ---------------- Левая панель на компьютере ---------------- */

@@ -550,9 +550,11 @@ function continueSection() {
         if (audioPaused()) togglePlay();
         else expandPlayer();
     }, cover, el("span", "o-continue-text", "", el("span", "o-continue-title", names.title),
-        el("span", "o-continue-sub", [names.artist, sub].filter(Boolean).join(" — "))), el("span", "o-continue-play", "", labIcon("play")));
-    row.setAttribute("aria-label", "Продолжить «" + names.title + "»");
-    const section = labSection("Продолжить", null, row);
+        el("span", "o-continue-sub", [names.artist, sub].filter(Boolean).join(" — "))),
+        /* Играет — нажатие открывает плеер, а не «играть»: значок стрелкой. */
+        el("span", "o-continue-play", "", labIcon(audioPaused() ? "play" : "chevron")));
+    row.setAttribute("aria-label", (audioPaused() ? "Продолжить «" : "Открыть плеер: «") + names.title + "»");
+    const section = labSection(audioPaused() ? "Продолжить" : "Сейчас играет", null, row);
     section.classList.add("is-continue");
     return section;
 }
@@ -562,10 +564,41 @@ function refreshContinue() {
     const box = document.getElementById("homeBody");
     if (!box) return;
     const old = box.querySelector(".o-section.is-continue");
+    /* Зовётся и из renderPlayer: перерисовать только когда сменился трек или
+     * «играет/пауза» — иначе кнопка теряла бы фокус на каждом обновлении. */
+    const track = player.queue[player.index];
+    const key = track ? `${track.path}|${player.audio.paused}` : "";
+    if (old && old.dataset.key === key) return;
     const now = continueSection();
+    if (now) now.dataset.key = key;
     if (old && now) old.replaceWith(now);
     else if (old) old.remove();
     else if (now) box.prepend(now);
+}
+
+/* «Ваши подборки»: «Любимое» и пять последних изменённых (аудит просил
+ * последние, а не первые по алфавиту). Подпись — чтобы заменять полку, только
+ * когда состав сменился. */
+function homePlaylists() {
+    if (typeof knownPlaylists === "undefined" || !knownPlaylists.length) return [];
+    const fav = knownPlaylists.filter(p => p.name === FAVOURITES);
+    const rest = knownPlaylists.filter(p => p.name !== FAVOURITES)
+        .sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0));
+    return [...fav, ...rest].slice(0, 6);
+}
+
+function yourPlaylistsSection() {
+    const lists = homePlaylists();
+    if (!lists.length) return null;
+    const section = labSection("Ваши подборки", { label: "Все", run: () => switchView("viewPlaylists") },
+        el("div", "o-quick-grid", "", ...lists.map((p) => {
+            const tile = button("o-quick", () => openPlaylist(p.name), labPlaylistCover(p.name), el("span", "o-quick-name", playlistLabel(p.name)));
+            tile.setAttribute("aria-label", playlistLabel(p.name));
+            return tile;
+        })));
+    section.classList.add("is-yours");
+    section.dataset.sig = lists.map(p => p.name).join("\n");
+    return section;
 }
 
 function renderLabHome(data) {
@@ -586,15 +619,8 @@ function renderLabHome(data) {
      * прокрутки. Рядом — свои подборки, «Любимое» первым. */
     const going = continueSection();
     if (going) parts.push(going);
-    const lists = typeof knownPlaylists !== "undefined" ? knownPlaylists.slice(0, 6) : [];
-    if (lists.length) {
-        parts.push(labSection("Ваши подборки", { label: "Все", run: () => switchView("viewPlaylists") },
-            el("div", "o-quick-grid", "", ...lists.map((p) => {
-                const tile = button("o-quick", () => openPlaylist(p.name), labPlaylistCover(p.name), el("span", "o-quick-name", playlistLabel(p.name)));
-                tile.setAttribute("aria-label", playlistLabel(p.name));
-                return tile;
-            }))));
-    }
+    const yours = yourPlaylistsSection();
+    if (yours) parts.push(yours);
 
     /* Одинаковые песни в фонотеке (с 15.11.2026): сказать и отвести туда,
      * где выбирают, что оставить. */
@@ -684,6 +710,9 @@ function renderLabHome(data) {
     const artistsSlot = el("div");
     const findsSlot = el("div");
     parts.push(recentSlot, albumsSlot, artistsSlot, findsSlot);
+    /* Метка «главная собрана здесь»: полку подборок followPlaylists вставляет
+     * только сюда, а не в чужое содержимое #homeBody. */
+    recentSlot.classList.add("o-lab-mark");
     put(box, ...parts);
 
     labIndex().then((rows) => {
@@ -1316,7 +1345,20 @@ function renderPlaylistsGrid(force) {
         original(data);
         if (activeView === "viewPlaylists") renderPlaylistsGrid();
         /* Подборки пришли позже главной — полка «Ваши подборки» появится. */
-        if (homeDataForMoods && data.length && !document.querySelector("#homeBody .o-quick-grid")) renderLabHome(homeDataForMoods);
+        /* Подборки пришли позже главной, переименовали, удалили, создали —
+         * вставить или заменить только эту полку: перерисовка всей главной
+         * сбрасывала прокрутку и открытые меню. */
+        const box = document.getElementById("homeBody");
+        if (!homeDataForMoods || !box || !box.querySelector(".o-lab-mark")) return;
+        const old = box.querySelector(".o-section.is-yours");
+        const now = yourPlaylistsSection();
+        if (old && !now) old.remove();
+        else if (old && now.dataset.sig !== old.dataset.sig) old.replaceWith(now);
+        else if (!old && now) {
+            const going = box.querySelector(".o-section.is-continue");
+            if (going) going.after(now);
+            else box.prepend(now);
+        }
     };
 })();
 

@@ -156,6 +156,9 @@ def server(tmp_path_factory):
     mp.setattr(lyrics, "CACHE_DIR", tmp / "lyrics")
     mp.setattr(navidrome, "configured", lambda: False)
     mp.setattr(sync, "start", lambda: None)
+    # Предел «60 событий плеера в минуту» — на весь сервер, а сервер здесь
+    # один на модуль: события сотни тестов подряд упирались в 429 (CI плавал).
+    mp.setattr(app_module, "EVENTS_PER_MINUTE", 10**6)
     mp.setattr(lyrics, "start_backfill", lambda: None)
     mp.setattr(lyrics, "_ask", lambda *a, **k: {})
     mp.setattr(lyrics, "_search", lambda *a, **k: {})

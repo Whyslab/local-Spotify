@@ -108,6 +108,9 @@ def server(tmp_path_factory):
     # Everything that would reach the network or another process at startup.
     mp.setattr(navidrome, "configured", lambda: False)
     mp.setattr(sync, "start", lambda: None)
+    # Предел «60 событий плеера в минуту» — на весь сервер, а сервер здесь
+    # один на модуль: события сотни тестов подряд упирались в 429 (CI плавал).
+    mp.setattr(app_module, "EVENTS_PER_MINUTE", 10**6)
     mp.setattr(lyrics, "start_backfill", lambda: None)
     mp.setattr(lyrics, "_ask", lambda *a, **k: {})
     mp.setattr(lyrics, "_search", lambda *a, **k: {})
@@ -2925,6 +2928,8 @@ def test_a_library_row_has_one_menu_button_with_seven_actions(page):
         "В очередь",
         "Радио",
         "В подборку…",
+        "К артисту «Quiet»",
+        "К альбому",
         "Изменить теги…",
         "Удалить…",
     ]
@@ -3800,7 +3805,7 @@ def test_shuffle_offers_plain_and_smart(page):
             ".then(d => d.outside_mix === 'few')"
         )
         assert mix.locator("[aria-pressed=true]").inner_text() == "мало"
-        assert "немного нового" in page.locator(".smart-hint").inner_text()
+        assert "немного не из фонотеки" in page.locator(".smart-hint").inner_text()
     finally:
         page.evaluate(
             "fetch('/api/settings', {method: 'PUT', headers: {...headers(),"
@@ -6761,13 +6766,7 @@ def _fake_smart(page):
 def test_a_smart_queue_from_a_page_is_honest_about_itself(page):
     """Аудит 19.11, п. 2–3: после «Перемешать → Умное» значок горит со ✦, записка
     говорит, сколько своих и сколько не из фонотеки и каким движком, метки в
-    очереди — словами; нажатие на значок возвращает порядок, записка уходит.
-    Ссылку на нескачанный чужой трек плеер заранее не просит (было 404)."""
-    asked = []
-    page.on(
-        "request",
-        lambda r: asked.append(r.url) if "stream-url" in r.url and "outside" in r.url else None,
-    )
+    очереди — словами; нажатие на значок возвращает порядок, записка уходит."""
     _fake_smart(page)
     open_library(page)
     page.evaluate("playSmartShuffle(); true")
@@ -6786,8 +6785,6 @@ def test_a_smart_queue_from_a_page_is_honest_about_itself(page):
     assert rows.nth(1).locator(".queue-outside").inner_text() == "не в фонотеке"
     assert rows.nth(1).locator(".queue-keep").inner_text() == "+ в фонотеку"
     assert rows.nth(2).locator(".queue-outside").inner_text() == "не из подборки"
-    page.wait_for_timeout(600)
-    assert asked == []
 
     page.locator("#playerShuffle").click()
     page.wait_for_function("player.queueMode !== 'smart'")
@@ -6831,9 +6828,14 @@ def test_on_a_touch_screen_a_queue_row_is_removed_by_a_swipe(server, browser):
     context, phone = _phone(server, browser)
     try:
         open_library(phone)
+        # Без настоящего звука: первый трек мог не заиграть в безголовом
+        # браузере, плеер перескакивал на второй — и строка 1 становилась
+        # играющей, без «×» (тест плавал в полном прогоне).
         phone.evaluate(
-            f"playQueue([{LOUD}, {QUIET}, {{...{LOUD}, title: 'Third'}}], 0, 'manual'); player.audio.pause(); true"
+            "playAt = async (i) => { player.index = i; renderQueuePanel(); return true; };"
+            f"playQueue([{LOUD}, {QUIET}, {{...{LOUD}, title: 'Third'}}], 0, 'manual'); true"
         )
+        phone.wait_for_function("player.index === 0")
         phone.evaluate("toggleQueuePanel()")
         rows = phone.locator("#playQueueRows .queue-row")
         rows.nth(2).wait_for()
@@ -6863,9 +6865,18 @@ def test_on_a_touch_screen_a_queue_row_is_removed_by_a_swipe(server, browser):
 
 def test_the_players_more_menu_has_the_track_actions(page):
     """Аудит 19.11, п. 5: в «⋯» плеера было только «откуда играет» и цвет
-    обложки. Теперь — то же, что у строки: в подборку, радио, к артисту, к альбому."""
+    обложки. Теперь — то же, что у строки: в подборку, радио, к артисту, к альбому,
+    замена версии, теги, удаление. «К альбому» — только когда у трека есть альбом."""
     open_library(page)
     page.evaluate(f"playQueue([{LOUD}], 0, 'manual'); player.audio.pause(); true")
+    page.locator("#player").wait_for(state="visible")
+    page.locator("#playerMore").click()
+    assert "К альбому" not in page.locator(".player-more-menu").inner_text()
+    page.keyboard.press("Escape")
+    page.wait_for_function("labTracks && labTracks.some(t => t.title === 'Loud' && t.album)")
+    page.evaluate(
+        "playQueue([labTracks.find(t => t.title === 'Loud')], 0, 'manual'); player.audio.pause(); true"
+    )
     page.locator("#player").wait_for(state="visible")
     page.locator("#playerMore").click()
     items = [t.strip() for t in page.locator(".player-more-menu .row-menu-item").all_inner_texts()]
@@ -6875,6 +6886,9 @@ def test_the_players_more_menu_has_the_track_actions(page):
         "К артисту «Loud Band»",
         "К альбому",
         "Показать, откуда играет",
+        "Заменить другой версией…",
+        "Изменить теги…",
+        "Удалить…",
     ):
         assert want in items, items
     assert not any("Цвет из обложки" in t for t in items)
@@ -6883,6 +6897,18 @@ def test_the_players_more_menu_has_the_track_actions(page):
     ask.get_by_text("В какую подборку?").wait_for()
     ask.get_by_role("button", name="Отмена").click()
     ask.wait_for(state="detached")
+    # Окошко с тегами: Esc закрывает его (а не сворачивает плеер под ним),
+    # второе окошко не ложится на первое.
+    page.locator("#playerMore").click()
+    page.get_by_role("menuitem", name="Изменить теги…").click()
+    ask.get_by_text("Теги трека").wait_for()
+    assert ask.get_attribute("role") == "dialog"
+    page.locator("#playerMore").click()
+    page.get_by_role("menuitem", name="Заменить другой версией…").click()
+    page.locator(".floating-ask input[type=url]").wait_for()
+    assert page.locator(".floating-ask").count() == 1
+    page.locator(".floating-ask input[type=url]").press("Escape")
+    page.locator(".floating-ask").wait_for(state="detached")
     page.locator("#playerMore").click()
     page.get_by_role("menuitem", name="К альбому").click()
     page.wait_for_function("activeView === 'viewAlbum'")
@@ -6909,6 +6935,14 @@ def test_monday_is_shown_as_favourites_first_with_hearts_in_rows(page, server):
         page.wait_for_selector("#playlistTracks .playlist-track")
         assert page.locator("#playlistName").inner_text() == "Любимое ♥"
         assert page.locator("#playlistTracks .track-love").count() == 0
+        # Рецензия: «Переименовать» подставляло «Monday» — исправишь на
+        # «Любимое», и сердце молча отвяжется. У неё правки имени и удаления нет.
+        assert page.locator("#playlistEditToggle").is_hidden()
+        page.evaluate("togglePlaylistEdit(true)")
+        assert page.locator("#playlistEdit").is_hidden()
+        assert page.locator("#playlistCover").inner_text().startswith("♥") or page.evaluate(
+            "!!document.querySelector('#playlistCover img')"
+        )
     finally:
         monday.unlink()
         (server["root"] / "Аааа.m3u").unlink()
@@ -6924,7 +6958,20 @@ def test_home_starts_with_continue(page):
     first = page.locator("#homeBody .o-section").first
     first.locator(".o-continue").wait_for()
     assert "Quiet" in first.inner_text()
-    assert first.locator("h2").inner_text() == "Продолжить"
+    # На паузе — «Продолжить»; заиграло — строка та же, но «Сейчас играет»
+    # (рецензия: строка не обновлялась, пока главная открыта).
+    page.evaluate("player.audio.pause(); renderPlayer(); true")
+    page.wait_for_function(
+        "document.querySelector('#homeBody .o-section h2')?.textContent === 'Продолжить'"
+    )
+    page.evaluate(
+        "Object.defineProperty(player.audio, 'paused', {configurable: true, get: () => false});"
+        " renderPlayer(); true"
+    )
+    page.wait_for_function(
+        "document.querySelector('#homeBody .o-section h2')?.textContent === 'Сейчас играет'"
+    )
+    page.evaluate("delete player.audio.paused; true")
 
 
 def test_small_fixes_of_the_audit(page, server, browser):
@@ -6953,3 +7000,73 @@ def test_small_fixes_of_the_audit(page, server, browser):
         assert phone.locator("#viewTitle").inner_text() == "Настройки"
     finally:
         context.close()
+
+
+def test_a_late_library_does_not_hang_the_old_order_on_a_queue_already_back_in_order(page):
+    """Рецензия этапа 6: фонотека для «вернуть порядок» пришла после того, как
+    порядок уже вернули ✦ — и цеплялась к обычной очереди: следующее
+    выключение умного ставило вместо прежней очереди всю фонотеку."""
+    _fake_smart(page)
+    open_library(page)
+    page.evaluate(
+        "window.__late = null; const p = new Promise(r => { window.__late = r; });"
+        " loadShuffle('smart', '', 'shuffleNote', null, p); true"
+    )
+    page.wait_for_function("player.queueMode === 'smart'")
+    page.locator("#playerShuffle").click()
+    page.wait_for_function("player.queueMode !== 'smart'")
+    page.evaluate(f"window.__late([{LOUD}, {QUIET}]); true")
+    page.wait_for_timeout(100)
+    assert page.evaluate("player.beforeSmart") is None
+
+
+def test_on_a_phone_the_queue_keeps_whole_titles_for_outside_tracks(server, browser):
+    """Критик этапа 6: на телефоне капсула «+ в фонотеку» съедала название
+    («Делай Как …»). Там — круг «+» (подпись в aria-label), а метка словами —
+    в строке артиста, не в названии."""
+    context, phone = _phone(server, browser)
+    try:
+        _fake_smart(phone)
+        open_library(phone)
+        phone.evaluate("playSmartShuffle(); true")
+        phone.wait_for_function("player.queueMode === 'smart'")
+        phone.evaluate("toggleQueuePanel()")
+        rows = phone.locator("#playQueueRows .queue-row")
+        rows.nth(2).wait_for()
+        keep = rows.nth(1).locator(".queue-keep")
+        assert keep.inner_text() == "+"
+        assert "фонотеку" in (keep.get_attribute("aria-label") or "")
+        assert rows.nth(1).locator(".track-title .queue-outside").count() == 0
+        assert rows.nth(1).locator(".track-artist .queue-outside").inner_text() == "не в фонотеке"
+    finally:
+        context.close()
+
+
+def test_home_shows_the_recently_changed_playlists_and_follows_renames(page, server):
+    """Критик этапа 6: «Ваши подборки» были первыми шестью по алфавиту, а аудит
+    просил последние; после переименования полка оставалась старой."""
+    import os
+    import time
+
+    old = server["root"] / "Аа старая.m3u"
+    new = server["root"] / "Яя свежая.m3u"
+    old.write_text(LOUD_PATH + "\n", encoding="utf-8")
+    new.write_text(QUIET_PATH + "\n", encoding="utf-8")
+    os.utime(old, (time.time() - 86400 * 400, time.time() - 86400 * 400))
+    try:
+        page.evaluate("playlists(); switchView('viewHome'); true")
+        page.wait_for_function(
+            "[...document.querySelectorAll('#homeBody .o-quick-name')].some(n => n.textContent === 'Яя свежая')"
+        )
+        names = page.locator("#homeBody .o-quick-name").all_inner_texts()
+        assert names.index("Яя свежая") < (names.index("Аа старая") if "Аа старая" in names else 99)
+        new.rename(server["root"] / "Яя другая.m3u")
+        page.evaluate("playlists(); true")
+        page.wait_for_function(
+            "[...document.querySelectorAll('#homeBody .o-quick-name')].some(n => n.textContent === 'Яя другая')"
+        )
+    finally:
+        old.unlink(missing_ok=True)
+        new.unlink(missing_ok=True)
+        (server["root"] / "Яя другая.m3u").unlink(missing_ok=True)
+    page.evaluate("playlists(); true")

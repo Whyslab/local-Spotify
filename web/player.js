@@ -282,10 +282,10 @@ let lastPrefetch = { path: null, at: 0 };  // когда за ним ходил�
 
 function prefetchNextStream() {
     const track = player.queue[peekNext()];
-    /* Трек не из фонотеки ещё качается во временный кэш: ссылка на него до
-     * конца скачивания — 404 в консоли на каждую предзагрузку (аудит 19.11,
-     * п. 3). Возьмём, когда дойдём: playAt ждёт его сам. */
-    if (!track || isOutside(track) || track.path === prefetching) return;
+    /* Трек не из фонотеки тоже: ссылка, взятая заранее, нужна айфону с
+     * погашенным экраном (см. выше), а пока он качается — 404, и повтор не
+     * чаще раза в PREFETCH_RETRY_MS (рецензия этапа 6). */
+    if (!track || track.path === prefetching) return;
     if (nextStream && nextStream.path === track.path && linkLasts(nextStream, track)) return;
     /* Не чаще раза в PREFETCH_RETRY_MS за тем же треком — и после неудачи, и
      * после удачи: сервер мог дать ссылку короче, чем думает телефон (часы
@@ -750,7 +750,11 @@ function smartQueueToOrder() {
     player.smartTicket += 1;
     const saved = player.beforeSmart;
     restoreBeforeSmart();
-    if (!saved) player.queueMode = "manual";
+    if (!saved && shuffleNoteFor) {
+        /* newQueue не звали — записку про умную очередь стереть самим. */
+        if (shuffleNoteFor.el.textContent === shuffleNoteFor.text) shuffleNoteFor.el.textContent = "";
+        shuffleNoteFor = null;
+    }
     renderPlayerModes();
     renderQueuePanel();
     setPlayerNote("По порядку");
@@ -805,8 +809,8 @@ const MIX_LEVELS = [["off", "выкл"], ["few", "мало"], ["on", "треть
 let outsideMix = "off";
 
 function smartHint() {
-    return outsideMix === "on" ? "похожее рядом, примерно треть новых"
-        : outsideMix === "few" ? "похожее рядом, немного нового"
+    return outsideMix === "on" ? "похожее рядом, примерно треть — не из фонотеки"
+        : outsideMix === "few" ? "похожее рядом, немного не из фонотеки"
             : "похожее рядом, только своё";
 }
 
@@ -978,7 +982,8 @@ async function smartifyQueue(base = null) {
     }
     /* Пока ждали, могли выключить, выбрать другое или включить другую
      * подборку. Нажатый «дальше» — не повод: берём то, что играет теперь. */
-    if (ticket !== player.smartTicket || player.shuffle !== "smart" || player.queueEpoch !== epoch) {
+    const stillSmart = player.shuffle === "smart" || (!player.shuffle && player.queueMode === "smart");
+    if (ticket !== player.smartTicket || !stillSmart || player.queueEpoch !== epoch) {
         return null;
     }
     const current = player.queue[player.index];
@@ -1047,7 +1052,8 @@ async function smartifyFromDownloads(ticket, epoch, paths) {
     } catch (e) {
         tracks = [];
     }
-    if (ticket !== player.smartTicket || player.shuffle !== "smart" || player.queueEpoch !== epoch) {
+    if (ticket !== player.smartTicket || !(player.shuffle === "smart" || (!player.shuffle && player.queueMode === "smart"))
+        || player.queueEpoch !== epoch) {
         return null;
     }
     if (!tracks.length) {
@@ -1388,6 +1394,9 @@ function restoreBeforeSmart() {
     const saved = player.beforeSmart;
     player.beforeSmart = null;
     if (!saved) {
+        /* Порядок неизвестен — очередь та же, но уже не «умная»: иначе ✦
+         * горел бы по queueMode и после выключения. */
+        if (player.queueMode === "smart") player.queueMode = "manual";
         buildOrder(player.index);
         return;
     }
@@ -1745,7 +1754,12 @@ function renderQueuePanel() {
             keep.className = "queue-keep";
             /* Словами, а не «+» (аудит 19.11, п. 3): подсказка при наведении на
              * телефоне не видна. */
-            keep.textContent = track.kept === "queued" ? "✓ добавляется" : "+ в фонотеку";
+            /* На телефоне подпись отнимала место у названия («Делай Как …»):
+             * там кнопка — кругом «+», а «не в фонотеке» словами стоит под
+             * названием, в строке артиста. */
+            const queued = track.kept === "queued";
+            keep.textContent = COARSE_POINTER.matches ? (queued ? "✓" : "+") : (queued ? "✓ добавляется" : "+ в фонотеку");
+            keep.classList.toggle("is-round", COARSE_POINTER.matches);
             keep.title = keepLabel(track);
             keep.setAttribute("aria-label", `${keepLabel(track)}: «${track.title}»`);
             keep.disabled = track.kept === "saving" || track.kept === "queued";
@@ -1758,17 +1772,28 @@ function renderQueuePanel() {
         if (queueIndex !== player.index) row.append(...queueRowTools(row, position, track));
         /* Видно, что трек пришёл со стороны, а не из подборки. Иначе
          * непонятно, откуда он взялся, и это выглядит ошибкой. */
+        let mark = null;
         if (isOutside(track)) {
-            const mark = document.createElement("span");
+            mark = document.createElement("span");
             mark.className = "queue-outside is-new";
             mark.textContent = "не в фонотеке";
             mark.title = "Этого трека нет в фонотеке — подобран к похожим артистам";
-            title.prepend(mark);
         } else if (track.outside) {
-            const mark = document.createElement("span");
+            mark = document.createElement("span");
             mark.className = "queue-outside";
             mark.textContent = "не из подборки";
             mark.title = "Трек из фонотеки, но не из этой подборки — подобран к соседям";
+        }
+        if (mark && COARSE_POINTER.matches) {
+            /* Палец: метка — словами в строке артиста, название остаётся целым. */
+            let line = info.querySelector(".track-artist");
+            if (!line) {
+                line = document.createElement("div");
+                line.className = "track-artist";
+                info.appendChild(line);
+            }
+            line.prepend(mark);
+        } else if (mark) {
             title.prepend(mark);
         }
         /* Палец: «×» в каждой строке съедал место названия (аудит 19.11, п. 4) —
@@ -1872,7 +1897,9 @@ function reshuffleQueue() {
         setPlayerNote("Радио само выбирает порядок — перемешивать нечего");
         return;
     }
-    if (player.shuffle === "smart") {
+    /* Умная со страницы («Перемешать → Умное» у подборки) — тоже умная:
+     * раньше тут включалась колода поверх неё, а ✦ потом загорался снова. */
+    if (player.shuffle === "smart" || (!player.shuffle && player.queueMode === "smart")) {
         /* Собирается из исходной подборки, а нынешняя очередь стоит, пока
          * новая не пришла: не собралась — играет прежняя умная, ✦ горит по
          * праву. Добавленное руками переезжает в новую (smartifyQueue). */
@@ -1908,8 +1935,8 @@ function swipeToRemove(row, position) {
     row.addEventListener("pointermove", (event) => {
         if (!start || event.pointerId !== start.id) return;
         const dx = event.clientX - start.x, dy = event.clientY - start.y;
-        if (!start.moved && Math.abs(dy) > Math.abs(dx)) { start = null; row.style.transform = ""; return; }
-        if (dx < -8) start.moved = true;
+        if (!start.moved && Math.abs(dy) > Math.abs(dx)) { start = null; row.style.transform = ""; row.classList.remove("is-swiping"); return; }
+        if (dx < -8 && !start.moved) { start.moved = true; row.classList.add("is-swiping"); }
         if (start.moved) row.style.transform = `translateX(${Math.min(0, dx)}px)`;
     });
     const end = (event) => {
@@ -1917,6 +1944,7 @@ function swipeToRemove(row, position) {
         const dx = event.clientX - start.x;
         const moved = start.moved;
         start = null;
+        row.classList.remove("is-swiping");
         row.style.transform = "";
         if (!moved) return;
         /* Щелчок, который придёт следом, не включает трек (row.onclick). */
@@ -2292,14 +2320,19 @@ async function loadShuffle(mode, playlist = "", noteId = "shuffleNote", paths = 
          * бывает и обещанием: фонотека ещё грузится). */
         if (mode === "smart" && ordered) {
             const epoch = player.queueEpoch;
+            const ticket = player.smartTicket;
             Promise.resolve(ordered).then(list => {
-                if (player.queueEpoch !== epoch || player.beforeSmart || !Array.isArray(list) || !list.length) return;
+                /* Пока фонотека грузилась, могли уже вернуть порядок (✦) —
+                 * билет сменился, очередь та же: не цеплять к ней чужое. */
+                if (player.queueEpoch !== epoch || player.smartTicket !== ticket || player.queueMode !== "smart"
+                    || player.beforeSmart || !Array.isArray(list) || !list.length) return;
                 /* Только нужное плееру: очередь сохраняется в localStorage, а
                  * строки фонотеки несут ещё десяток полей. */
                 const queue = list.filter(t => t && t.path).map(t => ({
                     path: t.path, title: t.title, artist: t.artist, album: t.album, duration: t.duration,
                 }));
                 player.beforeSmart = { queue, index: -1, mode: "manual", source: player.queueSource };
+                saveQueueSoon();
             }).catch(() => { /* порядок неизвестен — значок вернёт эту же очередь прямо */ });
         }
 
@@ -2604,6 +2637,8 @@ function formatTime(seconds) {
 let renderedTrack = null;
 
 function renderPlayer() {
+    /* «Продолжить» на открытой главной — с тем, что играет сейчас. */
+    if (activeView === "viewHome" && typeof refreshContinue === "function") refreshContinue();
     const bar = document.getElementById("player");
     const track = player.queue[player.index];
     bar.hidden = !track;
@@ -3579,6 +3614,9 @@ function togglePlaylistEdit(force) {
     const button = document.getElementById("playlistEditToggle");
     if (!card) return;
     card.hidden = force === undefined ? !card.hidden : !force;
+    /* «Любимое ♥» — это файл Monday: переименуешь — сердце молча отвяжется,
+     * а Navidrome потеряет подборку. Ни переименовать, ни удалить. */
+    if (player.playlist && player.playlist.name === FAVOURITES) card.hidden = true;
     if (card.hidden) resetPlaylistDelete();
     if (button) button.setAttribute("aria-expanded", String(!card.hidden));
     if (!card.hidden) {
@@ -3594,6 +3632,8 @@ function renderPlaylist() {
     if (pl.name === FAVOURITES) syncFavourites(pl);
 
     document.getElementById("playlistName").textContent = playlistLabel(pl.name);
+    const editToggle = document.getElementById("playlistEditToggle");
+    if (editToggle) editToggle.hidden = pl.name === FAVOURITES;
     const seconds = pl.entries.reduce((sum, e) => sum + (e.duration > 0 ? e.duration : 0), 0);
     document.getElementById("playlistCount").textContent =
         (pl.entries.length === 1 ? "1 трек" : `${pl.entries.length} треков`)
@@ -3601,7 +3641,7 @@ function renderPlaylist() {
 
     const art = document.getElementById("playlistCover");
     art.replaceChildren();
-    art.textContent = pl.name.slice(0, 1).toUpperCase();
+    art.textContent = pl.name === FAVOURITES ? "♥" : pl.name.slice(0, 1).toUpperCase();
     loadPlaylistCover(art, pl.name);
 
     const box = document.getElementById("playlistTracks");
@@ -4048,10 +4088,12 @@ function openPlaylistMenu(button) {
  * Трек не исчезает и не уезжает в конец — новая версия встаёт на его место,
  * а старая уходит в корзину. Всё после загрузки, на сервере: страницу можно
  * закрыть. */
-function askForReplacement(button, position) {
-    const entry = player.playlist.entries[position];
+/* ``options.entry`` — трек не из подборки (играющий, «⋯» большого плеера),
+ * ``options.host`` — окошко, куда встаёт форма вместо места под строкой. */
+function askForReplacement(button, position, options = {}) {
+    const entry = options.entry || (player.playlist ? player.playlist.entries[position] : null);
     closeTrackMenu();
-    if (!entry) return;
+    if (!entry) { if (options.host) options.host.remove(); return; }
 
     const form = document.createElement("form");
     form.className = "row-menu row-menu-form";
@@ -4109,9 +4151,13 @@ function askForReplacement(button, position) {
     };
 
     form.append(label, field, note, go, or, cancelItem(button));
-    button.insertAdjacentElement("afterend", form);
-    /* Как и меню: у нижней строки форма уходила под мини-плеер. */
-    keepMenuOnScreen(form);
+    if (options.host) {
+        options.host.appendChild(form);
+    } else {
+        button.insertAdjacentElement("afterend", form);
+        /* Как и меню: у нижней строки форма уходила под мини-плеер. */
+        keepMenuOnScreen(form);
+    }
     button.setAttribute("aria-expanded", "true");
     openMenu = { menu: form, button };
     document.addEventListener("keydown", menuKeydown, true);
@@ -4422,7 +4468,7 @@ function offerUndoRemoval(removed, position, name) {
     undo.textContent = "Вернуть";
     undo.onclick = async () => {
         if (!player.playlist || player.playlist.name !== name) {
-            setPlaylistNote(`Открыта другая подборка — вернуть в «${name}» отсюда нельзя.`);
+            setPlaylistNote(`Открыта другая подборка — вернуть в «${playlistLabel(name)}» отсюда нельзя.`);
             return;
         }
         undo.disabled = true;
@@ -4581,7 +4627,7 @@ async function settleClash(name) {
     const edit = pendingEdit(name);
     if (r.status === 404) {
         if (edit) dropPendingEdit(name);
-        setPlayerNoteOrPlaylist(name, `Подборки «${name}» больше нет — правку без сети некуда записать.`);
+        setPlayerNoteOrPlaylist(name, `Подборки «${playlistLabel(name)}» больше нет — правку без сети некуда записать.`);
         return { outcome: "gone" };
     }
     if (!r.ok) return { outcome: null };
@@ -4703,7 +4749,7 @@ async function flushPlaylistEdits() {
             if (!r.ok) {
                 // Правку сервер не примет никогда (400, 404, 422) — сказать, а не повторять вечно.
                 dropPendingEdit(name, edit.seq);
-                setPlayerNoteOrPlaylist(name, `Правку подборки «${name}» без сети сохранить не вышло (${r.status}).`);
+                setPlayerNoteOrPlaylist(name, `Правку подборки «${playlistLabel(name)}» без сети сохранить не вышло (${r.status}).`);
                 continue;
             }
             sent = true;
@@ -4747,14 +4793,14 @@ function setPlayerNoteOrPlaylist(name, text) {
 function showEditConflict(name) {
     if (!(activeView === "viewPlaylist" && playlistIsOpen(name))) {
         announcedConflicts.add(name);
-        setPlayerNoteOrPlaylist(name, `Подборку «${name}» изменили на другом устройстве, пока не было сети — открой её и выбери версию.`);
+        setPlayerNoteOrPlaylist(name, `Подборку «${playlistLabel(name)}» изменили на другом устройстве, пока не было сети — открой её и выбери версию.`);
         return;
     }
     const note = document.getElementById("playlistNote");
     if (!note) return;
     note.textContent = "";
     const text = document.createElement("span");
-    text.textContent = `Пока не было сети, «${name}» изменили на другом устройстве. Чью версию оставить? `;
+    text.textContent = `Пока не было сети, «${playlistLabel(name)}» изменили на другом устройстве. Чью версию оставить? `;
     const mine = document.createElement("button");
     mine.className = "ghost small-inline";
     mine.textContent = "Оставить мою";
@@ -4781,7 +4827,7 @@ async function resolveEditConflict(name, keepMine) {
                 { headers: headers(), cache: "no-store" }, EDIT_TIMEOUT_MS);
             if (got.status === 404) {
                 dropPendingEdit(name, edit.seq);
-                setPlaylistNote(`Подборки «${name}» больше нет — правку некуда записать.`);
+                setPlaylistNote(`Подборки «${playlistLabel(name)}» больше нет — правку некуда записать.`);
                 return;
             }
             if (!got.ok) throw new Error("Ошибка " + got.status);
@@ -5207,7 +5253,7 @@ function askDeletePlaylist(button) {
     resetPlaylistDelete = () => { if (box.isConnected) box.replaceWith(button); };
 
     const head = document.createElement("h3");
-    head.textContent = `Удалить подборку «${name}»?`;
+    head.textContent = `Удалить подборку «${playlistLabel(name)}»?`;
 
     const note = document.createElement("p");
     note.textContent = pl.entries.length === 1
@@ -5541,6 +5587,9 @@ function loveMark(title, path) {
         mark.className = "track-love";
         mark.textContent = "♥";
         mark.title = "В любимом";
+        /* Диктору — словами: у простого span aria-label не читается, и он
+         * произносил «чёрное сердце» посреди названия. */
+        mark.setAttribute("role", "img");
         mark.setAttribute("aria-label", "в любимом");
         /* В начале: длинное название обрезается многоточием с конца. */
         title.prepend(mark);

@@ -3064,6 +3064,8 @@ input:placeholder-shown + .search-clear { display: none; }
 }
 /* Свайп влево убирает строку очереди — вертикаль остаётся прокрутке. */
 .queue-row { touch-action: pan-y; transition: transform .15s ease-out; }
+/* Пока палец или мышь ведут строку — без перехода, иначе она отстаёт. */
+.queue-row.is-dragging, .queue-row.is-swiping { transition: none; }
 @media (pointer: coarse) {
     /* «×» у каждой строки на телефоне — свайпом; для диктора кнопка остаётся. */
     .queue-row .queue-remove {
@@ -3074,12 +3076,22 @@ input:placeholder-shown + .search-clear { display: none; }
         clip-path: inset(50%);
         white-space: nowrap;
     }
-    /* Метка — точкой: «не в фонотеке» словами есть в подсказке и у плеера. */
-    .queue-row .track-title .queue-outside {
-        width: 8px; height: 8px;
-        padding: 0; border: 0;
-        font-size: 0; line-height: 0;
-        vertical-align: 2px;
+    /* Метка — словами в строке артиста, с рамкой: серая на тёмном не видна. */
+    .queue-row .track-artist .queue-outside {
+        display: inline-block;
+        margin-right: 6px;
+        padding: 0 6px;
+        border: 1px solid var(--line-2);
+        font-size: 10px;
+        line-height: 14px;
+        vertical-align: 1px;
+    }
+    /* «+ в фонотеку» — кругом с «+», цель 40 px; подпись — в aria-label. */
+    .queue-keep.is-round {
+        width: 40px; min-width: 40px; height: 40px; min-height: 40px;
+        padding: 0;
+        font-size: 20px;
+        line-height: 1;
     }
 }
 
