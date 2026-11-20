@@ -115,3 +115,8 @@ adder/replaygain-failures.json
 adder/models/
 adder/artist-graph.json
 adder/artist-graph.json.tmp
+# «Починка» «Клипов» (adder/repair.py): скачанные кандидаты и места «послушать»,
+# и оригиналы заменённых файлов — данные фонотеки, не код. repair-backup и так
+# под «*backup*», но явно — надёжнее.
+adder/repair/
+adder/repair-backup/

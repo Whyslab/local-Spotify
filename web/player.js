@@ -237,8 +237,22 @@ function nextRound() {
     const cached = player.nextRound;
     if (cached && cached.order === player.order && cached.length === player.order.length) return cached.round;
     if (deckContinues()) {
-        /* Колода кончилась — следующая уже собрана сервером. */
-        const round = deckIndices(player.deck.next, new Set());
+        /* Колода кончилась — начало следующей уже собрано сервером (50
+         * треков). Остальное круга — следом, перемешанным здесь: без сети
+         * сверки не будет, и раньше после этих 50 всё вставало. С сетью
+         * первая же сверка заменит хвост серверным. */
+        const head = deckIndices(player.deck.next, new Set());
+        const inHead = new Set(head);
+        /* Поставленное руками («следующим», «в очередь») и чужое — разовое:
+         * в новый круг не идёт (как и в deckIndices). */
+        const paths = player.order.map(i => player.queue[i]).filter(t => t && !isOutside(t)).map(t => t.path);
+        for (let i = paths.length - 1; i > 0; i -= 1) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [paths[i], paths[j]] = [paths[j], paths[i]];
+        }
+        /* deckIndices отбросит и повтор одного пути в подборке. */
+        const rest = deckIndices(paths, inHead);
+        const round = [...head, ...rest];
         player.nextRound = { order: player.order, length: player.order.length, round };
         return round;
     }
@@ -405,7 +419,7 @@ async function playAt(position, skipped = 0, direction = 1, options = {}) {
         player.audio.removeAttribute("src");
         player.audio.load();
         renderPlayer();
-        setPlayerNote(tooManyGone ? `Подряд ${skipped + 1} ${tracksWord(skipped + 1)} нет в фонотеке — остановлено` : e.message);
+        setPlayerNote(tooManyGone ? `Подряд ${tracksWord(skipped + 1)} нет в фонотеке — остановлено` : e.message);
         return false;
     }
     if (generation !== player.generation) return false;
@@ -704,7 +718,7 @@ function stepInOrder(delta) {
         player.order = nextRound();
         player.nextRound = null;
         player.deck.round += 1;
-        player.deck.order = player.deck.next;
+        player.deck.order = player.order.map(i => player.queue[i].path);
         player.deck.next = null;
         player.deck.passed = new Set();
         player.deck.skippedOnce = new Set();
@@ -1835,7 +1849,7 @@ function enqueue(tracks, where) {
         return;
     }
     insertQueued(list, where);
-    const name = list.length === 1 ? `«${trackNames(list[0]).title}»` : `${list.length} ${tracksWord(list.length)}`;
+    const name = list.length === 1 ? `«${trackNames(list[0]).title}»` : `${tracksWord(list.length)}`;
     setPlayerNote(where === "next" ? `${name} — следующим` : `${name} — в очереди`);
 }
 
@@ -2370,6 +2384,7 @@ function shuffleTracks(tracks, noteId) {
 
 function togglePlay() {
     if (!player.queue.length) return;
+    errorSkips = 0;  // «играть» руками — снова можно пропускать неиграющие
     /* Звучит связка «как диджей», а уходящий трек уже доиграл: «пауза» —
      * остановиться на следующем, там, куда дошёл переход. */
     if (player.audio.paused && typeof mixSounding === "function" && mixSounding()) {
@@ -2448,6 +2463,10 @@ onAudio("pause", renderPlayer);
  * запросов за пять секунд. Такой трек пропускаем. */
 let errorRetry = -1;   // включение, для которого новая ссылка уже бралась
 let errorSkips = 0;    // сколько подряд пропущено — чтобы не кружить по битой очереди
+/* Подряд не играет больше трёх — дело не в файлах, а в звуке (сбой декодера,
+ * отнятый айфоном звук): разбор 19.11 нашёл 17 пропусков за 3 секунды, когда
+ * пределом была вся очередь. Тогда остановиться и сказать, а не листать. */
+const ERROR_SKIPS_MAX = 3;
 
 /* Попытка — одна на включение трека, и «playing» её не возвращает: файл,
  * битый в середине, после новой ссылки снова начинал играть с того же места,
@@ -2568,6 +2587,21 @@ onAudio("error", async () => {
     if (generation !== player.generation) return;
     const title = track.title || track.path;
     errorSkips += 1;
+    if (errorSkips > ERROR_SKIPS_MAX) {
+        /* Счётчик не сбрасывается: следующие сбои того же звука тоже не
+         * листают. Сбрасывают его заигравший трек и нажатие «играть». */
+        if (errorSkips === ERROR_SKIPS_MAX + 1) playerEvent("error", `подряд ${errorSkips} не играют — остановлено`);
+        /* Без источника: иначе «играть» звало бы play() у элемента с ошибкой,
+         * а тот сразу отказывает. Без src togglePlay берёт свежую ссылку
+         * через playAt — как остановка в playAt. */
+        player.pauseReason = "сбой звука";
+        player.audio.pause();
+        player.audio.removeAttribute("src");
+        player.audio.load();
+        renderPlayer();
+        setPlayerNote(`Подряд ${tracksWord(errorSkips)} не играют — остановлено. Нажмите «играть», чтобы попробовать снова`);
+        return;
+    }
     const next = errorSkips <= player.queue.length ? stepInOrder(1) : -1;
     if (next < 0 || next === player.index) {
         setPlayerNote(`«${title}» не играет`);
@@ -5227,6 +5261,16 @@ async function renamePlaylist() {
         if (r.status === 409) { setPlaylistNote("Подборка с таким названием уже есть."); return; }
         if (!r.ok) { setPlaylistNote("Не удалось переименовать"); return; }
         movePendingEdit(pl.name, next);
+        /* Играет эта подборка колодой — колода (на сервере уже под новым
+         * именем) и «откуда играет» идут за ней, иначе круг начался бы заново. */
+        if (player.deck && player.deck.playlist === pl.name) {
+            player.deck.playlist = next;
+            if (player.deck.key === "playlist:" + pl.name) player.deck.key = "playlist:" + next;
+        }
+        if (player.queueSource && player.queueSource.kind === "playlist" && player.queueSource.name === pl.name) {
+            player.queueSource = { ...player.queueSource, name: next };
+        }
+        saveQueueSoon();
         moveViewSettings(pl.name, next);
         player.playlist = withPendingEdit(await r.json());
     } catch (e) {

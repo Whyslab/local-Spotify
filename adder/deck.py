@@ -576,6 +576,29 @@ def rename_path(old: str, new: str) -> None:
                 _save(row["key"], state)
 
 
+def rename_playlist(old: str, new: str) -> bool:
+    """Подборку переименовали: колода (порядок, «сыграно», номер круга) идёт
+    за ней. Раньше под новым именем начиналась новая колода, а старая лежала
+    до prune — и круг начинался заново. Колода под новым именем может быть
+    только от удалённой подборки (живое имя rename не пустит) — она уходит."""
+    old_key, new_key = playlist_key(old), playlist_key(new)
+    if old_key == new_key:
+        return False
+    with _LOCK:
+        if not db.db_query("SELECT 1 FROM decks WHERE key = ?", (old_key,)):
+            return False
+        db.db_exec("DELETE FROM decks WHERE key = ?", (new_key,))
+        _LEASES.pop(new_key, None)
+        db.db_exec(
+            "UPDATE decks SET key = ?, updated_at = ? WHERE key = ?",
+            (new_key, time.time(), old_key),
+        )
+        leases = _LEASES.pop(old_key, None)
+        if leases:
+            _LEASES[new_key] = leases
+    return True
+
+
 def prune(days: int) -> None:
     """Колоды, которых не касались ``days`` дней (подборку удалили или
     переименовали), — долой: heard перебирает все колоды на каждое прослушивание."""

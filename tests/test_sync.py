@@ -599,3 +599,37 @@ def test_clearing_deletes_the_navidrome_playlist_only_while_the_file_is_empty(
     assert deleted == ["p"]
     assert not navidrome.pending("clear", "p")
     assert not navidrome.pending("clear", "q")
+
+
+def test_a_playlist_emptied_by_hand_is_cleared_in_navidrome(
+    temp_library, monkeypatch, nd_configured
+):
+    """Опустошена мимо службы: Navidrome прочёл пустой файл (штамп «в ногу»),
+    но держит старые треки. Раньше _diverged говорил «в ногу», и треки
+    оставались в Navidrome навсегда."""
+    monkeypatch.setattr(library, "library_index", lambda: _index("a.m4a", "b.m4a"))
+    playlists.create("p", ["a.m4a", "b.m4a"])
+    playlists.playlist_path("p").write_text("#EXTM3U\n", encoding="utf-8")
+    monkeypatch.setattr(navidrome, "remote_tracks", lambda _id, _n: ["a.m4a", "b.m4a"])
+    entry = _entry("p", playlists.playlist_path("p"), 2, ahead=1)
+    monkeypatch.setattr(navidrome, "playlists", lambda: [entry])
+    assert sync._diverged(entry)[0] is False  # то самое «в ногу»
+
+    sync.check(apply=True)
+
+    assert navidrome.pending("clear", "p")
+    assert playlists.read("p").entries == []
+
+
+def test_an_empty_playlist_navidrome_also_sees_empty_is_left_alone(
+    temp_library, monkeypatch, nd_configured
+):
+    monkeypatch.setattr(library, "library_index", lambda: _index("a.m4a"))
+    playlists.create("p", ["a.m4a"])
+    playlists.playlist_path("p").write_text("#EXTM3U\n", encoding="utf-8")
+    entry = _entry("p", playlists.playlist_path("p"), 0, ahead=1)
+    monkeypatch.setattr(navidrome, "playlists", lambda: [entry])
+
+    sync.check(apply=True)
+
+    assert not navidrome.pending("clear", "p")

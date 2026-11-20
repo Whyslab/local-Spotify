@@ -88,3 +88,28 @@ def test_the_window_lets_the_page_start_a_second_track():
     assert len(views) == 1
     policies = {k.arg: ast.unparse(k.value) for k in views[0].keywords}.get("website_policies", "")
     assert "autoplay=WebKit2.AutoplayPolicy.ALLOW" in policies
+
+
+def test_successful_health_polls_stay_out_of_the_journal():
+    """Сторож опрашивает /health каждые 10 с: 360 строк в час в журнале."""
+    import logging
+
+    from adder import app as app_module  # noqa: F401 -- вешает фильтр
+
+    access = logging.getLogger("uvicorn.access")
+
+    def record(path, status):
+        return logging.LogRecord(
+            "uvicorn.access",
+            logging.INFO,
+            __file__,
+            1,
+            '%s - "%s %s HTTP/%s" %d',
+            ("127.0.0.1:1", "GET", path, "1.1", status),
+            None,
+        )
+
+    assert not access.filter(record("/health", 200))
+    assert not access.filter(record("/health?full=1", 200))
+    assert access.filter(record("/health", 503))
+    assert access.filter(record("/api/library", 200))

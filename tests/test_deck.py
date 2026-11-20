@@ -510,3 +510,39 @@ def test_an_unreadable_library_leaves_playlist_decks_alone(client):
     assert r.status_code == 503
     client.rows[:] = full
     assert take(client, playlist="Мой")["order"] == first["order"][5:]
+
+
+def test_renaming_a_playlist_keeps_its_deck(client):
+    """Хвост этапа 2: переименование подборки начинало колоду заново, старая
+    лежала до prune. Теперь колода идёт за подборкой; колода под новым именем,
+    если уже есть, не затирается."""
+    (config.LIBRARY / "Мой.m3u").write_text(
+        "\n".join(r["path"] for r in ROWS[:20]) + "\n", encoding="utf-8"
+    )
+    first = take(client, playlist="Мой")
+    tag = {"key": first["key"], "round": 1}
+    for path in first["order"][:5]:
+        play(client, path, deck_tag=tag)
+
+    r = client.patch("/api/playlists/Мой", json={"name": "Новый"})
+    assert r.status_code == 200, r.text
+
+    after = take(client, playlist="Новый")
+    assert after["key"] == deck.playlist_key("Новый")
+    assert after["order"] == first["order"][5:]
+    assert after["round"] == 1
+    assert not db.db_query("SELECT 1 FROM decks WHERE key = ?", (deck.playlist_key("Мой"),))
+
+
+def test_a_rename_onto_the_name_of_a_deleted_playlist_drops_its_old_deck(client):
+    """Колода под новым именем — от удалённой подборки: она не продолжается."""
+    (config.LIBRARY / "А.m3u").write_text(ROWS[0]["path"] + "\n", encoding="utf-8")
+    take(client, playlist="А")
+    db.db_exec(
+        "INSERT INTO decks(key, state, updated_at) VALUES(?, ?, ?)",
+        (deck.playlist_key("Б"), '{"order": ["x"], "round": 7}', time.time()),
+    )
+    assert deck.rename_playlist("А", "Б") is True
+    state = db.db_query("SELECT state FROM decks WHERE key = ?", (deck.playlist_key("Б"),))
+    assert '"round": 7' not in state[0]["state"]
+    assert not db.db_query("SELECT 1 FROM decks WHERE key = ?", (deck.playlist_key("А"),))

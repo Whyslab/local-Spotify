@@ -74,6 +74,32 @@ from . import queue as task_queue
 
 logger = logging.getLogger(__name__)
 
+
+class _QuietHealth(logging.Filter):
+    """Убирает из журнала удачные опросы /health.
+
+    Сторож опрашивает службу каждые 10 секунд: 360 одинаковых строк в час
+    топили в журнале всё остальное. Неудачный ответ (не 2xx) остаётся —
+    по нему и видно, что служба болела.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if isinstance(args, tuple) and len(args) == 5:
+            path, status = str(args[2]), args[4]
+            if (
+                path.split("?", 1)[0] == "/health"
+                and isinstance(status, int)
+                and 200 <= status < 300
+            ):
+                return False
+        return True
+
+
+# uvicorn настраивает свои журналы до импорта приложения и фильтры логгера не
+# сбрасывает: повешенный здесь фильтр живёт весь срок службы.
+logging.getLogger("uvicorn.access").addFilter(_QuietHealth())
+
 security = HTTPBearer(auto_error=False)
 
 
@@ -738,6 +764,17 @@ HOUSEKEEPING_SECONDS = 24 * 3600
 
 def _housekeeping() -> None:
     ingest.cleanup_old_temp_files()
+    try:
+        trashed = library.prune_trash()
+        if trashed:
+            logger.info(
+                "Removed %d file(s) older than %d days from the trash",
+                trashed,
+                library.TRASH_KEEP_DAYS,
+                extra={"task_id": "system"},
+            )
+    except Exception as exc:
+        logger.warning("Could not prune the trash: %s", exc, extra={"task_id": "system"})
     try:
         removed = db.prune_play_history(config.PLAY_HISTORY_DAYS)
         if removed:
@@ -1984,6 +2021,10 @@ def rename_playlist(
     through its API and the cover is re-uploaded onto the new one.
     """
     playlist = playlists.rename(name, req.name)
+    try:
+        deck.rename_playlist(name, playlist.name)
+    except Exception as exc:  # колода — удобство: переименование уже сделано
+        logger.warning("Deck of %r not moved to %r: %s", name, playlist.name, exc)
     navidrome.cancel("delete", playlist.name)
     covers.rename(name, req.name)
     _sync_navidrome("delete", name)

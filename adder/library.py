@@ -321,6 +321,41 @@ def move_to_trash(file: Path, relative: Path) -> Path:
     return destination
 
 
+TRASH_KEEP_DAYS = 30
+
+
+def prune_trash(days: int = TRASH_KEEP_DAYS, now: float | None = None) -> int:
+    """Remove what has lain in the trash longer than ``days``; return how many files.
+
+    Age is the inode change time: moving into the trash keeps a file's mtime
+    (the library reads it as "when it arrived", and a file brought back must
+    keep it), but the rename itself stamps ctime. Empty folders go too.
+    """
+    root = runtime.TRASH_DIR
+    if not root.is_dir():
+        return 0
+    cutoff = (time.time() if now is None else now) - days * 86400
+    removed = 0
+    with runtime.FILE_LOCK:
+        for file in sorted(root.rglob("*")):
+            try:
+                if (file.is_file() or file.is_symlink()) and file.lstat().st_ctime < cutoff:
+                    file.unlink()
+                    removed += 1
+                    # Удаление необратимо: в журнале — что именно.
+                    logger.info(
+                        "Trash: removed %s", file.relative_to(root), extra={"task_id": "system"}
+                    )
+            except OSError:
+                continue
+        for folder in sorted(
+            (p for p in root.rglob("*") if p.is_dir()), key=lambda p: -len(p.parts)
+        ):
+            with suppress(OSError):  # не пустая — остаётся
+                folder.rmdir()
+    return removed
+
+
 def delete_track(rel_path: str) -> dict:
     """Remove a track from the library.
 

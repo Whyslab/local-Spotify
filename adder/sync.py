@@ -152,6 +152,29 @@ def _diverged(entry: dict) -> tuple[bool, str]:
     return True, f"Navidrome is {int(updated - mtime)}s ahead of the file"
 
 
+def _emptied_by_hand(entry: dict) -> bool:
+    """Файл подборки пуст, а Navidrome «в ногу» с ним и всё ещё держит треки.
+
+    Так бывает, когда .m3u опустошили мимо службы (руками): Navidrome 0.64
+    читает пустой файл, штамп у него свежий, и _diverged честно говорит «в
+    ногу» — а старые треки там остаются навсегда. Служба при своём
+    опустошении ставит очистку сама; это — для всех остальных путей.
+    """
+    if not entry.get("sync") or not entry.get("path"):
+        return False
+    if int(entry.get("songCount") or 0) <= 0:
+        return False
+    name = entry.get("name") or ""
+    if _SEEN.get(name) == str(entry.get("updatedAt") or ""):
+        return False
+    if _mtime(name) is None:
+        return False
+    try:
+        return not playlists.read(name).entries
+    except Exception:  # noqa: BLE001 -- unreadable: the usual pass reports it
+        return False
+
+
 def pull_back(name: str, entry: dict) -> dict:
     """Write Navidrome's order for one playlist into its .m3u.
 
@@ -266,6 +289,10 @@ def check(apply: bool = True) -> dict:
     for entry in entries:
         diverged, why = _diverged(entry)
         name = entry.get("name") or ""
+        if not diverged and _emptied_by_hand(entry):
+            # Тем же путём, что и расхождение: pull_back откажется наполнять
+            # пустой файл (EmptiedHere), и ниже встанет очистка в Navidrome.
+            diverged, why = True, "the file is empty, Navidrome still lists tracks"
         if not diverged:
             continue
         row = {"playlist": name, "reason": why}

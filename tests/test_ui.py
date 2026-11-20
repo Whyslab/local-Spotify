@@ -3513,8 +3513,11 @@ def test_search_groups_computed_once(page):
             labTracksAt = Date.now();
             window.__grouped = {artists: 0, albums: 0};
             const artists = window.groupArtists, albums = window.groupIntoAlbums;
-            window.groupArtists = (r) => { window.__grouped.artists += 1; return artists(r); };
-            window.groupIntoAlbums = (r) => { window.__grouped.albums += 1; return albums(r); };
+            // Только по этой выборке: главная догружается фоном и группирует
+            // свои строки — она и давала 2 вместо 1 (тест плавал, 1 из 6).
+            const mine = labTracks;
+            window.groupArtists = (r) => { if (r === mine) window.__grouped.artists += 1; return artists(r); };
+            window.groupIntoAlbums = (r) => { if (r === mine) window.__grouped.albums += 1; return albums(r); };
         }""",
         _fake_rows(30),
     )
@@ -7080,3 +7083,74 @@ def test_home_shows_the_recently_changed_playlists_and_follows_renames(page, ser
         new.unlink(missing_ok=True)
         (server["root"] / "Яя другая.m3u").unlink(missing_ok=True)
     page.evaluate("playlists(); true")
+
+
+# --- Этап 8: хвосты ---
+
+
+def test_decoder_failures_stop_after_three_skips_instead_of_running_the_queue(page):
+    """Разбор 19.11: сбой декодера пролистал 17 треков за 3 с — пределом была
+    вся очередь. Теперь больше трёх подряд — остановка и понятная записка."""
+    result = page.evaluate(
+        """async () => {
+        const fake = Array.from({length: 12}, (_, i) => ({path: `x/${i}.m4a`, title: `T${i}`, artist: 'A'}));
+        player.queue = fake;
+        player.order = fake.map((_, i) => i);
+        player.orderAt = 0;
+        player.index = 0;
+        player.switching = false;
+        let jumps = 0;
+        playAt = async (i) => { jumps += 1; player.index = i; return true; };
+        Object.defineProperty(player.audio, 'error', {configurable: true, get: () => ({code: 4, message: ''})});
+        for (let n = 0; n < 8; n += 1) {
+            // Перед остановкой у элемента есть (битая) ссылка — как в жизни.
+            if (n === 3) player.audio.setAttribute('src', '/api/stream-gone');
+            player.audio.dispatchEvent(new Event('error'));
+            await new Promise((r) => setTimeout(r, 30));
+        }
+        const note = document.getElementById('playerNote')?.textContent || '';
+        // «играть» после остановки — снова через playAt со свежей ссылкой,
+        // а не play() у элемента с ошибкой.
+        const before = jumps;
+        const noSrc = !player.audio.getAttribute('src');
+        togglePlay();
+        await new Promise((r) => setTimeout(r, 30));
+        return {jumps: before, note, noSrc, retried: jumps > before};
+    }"""
+    )
+    assert result["jumps"] == 3, result
+    assert "остановлено" in result["note"], result
+    assert result["noSrc"] and result["retried"], result
+
+
+def test_offline_the_next_deck_round_plays_whole_not_only_its_head(page):
+    """Хвост этапа 2: сервер присылает лишь начало следующего круга (до 50
+    треков). Без сети сверки нет — и после этих 50 очередь вставала. Теперь
+    новый круг: начало от сервера, затем остальное, перемешанное здесь."""
+    open_library(page)
+    result = page.evaluate(
+        """(async () => {
+        const realPlayAt = playAt, realFetch = fetchDeck;
+        playAt = async () => true;
+        fetchDeck = async () => { throw new TypeError('Failed to fetch'); };
+        const q = Array.from({length: 8}, (_, i) => ({path: `S/${i}.m4a`, title: `t${i}`}));
+        q.push({path: 'S/once.m4a', title: 'once', queued: 'next'});
+        const deck = newDeck({kind: 'playlist', name: 'S'}, false);
+        Object.assign(deck, {key: 'playlist:S', round: 1, order: q.map(t => t.path)});
+        player.shuffle = 'plain';
+        playQueue(q, 0, 'plain', {kind: 'playlist', name: 'S'}, {deck});
+        player.order = [0, 1, 2, 3, 4, 5, 6, 8, 7]; player.index = 7; player.orderAt = 8;
+        deck.next = ['S/3.m4a', 'S/5.m4a'];  // начало следующего — два трека
+        player.nextRound = null;
+        const out = {};
+        try {
+            out.first = stepInOrder(1);
+            out.route = player.order.map(i => player.queue[i].path);
+            out.deckOrder = player.deck.order.length;
+        } finally { playAt = realPlayAt; fetchDeck = realFetch; setShuffle(false); }
+        return out;
+    })()"""
+    )
+    assert result["route"][:2] == ["S/3.m4a", "S/5.m4a"]
+    assert sorted(result["route"]) == sorted(f"S/{i}.m4a" for i in range(8))
+    assert result["deckOrder"] == 8

@@ -190,3 +190,28 @@ def test_a_picture_type_from_tags_is_only_passed_on_if_it_is_an_image():
     assert library._image_mime("IMAGE/JPEG ") == "image/jpeg"
     assert library._image_mime("text/html") == "image/jpeg"
     assert library._image_mime(None) == "image/jpeg"
+
+
+def test_the_trash_forgets_what_lay_there_a_month(tmp_path, monkeypatch):
+    """Корзина копилась с августа (303 МБ): теперь уборка по возрасту —
+    по ctime (переезд в корзину), а не по mtime, который хранит дату прихода."""
+    import os
+    import time
+
+    from adder import library, runtime
+
+    trash = tmp_path / "trash"
+    monkeypatch.setattr(runtime, "TRASH_DIR", trash)
+    old = trash / "A" / "Singles" / "old.m4a"
+    old.parent.mkdir(parents=True)
+    old.write_bytes(b"x")
+    os.utime(old, (0, 0))  # дата прихода — давняя; в корзине — только что
+    fresh = trash / "fresh.m3u"
+    fresh.write_text("#EXTM3U\n")
+
+    assert library.prune_trash(30) == 0  # mtime не в счёт
+    assert old.exists()
+
+    assert library.prune_trash(30, now=time.time() + 31 * 86400) == 2
+    assert not (trash / "A").exists()
+    assert trash.is_dir()
