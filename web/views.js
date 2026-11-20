@@ -595,7 +595,7 @@ function yourPlaylistsSection() {
     if (!lists.length) return null;
     const section = labSection("Ваши подборки", { label: "Все", run: () => switchView("viewPlaylists") },
         el("div", "o-quick-grid", "", ...lists.map((p) => {
-            const tile = button("o-quick", () => openPlaylist(p.name), labPlaylistCover(p.name), el("span", "o-quick-name", playlistTitle(p.name)));
+            const tile = button("o-quick", () => openPlaylist(p.name), labPlaylistCover(p.name), markFavouriteTitle(el("span", "o-quick-name", playlistTitle(p.name)), p.name));
             tile.setAttribute("aria-label", playlistLabel(p.name));
             return tile;
         })));
@@ -1343,7 +1343,9 @@ function renderPlaylistsGrid(force) {
     }
     const grid = el("div", "o-grid");
     for (const p of list) {
-        grid.appendChild(labCard(labPlaylistCover(p.name), playlistTitle(p.name), playlistSubtitle(p.name, p.tracks), () => openPlaylist(p.name)));
+        const card = labCard(labPlaylistCover(p.name), playlistTitle(p.name), playlistSubtitle(p.name, p.tracks), () => openPlaylist(p.name));
+        markFavouriteTitle(card.querySelector(".o-card-title"), p.name);
+        grid.appendChild(card);
     }
     body.replaceChildren(grid);
 }
@@ -1516,7 +1518,8 @@ async function fillSearch() {
     const results = document.getElementById("searchBody");
     if (results) {
         results.addEventListener("click", (e) => {
-            if (searchQueryText.trim() && e.target instanceof Element && e.target.closest("button, .track, a")) rememberSearch(searchQueryText);
+            if (searchQueryText.trim() && e.target instanceof Element && e.target.closest("button, .track, a")
+                && !e.target.closest("[aria-haspopup]")) rememberSearch(searchQueryText);  // «⋯» — ещё не выбор
         }, true);
     }
     if (side) {

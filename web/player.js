@@ -2599,7 +2599,8 @@ onAudio("error", async () => {
     errorSkips += 1;
     if (errorSkips > ERROR_SKIPS_MAX) {
         /* Счётчик не сбрасывается: следующие сбои того же звука тоже не
-         * листают. Сбрасывают его заигравший трек и нажатие «играть». */
+         * листают. Сбрасывают его заигравший трек, «играть», «вперёд»,
+         * «назад» и трек, выбранный руками. */
         if (errorSkips === ERROR_SKIPS_MAX + 1) playerEvent("error", `подряд ${errorSkips} не играют — остановлено`);
         /* Без источника: иначе «играть» звало бы play() у элемента с ошибкой,
          * а тот сразу отказывает. Без src togglePlay берёт свежую ссылку
@@ -3521,6 +3522,7 @@ function renderRail(data) {
         text.className = "rail-text";
         const name = document.createElement("b");
         name.textContent = playlistTitle(p.name);
+        markFavouriteTitle(name, p.name);
         const count = document.createElement("small");
         count.textContent = playlistSubtitle(p.name, p.tracks);
         text.append(name, count);
@@ -3571,8 +3573,10 @@ function loadPlaylistCover(host, name) {
     /* Первая буква или цифра, а не первый знак: у умных подборок это «★». */
     const letter = () => {
         if (!mine()) return;
-        host.replaceChildren();
+        host.classList.remove("is-heart"); host.replaceChildren();
         /* «Любимое» без обложки — сердце, а не «M» от имени файла Monday. */
+        /* Сердце на обложке — у названия рядом ♥ не нужен (.fav-title). */
+        host.classList.toggle("is-heart", name === FAVOURITES);
         host.textContent = name === FAVOURITES ? "♥" : (name.match(/[\p{L}\p{N}]/u) || [name])[0].slice(0, 1).toUpperCase();
     };
     /* Что известно из списка подборок: есть ли своя обложка и первый трек. */
@@ -3592,7 +3596,7 @@ function loadPlaylistCover(host, name) {
                 img.alt = "";
                 img.onerror = letter;
                 img.src = url;
-                host.replaceChildren(img);
+                host.classList.remove("is-heart"); host.replaceChildren(img);
             })
             .catch((error) => {
                 if (error && error.name === "AbortError") return false;  // ушла с экрана
@@ -3603,7 +3607,7 @@ function loadPlaylistCover(host, name) {
     /* Пока грузится — пустой цветной квадрат, а не буква: буква на долю
      * секунды и потом обложка читалась как мигание. Буква — только когда
      * обложки нет совсем. */
-    host.replaceChildren();
+    host.classList.remove("is-heart"); host.replaceChildren();
     /* Своей обложки нет — и спрашивать её незачем (был 404 на каждый показ). */
     if (known && known.cover === false) { fallback(); return; }
     /* Через общий кэш обложек: рельс перерисовывается каждым опросом, и без
@@ -3616,7 +3620,7 @@ function loadPlaylistCover(host, name) {
             img.alt = "";
             img.onerror = letter;
             img.src = url;
-            host.replaceChildren(img);
+            host.classList.remove("is-heart"); host.replaceChildren(img);
         })
         .catch(letter);
 }
@@ -3683,10 +3687,13 @@ function togglePlaylistEdit(force) {
 function renderPlaylist() {
     const pl = player.playlist;
     if (!pl) return;
+    /* Меню строки лежит в body и пережило бы пересборку строк, сохранив
+     * старый номер трека. */
+    if (openMenu && document.getElementById("playlistTracks").contains(openMenu.button)) closeTrackMenu();
     // Monday открыта и, может, поправлена в ней же — сердце в плеере с ней заодно.
     if (pl.name === FAVOURITES) syncFavourites(pl);
 
-    document.getElementById("playlistName").textContent = playlistTitle(pl.name);
+    markFavouriteTitle(document.getElementById("playlistName"), pl.name).textContent = playlistTitle(pl.name);
     const editToggle = document.getElementById("playlistEditToggle");
     if (editToggle) editToggle.hidden = pl.name === FAVOURITES;
     const seconds = pl.entries.reduce((sum, e) => sum + (e.duration > 0 ? e.duration : 0), 0);
@@ -3854,7 +3861,18 @@ function menuKeydown(event) {
         return;
     }
     if (event.key === "Tab" && openMenu) {
-        const { menu } = openMenu;
+        const { menu, button } = openMenu;
+        /* Меню лежит в конце страницы: Tab с последнего пункта уходил в
+         * адресную строку, Shift+Tab с первого — в конец страницы. С края —
+         * назад к «⋯», откуда открыли; внутри формы Tab ходит как обычно. */
+        const stops = [...menu.querySelectorAll("button:not([disabled]), input, select, textarea, a[href]")];
+        const edge = event.shiftKey ? stops[0] : stops[stops.length - 1];
+        if (!stops.length || document.activeElement === edge || !menu.contains(document.activeElement)) {
+            event.preventDefault();
+            closeTrackMenu();
+            if (button.isConnected) button.focus();
+            return;
+        }
         setTimeout(() => { if (openMenu && openMenu.menu === menu && !menu.contains(document.activeElement)) closeTrackMenu(); });
         return;
     }
@@ -3944,6 +3962,33 @@ function menuFloor() {
  * плеер и вкладки (у строки, наполовину скрытой плеером, — всегда).
  * Под строкой, если до плеера помещается, иначе над ней, иначе — сколько
  * влезет над плеером; не влезает и так — прокручивается внутри себя. */
+/* На телефоне пункт меню — 44 точки, и 17 пунктов строки подборки не влезают
+ * между «чёлкой» и плеером (прокрутка внутри меню прятала нижние пункты).
+ * Длинные группы там — вложенным списком с «‹ Назад». */
+function fingerMenus() {
+    return window.matchMedia("(pointer: coarse)").matches;
+}
+
+function menuGroup(menu, button, label, children) {
+    const b = document.createElement("button");
+    b.className = "row-menu-item";
+    b.textContent = label;
+    b.setAttribute("role", "menuitem");
+    b.setAttribute("aria-haspopup", "menu");
+    b.onclick = () => {
+        const before = [...menu.childNodes];
+        const back = document.createElement("button");
+        back.className = "row-menu-item";
+        back.textContent = "‹ Назад";
+        back.setAttribute("role", "menuitem");
+        back.onclick = () => { menu.replaceChildren(...before); placeMenuBy(menu, button); b.focus(); };
+        menu.replaceChildren(back, ...children);
+        placeMenuBy(menu, button);
+        (children.find((c) => !c.disabled) || back).focus();
+    };
+    return b;
+}
+
 function placeMenuBy(menu, button) {
     menu.classList.add("more-menu");
     document.body.appendChild(menu);
@@ -4060,15 +4105,19 @@ function openTrackMenu(button, position) {
         b.setAttribute("role", "menuitem");
         if (title) b.title = title;
         b.disabled = Boolean(disabled);
-        b.onclick = () => { closeTrackMenu(); onClick(); };
+        /* Строку пересобрали, пока меню было открыто, — номер в нём уже
+         * чужой: «Убрать» убрало бы не тот трек. Тогда только закрыть. */
+        b.onclick = () => { const live = button.isConnected; closeTrackMenu(); if (live) onClick(); };
         return b;
     };
+    const coarse = fingerMenus();
+    const group = (label, children) => menuGroup(menu, button, label, children);
 
     /* В чужом порядке «выше на один» двигало бы не туда, куда видно, —
      * перемещения только в своём порядке подборки. */
     const view = playlistView(player.playlist.name);
     if (view.sort === "own" && !view.reverse) {
-        menu.append(
+        const moves = [
             item("В начало подборки", "", () => moveTrack(position, 0), position === 0),
             item("Выше на один", "", () => moveTrack(position, position - 1), position === 0),
             item("Ниже на один", "", () => moveTrack(position, position + 1), position === total - 1),
@@ -4076,7 +4125,9 @@ function openTrackMenu(button, position) {
             /* Прыжок на номер: в подборке на тысячу треков «выше на один» бесполезно,
              * а тащить мышью через весь список — тем более. */
             item("Переместить на место…", "", () => askForPosition(button, position, total)),
-        );
+        ];
+        if (coarse) menu.appendChild(group("Переместить…", moves));
+        else menu.append(...moves);
         const separator = document.createElement("div");
         separator.className = "row-menu-line";
         menu.appendChild(separator);
@@ -4092,9 +4143,10 @@ function openTrackMenu(button, position) {
     }
     if (entry && !isOutside(entry)) {
         menu.appendChild(item("Радио", "", () => startRadio({ path: entry.path }, entry)));
-        for (const name of splitArtists(trackNames(entry).artist).slice(0, 3)) {
-            menu.appendChild(item(`К артисту «${name}»`, "", () => goToArtist(name)));
-        }
+        const artists = splitArtists(trackNames(entry).artist).slice(0, 3)
+            .map((name) => item(`К артисту «${name}»`, "", () => goToArtist(name)));
+        if (coarse && artists.length > 1) menu.appendChild(group("К артисту…", artists));
+        else menu.append(...artists);
         menu.appendChild(item("К альбому", "", () => goToAlbumOf(entry)));
     }
     menu.appendChild(item("Заменить другой версией…", "", () => askForReplacement(button, position)));
@@ -5640,6 +5692,13 @@ function playlistLabel(name) {
  * обложки (меню, записки) — playlistLabel, с сердцем. */
 function playlistTitle(name) {
     return name === FAVOURITES ? "Любимое" : name;
+}
+/* У «Любимого» ♥ у названия дорисовывает CSS (.fav-title::after) и прячет,
+ * пока на обложке нарисовано сердце (.is-heart): при своей картинке сердце
+ * остаётся, при сердце-обложке не двоится. */
+function markFavouriteTitle(node, name) {
+    if (node) node.classList.toggle("fav-title", name === FAVOURITES);
+    return node;
 }
 
 /* «★ …» собирает служба каждую ночь (shelves) — звёздочку нигде не

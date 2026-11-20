@@ -314,6 +314,8 @@ function leavePlaylist() {
 
 function switchView(id) {
     navigation += 1;
+    /* Меню «⋯» лежит поверх страницы (в body) и иначе пережило бы уход с неё. */
+    if (typeof closeTrackMenu === "function") closeTrackMenu();
     if (id === "viewLibrary") probeMark("tolib");
     activeView = id;
     updateSearchPlaceholder(id);
@@ -2158,7 +2160,9 @@ function fetchTrackCover(host, path, size, signal) {
 function hasOpenChoice(id) {
     const box = document.getElementById(id);
     /* .row-menu — открытое «⋯»: перерисовка снесла бы его из-под руки. */
-    return !!box && !!box.querySelector(".confirm, .row-menu");
+    /* Меню строки с 20.11 лежит в body — его ищем по кнопке, открывшей его. */
+    return !!box && (!!box.querySelector(".confirm, .row-menu")
+        || (typeof openMenu !== "undefined" && !!openMenu && box.contains(openMenu.button)));
 }
 
 async function library() {
@@ -2475,7 +2479,9 @@ function openLibraryMenu(button, card, t, rows) {
         b.className = "row-menu-item";
         b.setAttribute("role", "menuitem");
         b.textContent = label;
-        b.onclick = () => { closeTrackMenu(); onClick(); };
+        /* Строку пересобрали, пока меню было открыто: форма встала бы в
+         * оторванную от страницы строку, невидимо. Тогда только закрыть. */
+        b.onclick = () => { const live = card.isConnected; closeTrackMenu(); if (live) onClick(); };
         menu.appendChild(b);
         return b;
     };
@@ -2485,7 +2491,12 @@ function openLibraryMenu(button, card, t, rows) {
     if (favouritePaths) item(isFavourite(t) ? "Убрать из любимого" : "В любимое", () => toggleFavourite(t));
     item("Радио", () => startRadio({ path: t.path }, t));
     item("В подборку…", () => askAddToPlaylist(card, t));
-    for (const name of splitArtists(t.artist).slice(0, 3)) item(`К артисту «${name}»`, () => goToArtist(name));
+    const names = splitArtists(t.artist).slice(0, 3);
+    if (fingerMenus() && names.length > 1) {
+        const artists = names.map((name) => item(`К артисту «${name}»`, () => goToArtist(name)));
+        artists.forEach((b) => b.remove());
+        menu.appendChild(menuGroup(menu, button, "К артисту…", artists));
+    } else names.forEach((name) => item(`К артисту «${name}»`, () => goToArtist(name)));
     if (t.album) item("К альбому", () => goToAlbumOf(t));
     item("Изменить теги…", () => askEdit(card, t, rows));
     const line = document.createElement("div");

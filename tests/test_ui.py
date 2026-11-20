@@ -7493,3 +7493,161 @@ def test_a_row_menu_survives_the_scroll_that_happened_before_it_opened(page, ser
     finally:
         (server["root"] / "Прокрутка.m3u").unlink()
         page.evaluate("playlists(); true")
+
+
+# ---- 20.11: по рецензии правок аудита ----
+
+
+@pytest.mark.parametrize("picture", [True, False], ids=["picture", "heart"])
+def test_favourites_name_has_a_heart_unless_the_cover_already_is_one(page, server, picture):
+    """Критик 20.11: ♥ убрали из названия всегда, а сердце на обложке
+    рисуется, только когда картинки нет. У Monday с картинкой сердца не
+    оставалось нигде. Теперь ♥ у названия прячется лишь рядом с сердцем."""
+    monday = server["root"] / "Monday.m3u"
+    monday.write_text(QUIET_PATH + "\n", encoding="utf-8")
+    if picture:  # своя картинка подборки — как у Monday в живой службе
+        page.evaluate(
+            """async (bytes) => {
+            const form = new FormData();
+            form.append('image', new Blob([new Uint8Array(bytes)], {type: 'image/png'}), 'c.png');
+            const r = await fetch('/api/playlists/Monday/cover', {method: 'POST', headers: headers(), body: form});
+            if (!r.ok) throw new Error('upload ' + r.status);
+        }""",
+            list(_tiny_png()),
+        )
+    try:
+        page.evaluate("playlists(); true")
+        page.wait_for_function("knownPlaylists.some(p => p.name === 'Monday')")
+        page.evaluate("openPlaylist('Monday')")
+        page.wait_for_selector("#playlistCover img" if picture else "#playlistCover.is-heart")
+        assert page.locator("#playlistName").inner_text() == "Любимое"
+        after = page.evaluate(
+            "getComputedStyle(document.getElementById('playlistName'), '::after').content"
+        )
+        assert after == ('" ♥"' if picture else "none"), after
+    finally:
+        page.evaluate(
+            "fetch('/api/playlists/Monday/cover', {method: 'DELETE', headers: headers()}).then(() => true)"
+        )
+        monday.unlink()
+        page.evaluate("playlists(); true")
+
+
+def test_an_open_row_menu_keeps_the_library_from_redrawing(page):
+    """Рецензия 20.11: меню строки теперь в body, и проверка «открыт выбор —
+    не перерисовывать» его не видела. Перерисовка оставляла меню висеть, а
+    «Изменить теги…» ставило форму в оторванную строку — невидимо."""
+    open_library(page)
+    row(page, "Loud").locator("button.row-more").click()
+    page.wait_for_selector(".row-menu")
+    assert page.evaluate("hasOpenChoice('library')") is True
+    page.keyboard.press("Escape")
+    assert page.evaluate("hasOpenChoice('library')") is False
+
+
+def test_a_playlist_row_menu_goes_away_with_its_rows(page, server):
+    """Рецензия 20.11: меню пережило пересборку подборки со старым номером
+    трека — «Убрать из подборки» убрало бы чужой трек; переживало и уход
+    со страницы."""
+    _playlist(server, page, "Пересборка", QUIET_PATH, LOUD_PATH)
+    more = "document.querySelectorAll('#playlistTracks .playlist-track')[1].querySelector('button.row-more').click()"
+    try:
+        page.evaluate("openPlaylist('Пересборка')")
+        page.wait_for_selector("#playlistTracks .playlist-track")
+        page.evaluate(more)
+        page.wait_for_selector(".row-menu")
+        page.evaluate("renderPlaylist()")
+        assert page.locator(".row-menu").count() == 0
+        page.evaluate(more)
+        page.wait_for_selector(".row-menu")
+        page.evaluate("switchView('viewHome')")
+        assert page.locator(".row-menu").count() == 0
+        # Строки пересобраны в обход renderPlaylist — пункт меню не действует.
+        page.evaluate("openPlaylist('Пересборка')")
+        page.wait_for_selector("#playlistTracks .playlist-track")
+        page.evaluate(more)
+        page.wait_for_selector(".row-menu")
+        page.evaluate("document.getElementById('playlistTracks').replaceChildren()")
+        page.locator(".row-menu .row-menu-item", has_text="Убрать из подборки").click()
+        page.wait_for_timeout(300)
+        assert page.evaluate("player.playlist.entries.length") == 2
+    finally:
+        (server["root"] / "Пересборка.m3u").unlink()
+        page.evaluate("playlists(); true")
+
+
+@pytest.mark.parametrize("key", ["Tab", "Shift+Tab"])
+def test_tab_out_of_a_row_menu_returns_to_its_button(page, server, key):
+    """Рецензия 20.11: меню лежит в конце страницы — Tab с последнего пункта
+    уходил в адресную строку, Shift+Tab с первого — в конец страницы."""
+    _playlist(server, page, "Табуляция", QUIET_PATH, LOUD_PATH)
+    try:
+        page.evaluate("openPlaylist('Табуляция')")
+        page.wait_for_selector("#playlistTracks .playlist-track")
+        button = page.locator("#playlistTracks .playlist-track").first.locator("button.row-more")
+        button.focus()
+        page.keyboard.press("Enter")
+        page.wait_for_selector(".row-menu")
+        page.keyboard.press("End" if key == "Tab" else "Home")
+        page.keyboard.press(key)
+        page.wait_for_function("!document.querySelector('.row-menu')")
+        assert page.evaluate(
+            "document.activeElement === document.querySelector('#playlistTracks .playlist-track button.row-more')"
+        )
+    finally:
+        (server["root"] / "Табуляция.m3u").unlink()
+        page.evaluate("playlists(); true")
+
+
+def test_on_a_small_phone_the_longest_row_menu_fits_whole(server, browser):
+    """Рецензия 20.11: прежние тесты меню шли без касаний — пункты по 34
+    точки. На телефоне они по 44, и 17 пунктов строки подборки (свой порядок,
+    три артиста) не влезали: прокрутка внутри, «Убрать» скрыто. Теперь
+    перемещения и артисты — вложенными списками."""
+    context, phone = _phone(server, browser)
+    phone.set_viewport_size({"width": 375, "height": 667})
+    (server["root"] / "Телефон.m3u").write_text(
+        "\n".join([QUIET_PATH, LOUD_PATH] * 12) + "\n", encoding="utf-8"
+    )
+    try:
+        phone.evaluate("playlists()")
+        phone.wait_for_function("knownPlaylists.some(p => p.name === 'Телефон')")
+        phone.evaluate("openPlaylist('Телефон')")
+        phone.wait_for_selector("#playlistTracks .playlist-track")
+        phone.evaluate(
+            "player.playlist.entries.forEach(e => { e.artist = 'Первый • Второй • Третий'; e.album = 'Альбом'; })"
+        )
+        phone.evaluate(
+            """() => { const r = document.querySelectorAll('#playlistTracks .playlist-track')[6];
+            window.scrollBy(0, r.getBoundingClientRect().top - innerHeight * 0.45); }"""
+        )
+        phone.wait_for_timeout(200)
+        phone.evaluate(
+            "document.querySelectorAll('#playlistTracks .playlist-track')[6].querySelector('button.row-more').click()"
+        )
+        phone.wait_for_selector(".row-menu")
+        box = _menu_box(phone)
+        assert box["top"] >= 0 and box["bottom"] <= box["floor"], box
+        assert box["whole"] and box["lastReachable"], box
+        phone.locator(".row-menu .row-menu-item", has_text="Переместить…").click()
+        phone.wait_for_selector(".row-menu .row-menu-item:text('Выше на один')")
+        assert phone.locator(".row-menu .row-menu-item").first.inner_text() == "‹ Назад"
+        assert _menu_box(phone)["whole"]
+        phone.locator(".row-menu .row-menu-item", has_text="Назад").click()
+        phone.wait_for_selector(".row-menu .row-menu-item:text('Убрать из подборки')")
+        phone.locator(".row-menu .row-menu-item", has_text="К артисту…").click()
+        phone.wait_for_selector(".row-menu .row-menu-item:text('К артисту «Третий»')")
+    finally:
+        context.close()
+        (server["root"] / "Телефон.m3u").unlink()
+
+
+def test_opening_a_row_menu_in_search_is_not_a_used_query(page):
+    """Рецензия 20.11: «⋯» в выдаче — ещё не выбор, а запрос запоминался."""
+    page.evaluate("localStorage.removeItem('recentSearches'); switchView('viewSearch')")
+    page.locator("#searchEverywhere").fill("Quiet")
+    page.wait_for_selector("#searchBody .track button.row-more")
+    page.locator("#searchBody .track button.row-more").first.click()
+    page.wait_for_selector(".row-menu")
+    page.keyboard.press("Escape")
+    assert page.evaluate("recentSearches()") == []
