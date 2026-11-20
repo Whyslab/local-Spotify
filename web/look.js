@@ -508,12 +508,27 @@ function openPlayerMore(button) {
         menu.appendChild(b);
         return b;
     };
-    /* Трека со стороны нет ни в подборке, ни в фонотеке — показывать негде. */
-    if (track && !isOutside(track)) {
+    /* Тот же набор, что у строки трека (аудит 19.11.2026, п. 5): раньше здесь
+     * были только «откуда играет» и цвет обложки, а «В подборку», «Радио»,
+     * «К артисту» из плеера были недоступны. Цвет обложки — настройка, она в
+     * «Службе». */
+    if (track && isOutside(track)) {
+        item(keepLabel(track), () => keepOutside(track)).disabled = track.kept === "saving" || track.kept === "queued";
+        item("Не предлагать", () => banCurrent()).disabled = track.banned === true || track.kept === "queued";
+    } else if (track) {
+        if (favouritePaths) item(isFavourite(track) ? "Убрать из любимого" : "В любимое", () => toggleFavourite(track));
+        item("В подборку…", () => askAddToPlaylistFloating(track));
+        item("Радио", () => startRadio({ path: track.path }, track));
+        for (const name of splitArtists(trackNames(track).artist).slice(0, 3)) {
+            item(`К артисту «${name}»`, () => goToArtist(name));
+        }
+        item("К альбому", () => goToAlbumOf(track));
         item("Показать, откуда играет", () => { collapsePlayer(); revealTrack(track); });
+        if (offline.supported) {
+            item(isDownloaded(track.path) ? "Убрать с телефона" : "Скачать на телефон", () => toggleTrackDownload(track));
+        }
     }
-    item(tintEnabled() ? "Цвет из обложки: выключить" : "Цвет из обложки: включить",
-        () => setCoverTint(!tintEnabled()));
+    if (!menu.childElementCount) return;
     document.body.appendChild(menu);
 
     const box = button.getBoundingClientRect();
@@ -531,6 +546,22 @@ function openPlayerMore(button) {
     document.addEventListener("keydown", menuKeydown, true);
     document.addEventListener("pointerdown", menuPointerDown, true);
     menu.querySelector(".row-menu-item").focus();
+}
+
+/* «В подборку…» из плеера: у плеера нет строки, на месте которой встаёт
+ * выбор подборки (askAddToPlaylist меняет строку на окошко). Строкой служит
+ * пустое место в окошке поверх плеера; окошко вернуло его — убираем окошко. */
+function askAddToPlaylistFloating(track) {
+    const host = document.createElement("div");
+    host.className = "floating-ask";
+    const slot = document.createElement("div");
+    host.appendChild(slot);
+    document.body.appendChild(host);
+    const watch = new MutationObserver(() => {
+        if (host.contains(slot)) { watch.disconnect(); host.remove(); }
+    });
+    watch.observe(host, { childList: true });
+    askAddToPlaylist(slot, track);
 }
 
 /* ---------------- Левая панель на компьютере ---------------- */

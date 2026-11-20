@@ -289,7 +289,7 @@ const VIEW_TITLES = {
     viewMood: "Настроение",
     viewSearch: "Поиск",
     viewAdd: "Добавить",
-    viewService: "Служба",
+    viewService: "Настройки",
     viewStats: "Статистика",
     viewLyrics: "Текст песни",
 };
@@ -1310,7 +1310,7 @@ function lyricHitRow(hit, hits) {
     const info = card.querySelector(".track-info");
     info.querySelector(".track-album")?.remove();
     info.appendChild(lyricQuote(hit.line));
-    info.onclick = () => playQueue(hits, hits.indexOf(hit), "manual", null,
+    card.play = () => playQueue(hits, hits.indexOf(hit), "manual", null,
         hit.at > 0 ? { startAt: Math.max(0, hit.at - 1) } : {});
     return card;
 }
@@ -1517,6 +1517,8 @@ function home() {
         if (homeRendered !== homeCache) {
             renderHome(homeCache);
             homeRendered = homeCache;
+        } else if (typeof refreshContinue === "function") {
+            refreshContinue();
         }
         markAppReady();
         /* Устарела — перерисуется, когда придёт новая, если она другая. */
@@ -1577,6 +1579,9 @@ function applyLibrarySortButton() {
     b.classList.toggle("is-on", fresh);
     b.textContent = fresh ? "Свежие сверху" : "По алфавиту";
     b.title = fresh ? "Сначала недавно добавленные" : "По артисту, как на диске";
+    /* Артисты и альбомы всегда по алфавиту — кнопка там врала «Свежие
+     * сверху» (аудит 19.11, п. 7). */
+    b.hidden = libraryMode !== "tracks";
 }
 
 function toggleLibrarySort() {
@@ -1605,6 +1610,7 @@ function setLibraryMode(mode) {
         b.classList.toggle("is-on", name === mode);
         b.setAttribute("aria-selected", String(name === mode));
     }
+    applyLibrarySortButton();
     if (typeof syncNav === "function") syncNav();
     /* Режим — часть того, куда вернёт «назад». */
     if (typeof recordTop === "function") recordTop();
@@ -2347,11 +2353,17 @@ function splitArtists(artist) {
     return String(artist || "").split(" • ").map((name) => name.trim()).filter(Boolean);
 }
 
+/* Палец (UX-аудит 19.11.2026, п. 1): имя — кнопка высотой 17 точек и в
+ * треть строки, промах по строке уводил к артисту. На сенсорном экране имена
+ * — простой текст: нажатие по строке включает трек, нажатие по мини-плееру
+ * раскрывает его, а «К артисту» — в «⋯». */
+const COARSE_POINTER = window.matchMedia("(pointer: coarse)");
+
 function fillArtistLinks(box, artist, path) {
     box.replaceChildren();
     const names = splitArtists(artist);
     if (!names.length) return;
-    if (typeof path === "string" && path.startsWith("outside:")) {
+    if ((typeof path === "string" && path.startsWith("outside:")) || COARSE_POINTER.matches) {
         box.textContent = names.join(" • ");
         return;
     }
@@ -2395,6 +2407,7 @@ function libraryRow(t, rows) {
     const titleEl = document.createElement("div");
     titleEl.className = "track-title";
     titleEl.textContent = t.title;
+    if (typeof loveMark === "function") loveMark(titleEl, t.path);
     info.appendChild(titleEl);
 
     if (t.artist) {
@@ -2413,7 +2426,16 @@ function libraryRow(t, rows) {
         info.appendChild(albumEl);
     }
 
-    info.onclick = () => playFromLibrary(t, rows);
+    /* Вся строка, а не только текст: обложка и длительность тоже её часть
+     * (аудит 19.11, п. 1). Меню строки стоит внутри неё — его нажатия не в счёт. */
+    /* Что играет нажатие — card.play: полки на главной и строки поиска по
+     * тексту ставят свою очередь, подменяя её (а не onclick у текста — тогда
+     * сработали бы оба). */
+    card.play = () => playFromLibrary(t, rows);
+    card.onclick = (event) => {
+        if (event.target instanceof Element && event.target.closest(".row-menu, button, input, a, form")) return;
+        card.play();
+    };
 
     /* Длительность — справа, как в списках Apple Music; на телефоне её
      * прячет CSS: там место — названию. */
@@ -2455,12 +2477,14 @@ function openLibraryMenu(button, card, t, rows) {
         menu.appendChild(b);
         return b;
     };
-    item("Играть", () => playFromLibrary(t, rows));
+    item("Играть", () => (card.play ? card.play() : playFromLibrary(t, rows)));
     item("Играть следующим", () => enqueue([t], "next"));
     item("В очередь", () => enqueue([t], "queue"));
     if (favouritePaths) item(isFavourite(t) ? "Убрать из любимого" : "В любимое", () => toggleFavourite(t));
     item("Радио", () => startRadio({ path: t.path }, t));
     item("В подборку…", () => askAddToPlaylist(card, t));
+    for (const name of splitArtists(t.artist).slice(0, 3)) item(`К артисту «${name}»`, () => goToArtist(name));
+    if (t.album) item("К альбому", () => goToAlbumOf(t));
     item("Изменить теги…", () => askEdit(card, t, rows));
     const line = document.createElement("div");
     line.className = "row-menu-line";

@@ -4211,7 +4211,12 @@ def test_unfitting_lyrics_can_be_removed(page):
     page.locator("#playerLyricsButton").click()
     page.locator(".lyric").filter(has_text="чужая строка").wait_for()
     remove = page.get_by_role("button", name="Удалить текст")
+    # С 20.11.2026 над текстом одна тихая кнопка, «Удалить» — по ней.
+    assert remove.is_hidden()
+    assert page.locator("#lyricsFind").is_hidden()
+    page.get_by_role("button", name="Текст неверный?").click()
     assert remove.is_visible()
+    assert page.locator("#lyricsFind").is_visible()
     remove.click()
     # Первое нажатие только спрашивает: вставленный руками текст не вернуть.
     sure = page.get_by_role("button", name="Точно удалить?")
@@ -5488,16 +5493,16 @@ def test_the_heart_puts_the_playing_track_into_monday_and_takes_it_out(page, ser
         love.wait_for(state="visible")
         assert love.get_attribute("aria-pressed") == "false"
         love.click()
-        page.wait_for_function(f"{note} === 'Добавлено в «Monday»'")
+        page.wait_for_function(f"{note} === 'Добавлено в любимое'")
         assert love.get_attribute("aria-pressed") == "true"
         assert _playlist_paths(page, "Monday") == [LOUD_PATH, QUIET_PATH]
         # Сняли — и можно вернуть на то же место одним нажатием.
         love.click()
-        page.wait_for_function(f"{note}.startsWith('Убрано из «Monday».')")
+        page.wait_for_function(f"{note}.startsWith('Убрано из любимого.')")
         assert love.get_attribute("aria-pressed") == "false"
         assert _playlist_paths(page, "Monday") == [QUIET_PATH]
         page.locator("#playerNote").get_by_role("button", name="Вернуть").click()
-        page.wait_for_function(f"{note} === 'Вернули в «Monday»'")
+        page.wait_for_function(f"{note} === 'Вернули в любимое'")
         assert _playlist_paths(page, "Monday") == [LOUD_PATH, QUIET_PATH]
         assert love.get_attribute("aria-pressed") == "true"
         assert not page.evaluate("sheetOpen()")  # «Вернуть» не раскрывает плеер
@@ -5513,10 +5518,10 @@ def test_the_heart_puts_the_playing_track_into_monday_and_takes_it_out(page, ser
         # Из меню строки — тоже, и не только играющий трек.
         page.evaluate("setPlayerNote('')")
         row_action(page, "Quiet", "Убрать из любимого")
-        page.wait_for_function(f"{note}.startsWith('Убрано из «Monday».')")
+        page.wait_for_function(f"{note}.startsWith('Убрано из любимого.')")
         assert _playlist_paths(page, "Monday") == []
         row_action(page, "Quiet", "В любимое")
-        page.wait_for_function(f"{note} === 'Добавлено в «Monday»'")
+        page.wait_for_function(f"{note} === 'Добавлено в любимое'")
         assert _playlist_paths(page, "Monday") == [QUIET_PATH]
         # Monday поправили в ней самой — сердце узнаёт и без перезагрузки.
         page.evaluate("openPlaylist('Monday')")
@@ -6708,3 +6713,243 @@ def test_copies_the_server_named_as_replaced_skip_the_per_pass_limit(page):
     )
     assert asked == 25
     page.evaluate("removeAllDownloads()")
+
+
+# ---------------------------------------------------------------------------
+# Этап 6 (20.11.2026): интерфейс по UX-аудиту 19.11.
+
+SMART_ANSWER = {
+    "mode": "smart",
+    "engine": "sonic",
+    "queue": [
+        {
+            "path": "Loud Band/Singles/Loud.opus",
+            "title": "Loud",
+            "artist": "Loud Band",
+            "duration": 12,
+        },
+        {"path": "outside:k1", "title": "Чужая", "artist": "Новый артист", "duration": 120},
+        {
+            "path": "Quiet/Singles/Quiet.m4a",
+            "title": "Quiet",
+            "artist": "Quiet",
+            "duration": 12,
+            "outside": True,
+        },
+    ],
+    "report": {},
+    "external": 1,
+    "outside": 2,
+    "analysed": 3,
+    "total": 3,
+}
+
+
+def _fake_smart(page):
+    page.route(
+        "**/api/shuffle?*",
+        lambda r: r.fulfill(
+            status=200, content_type="application/json", body=json.dumps(SMART_ANSWER)
+        ),
+    )
+    page.route(
+        "**/api/outside/prefetch",
+        lambda r: r.fulfill(status=200, content_type="application/json", body="{}"),
+    )
+
+
+def test_a_smart_queue_from_a_page_is_honest_about_itself(page):
+    """Аудит 19.11, п. 2–3: после «Перемешать → Умное» значок горит со ✦, записка
+    говорит, сколько своих и сколько не из фонотеки и каким движком, метки в
+    очереди — словами; нажатие на значок возвращает порядок, записка уходит.
+    Ссылку на нескачанный чужой трек плеер заранее не просит (было 404)."""
+    asked = []
+    page.on(
+        "request",
+        lambda r: asked.append(r.url) if "stream-url" in r.url and "outside" in r.url else None,
+    )
+    _fake_smart(page)
+    open_library(page)
+    page.evaluate("playSmartShuffle(); true")
+    page.wait_for_function("player.queueMode === 'smart'")
+    page.wait_for_function(
+        "document.getElementById('shuffleNote').textContent.startsWith('Умная очередь по звуку')"
+    )
+    text = page.locator("#shuffleNote").inner_text()
+    assert "2 ваших" in text and "1 не из фонотеки" in text and "1 не из этой подборки" in text
+    assert page.locator("#playerShuffle").get_attribute("aria-pressed") == "true"
+    assert page.locator("#playerShuffleSmart").is_visible()
+
+    page.evaluate("toggleQueuePanel()")
+    rows = page.locator("#playQueueRows .queue-row")
+    rows.nth(2).wait_for()
+    assert rows.nth(1).locator(".queue-outside").inner_text() == "не в фонотеке"
+    assert rows.nth(1).locator(".queue-keep").inner_text() == "+ в фонотеку"
+    assert rows.nth(2).locator(".queue-outside").inner_text() == "не из подборки"
+    page.wait_for_timeout(600)
+    assert asked == []
+
+    page.locator("#playerShuffle").click()
+    page.wait_for_function("player.queueMode !== 'smart'")
+    assert page.locator("#playerShuffle").get_attribute("aria-pressed") == "false"
+    assert not page.evaluate("player.queue.some(t => isOutside(t))")
+    assert page.locator("#shuffleNote").inner_text() == ""
+
+
+def _phone(server, browser):
+    context = browser.new_context(
+        viewport={"width": 390, "height": 844}, has_touch=True, is_mobile=True
+    )
+    context.add_init_script(f"localStorage.setItem('token', '{TOKEN}');")
+    phone = context.new_page()
+    phone.wait_for_function = csp_safe_wait(phone)
+    phone.goto(server["url"] + "/")
+    phone.wait_for_function("typeof playQueue === 'function'")
+    return context, phone
+
+
+def test_on_a_touch_screen_the_whole_row_plays_and_names_are_text(server, browser):
+    """Аудит 19.11, п. 1: имя артиста — не кнопка (палец уводил к артисту),
+    нажатие на обложку строки тоже включает трек."""
+    context, phone = _phone(server, browser)
+    try:
+        open_library(phone)
+        loud = row(phone, "Loud")
+        assert loud.locator(".artist-link").count() == 0
+        assert loud.locator(".track-artist").inner_text() == "Loud Band"
+        loud.locator(".cover").click()
+        phone.wait_for_function("player.queue.length > 0")
+        assert phone.evaluate("player.queue[player.index].path") == "Loud Band/Singles/Loud.opus"
+        assert phone.locator("#playerArtist .artist-link").count() == 0
+    finally:
+        context.close()
+
+
+def test_on_a_touch_screen_a_queue_row_is_removed_by_a_swipe(server, browser):
+    """Аудит 19.11, п. 4: «×» у каждой строки отнимал место у названия — на
+    телефоне строка убирается свайпом влево, «×» остаётся только для диктора."""
+    context, phone = _phone(server, browser)
+    try:
+        open_library(phone)
+        phone.evaluate(
+            f"playQueue([{LOUD}, {QUIET}, {{...{LOUD}, title: 'Third'}}], 0, 'manual'); player.audio.pause(); true"
+        )
+        phone.evaluate("toggleQueuePanel()")
+        rows = phone.locator("#playQueueRows .queue-row")
+        rows.nth(2).wait_for()
+        assert rows.nth(1).locator(".queue-remove").bounding_box()["width"] <= 1
+        phone.evaluate(
+            "(() => { const r = document.querySelectorAll('#playQueueRows .queue-row')[1];"
+            " const b = r.getBoundingClientRect(); const y = b.top + b.height / 2;"
+            " const ev = (type, x) => r.dispatchEvent(new PointerEvent(type,"
+            " {pointerType: 'touch', pointerId: 7, clientX: x, clientY: y, bubbles: true}));"
+            " ev('pointerdown', 300); ev('pointermove', 250); ev('pointermove', 150); ev('pointerup', 150); })()"
+        )
+        phone.wait_for_function("player.order.length === 2")
+        assert phone.evaluate("player.order.map(i => player.queue[i].title)") == ["Loud", "Third"]
+        # Короткий сдвиг — не свайп: строка на месте.
+        phone.evaluate(
+            "(() => { const r = document.querySelectorAll('#playQueueRows .queue-row')[1];"
+            " const b = r.getBoundingClientRect(); const y = b.top + b.height / 2;"
+            " const ev = (type, x) => r.dispatchEvent(new PointerEvent(type,"
+            " {pointerType: 'touch', pointerId: 8, clientX: x, clientY: y, bubbles: true}));"
+            " ev('pointerdown', 300); ev('pointermove', 270); ev('pointerup', 270); })()"
+        )
+        phone.wait_for_timeout(100)
+        assert phone.evaluate("player.order.length") == 2
+    finally:
+        context.close()
+
+
+def test_the_players_more_menu_has_the_track_actions(page):
+    """Аудит 19.11, п. 5: в «⋯» плеера было только «откуда играет» и цвет
+    обложки. Теперь — то же, что у строки: в подборку, радио, к артисту, к альбому."""
+    open_library(page)
+    page.evaluate(f"playQueue([{LOUD}], 0, 'manual'); player.audio.pause(); true")
+    page.locator("#player").wait_for(state="visible")
+    page.locator("#playerMore").click()
+    items = [t.strip() for t in page.locator(".player-more-menu .row-menu-item").all_inner_texts()]
+    for want in (
+        "В подборку…",
+        "Радио",
+        "К артисту «Loud Band»",
+        "К альбому",
+        "Показать, откуда играет",
+    ):
+        assert want in items, items
+    assert not any("Цвет из обложки" in t for t in items)
+    page.get_by_role("menuitem", name="В подборку…").click()
+    ask = page.locator(".floating-ask")
+    ask.get_by_text("В какую подборку?").wait_for()
+    ask.get_by_role("button", name="Отмена").click()
+    ask.wait_for(state="detached")
+    page.locator("#playerMore").click()
+    page.get_by_role("menuitem", name="К альбому").click()
+    page.wait_for_function("activeView === 'viewAlbum'")
+
+
+def test_monday_is_shown_as_favourites_first_with_hearts_in_rows(page, server):
+    """Решение 20.11.2026: файл остаётся Monday.m3u, на экране — «Любимое ♥»,
+    первой в списке; у трека из неё в списках маленькое ♥ (в ней самой — нет)."""
+    monday = server["root"] / "Monday.m3u"
+    (server["root"] / "Аааа.m3u").write_text(LOUD_PATH + "\n", encoding="utf-8")
+    monday.write_text(QUIET_PATH + "\n", encoding="utf-8")
+    try:
+        page.evaluate("loadFavourites(); playlists(); true")
+        page.wait_for_function("knownPlaylists.length >= 2 && favouritePaths !== null")
+        assert page.evaluate("knownPlaylists[0].name") == "Monday"
+        page.wait_for_function(
+            "document.querySelector('#railPlaylists .rail-item b')?.textContent === 'Любимое ♥'"
+        )
+        open_library(page)
+        page.wait_for_function("document.querySelectorAll('#library .track-love').length === 1")
+        assert row(page, "Quiet").locator(".track-love").count() == 1
+        assert row(page, "Loud").locator(".track-love").count() == 0
+        page.evaluate("openPlaylist('Monday')")
+        page.wait_for_selector("#playlistTracks .playlist-track")
+        assert page.locator("#playlistName").inner_text() == "Любимое ♥"
+        assert page.locator("#playlistTracks .track-love").count() == 0
+    finally:
+        monday.unlink()
+        (server["root"] / "Аааа.m3u").unlink()
+    page.evaluate("loadFavourites(); playlists(); true")
+
+
+def test_home_starts_with_continue(page):
+    """Аудит 19.11, идея 1: «Продолжить» первой строкой главной — трек в плеере
+    и откуда он; нажатие играет с того же места."""
+    open_library(page)
+    page.evaluate(f"playQueue([{LOUD}, {QUIET}], 1, 'manual'); player.audio.pause(); true")
+    page.evaluate("switchView('viewHome')")
+    first = page.locator("#homeBody .o-section").first
+    first.locator(".o-continue").wait_for()
+    assert "Quiet" in first.inner_text()
+    assert first.locator("h2").inner_text() == "Продолжить"
+
+
+def test_small_fixes_of_the_audit(page, server, browser):
+    """Аудит 19.11: «Свежие сверху» только у треков (п. 7); режим перехода
+    подписан под значком (п. 10); шестерёнка «Настройки» на телефоне (п. 12)."""
+    open_library(page)
+    assert page.locator("#librarySort").is_visible()
+    page.evaluate("setLibraryMode('artists')")
+    assert page.locator("#librarySort").is_hidden()
+    page.evaluate("setLibraryMode('tracks')")
+    assert page.locator("#librarySort").is_visible()
+
+    page.evaluate("setFade(3)")
+    try:
+        assert page.locator("#playerFadeLabel").text_content() == "3 с"
+        page.evaluate("setFade('dj')")
+        assert page.locator("#playerFadeLabel").text_content() == "DJ"
+    finally:
+        page.evaluate("setFade(0)")
+    assert page.locator("#playerFadeLabel").is_hidden()
+
+    context, phone = _phone(server, browser)
+    try:
+        phone.locator("#topSettings").click()
+        phone.wait_for_function("activeView === 'viewService'")
+        assert phone.locator("#viewTitle").inner_text() == "Настройки"
+    finally:
+        context.close()

@@ -533,6 +533,41 @@ function openShuffleChoice(anchor, plain, smart) {
 
 let homeDataForMoods = null;
 
+/* Строка «Продолжить»: что стоит в плеере и откуда. Нажатие — играть с того
+ * же места (или раскрыть плеер, если уже играет). Пустая очередь — нет строки. */
+function continueSection() {
+    const track = player.queue[player.index];
+    if (!track) return null;
+    const names = trackNames(track);
+    const src = player.queueSource;
+    const from = src && src.kind === "playlist" ? "из «" + playlistLabel(src.name) + "»"
+        : player.queueMode === "radio" ? "радио"
+            : player.queueMode === "smart" ? "умная очередь" : "";
+    const at = player.audio && player.audio.getAttribute("src") ? player.audio.currentTime : player.resumeAt;
+    const sub = [at > 5 ? "с " + formatTime(at) : "", from].filter(Boolean).join(" · ");
+    const cover = labCover(isOutside(track) ? null : track.path, THUMB_SMALL, names.artist || names.title);
+    const row = button("o-continue", () => {
+        if (audioPaused()) togglePlay();
+        else expandPlayer();
+    }, cover, el("span", "o-continue-text", "", el("span", "o-continue-title", names.title),
+        el("span", "o-continue-sub", [names.artist, sub].filter(Boolean).join(" — "))), el("span", "o-continue-play", "", labIcon("play")));
+    row.setAttribute("aria-label", "Продолжить «" + names.title + "»");
+    const section = labSection("Продолжить", null, row);
+    section.classList.add("is-continue");
+    return section;
+}
+
+/* Главная показана из кэша — строка «Продолжить» всё равно про сейчас. */
+function refreshContinue() {
+    const box = document.getElementById("homeBody");
+    if (!box) return;
+    const old = box.querySelector(".o-section.is-continue");
+    const now = continueSection();
+    if (old && now) old.replaceWith(now);
+    else if (old) old.remove();
+    else if (now) box.prepend(now);
+}
+
 function renderLabHome(data) {
     const box = document.getElementById("homeBody");
     if (!box) return;
@@ -545,6 +580,21 @@ function renderLabHome(data) {
     const based = (data.discover && data.discover.based_on) || [];
 
     const parts = [];
+
+    /* «Продолжить» — первой строкой (аудит 19.11, идея 1): очередь и место в
+     * треке сохраняются (restoreQueue), а до них было не добраться без
+     * прокрутки. Рядом — свои подборки, «Любимое» первым. */
+    const going = continueSection();
+    if (going) parts.push(going);
+    const lists = typeof knownPlaylists !== "undefined" ? knownPlaylists.slice(0, 6) : [];
+    if (lists.length) {
+        parts.push(labSection("Ваши подборки", { label: "Все", run: () => switchView("viewPlaylists") },
+            el("div", "o-quick-grid", "", ...lists.map((p) => {
+                const tile = button("o-quick", () => openPlaylist(p.name), labPlaylistCover(p.name), el("span", "o-quick-name", playlistLabel(p.name)));
+                tile.setAttribute("aria-label", playlistLabel(p.name));
+                return tile;
+            }))));
+    }
 
     /* Одинаковые песни в фонотеке (с 15.11.2026): сказать и отвести туда,
      * где выбирают, что оставить. */
@@ -567,7 +617,9 @@ function renderLabHome(data) {
     }
 
     if (moods.length) {
-        parts.push(labSection("Под настроение", null, labShelf(moods.map((m) => {
+        /* Плитками, а не полкой во весь экран (аудит 19.11, п. 8): одна
+         * карточка занимала на телефоне 750 точек из 852. */
+        parts.push(labSection("Под настроение", null, el("div", "o-mood-grid", "", ...moods.map((m) => {
             const first = m.tracks[0];
             const open = button("o-mood-open", () => openMoodPage(m.key),
                 labCover(first && first.path, THUMB_LARGE, m.name),
@@ -577,7 +629,7 @@ function renderLabHome(data) {
             const play = button("o-mood-play", () => playQueue(m.tracks, 0, "manual"), labIcon("play"));
             play.setAttribute("aria-label", "Слушать «" + m.name + "»");
             return el("div", "o-mood", "", open, play);
-        }), "is-moods")));
+        }))));
     }
 
     /* Недавно слушали — из журнала прослушиваний (adder/stats.py): что
@@ -617,7 +669,7 @@ function renderLabHome(data) {
         const picks = el("div", "o-picks");
         disc.slice(0, 16).forEach((t, i) => {
             const row = libraryRow(t, disc);
-            row.querySelector(".track-info").onclick = () => playQueue(disc, i, "manual");
+            row.play = () => playQueue(disc, i, "manual");
             picks.appendChild(row);
         });
         parts.push(labSection("Похоже на любимое", null,
@@ -969,6 +1021,21 @@ function openAlbumPage(group) {
     showAlbum(group);
 }
 
+/* «К альбому» из меню трека: у строки очереди или подборки альбома может не
+ * быть — берём его из фонотеки по пути. Альбом из одного трека (сингл) тоже
+ * открывается: это честный ответ «откуда трек». */
+async function goToAlbumOf(track) {
+    if (!track || !track.path) return;
+    const rows = await labIndex();
+    const row = rows.find((t) => t.path === track.path);
+    if (!row) { if (typeof setPlayerNote === "function") setPlayerNote("Этого трека в фонотеке уже нет"); return; }
+    const group = groupIntoAlbums(rows).find((g) => g.tracks.some((t) => t.path === track.path));
+    if (!group) return;
+    if (typeof closeTrackMenu === "function") closeTrackMenu();
+    if (typeof sheetOpen === "function" && sheetOpen()) collapsePlayer();
+    openAlbumPage(group);
+}
+
 async function renderAlbumPage(artist, album) {
     const ticket = ++labTicket;
     const rows = await labIndex();
@@ -1237,7 +1304,7 @@ function renderPlaylistsGrid(force) {
     }
     const grid = el("div", "o-grid");
     for (const p of list) {
-        grid.appendChild(labCard(labPlaylistCover(p.name), p.name, tracksWord(p.tracks), () => openPlaylist(p.name)));
+        grid.appendChild(labCard(labPlaylistCover(p.name), playlistLabel(p.name), tracksWord(p.tracks), () => openPlaylist(p.name)));
     }
     body.replaceChildren(grid);
 }
@@ -1248,6 +1315,8 @@ function renderPlaylistsGrid(force) {
     renderRail = function (data) {
         original(data);
         if (activeView === "viewPlaylists") renderPlaylistsGrid();
+        /* Подборки пришли позже главной — полка «Ваши подборки» появится. */
+        if (homeDataForMoods && data.length && !document.querySelector("#homeBody .o-quick-grid")) renderLabHome(homeDataForMoods);
     };
 })();
 
@@ -1368,7 +1437,7 @@ function openPlaylistShuffle(anchor) {
             const entries = player.playlist.entries;
             shuffleWhole(() => entries, name, (text) => { if (note) note.textContent = text; });
         },
-        () => loadShuffle("smart", name, "playlistNote"));
+        () => loadShuffle("smart", name, "playlistNote", null, player.playlist.entries.slice()));
 }
 
 syncNav();

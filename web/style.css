@@ -3018,3 +3018,177 @@ html.sheet-lock, html.sheet-lock body { overflow: hidden; }
 /* Палец промахивается мимо 18 точек: ловим нажатие шире, чем видно. */
 .search-clear::after { content: ""; position: absolute; inset: -6px -8px; }
 input:placeholder-shown + .search-clear { display: none; }
+
+/* ================= Интерфейс по аудиту 19.11.2026 (этап 6, 20.11) ================= */
+
+/* ♥ у названия трека, который уже в любимом. */
+.track-love { color: var(--accent); font-size: .78em; margin-right: 5px; vertical-align: 1px; }
+
+/* Играет трек не из фонотеки — плашка под исполнителем. */
+.player-outside-tag {
+    display: inline-block;
+    margin-top: 3px;
+    padding: 1px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    line-height: 16px;
+    color: var(--accent-ink);
+    background: var(--accent);
+}
+.player-outside-tag[hidden] { display: none; }
+
+/* «+ в фонотеку» — подписью, а не значком. */
+.queue-keep {
+    flex: none;
+    min-height: 30px;
+    padding: 0 10px;
+    border: 1px solid var(--line-2);
+    border-radius: 999px;
+    background: var(--surface-2);
+    color: var(--text);
+    font: inherit;
+    font-size: 12px;
+    white-space: nowrap;
+    cursor: pointer;
+}
+.queue-keep:disabled { opacity: .6; cursor: default; }
+/* Метка «не в фонотеке» / «не из подборки» — перед названием, не капсулой
+   справа: справа она отнимала место у названия. */
+.queue-row .track-title .queue-outside {
+    display: inline-block;
+    margin-right: 6px;
+    padding: 0 6px;
+    font-size: 10px;
+    line-height: 15px;
+    vertical-align: 2px;
+}
+/* Свайп влево убирает строку очереди — вертикаль остаётся прокрутке. */
+.queue-row { touch-action: pan-y; transition: transform .15s ease-out; }
+@media (pointer: coarse) {
+    /* «×» у каждой строки на телефоне — свайпом; для диктора кнопка остаётся. */
+    .queue-row .queue-remove {
+        position: absolute;
+        width: 1px; min-width: 1px; height: 1px; min-height: 0;
+        padding: 0; border: 0;
+        overflow: hidden;
+        clip-path: inset(50%);
+        white-space: nowrap;
+    }
+    /* Метка — точкой: «не в фонотеке» словами есть в подсказке и у плеера. */
+    .queue-row .track-title .queue-outside {
+        width: 8px; height: 8px;
+        padding: 0; border: 0;
+        font-size: 0; line-height: 0;
+        vertical-align: 2px;
+    }
+}
+
+/* Телефон, большой плеер, открыта очередь: низ — одной строкой названия и
+   кнопками, остальное место — очереди (аудит 19.11, п. 4). */
+@media (max-width: 699.98px) {
+    .app.player-open .player.is-queue .player-track { padding-top: 4px; }
+    .app.player-open .player.is-queue .player-title { font-size: 17px; }
+    .app.player-open .player.is-queue .player-artist { font-size: 14px; }
+    .app.player-open .player.is-queue .player-time,
+    .app.player-open .player.is-queue .player-volume { display: none; }
+    .app.player-open .player.is-queue .player-controls { padding: 0; }
+    .app.player-open .player.is-queue .player-controls .icon-button { width: 48px; height: 48px; min-height: 48px; }
+    .app.player-open .player.is-queue .player-controls .icon-button .icon { width: 26px; height: 26px; }
+    .app.player-open .player.is-queue .player-controls .icon-button.primary-round { width: 52px; height: 52px; }
+    .app.player-open .player.is-queue .player-panel { margin-bottom: 4px; }
+}
+
+/* «В подборку…» из плеера — окошком поверх него. */
+.floating-ask {
+    position: fixed;
+    left: 50%;
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 24px);
+    transform: translateX(-50%);
+    width: min(420px, calc(100vw - 24px));
+    max-height: 70vh;
+    overflow-y: auto;
+    z-index: 60;
+    background: var(--surface);
+    border-radius: 14px;
+    box-shadow: 0 18px 50px rgba(0, 0, 0, .6);
+}
+.floating-ask .confirm { margin: 0; }
+
+/* Главная: «Продолжить» и «Ваши подборки» — наверху, плитки настроения
+   компактные (аудит 19.11, п. 8). */
+.o-continue {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: calc(100% - 32px);
+    margin: 0 16px;
+    padding: 10px 12px;
+    border: 0;
+    border-radius: 12px;
+    background: var(--fill-2);
+    color: var(--text);
+    text-align: left;
+    cursor: pointer;
+}
+.o-continue .o-cover { width: 52px; height: 52px; flex: none; border-radius: 6px; }
+.o-continue-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 auto; }
+.o-continue-title { font-size: 16px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.o-continue-sub { font-size: 13px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.o-continue-play { flex: none; display: grid; place-items: center; width: 40px; height: 40px; border-radius: 50%; background: var(--accent); color: var(--accent-ink); }
+.o-continue-play .icon { width: 20px; height: 20px; }
+
+.o-quick-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; padding: 0 16px; }
+.o-quick {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 52px;
+    padding: 0 10px 0 0;
+    border: 0;
+    border-radius: 8px;
+    overflow: hidden;
+    background: var(--fill-2);
+    color: var(--text);
+    text-align: left;
+    cursor: pointer;
+}
+.o-quick .o-cover { width: 52px; height: 52px; flex: none; border-radius: 0; font-size: 20px; }
+.o-quick-name { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.o-mood-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding: 0 16px; }
+.o-mood-grid .o-mood-open { aspect-ratio: 16 / 9; border-radius: 12px; }
+.o-mood-grid .o-mood-text { left: 12px; right: 50px; bottom: 10px; gap: 2px; }
+.o-mood-grid .o-mood-name { font-size: 18px; }
+.o-mood-grid .o-mood-hint { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.o-mood-grid .o-mood-play { width: 36px; height: 36px; right: 8px; bottom: 8px; }
+@media (min-width: 700px) {
+    .o-quick-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .o-mood-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+    .o-mood-grid .o-mood-open { aspect-ratio: 1; }
+    .o-continue { max-width: 560px; }
+}
+
+/* Режим плавного перехода — мелкой подписью под значком. */
+#playerFade { position: relative; }
+.fade-label {
+    position: absolute;
+    left: 50%;
+    bottom: -3px;
+    transform: translateX(-50%);
+    font-size: 9px;
+    line-height: 11px;
+    font-weight: 700;
+    white-space: nowrap;
+    color: var(--accent);
+    pointer-events: none;
+}
+.fade-label[hidden] { display: none; }
+/* «Текст неверный?» — тише обычной кнопки. */
+.lyrics-wrong { min-height: 30px; padding: 0 10px; font-size: 13px; color: var(--text-3); background: none; }
+
+/* Шестерёнка «Настройки» — только на телефоне: на компьютере есть пункт в
+   левой панели. В самих настройках её не видно. */
+.top-settings { color: var(--text-2); }
+.top-settings .icon { width: 22px; height: 22px; }
+.app[data-view="viewService"] .top-settings { display: none; }
+@media (min-width: 1100px) { .top-settings { display: none; } }

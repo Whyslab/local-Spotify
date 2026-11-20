@@ -47,9 +47,14 @@
                 aria-label="Добавить музыку" title="Добавить музыку" aria-haspopup="dialog">
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
         </button>
-        <!-- Состояние службы; нажатие — раздел «Служба» (на телефоне другого пути туда нет). -->
+        <!-- Настройки — своей кнопкой-шестерёнкой (аудит 19.11, п. 12): раньше на
+             телефоне туда вёл только значок «онлайн». Он остался — как и был. -->
+        <button id="topSettings" class="icon-button top-settings" type="button" onclick="switchView('viewService')"
+                aria-label="Настройки" title="Настройки">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+        </button>
         <button id="statusPill" class="pill pill-idle" type="button" onclick="switchView('viewService')"
-                title="Служба">
+                title="Состояние службы — настройки">
           <span class="dot"></span>
           <span id="statusText">проверяю</span>
         </button>
@@ -242,7 +247,10 @@
       <div class="lyrics-head">
         <div class="row wrap lyrics-actions">
           <button id="lyricsSync" class="ghost" onclick="resyncLyrics()" hidden>Синхронизировать</button>
-          <!-- Есть всегда: текст мог найтись чужой, а мог не найтись вовсе. -->
+          <!-- Текст есть — над ним одна тихая кнопка, а «Найти» и «Удалить»
+               появляются по ней: крупная «Удалить текст» стояла там, где палец
+               бывает при прокрутке (аудит 19.11, п. 11). Текста нет — сразу «Найти». -->
+          <button id="lyricsWrong" class="ghost lyrics-wrong" onclick="showLyricsFix()" hidden>Текст неверный?</button>
           <button id="lyricsFind" class="ghost" onclick="openLyricsFinder()">Найти текст</button>
           <!-- Только когда текст есть: чужой или не тот — убрать, и сам он больше не найдётся. -->
           <button id="lyricsRemove" class="ghost" onclick="removeLyrics()" hidden>Удалить текст</button>
@@ -450,6 +458,9 @@
     <div class="player-track" onclick="expandPlayer('track')">
       <div id="playerTitle" class="player-title"></div>
       <div id="playerArtist" class="player-artist"></div>
+      <!-- Играет трек не из фонотеки (умная очередь с подмесом) — видно сразу,
+           без открытой очереди (аудит 19.11.2026, п. 3). -->
+      <div id="playerOutsideTag" class="player-outside-tag" hidden>не из фонотеки</div>
       <div id="playerNote" class="player-note"></div>
     </div>
     <!-- ♥ — подборка Monday (player.js, «Любимое»). -->
@@ -508,7 +519,8 @@
       </button>
       <button id="playerLyricsButton" class="icon-button" onclick="playerLyrics()"
               aria-label="Текст песни" title="Текст песни" aria-pressed="false">
-        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 11h16M4 16h9"/><circle cx="18" cy="17" r="3"/><path d="M21 17V9"/></svg>
+        <!-- Кавычки: строки с нотой путались со значком очереди рядом. -->
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M10 7H6a2 2 0 0 0-2 2v3a2 2 0 0 0 2 2h3v1a3 3 0 0 1-3 3M20 7h-4a2 2 0 0 0-2 2v3a2 2 0 0 0 2 2h3v1a3 3 0 0 1-3 3"/></svg>
       </button>
       <button id="playerQueueButton" class="icon-button" onclick="playerQueue()"
               aria-label="Очередь" title="Очередь" aria-pressed="false">
@@ -520,7 +532,10 @@
       <div id="playerFadeWrap" class="fade-wrap" hidden>
         <button id="playerFade" class="icon-button" onclick="toggleFadeMenu()"
                 aria-label="Плавный переход" title="Плавный переход" aria-haspopup="true">
-          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6c6 0 9 12 18 12M3 18c6 0 9-12 18-12"/></svg>
+          <!-- Две волны, а не перекрещённые кривые: те на малом размере
+               читались как «×» (аудит 19.11, п. 10). Под значком — режим. -->
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9c3-3 6-3 9 0s6 3 9 0M3 15c3-3 6-3 9 0s6 3 9 0"/></svg>
+          <span id="playerFadeLabel" class="fade-label" hidden></span>
         </button>
         <div id="playerFadeMenu" class="fade-menu" role="menu" hidden>
           <div class="fade-title">Плавный переход</div>
@@ -602,7 +617,7 @@
       <div id="railWork" class="muted"></div>
     </div>
     <button class="side-item" type="button" data-nav="viewService" id="sideService" onclick="switchView('viewService')">
-      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 13h3.5l2-6 4 11 2-5H20"/></svg><span>Служба</span>
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 13h3.5l2-6 4 11 2-5H20"/></svg><span>Настройки</span>
     </button>
   </aside>
 
