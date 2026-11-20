@@ -403,7 +403,7 @@ git pull
 ./deploy/install.sh                      # the unit changes between versions
 ```
 
-The unit runs with `WorkingDirectory` at the repository root and permits writes only to `adder/` (database and temp files), `trash/` (deleted tracks) and the library path. Deleted files stay in `trash/` for 30 days (counted from when they were moved there); after that the service removes them for good once a day, logging every name. `ProtectSystem=strict` alone is not enough for that: it mounts `/` read-only but leaves `/home` writable, since `/home` is a separate mount point. `ProtectHome=read-only` closes it, and the paths above are carved back out with `ReadWritePaths`.
+The unit runs with `WorkingDirectory` at the repository root and permits writes only to `adder/` (database and temp files), `trash/` (deleted tracks) and the library path. `ProtectSystem=strict` alone is not enough for that: it mounts `/` read-only but leaves `/home` writable, since `/home` is a separate mount point. `ProtectHome=read-only` closes it, and the paths above are carved back out with `ReadWritePaths`. Deleted files stay in `trash/` for 30 days (counted from when they were moved there); after that the service removes them for good once a day, logging every name.
 
 Back up state (SQLite plus `.env`):
 
