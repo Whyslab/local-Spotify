@@ -7035,8 +7035,13 @@ def test_on_a_phone_the_queue_keeps_whole_titles_for_outside_tracks(server, brow
     try:
         _fake_smart(phone)
         open_library(phone)
-        phone.evaluate("playSmartShuffle(); true")
-        phone.wait_for_function("player.queueMode === 'smart'")
+        # Без настоящего звука: первый трек мог не заиграть, и плеер
+        # перескакивал на чужой — у играющей строки «+» нет (плавал).
+        phone.evaluate(
+            "playAt = async (i) => { player.index = i; renderQueuePanel(); return true; };"
+            " playSmartShuffle(); true"
+        )
+        phone.wait_for_function("player.queueMode === 'smart' && player.index === 0")
         phone.evaluate("toggleQueuePanel()")
         rows = phone.locator("#playQueueRows .queue-row")
         rows.nth(2).wait_for()
