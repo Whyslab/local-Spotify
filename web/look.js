@@ -528,8 +528,8 @@ function openPlayerMore(button) {
             item(isDownloaded(track.path) ? "Убрать с телефона" : "Скачать на телефон", () => toggleTrackDownload(track));
         }
         /* Неверную версию замечают, пока она играет (рецензия этапа 6). */
-        item("Заменить другой версией…", () => {
-            const host = floatingHost("Заменить другой версией");
+        item("Заменить по ссылке…", () => {
+            const host = floatingHost("Заменить по ссылке");
             askForReplacement(button, -1, { entry: track, host });
         });
         item("Изменить теги…", () => {

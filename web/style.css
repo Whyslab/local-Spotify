@@ -2409,6 +2409,11 @@ html.sheet-lock, html.sheet-lock body { overflow: hidden; }
        обрезалось (тест 24.10). Как стоя: «откуда играет» — у играющего. */
     .app.player-open .queue-row:not(.is-playing) .queue-reveal { display: none; }
     .app.player-open .queue-row { gap: 6px; }
+    /* «×» снова виден (22.11.2026): у играющей строки три кнопки — уже
+       по 36 точек, высота цели остаётся 44, названию хватает места. */
+    .app.player-open .queue-row .queue-remove,
+    .app.player-open .queue-row .queue-handle,
+    .app.player-open .queue-row .queue-reveal { width: 36px; min-width: 36px; }
     .app.player-open .queue-row .cover { width: 40px; height: 40px; }
     .app.player-open .player-panel .play-queue-head h3 { font-size: 17px; }
     /* «дальше 11» — подсказка, кнопка важнее. */
@@ -3086,15 +3091,8 @@ input:placeholder-shown + .search-clear { display: none; }
 /* Пока палец или мышь ведут строку — без перехода, иначе она отстаёт. */
 .queue-row.is-dragging, .queue-row.is-swiping { transition: none; }
 @media (pointer: coarse) {
-    /* «×» у каждой строки на телефоне — свайпом; для диктора кнопка остаётся. */
-    .queue-row .queue-remove {
-        position: absolute;
-        width: 1px; min-width: 1px; height: 1px; min-height: 0;
-        padding: 0; border: 0;
-        overflow: hidden;
-        clip-path: inset(50%);
-        white-space: nowrap;
-    }
+    /* «×» у строки очереди на телефоне виден (просьба 22.11.2026: спрятанный
+       за свайп выглядел как «удалять убрали»); свайп влево тоже убирает. */
     /* Метка — словами в строке артиста, с рамкой: серая на тёмном не видна. */
     .queue-row .track-artist .queue-outside {
         display: inline-block;
@@ -3110,7 +3108,7 @@ input:placeholder-shown + .search-clear { display: none; }
        Ручка, «откуда играет» и «Свежие сверху» — сами выше и шире (под
        «Свежими» сразу строка трека: невидимое поле попадало бы на неё);
        у «онлайн» — невидимое поле вокруг, рядом с ним ничего нет. */
-    .queue-row .queue-handle, .queue-row .queue-reveal { width: 44px; min-width: 44px; min-height: 44px; }
+    .queue-row .queue-remove, .queue-row .queue-handle, .queue-row .queue-reveal { width: 44px; min-width: 44px; min-height: 44px; }
     #librarySort { display: inline-flex; align-items: center; min-height: 44px; }
     #statusPill { position: relative; }
     #statusPill::before { content: ""; position: absolute; inset: -8px -4px; }

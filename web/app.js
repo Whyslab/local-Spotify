@@ -2499,6 +2499,8 @@ function openLibraryMenu(button, card, t, rows) {
     } else names.forEach((name) => item(`К артисту «${name}»`, () => goToArtist(name)));
     if (t.album) item("К альбому", () => goToAlbumOf(t));
     item("Изменить теги…", () => askEdit(card, t, rows));
+    /* Не только из подборки и плеера (просьба 22.11.2026). */
+    item("Заменить по ссылке…", () => askForReplacement(button, -1, { entry: t }));
     const line = document.createElement("div");
     line.className = "row-menu-line";
     menu.appendChild(line);

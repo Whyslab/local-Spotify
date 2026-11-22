@@ -2210,8 +2210,13 @@ async function revealTrack(track) {
         if (flashTrackRow(track.path, track.index)) return;
     }
 
-    /* Фонотека: подставляем название в поиск — иначе трек может лежать за
-     * двухсотой строкой и на экране его не будет вовсе. */
+    await revealInLibrary(track);
+}
+
+/* Фонотека: подставляем название в поиск — иначе трек может лежать за
+ * двухсотой строкой и на экране его не будет вовсе. */
+async function revealInLibrary(track) {
+    if (!track) return;
     switchView("viewLibrary");
     const field = document.getElementById("librarySearch");
     /* По названию: строка «Артист - Название» из старой подборки не находила
@@ -4151,8 +4156,13 @@ function openTrackMenu(button, position) {
         if (coarse && artists.length > 1) menu.appendChild(group("К артисту…", artists));
         else menu.append(...artists);
         menu.appendChild(item("К альбому", "", () => goToAlbumOf(entry)));
+        /* Просьба 22.11.2026: из подборки (обычно «Любимое») добавить трек в
+         * другую и найти его в фонотеке — раньше только через поиск руками. */
+        const card = button.closest(".track");
+        if (card) menu.appendChild(item("В подборку…", "", () => askAddToPlaylist(card, entry)));
+        menu.appendChild(item("Показать в фонотеке", "", () => revealInLibrary(entry)));
     }
-    menu.appendChild(item("Заменить другой версией…", "", () => askForReplacement(button, position)));
+    menu.appendChild(item("Заменить по ссылке…", "", () => askForReplacement(button, position)));
     if (offline.supported && entry && !isOutside(entry)) {
         menu.appendChild(item(isDownloaded(entry.path) ? "Убрать с телефона" : "Скачать на телефон", "",
             () => toggleTrackDownload(entry)));
@@ -4451,7 +4461,16 @@ async function applyReplacement(oldPath, newPath) {
  * выглядело неработающим (05.11.2026): отказ сервера был, но наверху. */
 function tellReplacement(text) {
     setPlaylistNote(text);
-    if (!document.getElementById("player").hidden) setPlayerNote(text);
+    const playerShown = !document.getElementById("player").hidden;
+    if (playerShown) setPlayerNote(text);
+    /* Замена из фонотеки (с 22.11.2026): заметка подборки на скрытой
+     * странице, плеера может не быть — иначе ход замены не виден вовсе. */
+    else if (activeView !== "viewPlaylist") showNotice(text);
+}
+
+/* Фонотека на экране — перерисовать: в строке старый путь и длина. */
+async function refreshLibraryAfterReplacement() {
+    if (activeView === "viewLibrary" && typeof library === "function") await library();
 }
 
 /* Новая версия качается в фоне — дождаться задачи и сказать, чем кончилось. */
@@ -4487,6 +4506,7 @@ async function watchReplacement(tid, name, entry = null) {
         tellReplacement(text);
         showNotice(text);
         if (name && playlistOnScreen(name)) await openPlaylist(name);
+        await refreshLibraryAfterReplacement();
         return;
     }
 }
@@ -4521,6 +4541,7 @@ async function sendReplacement(path, url, file, choice = {}, entry = null) {
             tellReplacement("Этот трек уже был в фонотеке — он встал на место старого.");
             showNotice("Этот трек уже был в фонотеке — он встал на место старого.");
             if (name && playlistOnScreen(name)) await openPlaylist(name);
+            await refreshLibraryAfterReplacement();
             return;
         }
         tellReplacement("Версия качается. Когда доедет — встанет на это же место.");

@@ -2931,10 +2931,56 @@ def test_a_library_row_has_one_menu_button_with_seven_actions(page):
         "К артисту «Quiet»",
         "К альбому",
         "Изменить теги…",
+        "Заменить по ссылке…",
         "Удалить…",
     ]
     page.keyboard.press("Escape")
     assert page.get_by_role("menuitem").count() == 0
+    # Замена по ссылке — и из фонотеки (просьба 22.11.2026).
+    row_action(page, "Quiet", "Заменить по ссылке…")
+    page.locator(".row-menu-form input[type=url]").wait_for()
+    page.keyboard.press("Escape")
+    page.locator(".row-menu-form").wait_for(state="detached")
+
+
+def test_a_replacement_from_the_library_says_how_it_went(page):
+    """22.11.2026: замена из фонотеки писала ход в заметку скрытой подборки —
+    при закрытом плеере не было видно ни «ставлю», ни отказа сервера."""
+    open_library(page)
+    assert page.evaluate("document.getElementById(\x27player\x27).hidden")
+    page.evaluate(
+        "window.fetch = async () => new Response(JSON.stringify({detail: \x27Ссылка не открылась\x27}),"
+        " {status: 400, headers: {\x27Content-Type\x27: \x27application/json\x27}});"
+        "sendReplacement(\x27Quiet/Singles/Quiet.m4a\x27, \x27https://youtu.be/x\x27, null, {}, null); true"
+    )
+    page.wait_for_function(
+        "(document.getElementById(\x27replaceNotice\x27) || {}).textContent?.includes(\x27Ссылка не открылась\x27)"
+    )
+
+
+def test_a_playlist_row_menu_adds_to_a_playlist_and_shows_the_track_in_the_library(page, server):
+    """Просьба 22.11.2026: из подборки («Любимое») добавить трек в другую
+    подборку и найти его в фонотеке, не вбивая название руками."""
+    _playlist(server, page, "Откуда", "Quiet/Singles/Quiet.m4a")
+    _playlist(server, page, "Куда", "Loud Band/Singles/Loud.opus")
+    page.evaluate("openPlaylist(\x27Откуда\x27)")
+    page.wait_for_selector("#viewPlaylist .track")
+    menu_button = page.locator("#viewPlaylist .track").first.get_by_role("button", name="Что сделать с треком")
+    menu_button.click()
+    items = page.get_by_role("menuitem").all_inner_texts()
+    for want in ("В подборку…", "Показать в фонотеке", "Заменить по ссылке…"):
+        assert want in items, items
+    page.get_by_role("menuitem", name="В подборку…").click()
+    page.get_by_text("В какую подборку?").wait_for()
+    page.get_by_role("button", name="Куда · 1", exact=True).click()
+    page.wait_for_function(
+        "fetch(\x27/api/playlists/\x27 + encodeURIComponent(\x27Куда\x27) + \x27/tracks\x27, {headers: headers()})"
+        ".then(r => r.json()).then(p => p.entries.some(e => e.path === \x27Quiet/Singles/Quiet.m4a\x27))"
+    )
+    page.locator("#viewPlaylist .track").first.get_by_role("button", name="Что сделать с треком").click()
+    page.get_by_role("menuitem", name="Показать в фонотеке").click()
+    page.wait_for_function("activeView === \x27viewLibrary\x27")
+    page.wait_for_selector("#viewLibrary .is-found[data-track-path=\x27Quiet/Singles/Quiet.m4a\x27]")
 
 
 def test_the_rail_plus_creates_a_playlist_and_opens_it(page, server):
@@ -6274,7 +6320,7 @@ def test_a_track_replaced_while_it_waited_in_the_queue_plays_its_new_version(pag
         db.db_exec("DELETE FROM tasks WHERE url = 'https://www.youtube.com/watch?v=replaced'")
 
 
-@pytest.mark.parametrize("item", ["Заменить другой версией…", "Переместить на место…"])
+@pytest.mark.parametrize("item", ["Заменить по ссылке…", "Переместить на место…"])
 def test_a_row_form_at_the_bottom_stays_above_the_player(page, server, item):
     # Видео 23.10, 2:29: окно «заменить по ссылке» у нижней строки открылось
     # под мини-плеером — поле ссылки было не видно.
@@ -6829,8 +6875,8 @@ def test_on_a_touch_screen_the_whole_row_plays_and_names_are_text(server, browse
 
 
 def test_on_a_touch_screen_a_queue_row_is_removed_by_a_swipe(server, browser):
-    """Аудит 19.11, п. 4: «×» у каждой строки отнимал место у названия — на
-    телефоне строка убирается свайпом влево, «×» остаётся только для диктора."""
+    """Аудит 19.11, п. 4: на телефоне строка убирается свайпом влево. С 22.11
+    «×» снова виден рядом (спрятанный выглядел как «удалять убрали»)."""
     context, phone = _phone(server, browser)
     try:
         open_library(phone)
@@ -6845,7 +6891,7 @@ def test_on_a_touch_screen_a_queue_row_is_removed_by_a_swipe(server, browser):
         phone.evaluate("toggleQueuePanel()")
         rows = phone.locator("#playQueueRows .queue-row")
         rows.nth(2).wait_for()
-        assert rows.nth(1).locator(".queue-remove").bounding_box()["width"] <= 1
+        assert rows.nth(1).locator(".queue-remove").bounding_box()["width"] >= 44
         phone.evaluate(
             "(() => { const r = document.querySelectorAll('#playQueueRows .queue-row')[1];"
             " const b = r.getBoundingClientRect(); const y = b.top + b.height / 2;"
@@ -6892,7 +6938,7 @@ def test_the_players_more_menu_has_the_track_actions(page):
         "К артисту «Loud Band»",
         "К альбому",
         "Показать, откуда играет",
-        "Заменить другой версией…",
+        "Заменить по ссылке…",
         "Изменить теги…",
         "Удалить…",
     ):
@@ -6910,7 +6956,7 @@ def test_the_players_more_menu_has_the_track_actions(page):
     ask.get_by_text("Теги трека").wait_for()
     assert ask.get_attribute("role") == "dialog"
     page.locator("#playerMore").click()
-    page.get_by_role("menuitem", name="Заменить другой версией…").click()
+    page.get_by_role("menuitem", name="Заменить по ссылке…").click()
     page.locator(".floating-ask input[type=url]").wait_for()
     assert page.locator(".floating-ask").count() == 1
     page.locator(".floating-ask input[type=url]").press("Escape")
