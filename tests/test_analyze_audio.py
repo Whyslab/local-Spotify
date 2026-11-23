@@ -118,6 +118,10 @@ def test_new_tracks_are_measured_one_at_a_time(monkeypatch):
     monkeypatch.setattr(analysis.subprocess, "run", fake_run)
     # Без .venv в папке проекта (так на CI) разбор молча не запускается.
     monkeypatch.setattr(analysis, "PYTHON", Path(sys.executable))
+    # Скачанные модели звука (adder/models, не в git) добавляют второй разбор
+    # на трек — тест считал бы каждый трек дважды и падал только там, где они
+    # есть (22.11.2026). Здесь проверяется очередь разборов, не модели.
+    monkeypatch.setattr(analysis, "_embedding_ready", lambda: False)
     for i in range(4):
         real_analyse_track(f"A/Singles/{i}.m4a")
 
