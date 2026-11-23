@@ -551,7 +551,8 @@ def render(job: dict, beats_hook=None, parts: dict | None = None) -> tuple[np.nd
     a_end = a_end_i / SR  # секунды в окне A
     b_start = b_start_i / SR  # секунды файла B
     voice = job.get("voice_b")
-    voice_b = (float(voice) - b_start) if isinstance(voice, (int, float)) else None
+    ok = isinstance(voice, (int, float)) and math.isfinite(voice)
+    voice_b = (float(voice) - b_start) if ok else None
     if voice_b is not None and voice_b < 0:
         voice_b = 0.0
     b_body = b[b_start_i:]

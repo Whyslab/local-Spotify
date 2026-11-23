@@ -82,9 +82,8 @@ def make_track(
 def lag_and_residual(x, y):
     """Сдвиг y относительно x (отсчёты) и остаток после совмещения, дБ.
 
-    Сдвиг до ~10 мс — это перемотка ffmpeg внутри AAC (связка режется из куска,
-    прочитанного с перемоткой, а проверка читает трек с начала); плееру он не
-    мешает: тот находит место по звуку, а не по числу."""
+    Связка читает трек с перемоткой после -i (с начала файла), как и проверка,
+    поэтому сдвиг должен быть ровно 0."""
     a, b = x[:, 0].astype(np.float64), y[:, 0].astype(np.float64)
     n = min(len(a), len(b))
     a, b = a[:n], b[:n]
@@ -100,7 +99,7 @@ def lag_and_residual(x, y):
     return lag, 20 * np.log10(np.sqrt(np.mean(resid**2)) / np.sqrt(np.mean(a**2)) + 1e-12)
 
 
-NEAR = int(0.015 * SR)  # 15 мс
+NEAR = 0  # края — те же отсчёты, без сдвига
 
 
 def whole(path, start, length):
@@ -191,7 +190,7 @@ def test_the_edges_of_the_bridge_are_the_tracks_themselves(tracks, b, case):
     a = whole(tracks["a120"], plan["a_from"], plan["lead"])
     lag, resid = lag_and_residual(a[:lead], bridge[:lead])
     assert abs(lag) <= NEAR and resid < -30, (lag, resid)
-    solo = int(plan["b_solo_at"] * SR)
+    solo = round(plan["b_solo_at"] * SR)
     # Первые 20 мс — шов после растянутого куска; дальше — сам B.
     skip = int(0.03 * SR)
     b_ref = whole(tracks[b], plan["b_from"] + skip / SR, 4.0)
@@ -206,23 +205,25 @@ def test_the_tempo_of_b_is_matched_only_while_they_overlap(tracks):
     assert plan["beats"] in (4, 8, 16, 32)
 
 
-def test_the_whole_beatless_intro_is_in_the_bridge(tracks):
-    bridge, plan = render(tracks, "a120", "b123_intro")
-    b_start = rt.decode(tracks["b123_intro"], 0.0, 3.0)
-    start, _ = rt.loud_edges(b_start)
-    first = b_start[start : start + SR]
-    # Самое начало B (аккорд до барабана) лежит сразу после чистого A.
-    lead = int(plan["lead"] * SR)
-    window = bridge[lead : lead + 2 * SR]
-    lag, _ = lag_and_residual(first, window[: len(first)])
-    assert abs(lag) <= NEAR
+def test_the_beatless_intro_plays_under_a_from_the_start_of_the_mix(tracks):
+    """Вступление B без барабана звучит под A с первого отсчёта перехода, и
+    наложение не короче 4 с. С самого начала файла — не обязательно: длинное
+    вступление v3 укорачивает, чтобы наложение кончалось на первом ударе B."""
+    parts = {}
+    _, plan = render(tracks, "a120", "b123_intro", parts=parts)
+    assert plan["case"] == "intro"
+    assert plan["b_solo_at"] - plan["lead"] >= 4.0, plan
+    head = parts["b"][: SR // 2]
+    assert np.sqrt(np.mean(head**2)) > 1e-3
 
 
 def test_the_overlap_ends_before_the_voice(tracks):
     # Голос B на 7-й секунде, а вступление тихое 10 с: наложение — до голоса.
     _, plan = render(tracks, "a120", "b123_soft", voice_b=7.0)
     assert plan["case"] == "beatmatch"
-    assert plan["solo_before_voice"] >= 0
+    # Наложение кончается к голосу (не позже) и не раньше чем за 8 ударов до него:
+    # число ударов — из ряда 32/16/8/4, остаток ряда уходит в запас.
+    assert -0.01 <= plan["solo_before_voice"] <= 8 * 60 / 123 + 0.01, plan
 
 
 def test_replaygain_is_in_the_bridge(tracks):
@@ -379,6 +380,7 @@ def test_kicks_stay_together_through_a_long_overlap(tracks):
     env = librosa.onset.onset_strength(y=mono, sr=SR, hop_length=128)
     frames = librosa.onset.onset_detect(onset_envelope=env, sr=SR, hop_length=128, backtrack=False)
     # Сильные атаки — удары; слабые между ними — щелчок обрезанного хвоста
+    # (порог отсекает и тихие ранние доли вступления: проверяется громкая часть)
     # бочки в самом тестовом треке (на +0,12 с), не сдвиг.
     frames = frames[env[frames] >= 0.4 * env[frames].max()]
     kb = librosa.frames_to_time(frames, sr=SR, hop_length=128) + plan["a_from"] + plan["lead"]

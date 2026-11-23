@@ -20,8 +20,8 @@
  * звук же сверяется с образцом до отсчёта в обоих движках.
  *
  * Всё это — через Web Audio, поэтому только там, где странице подчиняется
- * громкость (не iPhone: там Web Audio обрывает фоновое воспроизведение, и
- * граф даже не создаётся). Где перехода не вышло — обычное затухание 3 с.
+ * громкость (volumeAdjustable: ноутбук и iPhone с iOS 26; на старых iOS Web
+ * Audio обрывает фоновое воспроизведение, и граф даже не создаётся). Где перехода не вышло — обычное затухание 3 с.
  * Громкость в графе ведут узлы: окно не слушает volume и muted элемента,
  * подключённого к Web Audio (проверено 09.10), а Chromium, наоборот, при muted
  * отдаёт в граф тишину — и переход бы ничего не услышал. Поэтому у такого
@@ -538,13 +538,18 @@ async function mixDock(run) {
         } else if (Math.abs(shift) > MIX_SEEK_ABOVE) {
             // Перемотка уже была и снова мимо — подогнать скоростью самого B.
             // Высоту не держать: B без звука, а простая смена скорости точнее.
+            // Не больше трёх раз: в WebKit смена скорости сама может перемотать
+            // мимо, и подгонка ходила бы по кругу до конца связки.
             const span = Math.abs(shift) / MIX_NUDGE_RATE;
-            if (span + 0.9 > left()) break;
+            if (span + 0.9 > left() || (run.nudges || 0) >= 3) break;
             b.preservesPitch = false;
             b.playbackRate = shift > 0 ? 1 - MIX_NUDGE_RATE : 1 + MIX_NUDGE_RATE;
-            await ctxWait(ctx.currentTime + span);
-            b.playbackRate = 1;
-            b.preservesPitch = true;
+            try {
+                await ctxWait(ctx.currentTime + span);
+            } finally {
+                b.playbackRate = 1;
+                b.preservesPitch = true;
+            }
             run.nudges = (run.nudges || 0) + 1;
             await ctxWait(ctx.currentTime + 0.3);
         } else {
