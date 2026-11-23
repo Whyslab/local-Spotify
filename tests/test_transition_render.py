@@ -122,6 +122,8 @@ def tracks(tmp_path_factory):
         "loud": make_track(d / "loud.m4a", 123, 60, level=1.0),
         "b123_soft": make_track(d / "b123s.m4a", 123, 60, soft=10.0),
         "a120_fade": make_track(d / "a120f.m4a", 120, 70, fade_out=12.0),
+        # Темп далеко от A, первые 20 с — тихо: под коротким стыком был бы провал.
+        "b150_quiet": make_track(d / "b150q.m4a", 150, 60, soft=20.0),
     }
 
 
@@ -388,3 +390,65 @@ def test_kicks_stay_together_through_a_long_overlap(tracks):
     phase = kb % 0.5
     worst = float(np.max(np.minimum(phase, 0.5 - phase)))
     assert worst < 0.012, (worst, kb)
+
+
+def _job(tracks, a, b, **extra):
+    return {"a": str(tracks[a]), "b": str(tracks[b]), "tempo_a": None, "tempo_b": None, **extra}
+
+
+def test_a_skipped_quiet_start_enters_b_on_its_beat(tracks):
+    """Пропуск тихого начала B (как AutoMix, решение пользователя 23.11): B
+    входит на долю (удары каждые 0,4 с с нуля), за 20 мс до неё; края связки —
+    сам B с новой позиции."""
+    job = _job(tracks, "a120", "b150_quiet", voice_b=16.0)
+    bridge, plan, _, _ = rt._render(job, None, {}, 2.0)
+    assert plan["b_skip"] > 2.0, plan
+    phase = (plan["b_skip"] + 0.02) % 0.4
+    assert min(phase, 0.4 - phase) < 0.03, plan
+    solo = round(plan["b_solo_at"] * SR)
+    b_ref = whole(tracks["b150_quiet"], plan["b_from"] + 0.03, 3.0)
+    lag, resid = lag_and_residual(b_ref, bridge[solo + int(0.03 * SR) :])
+    assert lag == 0 and resid < -30, (lag, resid)
+
+
+def test_the_skip_never_cuts_into_the_voice(tracks):
+    job = _job(tracks, "a120", "b150_quiet", voice_b=9.0)
+    _, plan, _, _ = rt._render(job, None, {}, 2.0)
+    assert 0 < plan["b_skip"] <= 9.0 - 2 * 0.4 + 1e-6, plan
+    assert plan["voice_b"] == pytest.approx(9.0, abs=0.01)
+
+
+def test_the_skip_is_taken_only_where_it_fills_a_hole(tracks, monkeypatch):
+    """Второй вариант (с пропуском) — только при провале в переходе глубже
+    HOLE_DB, и только если провал стал мельче на 3 дБ: пропуск вслепую делал
+    хуже в 10 парах из 34 (аудит 23.11)."""
+    calls = []
+
+    def fake(holes):
+        def _render(job, hook, parts, keep):
+            calls.append(keep)
+            hole = holes[0] if keep is None else holes[1]
+            return np.zeros((1, 2)), {"b_skip": 0.0 if keep is None else 5.0}, hole, 3.0
+
+        return _render
+
+    for holes, taken, tries in [
+        ((4.0, 0.0), False, 1),
+        ((9.0, 7.0), False, 2),
+        ((9.0, 2.0), True, 2),
+    ]:
+        calls.clear()
+        monkeypatch.setattr(rt, "_render", fake(holes))
+        _, plan = rt.render({"a": "x", "b": "y"})
+        assert (plan["b_skip"] > 0) == taken and len(calls) == tries, (holes, plan, calls)
+
+
+def test_without_a_known_voice_the_start_of_b_is_never_skipped(tracks):
+    _, plan, _, _ = rt._render(_job(tracks, "a120", "b150_quiet"), None, {}, 2.0)
+    assert plan["b_skip"] == 0, plan
+
+
+def test_a_quiet_start_covered_by_a_long_overlap_is_kept(tracks):
+    """Где длинное наложение и так накрывает тихое начало, пропускать нечего."""
+    _, plan = render(tracks, "a120", "b123_soft")
+    assert plan["b_skip"] == 0, plan

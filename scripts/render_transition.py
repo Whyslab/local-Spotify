@@ -34,6 +34,12 @@
    (последний — при голосе сразу, иначе за четыре удара до конца A); затакт B
    звучит поверх A; басы меняются на первом ударе B, A уходит за удар.
 
+Тихое начало B. Если в переходе остаётся провал (громкость ниже 3 с до и
+после глубже 6 дБ) и начало B тихое, связка сводится второй раз: B входит
+позже, на такт, не задевая голос — как AutoMix у Apple (решение пользователя
+23.11.2026). Второй вариант берётся, только если провал стал мельче на 3 дБ;
+позиция b_from в плане — уже с учётом пропуска, плееру менять нечего.
+
 Басы и верх делятся фильтром без сдвига фазы (низ + остаток = сам звук),
 поэтому, пока усиления равны единице, звук не меняется ни на отсчёт. До
 23.11.2026 у A в «cut» басы срезались фильтром разом на первом же отсчёте
@@ -77,7 +83,7 @@ if TYPE_CHECKING:
 # 3 — переход до затухания A, деление на басы и верх без щелчка, длинное
 #     наложение под вступление B, подстройка растяжки по звуку, громкость
 #     суммы (23.11.2026)
-VERSION = 3
+VERSION = 4
 SR = 48000
 LEAD = 4.0  # с чистого A в начале связки
 TAIL = 10.0  # с чистого B в конце связки: плееру — время подвести B
@@ -94,6 +100,9 @@ BLEND_MAX = 20.0  # с: наложение не дольше
 INTRO_MAX = 12.0  # с: A поверх вступления B не дольше
 FADE_DB = 6.0  # A «затихает сам», когда тише своей обычной громкости на столько
 FADE_KEEP_MAX = 20.0  # с: затухания A отбрасывается не больше
+SOFT_DB = 10.0  # дБ: начало B до входа в силу тише обычного на столько — «тихое»
+HOLE_DB = 6.0  # дБ: провал в связке глубже — пробуется пропуск тихого начала B
+SKIP_KEEP = 4  # ударов B тихого начала остаётся хотя бы (сверх того, что под A)
 RISE_DB = 6.0  # B «вошёл в силу», когда тише своей обычной громкости не больше чем на столько
 GRID_OK = 0.6  # доля найденных ударов на ровной сетке, чтобы ей верить
 LEVEL_TOLERANCE = 1.0  # LU: сумма громче прямой A→B на столько — ещё не поправляется
@@ -443,6 +452,23 @@ def step_at(n: int, at: int, width: int) -> np.ndarray:
     return (0.5 - 0.5 * np.cos(np.pi * x))[:, None].astype(np.float32)
 
 
+def local_dip(bridge: np.ndarray, lead_i: int, solo_i: int) -> float:
+    """Провал в переходе (дБ): самое тихое место наложения (громкость по
+    0,4 с, сглаженная за 1 с) ниже 3 с чистого A до него и 3 с чистого B после
+    — ниже того, что тише. Та же мерка, что у аудита переходов."""
+    import numpy as np
+
+    level = lufs(power_curve(bridge, 0.4))
+    sm = np.convolve(level, np.ones(20) / 20, "same")
+    i = lambda t: int(round(t / HOP))  # noqa: E731
+    t_lead, t_solo = lead_i / SR, solo_i / SR
+    pre, post = level[i(t_lead - 3) : i(t_lead)], level[i(t_solo) : i(t_solo + 3)]
+    mix = sm[i(t_lead) : i(t_solo) + 1]
+    if not len(pre) or not len(post) or not len(mix):
+        return 0.0
+    return float(min(np.median(pre), np.median(post)) - mix.min())
+
+
 def limit(x: np.ndarray, start: int, stop: int, alone: np.ndarray | None = None) -> np.ndarray:
     """Прижать пики выше CEILING в [start, stop) плавным усилением; вне отрезка
     звук не меняется. Минимум по окну 100 мс, затем среднее по 50 мс: среднее
@@ -536,7 +562,36 @@ def hold_a(
 
 def render(job: dict, beats_hook=None, parts: dict | None = None) -> tuple[np.ndarray, dict]:
     """Свести связку. beats_hook(x, prior) -> (tempo, beats) — для тестов;
-    в parts (если дан) кладутся части A и B перехода порознь — для проверок."""
+    в parts (если дан) кладутся части A и B перехода порознь — для проверок.
+
+    Длинное тихое начало B пропускается, как у AutoMix (решение пользователя
+    23.11): если в связке провал глубже HOLE_DB (громкость ниже обоих треков)
+    и начало B тихое, связка сводится второй раз — B входит позже, на такт, и
+    под A остаётся столько тихого начала, сколько его было в наложении. Второй
+    вариант берётся, только если провал стал мельче на 3 дБ: оценка «тихого
+    начала» по громкости B ошибается (в трэпе громкость дышит), и пропуск
+    вслепую делал хуже в 10 парах из 34 (аудит 23.11)."""
+    first: dict = {}
+    bridge, plan, hole, used = _render(job, beats_hook, first, None)
+    if hole > HOLE_DB:
+        second: dict = {}
+        try:
+            bridge2, plan2, hole2, _ = _render(job, beats_hook, second, used)
+        except Exception:  # пропуск — улучшение: не сошёлся — связка без него
+            hole2, plan2 = hole, {}
+        if plan2.get("b_skip", 0) > 0 and hole2 < hole - 3.0:
+            bridge, plan, first = bridge2, plan2, second
+    if parts is not None:
+        parts.update(first)
+    return bridge, plan
+
+
+def _render(
+    job: dict, beats_hook, parts: dict, keep: float | None
+) -> tuple[np.ndarray, dict, float, float]:
+    """Одно сведение. keep — None (B с начала) или сколько секунд тихого
+    начала B оставить под A перед входом в силу (пропуск). Возвращает ещё
+    глубину провала в связке (дБ) и сколько B ушло в наложение (с)."""
     import numpy as np
 
     beat_finder = beats_hook or find_beats
@@ -586,6 +641,38 @@ def render(job: dict, beats_hook=None, parts: dict | None = None) -> tuple[np.nd
         tempo_a = 60.0 / period_a
     if grid_b:
         tempo_b = 60.0 / period_b
+    # Длинное тихое начало B пропускается, как у AutoMix: после ухода A иначе
+    # 5–10 с звучало бы одно тихое вступление (аудит 23.11: 9 из 150 провалов,
+    # решение пользователя — пропускать). Остаётся SKIP_KEEP ударов до входа в
+    # силу; вход — на долю (такт от первого удара), голос не задевается.
+    b_skip = 0.0
+    pre_b = level_b[: max(0, int((rise_b - 1.0) / HOP))]
+    body_b = body_level(level_b) if len(level_b) else 0.0
+    soft = len(pre_b) > 0 and float(np.median(pre_b)) <= body_b - SOFT_DB
+    # Только где известен голос (первая строка текста): иначе тихий вокал в
+    # начале срезался бы вслепую.
+    if keep is not None and soft and voice_b is not None and len(beats_b):
+        target = rise_b - max(keep, SKIP_KEEP * period_b)
+        target = min(target, voice_b - 2 * period_b)
+        if grid_b:  # четыре доли от сетки (не обязательно граница такта)
+            bar = 4 * period_b
+            target = phase_b + math.floor((target - phase_b) / bar) * bar
+        else:
+            k = int(np.searchsorted(beats_b, target, side="right")) - 1
+            target = float(beats_b[k]) if k >= 0 else 0.0
+        # Удары найдены только в первых 30 с B: дальше сетка — догадка, и после
+        # пропуска ударов должно остаться на «удар в удар».
+        left = beats_b[beats_b >= target - 0.07 * period_b]
+        if target >= 2.0 and len(left) > 4 and target <= beats_b[-1]:
+            cut_i = int(round((target - 0.02) * SR))  # чуть раньше доли: атака целиком
+            b_skip = cut_i / SR
+            b_body = b_body[cut_i:]
+            b_start += b_skip
+            rise_b -= b_skip
+            phase_b -= b_skip
+            beats_b = np.maximum(0.0, left - b_skip)
+            if voice_b is not None:
+                voice_b = max(0.0, voice_b - b_skip)
     if len(beats_b):
         first_beat_b = float(beats_b[0])
         if grid_b:  # первый удар — на сетке (найденный дрожит)
@@ -848,6 +935,7 @@ def render(job: dict, beats_hook=None, parts: dict | None = None) -> tuple[np.nd
         "solo_before_voice": voice_after,
         "a_dropped": round(a_end - a_stop, 2),
         "rise_b": round(rise_b, 2),
+        "b_skip": round(b_skip, 3),
         "level_cut": round(level_cut, 2),
         # Почему так: доля ударов на сетке у A и B (верить ей — от GRID_OK).
         "grid": [round(on_a, 2), round(on_b, 2)],
@@ -855,7 +943,9 @@ def render(job: dict, beats_hook=None, parts: dict | None = None) -> tuple[np.nd
     }
     if "lock" in decision:
         plan["lock"] = decision["lock"]
-    return bridge, plan
+    # Провал в переходе; без тихого начала B пропускать нечего.
+    hole = local_dip(bridge, lead_i, int(round(b_solo_at * SR))) if soft else 0.0
+    return bridge, plan, hole, b_used / SR
 
 
 def write_flac(path: Path, x: np.ndarray) -> None:
