@@ -34,6 +34,11 @@ const MIX_MATCH = 0.8;       // нижняя граница сходства у�
 const MIX_DOCK_TOLERANCE = 0.0005;  // с: B «встал», если расходится меньше
 const MIX_SEEK_ABOVE = 0.012;  // с: дальше — перемотать B, ближе — подогнать связку
 const MIX_SLEW = 0.005;        // доля скорости связки при подгонке
+/* Перемотка на айфоне ложится мимо на десятки миллисекунд (журнал 22.11: стык
+ * не встал, 46 и 934 мс) — повторная перемотка снова мимо. Тогда B, пока он
+ * без звука, догоняет или ждёт связку скоростью: её рывков не слышно. */
+const MIX_NUDGE_MAX = 0.4;     // с: ближе — после первой перемотки подгонять скоростью B
+const MIX_NUDGE_RATE = 0.04;   // доля скорости B при такой подгонке
 
 const mix = {
     ctx: null,
@@ -500,6 +505,7 @@ async function mixDock(run) {
     // Сколько ещё можно стыковать: под конец связки нужна замена (до 0,35 с) с запасом.
     const left = () => run.zero + plan.length - 0.5 - ctx.currentTime;
     let delta = null;
+    let seeks = 0;
     // Запись 0,5 с и поиск по ней (на медленном ноутбуке — до 0,3 с).
     while (left() > 0.8) {
         const rec = await record(tap, 0.5);
@@ -520,12 +526,26 @@ async function mixDock(run) {
         (run.trace = run.trace || []).push([+(delta / sr * 1000).toFixed(2), +found.score.toFixed(3)]);
         if (Math.abs(delta) <= sr * MIX_DOCK_TOLERANCE) break;
         const shift = delta / sr;  // > 0: B впереди — связке догонять
-        if (Math.abs(shift) > MIX_SEEK_ABOVE) {
+        if (Math.abs(shift) > MIX_SEEK_ABOVE && (seeks === 0 || Math.abs(shift) > MIX_NUDGE_MAX)) {
             // Крупно — перемоткой B (звука у B пока нет, её не слышно). Мимо она
-            // бывает и после: в Chromium на кусок буфера (21 мс), в WebKit до ±15 мс.
+            // бывает и после: в Chromium на кусок буфера (21 мс), в WebKit до ±15 мс,
+            // на айфоне — на десятки.
             if (left() < 0.9) break;
             lead -= shift;
+            seeks += 1;
             seekB();
+            await ctxWait(ctx.currentTime + 0.3);
+        } else if (Math.abs(shift) > MIX_SEEK_ABOVE) {
+            // Перемотка уже была и снова мимо — подогнать скоростью самого B.
+            // Высоту не держать: B без звука, а простая смена скорости точнее.
+            const span = Math.abs(shift) / MIX_NUDGE_RATE;
+            if (span + 0.9 > left()) break;
+            b.preservesPitch = false;
+            b.playbackRate = shift > 0 ? 1 - MIX_NUDGE_RATE : 1 + MIX_NUDGE_RATE;
+            await ctxWait(ctx.currentTime + span);
+            b.playbackRate = 1;
+            b.preservesPitch = true;
+            run.nudges = (run.nudges || 0) + 1;
             await ctxWait(ctx.currentTime + 0.3);
         } else {
             // Мелко — подогнать связку: её скорость Web Audio держит до отсчёта, а у
@@ -543,8 +563,12 @@ async function mixDock(run) {
     }
     check(run);
     const docked = delta !== null && Math.abs(delta) <= sr * MIX_DOCK_TOLERANCE;
-    // Не встал — всё равно отдать звук B: тишина хуже. Замена длиннее, чтобы сгладить.
-    const swapLength = docked ? MIX_SWAP : 0.3;
+    // Не встал — всё равно отдать звук B: тишина хуже. Мимо на десятки
+    // миллисекунд — замена короткая: длинная смешала бы два сдвинутых звука в
+    // «эхо» (так звучал стык 46 мс на айфоне). Мимо сильнее или неизвестно на
+    // сколько — длиннее, чтобы сгладить скачок.
+    const near = delta !== null && Math.abs(delta) <= sr * 0.08;
+    const swapLength = docked ? MIX_SWAP : near ? 0.05 : 0.3;
     const at = ctx.currentTime + 0.03;
     run.bridgeHeld = true;
     run.bridgeGain.gain.cancelScheduledValues(0);
@@ -590,7 +614,7 @@ function mixAdopt(run, docked, delta) {
         b.dispatchEvent(new Event(name));
     }
     const ms = delta === null ? "?" : (delta * 1000).toFixed(2);
-    mix.last = { case: prep.plan.case, docked, delta, lag: run.lag, trace: run.trace || [] };
+    mix.last = { case: prep.plan.case, docked, delta, lag: run.lag, trace: run.trace || [], nudges: run.nudges || 0 };
     playerEvent(docked ? "mix" : "mix-fail", `${prep.plan.case}, стык ${ms} мс`);
 }
 

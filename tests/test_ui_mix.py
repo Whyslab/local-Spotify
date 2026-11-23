@@ -574,3 +574,36 @@ def test_a_quiet_passage_is_found_next_to_a_louder_repeat(opened):
         }"""
     )
     assert at["at"] == 10000 and at["score"] > 0.99, at
+
+
+IPHONE_SEEK = """
+    // Как айфон (журнал 22.11.2026): перемотка ложится мимо на 20–60 мс.
+    const real = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'currentTime');
+    Object.defineProperty(HTMLMediaElement.prototype, 'currentTime', {
+        get() { return real.get.call(this); },
+        set(v) {
+            const off = (0.02 + Math.random() * 0.04) * (Math.random() < 0.5 ? -1 : 1);
+            real.set.call(this, Math.max(0, v + off));
+        },
+        configurable: true,
+    });
+"""
+
+
+def test_seeks_that_keep_missing_are_made_up_by_the_speed_of_b(server, browser):
+    """Стык на айфоне не вставал (46 мс): каждая новая перемотка B ложилась
+    снова мимо. После первой перемотки B подгоняется скоростью — без звука."""
+    context, page, errors, _, events = _open(server, browser, IPHONE_SEEK)
+    try:
+        start_and_reach_the_bridge(page)
+        wait(page, "player.index === 1 && mix.last", timeout=40)
+        last = page.evaluate("mix.last")
+        assert last["docked"] is True and abs(last["delta"]) <= 0.0005, last
+        assert last["nudges"] >= 1, last
+        # Скорость B вернулась: дальше он играет как обычно.
+        assert page.evaluate("player.audio.playbackRate") == 1
+        assert page.evaluate("player.audio.preservesPitch") is True
+        wait_event(page, events, "mix")
+        assert errors == []
+    finally:
+        context.close()

@@ -38,9 +38,9 @@ from . import analysis, config, db, library, lyrics, runtime
 
 logger = logging.getLogger(__name__)
 
-RENDER_VERSION = 2  # то же, что VERSION в scripts/render_transition.py
+RENDER_VERSION = 3  # то же, что VERSION в scripts/render_transition.py
 SCRIPT = runtime.PROJECT.parent / "scripts" / "render_transition.py"
-KEEP = 60  # связок на диске (обычно 2–3 МБ, длинное наложение — до ~9)
+KEEP = 60  # связок на диске (обычно 3–4 МБ, длинное наложение — до ~10)
 MIN_A = 60.0  # с: короче — переход съел бы заметную часть трека
 MIN_B = 30.0
 FAILED_TTL = 3600.0  # не сводить ту же пару заново раньше, чем через час

@@ -2965,7 +2965,9 @@ def test_a_playlist_row_menu_adds_to_a_playlist_and_shows_the_track_in_the_libra
     _playlist(server, page, "Куда", "Loud Band/Singles/Loud.opus")
     page.evaluate("openPlaylist(\x27Откуда\x27)")
     page.wait_for_selector("#viewPlaylist .track")
-    menu_button = page.locator("#viewPlaylist .track").first.get_by_role("button", name="Что сделать с треком")
+    menu_button = page.locator("#viewPlaylist .track").first.get_by_role(
+        "button", name="Что сделать с треком"
+    )
     menu_button.click()
     items = page.get_by_role("menuitem").all_inner_texts()
     for want in ("В подборку…", "Показать в фонотеке", "Заменить по ссылке…"):
@@ -2977,10 +2979,14 @@ def test_a_playlist_row_menu_adds_to_a_playlist_and_shows_the_track_in_the_libra
         "fetch(\x27/api/playlists/\x27 + encodeURIComponent(\x27Куда\x27) + \x27/tracks\x27, {headers: headers()})"
         ".then(r => r.json()).then(p => p.entries.some(e => e.path === \x27Quiet/Singles/Quiet.m4a\x27))"
     )
-    page.locator("#viewPlaylist .track").first.get_by_role("button", name="Что сделать с треком").click()
+    page.locator("#viewPlaylist .track").first.get_by_role(
+        "button", name="Что сделать с треком"
+    ).click()
     page.get_by_role("menuitem", name="Показать в фонотеке").click()
     page.wait_for_function("activeView === \x27viewLibrary\x27")
-    page.wait_for_selector("#viewLibrary .is-found[data-track-path=\x27Quiet/Singles/Quiet.m4a\x27]")
+    page.wait_for_selector(
+        "#viewLibrary .is-found[data-track-path=\x27Quiet/Singles/Quiet.m4a\x27]"
+    )
 
 
 def test_the_rail_plus_creates_a_playlist_and_opens_it(page, server):
