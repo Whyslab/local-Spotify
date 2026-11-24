@@ -3236,3 +3236,39 @@ input:placeholder-shown + .search-clear { display: none; }
    сердца подряд (просьба 20.11). */
 .fav-title::after { content: " ♥"; }
 :is(.o-card, .o-quick, .rail-item, .playlist-head):has(.is-heart) .fav-title::after { content: none; }
+
+/* ---------- Горячие клавиши: подсказка (ноутбук) ---------- */
+.keys-dialog {
+    background: var(--material-solid);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: var(--r-card);
+    padding: 16px 20px 20px;
+    width: min(420px, calc(100vw - 32px));
+}
+.keys-dialog::backdrop { background: rgb(0 0 0 / 0.55); }
+.keys-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.keys-head h2 { font-size: 18px; margin: 0; }
+.keys-list {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 10px 16px;
+    margin: 0;
+    align-items: center;
+}
+.keys-list dt { white-space: nowrap; color: var(--text-2); }
+.keys-list dd { margin: 0; }
+kbd {
+    font: inherit;
+    font-size: 13px;
+    padding: 2px 7px;
+    border-radius: 6px;
+    background: var(--fill);
+    border: 1px solid var(--line-2);
+    color: var(--text);
+}
+.keys-open { margin-top: 12px; }
+/* На телефоне клавиатуры нет — и кнопки тоже. */
+@media (pointer: coarse) {
+    .keys-open { display: none; }
+}

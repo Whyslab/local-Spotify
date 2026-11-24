@@ -7703,3 +7703,47 @@ def test_opening_a_row_menu_in_search_is_not_a_used_query(page):
     page.wait_for_selector(".row-menu")
     page.keyboard.press("Escape")
     assert page.evaluate("recentSearches()") == []
+
+
+def test_hotkeys_work_on_a_laptop_in_any_keyboard_layout(page):
+    """Стрелки, Shift+стрелки, L, M, / и ? — по коду клавиши: в русской
+    раскладке L — это «д», а должно работать так же. В поле ввода — печать."""
+    page.evaluate(
+        """() => {
+        window.__calls = [];
+        const note = (name) => (...args) => { window.__calls.push(name); };
+        nextTrack = note("next"); prevTrack = note("prev");
+        toggleFavourite = note("love"); toggleMute = note("mute");
+        commitSeek = (t) => window.__calls.push("seek:" + Math.round(t));
+        player.queue = [{ path: "A/Singles/a.m4a", artist: "A", title: "a" }];
+        player.index = 0;
+        Object.defineProperty(player.audio, "duration", { value: 200, configurable: true });
+        Object.defineProperty(player.audio, "currentTime", { value: 50, configurable: true, writable: true });
+        document.activeElement && document.activeElement.blur();
+    }"""
+    )
+    page.keyboard.press("ArrowRight")
+    page.keyboard.press("ArrowLeft")
+    page.keyboard.press("Shift+ArrowRight")
+    page.keyboard.press("Shift+ArrowLeft")
+    # Русская раскладка: буква другая, код клавиши тот же.
+    page.dispatch_event("body", "keydown", {"code": "KeyL", "key": "д", "bubbles": True})
+    page.dispatch_event("body", "keydown", {"code": "KeyM", "key": "ь", "bubbles": True})
+    assert page.evaluate("window.__calls") == ["seek:55", "seek:45", "next", "prev", "love", "mute"]
+
+    page.keyboard.press("Shift+Slash")
+    assert page.locator("#keysDialog").is_visible()
+    assert page.locator("#keysList kbd").first.inner_text() == "Пробел"
+    page.keyboard.press("Escape")
+    assert not page.locator("#keysDialog").is_visible()
+
+    page.keyboard.press("Slash")
+    page.wait_for_function("activeView === 'viewSearch'")
+    focused = page.evaluate("document.activeElement.id")
+    assert focused in ("sideSearch", "searchEverywhere")
+    # В поле поиска клавиши — для печати.
+    page.evaluate("window.__calls = []")
+    page.keyboard.type("lm")
+    page.keyboard.press("ArrowLeft")
+    assert page.evaluate("window.__calls") == []
+    assert page.evaluate("document.activeElement.value").endswith("lm")

@@ -381,6 +381,7 @@
           </span>
           <input id="coverTintSwitch" class="switch" type="checkbox" role="switch" onchange="setCoverTint(this.checked)">
         </label>
+        <button class="ghost keys-open" type="button" onclick="showHotkeys()">Горячие клавиши <kbd>?</kbd></button>
       </div>
 
       <div class="card">
@@ -673,6 +674,17 @@
   </aside>
 
 </div>
+
+<!-- Горячие клавиши: «?» на ноутбуке (player.js, HOTKEYS). Esc закрывает сам <dialog>. -->
+<dialog id="keysDialog" class="keys-dialog" aria-labelledby="keysTitle">
+  <div class="keys-head">
+    <h2 id="keysTitle">Горячие клавиши</h2>
+    <button class="icon-button keys-close" type="button" aria-label="Закрыть" onclick="this.closest('dialog').close()">
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+    </button>
+  </div>
+  <dl id="keysList" class="keys-list"></dl>
+</dialog>
 
 <script src="/static/app.js"></script>
 <script src="/static/player.js"></script>

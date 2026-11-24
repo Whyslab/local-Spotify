@@ -6169,6 +6169,103 @@ document.addEventListener("keydown", (event) => {
 });
 
 
+/* ---------------- Горячие клавиши (ноутбук) ----------------
+ *
+ * По коду клавиши (event.code), а не по букве: в русской раскладке L — это
+ * «д», M — «ь», а работать должно одинаково. Не мешают печатать: в поле
+ * ввода, в меню и на ползунке клавиши остаются их. Пробел — выше, отдельно. */
+const HOTKEYS = [
+    ["Пробел", "играть / пауза"],
+    ["← / →", "назад / вперёд на 5 секунд"],
+    ["Shift + ← / →", "прошлый / следующий трек"],
+    ["L", "♥ — в «Любимое» или убрать"],
+    ["M", "без звука / со звуком"],
+    ["/", "поиск"],
+    ["?", "эта подсказка"],
+];
+
+function hotkeyBlocked(el) {
+    if (!el) return false;
+    const tag = el.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el.isContentEditable) return true;
+    return Boolean(el.closest && el.closest('[role="menu"], [role="listbox"], [role="radiogroup"], [role="tablist"]'));
+}
+
+function focusSearch() {
+    if (typeof switchView === "function") switchView("viewSearch");
+    const side = document.getElementById("sideSearch");
+    const field = side && side.offsetParent ? side : document.getElementById("searchEverywhere");
+    if (field) { field.focus(); field.select(); }
+}
+
+function showHotkeys() {
+    const dialog = document.getElementById("keysDialog");
+    if (!dialog) return;
+    const list = document.getElementById("keysList");
+    if (!list.childElementCount) {
+        for (const [key, what] of HOTKEYS) {
+            const k = document.createElement("dt");
+            for (const [i, part] of key.split(" + ").entries()) {
+                if (i) k.append(" + ");
+                const kbd = document.createElement("kbd");
+                kbd.textContent = part;
+                k.appendChild(kbd);
+            }
+            const d = document.createElement("dd");
+            d.textContent = what;
+            list.append(k, d);
+        }
+    }
+    if (!dialog.open) dialog.showModal();
+}
+
+document.addEventListener("keydown", (event) => {
+    if (event.defaultPrevented || event.ctrlKey || event.altKey || event.metaKey) return;
+    if (openMenu) return;
+    const dialogOpen = document.querySelector("dialog[open]");
+    if (event.code === "Slash" && event.shiftKey) {
+        if (dialogOpen && dialogOpen.id !== "keysDialog") return;
+        if (hotkeyBlocked(document.activeElement)) return;
+        event.preventDefault();
+        const dialog = document.getElementById("keysDialog");
+        if (dialog && dialog.open) dialog.close(); else showHotkeys();
+        return;
+    }
+    if (dialogOpen || hotkeyBlocked(document.activeElement)) return;
+    const current = player.queue[player.index];
+    switch (event.code) {
+    case "ArrowLeft":
+    case "ArrowRight": {
+        if (!current) return;
+        event.preventDefault();
+        const forward = event.code === "ArrowRight";
+        if (event.shiftKey) {
+            if (event.repeat) return;
+            if (forward) nextTrack(); else prevTrack();
+        } else if (Number.isFinite(player.audio.duration)) {
+            commitSeek((player.audio.currentTime || 0) + (forward ? 5 : -5));
+        }
+        return;
+    }
+    case "KeyL":
+        if (!current || event.shiftKey || event.repeat) return;
+        event.preventDefault();
+        toggleFavourite();
+        return;
+    case "KeyM":
+        if (event.shiftKey || event.repeat) return;
+        event.preventDefault();
+        toggleMute();
+        return;
+    case "Slash":
+        event.preventDefault();
+        focusSearch();
+        return;
+    default:
+    }
+});
+
+
 /* ---------------- Fades ----------------
  *
  * Плавный переход — затухание, а не наложение двух треков: настоящий
