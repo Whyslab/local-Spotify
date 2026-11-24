@@ -547,9 +547,12 @@ async function mixDock(run) {
             // Высоту не держать: B без звука, а простая смена скорости точнее.
             // Не больше трёх раз: в WebKit смена скорости сама может перемотать
             // мимо, и подгонка ходила бы по кругу до конца связки.
+            // Не дольше секунды и трети оставшегося: после подгонки нужен ещё
+            // замер и мелкая доводка связкой (до 2 с), а под нагрузкой замер сам
+            // идёт полсекунды. 4 % на 85 мс — это 2,1 с, и доводке не хватало.
             const room = left() - 0.9;
             const rate = Math.min(MIX_NUDGE_RATE_MAX,
-                Math.max(MIX_NUDGE_RATE, Math.abs(shift) / Math.max(0.1, room * 0.6)));
+                Math.max(MIX_NUDGE_RATE, Math.abs(shift) / Math.max(0.1, Math.min(1.0, room / 3))));
             const span = Math.abs(shift) / rate;
             if (span > room || (run.nudges || 0) >= 3) {
                 // Скоростью не успеть — ещё раз перемоткой, с поправкой на промах.

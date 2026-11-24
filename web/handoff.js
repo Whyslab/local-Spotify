@@ -141,7 +141,11 @@ onAudio("play", () => {
     if (claim) { handoff.claimDue = true; handoffReport(); }
 });
 onAudio("timeupdate", () => {
-    if (!audioPaused()) handoff.lastPlayingAt = Date.now();
+    if (audioPaused()) return;
+    handoff.lastPlayingAt = Date.now();
+    /* На айфоне в фоне таймеры засыпают, а timeupdate идёт, пока играет звук:
+     * отчёт и от него, иначе ноутбук решил бы, что телефон замолчал. */
+    if (Date.now() - handoff.lastSent >= HANDOFF_EVERY_MS) handoffReport();
 });
 onAudio("pause", () => { handoffReport(); });
 setInterval(() => {

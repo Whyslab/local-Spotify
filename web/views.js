@@ -1566,7 +1566,25 @@ syncNav();
  * список; заново — когда подборку открыли снова. Нажатие
  * на строку — играть похожие с неё; «+» — добавить трек в эту подборку. */
 const SIMILAR_HIDDEN = new Set([typeof REPAIR_PLAYLIST === "string" ? REPAIR_PLAYLIST : "Клипы"]);
+/* Ответы — на подборку на 10 минут: туда-обратно со страницы артиста не
+ * должно снова звать Deezer (новое ждёт его до 6 с на слабом сервере). */
+const SIMILAR_TTL_MS = 10 * 60 * 1000;
+const similarCache = new Map();
 let similarFor = "";
+
+function similarFetch(name, part) {
+    const key = name + "|" + part;
+    const hit = similarCache.get(key);
+    if (hit && Date.now() - hit.at < SIMILAR_TTL_MS) return hit.data;
+    const base = "/api/playlists/" + encodeURIComponent(name) + "/similar" + (part === "new" ? "?part=new" : "");
+    const data = fetch(base, { headers: headers() })
+        .then((r) => (r.ok ? r.json() : null))
+        .catch(() => null);
+    similarCache.set(key, { at: Date.now(), data });
+    /* Неудачу не помнить: в следующий раз — спросить снова. */
+    data.then((d) => { if (!d) similarCache.delete(key); });
+    return data;
+}
 
 function renderPlaylistSimilar(pl) {
     const box = document.getElementById("playlistSimilar");
@@ -1579,13 +1597,14 @@ function renderPlaylistSimilar(pl) {
     document.getElementById("playlistSimilarNew").replaceChildren();
     document.getElementById("playlistSimilarNewBox").hidden = true;
     if (SIMILAR_HIDDEN.has(pl.name) || !pl.entries.length) return;
-    const base = "/api/playlists/" + encodeURIComponent(pl.name) + "/similar";
     const still = () => similarFor === key && player.playlist && player.playlist.name === pl.name;
-    fetch(base, { headers: headers() })
-        .then((r) => (r.ok ? r.json() : null))
+    /* Уже добавленное в подборку (с прошлого показа) — не предлагать. */
+    const inside = () => new Set((player.playlist ? player.playlist.entries : []).map((e) => e.path));
+    similarFetch(pl.name, "library")
         .then((data) => {
             if (!data || !still()) return;
-            const tracks = Array.isArray(data.tracks) ? data.tracks : [];
+            const have = inside();
+            const tracks = (Array.isArray(data.tracks) ? data.tracks : []).filter((t) => !have.has(t.path));
             if (!tracks.length) return;
             document.getElementById("playlistSimilarNote").textContent = data.by === "sound"
                 ? "Из фонотеки, по звучанию. «+» — добавить в подборку"
@@ -1595,8 +1614,7 @@ function renderPlaylistSimilar(pl) {
             box.hidden = false;
         })
         .catch(() => { /* дополнение: без него так без него */ });
-    fetch(base + "?part=new", { headers: headers() })
-        .then((r) => (r.ok ? r.json() : null))
+    similarFetch(pl.name, "new")
         .then((data) => {
             if (!data || !still()) return;
             const tracks = Array.isArray(data.tracks) ? data.tracks : [];
@@ -1689,6 +1707,9 @@ const WRAPPED_BANNER_KEY = "wrappedBannerHidden";
 let wrappedData = null;
 let wrappedTarget = null;   // куда сейчас листают кнопкой или точкой
 let wrappedSettled = 0;
+let wrappedTargetAt = 0;
+let wrappedTargetTimer = 0;
+let wrappedTicket = 0;
 
 function wrappedYearNow(now = new Date()) {
     return now.getMonth() === 0 && now.getDate() <= 15 ? now.getFullYear() - 1 : now.getFullYear();
@@ -1744,12 +1765,14 @@ async function openWrapped(year) {
     track.replaceChildren(el("div", "wrapped-slide is-loading", "", el("p", "wrapped-small", "Считаю…")));
     document.getElementById("wrappedMarkers").replaceChildren();
     if (!dialog.open) dialog.showModal();
+    /* Закрыли и открыли снова — поздний ответ первого раза не рисуем. */
+    const ticket = ++wrappedTicket;
     let data = null;
     try {
         const r = await fetch("/api/stats/wrapped?year=" + encodeURIComponent(year), { headers: headers() });
         if (r.ok) data = await r.json();
     } catch (e) { /* ниже — «не собралось» */ }
-    if (!dialog.open) return;
+    if (!dialog.open || ticket !== wrappedTicket) return;
     wrappedData = data;
     const slides = data ? wrappedSlides(data) : [];
     if (!slides.length) {
@@ -1889,7 +1912,14 @@ function wrappedGo(i) {
     const track = document.getElementById("wrappedTrack");
     const slide = track.children[i];
     if (!slide) return;
+    /* Уже здесь — прокрутки не будет, и scrollend не придёт: цель не ставить,
+     * иначе она так и висела бы (рецензия 24.11). */
+    if (i === wrappedCurrent()) { wrappedTarget = null; wrappedSettle(); return; }
     wrappedTarget = i;
+    wrappedTargetAt = Date.now();
+    clearTimeout(wrappedTargetTimer);
+    /* Страховка: прокрутка оборвалась без scrollend — цель снимается сама. */
+    wrappedTargetTimer = setTimeout(() => { wrappedTarget = null; wrappedSettle(); }, 1200);
     wrappedMark(i);
     const smooth = window.matchMedia("(prefers-reduced-motion: no-preference)").matches;
     /* scrollBy по дорожке, не scrollIntoView: тот прокрутил бы и страницу. */
@@ -1928,8 +1958,10 @@ function wrappedSettle() {
     const track = document.getElementById("wrappedTrack");
     if (!track || !track.childElementCount) return;
     const i = wrappedCurrent();
-    if (wrappedTarget !== null && wrappedTarget !== i) return;  // остановка прежней прокрутки
+    /* Остановилась прежняя прокрутка, а до цели ещё едем — ждём следующей. */
+    if (wrappedTarget !== null && wrappedTarget !== i && Date.now() - wrappedTargetAt < 150) return;
     wrappedTarget = null;
+    clearTimeout(wrappedTargetTimer);
     wrappedMark(i);
     wrappedButtons(i);
     if (i !== wrappedSettled) {
@@ -1943,6 +1975,10 @@ document.addEventListener("DOMContentLoaded", () => {
     if (!track) return;
     document.querySelector(".wrapped-prev").addEventListener("click", () => wrappedStep(-1));
     document.querySelector(".wrapped-next").addEventListener("click", () => wrappedStep(1));
+    /* Палец или колесо перехватили прокрутку кнопкой — цель больше не наша. */
+    for (const type of ["pointerdown", "touchstart", "wheel"]) {
+        track.addEventListener(type, () => { wrappedTarget = null; }, { passive: true });
+    }
     let frame = 0;
     track.addEventListener("scroll", () => {
         if (wrappedTarget !== null || frame) return;

@@ -4775,7 +4775,8 @@ _SWEEP_ENUMERATE = """([scope, controls, names, selectors, rowSelector, maxRows]
 _SWEEP_STATE = """() => ({
     place: [activeView, libraryMode, sheetOpen(), sheetPanel],
     over: [!!openMenu, !document.getElementById("playerFadeMenu").hidden,
-           document.querySelectorAll("[role=dialog]:not(#player)").length],
+           document.querySelectorAll("[role=dialog]:not(#player)").length,
+           document.querySelectorAll("dialog[open]").length],
 })"""
 
 DIALOG = "[role=dialog]:not(#player)"
@@ -4810,6 +4811,8 @@ def _sweep_calm(page, sheet=None):
             for (const b of document.querySelectorAll("button"))
                 if (b.textContent.trim() === "Отмена" && b.checkVisibility()) b.click();
             for (const d of document.querySelectorAll("[role=dialog]:not(#player)")) d.remove();
+            // Родные <dialog> (горячие клавиши, итоги) закрываются, а не удаляются.
+            for (const d of document.querySelectorAll("dialog[open]")) d.close();
             return sheetOpen() && (sheet == null || (sheetPanel || "") !== sheet);
         }""",
         sheet,
@@ -7947,6 +7950,12 @@ def test_similar_tracks_under_a_playlist_are_offered_and_added(page, server):
     )
     page.wait_for_function("document.querySelectorAll('#playlistSimilarRows .track').length === 1")
     assert page.locator("#playlistTracks .playlist-track").count() == 2
+    # Ушли и вернулись — из кэша, без Deezer; добавленное уже не предлагается.
+    page.evaluate("switchView('viewHome')")
+    page.evaluate("openPlaylist('Похожая')")
+    page.wait_for_selector("#playlistSimilar:not([hidden]) #playlistSimilarRows .track")
+    assert len(asked) == 2
+    assert page.locator("#playlistSimilarRows .track").count() == 1
     # У «Клипов» похожих нет: там версии клипов, а не подбор.
     _playlist(server, page, "Клипы", LOUD_PATH)
     page.evaluate("openPlaylist('Клипы')")
@@ -7987,6 +7996,18 @@ def test_year_in_review_opens_from_stats_and_pages_through(page, server):
     assert (
         page.locator("#wrappedMarkers .wrapped-dot").nth(1).get_attribute("aria-current") == "true"
     )
+    # Точка текущего слайда: прокрутки нет, и карусель не должна «залипнуть»
+    # (рецензия 24.11: цель висела, «дальше» потом прыгало не туда).
+    page.locator("#wrappedMarkers .wrapped-dot").nth(1).click()
+    page.wait_for_timeout(200)
+    assert page.evaluate("wrappedTarget") is None
+    page.locator(".wrapped-next").click()
+    page.wait_for_function("document.getElementById('wrappedStatus').textContent.startsWith('Слайд 3 из')")
+    # Палец перехватил прокрутку кнопкой — цель снимается.
+    page.evaluate("wrappedGo(0)")
+    page.locator("#wrappedTrack").dispatch_event("pointerdown")
+    assert page.evaluate("wrappedTarget") is None
+    page.wait_for_function("document.getElementById('wrappedStatus').textContent.startsWith('Слайд 1 из')")
     page.locator("#wrappedMarkers .wrapped-dot").last.click()
     page.wait_for_function("document.querySelector('.wrapped-next').disabled")
     # Стрелки в окне — не перемотка трека: горячие клавиши молчат.

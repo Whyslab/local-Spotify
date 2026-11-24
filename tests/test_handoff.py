@@ -105,10 +105,10 @@ def test_the_place_of_a_silent_device_is_not_counted_on(client, monkeypatch):
     assert now["playing"] is True and now["at"] == 42 and now["age"] == 12
     clock[0] += 200  # трек кончился бы — дальше конца не считаем
     now = client.get("/api/now").json()["now"]
-    # Молчит дольше 30 с: закрыли вкладку — «играло», место — последнее.
+    # Молчит дольше минуты: закрыли вкладку — «играло», место — последнее.
     assert now["playing"] is False and now["at"] == 30
-    clock[0] = 1000.0 + 25
-    assert client.get("/api/now").json()["now"]["at"] == 55
+    clock[0] = 1000.0 + 55
+    assert client.get("/api/now").json()["now"]["at"] == 85
     report(client, LAPTOP, track=track, at=95)
     clock[0] += 20
     assert client.get("/api/now").json()["now"]["at"] == 99  # конец трека − 1 с
