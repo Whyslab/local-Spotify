@@ -347,6 +347,18 @@
       <!-- Поиск спрятал все строки — сказать об этом и дать сбросить: иначе
            подборка выглядела пустой, хотя в ней сотни треков. -->
       <p id="playlistFilterEmpty" class="empty" hidden></p>
+      <!-- «Похожие треки» (web/views.js, adder/playlist_similar.py): из
+           фонотеки по звучанию и два-три новых. -->
+      <section id="playlistSimilar" class="o-section playlist-similar" aria-labelledby="playlistSimilarTitle" hidden>
+        <div class="o-section-head"><h2 id="playlistSimilarTitle">Похожие треки</h2></div>
+        <p id="playlistSimilarNote" class="o-section-note"></p>
+        <div id="playlistSimilarRows" class="rows"></div>
+        <div id="playlistSimilarNewBox" hidden>
+          <h3 class="playlist-similar-sub">Новое для вас</h3>
+          <p id="playlistSimilarNewNote" class="o-section-note">Этого нет в фонотеке. Понравилось — «В фонотеку» в плеере</p>
+          <div id="playlistSimilarNew" class="rows"></div>
+        </div>
+      </section>
 
     </section>
 

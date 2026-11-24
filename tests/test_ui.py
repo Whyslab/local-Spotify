@@ -7847,3 +7847,46 @@ def test_handoff_claim_is_not_lost_while_a_report_is_in_flight(page):
     }"""
     )
     assert sent == {"bodies": [False, True], "paused": 0, "due": False}
+
+
+def test_similar_tracks_under_a_playlist_are_offered_and_added(page, server):
+    """«Похожие треки» в конце подборки (просьба 24.11.2026): своё — с «+» в
+    эту подборку, новое — отдельно; названия — только текстом."""
+    _playlist(server, page, "Похожая", LOUD_PATH)
+    asked = []
+
+    def similar(route):
+        asked.append(route.request.url)
+        if "part=new" in route.request.url:
+            body = {"tracks": [{"path": "outside:k1", "artist": "Новый", "title": "Свежее",
+                                "duration": 180, "external": True, "outside": True, "state": "unknown"}]}
+        else:
+            body = {"by": "sound", "tracks": [
+                {"path": QUIET_PATH, "artist": "Quiet", "title": "Quiet", "album": "", "duration": 12},
+                {"path": EVIL_PATH, "artist": "Evil", "title": XSS_TITLE, "album": "", "duration": 2},
+            ]}
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(body))
+
+    page.route("**/api/playlists/*/similar*", similar)
+    page.evaluate("openPlaylist('Похожая')")
+    page.wait_for_selector("#playlistSimilar:not([hidden]) #playlistSimilarRows .track")
+    page.wait_for_selector("#playlistSimilarNewBox:not([hidden]) .track")
+    assert page.locator("#playlistSimilarRows .track").count() == 2
+    assert XSS_TITLE in page.locator("#playlistSimilarRows").inner_text()
+    assert page.evaluate("window.pwned") is None
+    assert "Свежее" in page.locator("#playlistSimilarNew").inner_text()
+    # Перерисовка той же подборки не спрашивает заново.
+    page.evaluate("renderPlaylist()")
+    assert len(asked) == 2
+    page.get_by_role("button", name="Добавить «Quiet» в подборку").click()
+    page.wait_for_function(
+        "fetch('/api/playlists/' + encodeURIComponent('Похожая') + '/tracks', {headers: headers()})"
+        ".then(r => r.json()).then(p => p.entries[0].path === 'Quiet/Singles/Quiet.m4a')"
+    )
+    page.wait_for_function("document.querySelectorAll('#playlistSimilarRows .track').length === 1")
+    assert page.locator("#playlistTracks .playlist-track").count() == 2
+    # У «Клипов» похожих нет: там версии клипов, а не подбор.
+    _playlist(server, page, "Клипы", LOUD_PATH)
+    page.evaluate("openPlaylist('Клипы')")
+    page.wait_for_timeout(300)
+    assert page.locator("#playlistSimilar").is_hidden()

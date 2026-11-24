@@ -53,6 +53,7 @@ from . import (
     notify,
     opusgain,
     outside,
+    playlist_similar,
     playlists,
     radio,
     releases,
@@ -2002,6 +2003,41 @@ def create_playlist(req: PlaylistCreateRequest, authenticated: bool = Depends(ve
 @app.get("/api/playlists/{name}/tracks")
 def get_playlist_tracks(name: str, authenticated: bool = Depends(verify_token)):
     return _playlist_payload(playlists.read(name))
+
+
+@app.get("/api/playlists/{name}/similar")
+def get_playlist_similar(
+    name: str,
+    part: Literal["library", "new"] = "library",
+    authenticated: bool = Depends(verify_token),
+):
+    """«Похожие треки» под подборкой (adder/playlist_similar.py).
+
+    ``part=library`` — из фонотеки по звучанию, сразу; ``part=new`` — два-три
+    трека не из фонотеки, ждут Deezer (до нескольких секунд). Пустой список —
+    нормальный ответ: нечего предложить или сеть молчит.
+    """
+    members = [entry.path for entry in playlists.read(name).entries]
+    rows = library.library_index()
+    if part == "new":
+        try:
+            return {"tracks": playlist_similar.from_outside(members, rows)}
+        except Exception:  # noqa: BLE001 — новое — дополнение, не повод для 500
+            logger.exception("Похожее со стороны не собралось")
+            return {"tracks": []}
+    space = None
+    try:
+        space = sonic.load_space(rows)
+    except Exception:  # noqa: BLE001 — без звучания — по артистам
+        logger.exception("Звучание не загрузилось — похожее по артистам")
+    if space is not None and rows:
+        heard = sum(1 for row in rows if row["path"] in space)
+        if heard / len(rows) < sonic.MIN_COVERAGE:
+            space = None
+    tracks = playlist_similar.from_library(
+        members, rows, space, skipped=radio.recently_skipped(), seed=name
+    )
+    return {"tracks": tracks, "by": "sound" if space is not None else "artists"}
 
 
 @app.put("/api/playlists/{name}/tracks")

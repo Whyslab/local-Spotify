@@ -1550,3 +1550,121 @@ function openPlaylistShuffle(anchor) {
 }
 
 syncNav();
+
+/* ---------------- Похожие треки под подборкой ----------------
+ *
+ * Как у Spotify под плейлистом: что из фонотеки звучит похоже, а ниже —
+ * два-три трека не из неё (adder/playlist_similar.py). Две части приходят
+ * отдельно: новое ждёт Deezer и не держит своё.
+ *
+ * Набор — на открытие подборки (navigation): перерисовка той же подборки
+ * (отметка играющего, опрос, правка, «+») не перезапрашивает и не дёргает
+ * список; заново — когда подборку открыли снова. Нажатие
+ * на строку — играть похожие с неё; «+» — добавить трек в эту подборку. */
+const SIMILAR_HIDDEN = new Set([typeof REPAIR_PLAYLIST === "string" ? REPAIR_PLAYLIST : "Клипы"]);
+let similarFor = "";
+
+function renderPlaylistSimilar(pl) {
+    const box = document.getElementById("playlistSimilar");
+    if (!box) return;
+    const key = pl.name + "|" + navigation;
+    if (key === similarFor) return;
+    similarFor = key;
+    box.hidden = true;
+    document.getElementById("playlistSimilarRows").replaceChildren();
+    document.getElementById("playlistSimilarNew").replaceChildren();
+    document.getElementById("playlistSimilarNewBox").hidden = true;
+    if (SIMILAR_HIDDEN.has(pl.name) || !pl.entries.length) return;
+    const base = "/api/playlists/" + encodeURIComponent(pl.name) + "/similar";
+    const still = () => similarFor === key && player.playlist && player.playlist.name === pl.name;
+    fetch(base, { headers: headers() })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data) => {
+            if (!data || !still()) return;
+            const tracks = Array.isArray(data.tracks) ? data.tracks : [];
+            if (!tracks.length) return;
+            document.getElementById("playlistSimilarNote").textContent = data.by === "sound"
+                ? "Из фонотеки, по звучанию. «+» — добавить в подборку"
+                : "Из фонотеки, у тех же артистов. «+» — добавить в подборку";
+            const rows = document.getElementById("playlistSimilarRows");
+            rows.replaceChildren(...tracks.map((t, i) => similarRow(pl.name, t, tracks, i)));
+            box.hidden = false;
+        })
+        .catch(() => { /* дополнение: без него так без него */ });
+    fetch(base + "?part=new", { headers: headers() })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data) => {
+            if (!data || !still()) return;
+            const tracks = Array.isArray(data.tracks) ? data.tracks : [];
+            if (!tracks.length) return;
+            const note = document.getElementById("playlistSimilarNewNote");
+            const rows = document.getElementById("playlistSimilarNew");
+            rows.replaceChildren(...tracks.map((t, i) => similarNewRow(t, tracks, i, note)));
+            document.getElementById("playlistSimilarNewBox").hidden = false;
+            box.hidden = false;
+        })
+        .catch(() => { /* сеть молчит — нового нет */ });
+}
+
+function similarRow(name, t, tracks, i) {
+    const row = libraryRow(t, tracks);
+    row.classList.add("similar-track");
+    row.play = () => playQueue(tracks, i, "manual");
+    const add = document.createElement("button");
+    add.type = "button";
+    add.className = "ghost similar-add";
+    add.textContent = "+";
+    add.setAttribute("aria-label", `Добавить «${t.title}» в подборку`);
+    add.title = "В эту подборку";
+    add.onclick = (event) => {
+        event.stopPropagation();
+        addSimilarToPlaylist(name, t, row, add);
+    };
+    row.insertBefore(add, row.querySelector(".row-menu, .track-time"));
+    return row;
+}
+
+async function addSimilarToPlaylist(name, t, row, add) {
+    add.disabled = true;
+    try {
+        await flushSettled();
+        const got = await fetch("/api/playlists/" + encodeURIComponent(name) + "/tracks", { headers: headers() });
+        if (!got.ok) throw new Error("Ошибка " + got.status);
+        const pl = withPendingEdit(await got.json());
+        const paths = pl.entries.map((e) => e.path);
+        if (!paths.includes(t.path)) {
+            /* В начало — как «В подборку…»: только что добавленное хочется слышать сейчас. */
+            paths.unshift(t.path);
+            const result = await writePlaylistPaths(pl, paths, [t]);
+            if (result.problem) throw new Error(result.problem);
+            showWrittenPlaylist(name, result.saved);
+        }
+        /* Строка уходит из «Похожих»: трек уже в подборке. Новый набор — при
+         * следующем открытии, а пока список не прыгает. */
+        row.remove();
+        setPlaylistNote("Добавлено: " + (t.title || "трек"));
+    } catch (e) {
+        add.disabled = false;
+        setPlaylistNote("Не добавилось: " + e.message);
+    }
+}
+
+function similarNewRow(t, tracks, i, note) {
+    const row = el("div", "track similar-track is-new");
+    row.dataset.trackPath = t.path;
+    const cover = findCoverBox(t);
+    cover.classList.add("cover");
+    const info = el("div", "track-info", "",
+        el("div", "track-title", t.title || ""), el("div", "track-artist", t.artist || ""));
+    const time = el("span", "track-time", t.duration ? formatSeconds(t.duration) : "");
+    row.append(cover, info, time);
+    row.tabIndex = 0;
+    row.setAttribute("role", "button");
+    row.setAttribute("aria-label", `Слушать «${t.title || ""}» — ${t.artist || ""}`);
+    const play = () => playWeekly(tracks, i, note);
+    row.onclick = play;
+    row.onkeydown = (event) => {
+        if (event.key === "Enter" || event.key === " ") { event.preventDefault(); play(); }
+    };
+    return row;
+}

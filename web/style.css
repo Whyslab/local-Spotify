@@ -3315,3 +3315,12 @@ kbd {
 @media (pointer: coarse) {
     .handoff-take { min-height: 44px; }
 }
+
+/* «Похожие треки» под подборкой (web/views.js). */
+.playlist-similar { margin-top: 32px; }
+.playlist-similar.is-searching { display: none; }
+.playlist-similar .o-section-head, .playlist-similar .o-section-note { padding-left: 0; padding-right: 0; margin-left: 0; margin-right: 0; }
+.playlist-similar-sub { margin: 22px 0 6px; font-size: 17px; font-weight: 650; }
+.similar-add { min-width: 44px; min-height: 44px; font-size: 22px; line-height: 1; padding: 0; }
+.similar-track.is-new { cursor: pointer; }
+.similar-track.is-new:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }

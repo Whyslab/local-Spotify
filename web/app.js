@@ -1417,6 +1417,9 @@ function filterOpenPlaylist() {
         else empty.hidden = true;
     }
     markPlaylistLyricHits(needle);
+    /* Ищут внутри подборки — «Похожие» под строками только мешали бы. */
+    const similarBox = document.getElementById("playlistSimilar");
+    if (similarBox) similarBox.classList.toggle("is-searching", Boolean(needle));
 }
 
 /* ---------------- Главная ----------------
