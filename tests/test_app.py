@@ -1379,3 +1379,11 @@ def test_a_failed_uploads_file_waits_a_week_for_a_manual_retry(app_module):
     os.utime(failed, (week, week))
     ingest.cleanup_old_temp_files()
     assert not failed.exists()
+
+
+def test_lyrics_button_shows_a_microphone_not_quote_marks():
+    """Две кавычки на телефоне читались как цифры («55», потом «99»): значок текста — микрофон."""
+    html = (WEB_DIR / "index.html").read_text()
+    button = re.search(r'<button id="playerLyricsButton".*?</button>', html, re.S).group(0)
+    assert "icon-mic" in button
+    assert "M10 13H6" not in button
