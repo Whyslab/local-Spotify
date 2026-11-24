@@ -118,7 +118,10 @@ if ! sudo -n true 2>/dev/null; then
   exit 0
 fi
 
-if command -v navidrome >/dev/null; then
+# Navidrome — только если служба им пользуется (логин в adder/.env). С
+# 24.11.2026 он выключен: Amperfy удалён, слушают в своём плеере. Установщик
+# не должен включать и перезапускать его обратно.
+if command -v navidrome >/dev/null && [[ -n "$(env_value NAVIDROME_USER)" ]]; then
   sudo install -d /etc/navidrome
   # Только если настроек ещё нет: повторный запуск установщика молча
   # затирал живые (например, Subsonic.ArtistParticipations — без неё Amperfy
@@ -161,7 +164,9 @@ if [[ "$UFW_STATUS" == *"Status: active"* ]]; then
     echo "ERROR: Could not determine LAN subnet. Set LAN_SUBNET explicitly." >&2
     exit 1
   fi
-  sudo ufw allow from "$LAN_SUBNET" to any port 4533 proto tcp comment "Navidrome LAN"
+  if [[ -n "$(env_value NAVIDROME_USER)" ]]; then
+    sudo ufw allow from "$LAN_SUBNET" to any port 4533 proto tcp comment "Navidrome LAN"
+  fi
   sudo ufw allow from "$LAN_SUBNET" to any port "$PORT_VALUE" proto tcp comment "Adder LAN"
 fi
 
