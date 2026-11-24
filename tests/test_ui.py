@@ -8002,12 +8002,16 @@ def test_year_in_review_opens_from_stats_and_pages_through(page, server):
     page.wait_for_timeout(200)
     assert page.evaluate("wrappedTarget") is None
     page.locator(".wrapped-next").click()
-    page.wait_for_function("document.getElementById('wrappedStatus').textContent.startsWith('Слайд 3 из')")
+    page.wait_for_function(
+        "document.getElementById('wrappedStatus').textContent.startsWith('Слайд 3 из')"
+    )
     # Палец перехватил прокрутку кнопкой — цель снимается.
     page.evaluate("wrappedGo(0)")
     page.locator("#wrappedTrack").dispatch_event("pointerdown")
     assert page.evaluate("wrappedTarget") is None
-    page.wait_for_function("document.getElementById('wrappedStatus').textContent.startsWith('Слайд 1 из')")
+    page.wait_for_function(
+        "document.getElementById('wrappedStatus').textContent.startsWith('Слайд 1 из')"
+    )
     page.locator("#wrappedMarkers .wrapped-dot").last.click()
     page.wait_for_function("document.querySelector('.wrapped-next').disabled")
     # Стрелки в окне — не перемотка трека: горячие клавиши молчат.
