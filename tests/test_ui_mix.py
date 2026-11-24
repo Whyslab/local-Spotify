@@ -607,3 +607,41 @@ def test_seeks_that_keep_missing_are_made_up_by_the_speed_of_b(server, browser):
         assert errors == []
     finally:
         context.close()
+
+
+IPHONE_SEEK_BEHIND = """
+    // Журнал 23–24.11.2026: 6 стыков из 133 не встали, B мимо на 0,29–0,38 с.
+    // Промах у перемотки не постоянный: первая ложится точно, следующие — на
+    // 0,3 с дальше. После второй перемотки B впереди на 0,3 с, и догонять это
+    // скоростью 4 % — 7,5 с: столько у связки нет, переход сдавался.
+    const real = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'currentTime');
+    const seeks = new WeakMap();
+    Object.defineProperty(HTMLMediaElement.prototype, 'currentTime', {
+        get() { return real.get.call(this); },
+        set(v) {
+            const n = seeks.get(this) || 0;
+            if (v > 0) seeks.set(this, n + 1);
+            real.set.call(this, v > 0 && n > 0 ? v + 0.3 : v);
+        },
+        configurable: true,
+    });
+"""
+
+
+def test_a_seek_that_lands_a_third_of_a_second_behind_still_docks(server, browser):
+    """Подгонка скоростью 4 % на 0,3 с — 7,5 с, столько у связки не было, и
+    переход сдавался на второй секунде B («mix-fail … стык −300 мс»). Теперь
+    скорость — под оставшееся время, а не успеть — ещё одна перемотка с
+    поправкой на промах."""
+    context, page, errors, _, events = _open(server, browser, IPHONE_SEEK_BEHIND)
+    try:
+        start_and_reach_the_bridge(page)
+        wait(page, "player.index === 1 && mix.last", timeout=40)
+        last = page.evaluate("mix.last")
+        assert last["docked"] is True and abs(last["delta"]) <= 0.0005, last
+        assert page.evaluate("player.audio.playbackRate") == 1
+        wait_event(page, events, "mix")
+        assert not any(e["event"] == "mix-fail" for e in events), events
+        assert errors == []
+    finally:
+        context.close()

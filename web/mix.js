@@ -39,6 +39,13 @@ const MIX_SLEW = 0.005;        // доля скорости связки при 
  * без звука, догоняет или ждёт связку скоростью: её рывков не слышно. */
 const MIX_NUDGE_MAX = 0.4;     // с: ближе — после первой перемотки подгонять скоростью B
 const MIX_NUDGE_RATE = 0.04;   // доля скорости B при такой подгонке
+/* Журнал 23–24.11.2026: 6 стыков из 133 не встали — после второй перемотки B
+ * мимо на 0,3 с, а 0,3 с при 4 % — это 7,5 с подгонки, больше, чем оставалось.
+ * Переход сдавался сразу. Теперь скорость — под оставшееся время (B без звука,
+ * её не слышно), не быстрее MIX_NUDGE_RATE_MAX; не успеть и так — ещё одна
+ * перемотка с поправкой на промах, но не больше MIX_SEEKS_MAX. */
+const MIX_NUDGE_RATE_MAX = 0.15;
+const MIX_SEEKS_MAX = 4;
 
 const mix = {
     ctx: null,
@@ -540,10 +547,22 @@ async function mixDock(run) {
             // Высоту не держать: B без звука, а простая смена скорости точнее.
             // Не больше трёх раз: в WebKit смена скорости сама может перемотать
             // мимо, и подгонка ходила бы по кругу до конца связки.
-            const span = Math.abs(shift) / MIX_NUDGE_RATE;
-            if (span + 0.9 > left() || (run.nudges || 0) >= 3) break;
+            const room = left() - 0.9;
+            const rate = Math.min(MIX_NUDGE_RATE_MAX,
+                Math.max(MIX_NUDGE_RATE, Math.abs(shift) / Math.max(0.1, room * 0.6)));
+            const span = Math.abs(shift) / rate;
+            if (span > room || (run.nudges || 0) >= 3) {
+                // Скоростью не успеть — ещё раз перемоткой, с поправкой на промах.
+                if (seeks >= MIX_SEEKS_MAX || left() < 0.9) break;
+                lead -= shift;
+                seeks += 1;
+                seekB();
+                await ctxWait(ctx.currentTime + 0.3);
+                check(run);
+                continue;
+            }
             b.preservesPitch = false;
-            b.playbackRate = shift > 0 ? 1 - MIX_NUDGE_RATE : 1 + MIX_NUDGE_RATE;
+            b.playbackRate = shift > 0 ? 1 - rate : 1 + rate;
             try {
                 await ctxWait(ctx.currentTime + span);
             } finally {
@@ -583,6 +602,7 @@ async function mixDock(run) {
     nB.gain.gain.linearRampToValueAtTime(levelOf(stream.gain), at + swapLength);
     await ctxWait(at + swapLength + 0.01);
     check(run);
+    run.seeks = seeks;
     mixAdopt(run, docked, delta === null ? null : delta / sr);
 }
 
@@ -619,8 +639,15 @@ function mixAdopt(run, docked, delta) {
         b.dispatchEvent(new Event(name));
     }
     const ms = delta === null ? "?" : (delta * 1000).toFixed(2);
-    mix.last = { case: prep.plan.case, docked, delta, lag: run.lag, trace: run.trace || [], nudges: run.nudges || 0 };
-    playerEvent(docked ? "mix" : "mix-fail", `${prep.plan.case}, стык ${ms} мс`);
+    mix.last = {
+        case: prep.plan.case, docked, delta, lag: run.lag, trace: run.trace || [],
+        nudges: run.nudges || 0, seeks: run.seeks || 0,
+    };
+    /* Не встал — в журнал и как шёл: замеры (мс), перемотки, подгонки. Без
+     * этого шесть неудач 23.11 пришлось разгадывать по одной цифре. */
+    const how = docked ? "" : `; замеры ${(run.trace || []).slice(-5).map(([m]) => m).join(" ")};`
+        + ` перемоток ${run.seeks || 0}, подгонок ${run.nudges || 0}`;
+    playerEvent(docked ? "mix" : "mix-fail", `${prep.plan.case}, стык ${ms} мс${how}`);
 }
 
 /* Убрать связку и отпустить узлы (переход кончился или отменён). */
