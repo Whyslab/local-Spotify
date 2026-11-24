@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import random
+import re
 import zlib
 from collections import Counter
 
@@ -55,15 +56,37 @@ def _entry(row: dict) -> dict:
     }
 
 
+def _everyone(row: dict) -> set[str]:
+    """Все артисты трека: «IROH • GONE.Fludd» — оба."""
+    names = (row.get("artist") or "").split("•")
+    return {" ".join(outside._norm(name).split()) for name in names} - {""}
+
+
+def _song(title: str) -> str:
+    """Песня без приписок: всё до первой скобки или « - » — версия ли это,
+    фит или год, у одного артиста это та же песня."""
+    head = re.split(r"\s[-–—]\s|[(\[]", title.lower(), maxsplit=1)[0]
+    return " ".join(outside._norm(head).split())
+
+
 def _capped(order: list[dict], limit: int) -> list[dict]:
-    """Первые ``limit``, не больше ``PER_ARTIST`` на артиста."""
+    """Первые ``limit``: не больше ``PER_ARTIST`` на артиста и одна версия песни.
+
+    Считаются все участники, не только первый: 24.11.2026 на живой копии
+    шесть из двенадцати были с GONE.Fludd — то первым, то на фите. И одна
+    песня — один раз: «I CAN KICK IT (feat. bbno$)» и «I CAN KICK IT ( , 2020)»
+    стояли рядом.
+    """
     per: Counter[str] = Counter()
+    songs: set[tuple[str, str]] = set()
     out = []
     for row in order:
-        who = _artist(row)
-        if who and per[who] >= PER_ARTIST:
+        who = _everyone(row)
+        song = (_artist(row), _song(row.get("title") or ""))
+        if any(per[name] >= PER_ARTIST for name in who) or (song[1] and song in songs):
             continue
-        per[who] += 1
+        per.update(who)
+        songs.add(song)
         out.append(row)
         if len(out) >= limit:
             break

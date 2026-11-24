@@ -147,3 +147,36 @@ def test_the_endpoint_answers_for_a_playlist_and_404_for_none(client, monkeypatc
         "tracks": []
     }
     assert client.get("/api/playlists/Проба/similar", params={"part": "x"}).status_code == 422
+
+
+def test_a_featured_artist_and_a_second_version_count_too():
+    """24.11.2026 на живой копии: шесть из двенадцати — с GONE.Fludd (то первым,
+    то на фите), и одна песня в двух версиях рядом."""
+    rows = [
+        row("m1", "M"),
+        row("m2", "M"),
+        row("m3", "M"),
+        row("x1", "IROH • GONE.Fludd"),
+        row("x2", "GONE.Fludd • bbno$", "I CAN KICK IT (feat. bbno$)"),
+        row("x3", "GONE.Fludd • bbno$", "I CAN KICK IT ( , 2020)"),
+        row("x4", "Lottery Billz • GONE.Fludd"),
+        row("y1", "Y"),
+    ]
+    got = playlist_similar.from_library(["m1", "m2", "m3"], rows, None, seed="s")
+    assert got == []  # без звучания и общих артистов — нечего
+    space = space_of(
+        {
+            "m1": [1, 0, 0],
+            "m2": [0.99, 0.1, 0],
+            "m3": [0.98, 0, 0.1],
+            "x1": [0.97, 0.02, 0],
+            "x2": [0.96, 0.03, 0],
+            "x3": [0.95, 0.04, 0],
+            "x4": [0.94, 0.05, 0],
+            "y1": [0, 1, 0],
+        }
+    )
+    got = [t["path"] for t in playlist_similar.from_library(["m1", "m2", "m3"], rows, space)]
+    # Одна из двух версий «I CAN KICK IT»; x4 — был бы третьим с GONE.Fludd.
+    assert len(got) == 3 and "x4" not in got and "y1" in got
+    assert len({"x2", "x3"} & set(got)) == 1
