@@ -3272,3 +3272,46 @@ kbd {
 @media (pointer: coarse) {
     .keys-open { display: none; }
 }
+
+/* ---------- «Продолжить на другом устройстве» (handoff.js) ---------- */
+.handoff-bar {
+    position: fixed;
+    left: 50%;
+    translate: -50% 0;
+    bottom: calc(var(--tabbar) + var(--player) + env(safe-area-inset-bottom, 0px) + 12px);
+    z-index: 6;
+    width: min(520px, calc(100vw - 24px));
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 8px 10px 14px;
+    border-radius: var(--r-card);
+    background: var(--material-solid);
+    border: 1px solid var(--line-2);
+    box-shadow: 0 8px 28px rgb(0 0 0 / 0.5);
+}
+.handoff-bar[hidden] { display: none; }
+@media (prefers-reduced-motion: no-preference) {
+    .handoff-bar:not([hidden]) { animation: handoff-in 260ms var(--spring) both; }
+}
+@keyframes handoff-in { from { opacity: 0; translate: -50% 12px; } }
+.handoff-icon { color: var(--text-2); width: 22px; height: 22px; }
+.handoff-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.handoff-where { font-size: 12px; color: var(--text-2); }
+.handoff-track { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.handoff-take {
+    flex: none;
+    min-height: 36px;
+    padding: 0 14px;
+    border-radius: 999px;
+    border: 0;
+    background: var(--accent);
+    color: var(--accent-ink);
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+}
+.handoff-close { flex: none; }
+@media (pointer: coarse) {
+    .handoff-take { min-height: 44px; }
+}

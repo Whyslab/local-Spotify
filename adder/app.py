@@ -42,6 +42,7 @@ from . import (
     deck,
     discography,
     duplicates,
+    handoff,
     ingest,
     library,
     library_health,
@@ -2765,6 +2766,78 @@ def _drop_shelf_playlists() -> list[str]:
     return gone
 
 
+# ---------------------------------------------------------------------------
+# «Продолжить на другом устройстве» (adder/handoff.py)
+
+HANDOFF_QUEUE_MAX = 20000
+
+
+class HandoffTrack(BaseModel):
+    path: str = Field(max_length=4096)
+    artist: str = Field(default="", max_length=1000)
+    title: str = Field(default="", max_length=1000)
+
+
+class HandoffReport(BaseModel):
+    device: str = Field(min_length=8, max_length=64)
+    label: str = Field(default="", max_length=40)
+    track: HandoffTrack | None = None
+    index: int = Field(default=0, ge=0, le=HANDOFF_QUEUE_MAX)
+    at: float = Field(default=0, ge=0, le=86400, allow_inf_nan=False)
+    playing: bool = False
+    claim: bool = False
+    stamp: int = Field(default=0, ge=0)
+    # Очередь целиком, как её хранит плеер (saveQueue в player.js), — только
+    # когда она поменялась.
+    queue: dict[str, Any] | None = None
+
+
+class HandoffTake(BaseModel):
+    device: str = Field(min_length=8, max_length=64)
+    label: str = Field(default="", max_length=40)
+
+
+@app.put("/api/now")
+def report_now(req: HandoffReport, authenticated: bool = Depends(verify_token)):
+    """Что играет на этом устройстве. Ответ ``yield`` — слушают уже на другом."""
+    if req.queue is not None:
+        tracks = req.queue.get("queue")
+        if not isinstance(tracks, list) or not tracks or len(tracks) > HANDOFF_QUEUE_MAX:
+            raise HTTPException(status_code=422, detail="Очередь пустая или слишком длинная")
+    return handoff.report(
+        req.device,
+        req.label,
+        req.track.model_dump() if req.track else None,
+        req.index,
+        req.at,
+        req.playing,
+        req.claim,
+        req.stamp,
+        req.queue,
+    )
+
+
+@app.get("/api/now")
+def get_now(authenticated: bool = Depends(verify_token)):
+    """Последнее, что играло (на любом устройстве), — для плашки «Продолжить»."""
+    return {"now": handoff.current()}
+
+
+@app.get("/api/now/queue")
+def get_now_queue(stamp: int, authenticated: bool = Depends(verify_token)):
+    saved = handoff.saved_queue(stamp)
+    if saved is None:
+        raise HTTPException(status_code=404, detail="Очередь уже другая")
+    return saved
+
+
+@app.post("/api/now/take")
+def take_now(req: HandoffTake, authenticated: bool = Depends(verify_token)):
+    """Нажали «Продолжить» здесь: другое устройство встанет на паузу."""
+    handoff.take(req.device, req.label)
+    return {"ok": True}
+
+
 class SmartShuffleRequest(BaseModel):
     """Перемешать что угодно: альбом, выдачу поиска, текущую очередь."""
 
@@ -3480,6 +3553,7 @@ def index():
         "look.js",
         "views.js",
         "repair.js",
+        "handoff.js",
         "fonts/fonts.css",
     ):
         path = web / name

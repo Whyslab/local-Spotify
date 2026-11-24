@@ -37,6 +37,7 @@ from adder import (  # noqa: E402
     db,
     discography,
     enrich,
+    handoff,
     ingest,
     library,
     listenbrainz,
@@ -49,6 +50,12 @@ from adder import (  # noqa: E402
     similar,
     sync,
 )
+
+# «Продолжить на другом устройстве»: сервер один на модуль, и каждый тест —
+# новое «устройство». Без подмены плашка «Играло на ноутбуке» от прошлых
+# тестов лежала бы поверх мини-плеера во всех следующих. Свой тест —
+# test_handoff_bar_continues_what_played_elsewhere — возвращает настоящую.
+REAL_HANDOFF_CURRENT = handoff.current
 
 FIXTURE = Path(__file__).parent / "fixtures" / "tone.m4a"
 TOKEN = "ui-test-token"
@@ -108,6 +115,7 @@ def server(tmp_path_factory):
     # Everything that would reach the network or another process at startup.
     mp.setattr(navidrome, "configured", lambda: False)
     mp.setattr(sync, "start", lambda: None)
+    mp.setattr(handoff, "current", lambda: None)
     # Предел «60 событий плеера в минуту» — на весь сервер, а сервер здесь
     # один на модуль: события сотни тестов подряд упирались в 429 (CI плавал).
     mp.setattr(app_module, "EVENTS_PER_MINUTE", 10**6)
@@ -7747,3 +7755,95 @@ def test_hotkeys_work_on_a_laptop_in_any_keyboard_layout(page):
     page.keyboard.press("ArrowLeft")
     assert page.evaluate("window.__calls") == []
     assert page.evaluate("document.activeElement.value").endswith("lm")
+
+
+def test_handoff_bar_continues_what_played_elsewhere(page, monkeypatch):
+    """Играло на айфоне — на ноутбуке плашка, «Продолжить» ставит ту же очередь
+    с того же места, а айфону следующий отчёт велит встать на паузу."""
+    monkeypatch.setattr(handoff, "current", REAL_HANDOFF_CURRENT)
+    other = "other-phone-1"
+    loud = {"path": "Loud Band/Singles/Loud.opus", "artist": "Loud Band", "title": "Loud"}
+    quiet = {"path": "Quiet/Singles/Quiet.m4a", "artist": "Quiet", "title": "Quiet"}
+    put = """async (body) => (await fetch('/api/now', {method: 'PUT',
+        headers: {...headers(), 'Content-Type': 'application/json'},
+        body: JSON.stringify(body)})).json()"""
+    answer = page.evaluate(put, {
+        "device": other, "label": "айфоне", "track": quiet, "index": 1, "at": 7,
+        "playing": False, "claim": True, "stamp": 5,
+        "queue": {"v": 1, "queue": [loud, quiet], "index": 0, "shuffle": False, "repeat": "off"},
+    })
+    assert answer["yield"] is False
+    page.evaluate("window.__played = 0; togglePlay = () => { window.__played += 1; }; true")
+    page.evaluate("checkHandoffOffer()")
+    bar = page.locator("#handoffBar")
+    bar.wait_for(state="visible")
+    assert page.locator("#handoffWhere").inner_text() == "Играло на айфоне · 0:07"
+    assert page.locator("#handoffTrack").inner_text() == "Quiet — Quiet"
+
+    page.locator(".handoff-take").click()
+    assert not bar.is_visible()
+    assert page.evaluate("player.queue.map(t => t.path)") == [loud["path"], quiet["path"]]
+    assert page.evaluate("player.index") == 1
+    assert page.evaluate("player.resumeAt") == 7
+    assert page.evaluate("window.__played") == 1
+    # Айфон ещё играет — следующий его отчёт: пауза, слушают здесь.
+    page.wait_for_timeout(300)  # «take» ушёл без ожидания
+    answer = page.evaluate(put, {"device": other, "label": "айфоне", "track": quiet,
+                                 "index": 1, "at": 20, "playing": True, "stamp": 5})
+    assert answer["yield"] is True
+
+
+def test_handoff_bar_can_be_dismissed(page, monkeypatch):
+    monkeypatch.setattr(handoff, "current", REAL_HANDOFF_CURRENT)
+    loud = {"path": "Loud Band/Singles/Loud.opus", "artist": "Loud Band", "title": "Loud"}
+    page.evaluate("""async (body) => fetch('/api/now', {method: 'PUT',
+        headers: {...headers(), 'Content-Type': 'application/json'}, body: JSON.stringify(body)})""", {
+        "device": "other-laptop-2", "label": "ноутбуке", "track": loud, "at": 0,
+        "playing": False, "claim": True, "stamp": 11, "queue": {"v": 1, "queue": [loud], "index": 0},
+    })
+    page.evaluate("checkHandoffOffer()")
+    page.locator("#handoffBar").wait_for(state="visible")
+    page.locator(".handoff-close").click()
+    assert not page.locator("#handoffBar").is_visible()
+    page.evaluate("checkHandoffOffer()")
+    page.wait_for_timeout(500)
+    assert not page.locator("#handoffBar").is_visible()
+
+
+def test_handoff_claim_is_not_lost_while_a_report_is_in_flight(page):
+    """Нажали «играть», пока шёл обычный отчёт: заявка уходит следующим, а ответ
+    «пауза» на старый отчёт этому устройству не выполняется."""
+    sent = page.evaluate(
+        """async () => {
+        const bodies = [];
+        let release;
+        const gate = new Promise(r => { release = r; });
+        const realFetch = window.fetch;
+        window.fetch = async (url, init) => {
+            if (url === '/api/now' && init && init.method === 'PUT') {
+                const body = JSON.parse(init.body);
+                bodies.push(body.claim);
+                if (bodies.length === 1) {
+                    await gate;  // первый отчёт «в пути»
+                    return new Response(JSON.stringify({yield: true, to: 'айфоне'}));
+                }
+                return new Response(JSON.stringify({yield: false, to: ''}));
+            }
+            return realFetch(url, init);
+        };
+        player.queue = [{path: 'Loud Band/Singles/Loud.opus', artist: 'Loud Band', title: 'Loud'}];
+        player.index = 0;
+        let paused = 0;
+        player.audio.pause = () => { paused += 1; };
+        audioPaused = () => false;
+        const first = handoffReport();      // обычный отчёт
+        handoff.claimDue = true;            // в это время нажали «играть»
+        handoffReport();
+        release();
+        await first;
+        await new Promise(r => setTimeout(r, 200));
+        window.fetch = realFetch;
+        return {bodies, paused, due: handoff.claimDue};
+    }"""
+    )
+    assert sent == {"bodies": [False, True], "paused": 0, "due": False}

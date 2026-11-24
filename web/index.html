@@ -675,6 +675,19 @@
 
 </div>
 
+<!-- «Продолжить на другом устройстве» (handoff.js): то, что играло на другом устройстве. -->
+<div id="handoffBar" class="handoff-bar" role="status" hidden>
+  <svg class="icon handoff-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="5" width="13" height="9" rx="1.5"/><path d="M1.5 17h15"/><rect x="17.5" y="8" width="5" height="10" rx="1.2"/></svg>
+  <span class="handoff-text">
+    <span id="handoffWhere" class="handoff-where"></span>
+    <span id="handoffTrack" class="handoff-track"></span>
+  </span>
+  <button class="handoff-take" type="button" onclick="takeHandoff()">Продолжить</button>
+  <button class="icon-button handoff-close" type="button" aria-label="Не надо" onclick="dismissHandoffOffer()">
+    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+  </button>
+</div>
+
 <!-- Горячие клавиши: «?» на ноутбуке (player.js, HOTKEYS). Esc закрывает сам <dialog>. -->
 <dialog id="keysDialog" class="keys-dialog" aria-labelledby="keysTitle">
   <div class="keys-head">
@@ -693,3 +706,4 @@
 <script src="/static/look.js"></script>
 <script src="/static/views.js"></script>
 <script src="/static/repair.js"></script>
+<script src="/static/handoff.js"></script>

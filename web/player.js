@@ -2135,12 +2135,20 @@ function restoreQueue() {
         saved.savedAt = Math.max(saved.savedAt || 0, at.savedAt || 0);
     }
     if (!(Date.now() - saved.savedAt < QUEUE_KEEP_MS)) return;
-    if (!(Number.isInteger(saved.index) && saved.index >= 0 && saved.index < n)) return;
+    if (applySavedQueue(saved)) queueStamp = saved.stamp || 0;
+}
+
+/* Поставить очередь, сохранённую saveQueue: своей после перезапуска
+ * (restoreQueue) или чужой — с другого устройства (handoff.js). Место —
+ * saved.at, играть не начинает. false — запись негодная, ничего не тронуто. */
+function applySavedQueue(saved) {
+    if (!saved || !Array.isArray(saved.queue) || !saved.queue.length) return false;
+    const n = saved.queue.length;
+    if (!(Number.isInteger(saved.index) && saved.index >= 0 && saved.index < n)) return false;
     /* «Добавляю в фонотеку», прерванное закрытием, уже не идёт: кнопка
      * осталась бы выключенной навсегда. */
     for (const t of saved.queue) if (t && t.kept && t.kept !== "queued") delete t.kept;
     newQueue(saved.queue);
-    queueStamp = saved.stamp || 0;
     player.index = saved.index;
     player.shuffle = ["plain", "smart"].includes(saved.shuffle) ? saved.shuffle : false;
     player.repeat = ["all", "one"].includes(saved.repeat) ? saved.repeat : "off";
@@ -2177,6 +2185,7 @@ function restoreQueue() {
     renderPlayer();
     markPlayingRow();
     renderQueuePanel();
+    return true;
 }
 
 onAudio("timeupdate", () => { if (Date.now() - queueSavedAt > 5000) saveQueueSoon(false); });
