@@ -8030,3 +8030,47 @@ def test_year_in_review_opens_from_stats_and_pages_through(page, server):
     )
     page.get_by_role("button", name="Скрыть баннер итогов").click()
     assert page.evaluate("wrappedBanner()") is None
+
+
+def test_handoff_sends_the_queue_only_when_it_changes(page):
+    """Итоговая рецензия 24.11: метка очереди новая на каждом треке, и очередь
+    целиком (бывает вся фонотека) уходила с каждым треком. Теперь — только
+    когда сменился состав или порядок; отказ «слишком большая» не повторяется."""
+    sent = page.evaluate(
+        """async () => {
+        const bodies = [];
+        let status = 200;
+        const realFetch = window.fetch;
+        window.fetch = async (url, init) => {
+            if (url === '/api/now' && init && init.method === 'PUT') {
+                const body = JSON.parse(init.body);
+                bodies.push({queue: Boolean(body.queue), stamp: body.stamp});
+                return new Response(JSON.stringify({yield: false, to: ''}), {status});
+            }
+            return realFetch(url, init);
+        };
+        player.queue = [
+            {path: 'Loud Band/Singles/Loud.opus', artist: 'Loud Band', title: 'Loud'},
+            {path: 'Quiet/Singles/Quiet.m4a', artist: 'Quiet', title: 'Quiet'},
+        ];
+        player.order = [0, 1];
+        player.index = 0;
+        const step = async () => {
+            queueChanged = true;   // как на каждом треке: новая метка
+            saveQueue();
+            await handoffReport();
+        };
+        await step();                       // первая — с очередью
+        player.index = 1;
+        await step();                       // следующий трек — без очереди
+        const kept = bodies[1].stamp === bodies[0].stamp;
+        player.queue.push({path: 'Evil/Singles/evil.m4a', artist: 'Evil', title: 'x'});
+        player.order = [0, 1, 2];
+        status = 413;
+        await step();                       // состав сменился — с очередью; отказ
+        await step();                       // отказанную не шлём снова
+        window.fetch = realFetch;
+        return {queues: bodies.map(b => b.queue), kept};
+    }"""
+    )
+    assert sent == {"queues": [True, False, True, False], "kept": True}

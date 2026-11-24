@@ -11,8 +11,11 @@
  * треку сам по себе не claim: иначе ноутбук, которому сказали остановиться,
  * успевал бы перейти к следующему треку и забрать музыку обратно.
  *
- * Очередь целиком (бывает вся фонотека) уходит только когда сменилась её
- * метка queueStamp (player.js, saveQueue).
+ * Очередь целиком (бывает вся фонотека) уходит, только когда сменился её
+ * состав или порядок (queueSignature), а не метка queueStamp: метка новая на
+ * каждом треке (saveQueue пишет и место), и очередь уходила бы каждые три
+ * минуты (итоговая рецензия 24.11). Место без очереди отчёт шлёт с меткой
+ * той очереди, что уже лежит на сервере.
  */
 
 const HANDOFF_EVERY_MS = 10000;
@@ -24,6 +27,8 @@ const HANDOFF_DISMISS_KEY = "handoffDismissed";
 
 const handoff = {
     sentStamp: -1,     // метка очереди, отправленной целиком
+    sentSig: "",       // её состав и порядок (queueSignature)
+    refusedSig: "",    // такую сервер не взял (больше 2 МБ) — не слать снова
     lastSent: 0,
     lastPlayingAt: 0,  // когда последний раз видели «играет»
     claimed: false,    // этот сеанс уже нажимал «играть»
@@ -58,6 +63,19 @@ function handoffLabel() {
     return "ноутбуке";
 }
 
+/* Состав и порядок очереди одной строкой-хешем (FNV-1a): на тысячу треков —
+ * доли миллисекунды, раз в 10 с. */
+function queueSignature() {
+    let h = 0x811c9dc5;
+    const feed = (text) => {
+        for (let i = 0; i < text.length; i++) { h ^= text.charCodeAt(i); h = Math.imul(h, 0x01000193); }
+        h ^= 10; h = Math.imul(h, 0x01000193);
+    };
+    for (const t of player.queue) feed(t && t.path ? t.path : "");
+    feed(String(player.shuffle) + ":" + (Array.isArray(player.order) ? player.order.join(",") : ""));
+    return player.queue.length + ":" + (h >>> 0).toString(36);
+}
+
 function handoffPosition() {
     const a = player.audio;
     if (a.getAttribute("src") && !player.switching && Number.isFinite(a.currentTime)) return a.currentTime;
@@ -74,9 +92,10 @@ async function handoffReport() {
     /* Свежая очередь в localStorage — она же уйдёт на сервер. */
     if (typeof saveQueue === "function") saveQueue();
     let queue;
+    const sig = queueSignature();
     /* С заявкой «слушают здесь» — очередь всегда: на сервере могла остаться
      * очередь другого устройства, и без неё место не сохранить. */
-    if (queueStamp !== handoff.sentStamp || handoff.claimDue) {
+    if ((sig !== handoff.sentSig || handoff.claimDue) && sig !== handoff.refusedSig) {
         try { queue = JSON.parse(localStorage.getItem(QUEUE_KEY) || "null") || undefined; } catch (e) { queue = undefined; }
         if (queue && queue.stamp !== queueStamp) queue = undefined;
     }
@@ -94,7 +113,8 @@ async function handoffReport() {
         at: Math.max(0, Math.min(86400, handoffPosition())),
         playing: !audioPaused(),
         claim: handoff.claimDue,
-        stamp: queueStamp,
+        /* Без очереди — метка уже отправленной: состав тот же. */
+        stamp: queue ? queueStamp : (handoff.sentStamp >= 0 ? handoff.sentStamp : queueStamp),
     };
     if (queue) body.queue = queue;
     const json = JSON.stringify(body);
@@ -111,14 +131,26 @@ async function handoffReport() {
             /* Зависший запрос не должен держать отчёты навсегда (busy). */
             signal: AbortSignal.timeout ? AbortSignal.timeout(15000) : undefined,
         });
-        if (!r.ok) return;
+        if (!r.ok) {
+            /* Очередь не взяли (больше 2 МБ или 20 000 треков) — не слать её
+             * снова каждые 10 с по сотовой сети; продолжить её не выйдет. */
+            if (queue && (r.status === 413 || r.status === 422)) {
+                handoff.refusedSig = sig;
+                handoff.claimDue = false;
+            }
+            return;
+        }
         const answer = await r.json();
-        if (queue) handoff.sentStamp = body.stamp;
-        if (answer.need_queue) handoff.sentStamp = -1;
-        else if (body.claim) handoff.claimDue = false;
+        if (queue) { handoff.sentStamp = body.stamp; handoff.sentSig = sig; }
+        if (answer.need_queue) {
+            if (sig !== handoff.refusedSig) { handoff.sentStamp = -1; handoff.sentSig = ""; }
+            else handoff.claimDue = false;
+        } else if (body.claim) handoff.claimDue = false;
         if (answer.yield && !audioPaused() && !handoff.claimDue) {
             player.pauseReason = "продолжили на другом устройстве";
-            player.audio.pause();
+            /* Звучит хвост перехода, а уходящий уже доиграл — как кнопка «пауза». */
+            if (player.audio.paused && typeof mixPauseOnNext === "function") mixPauseOnNext();
+            else player.audio.pause();
             setPlayerNote("Продолжили на " + (answer.to || "другом устройстве"));
         }
     } catch (e) { /* без сети — следующий отчёт (claimDue остаётся) */ } finally {
@@ -127,7 +159,12 @@ async function handoffReport() {
     }
 }
 
-onAudio("ended", () => { handoff.advancing = true; });
+onAudio("ended", () => {
+    handoff.advancing = true;
+    /* Следующий так и не заиграл (очередь кончилась, айфон не дал play) —
+     * следующее «играть» нажмут руками, это уже заявка. */
+    setTimeout(() => { if (audioPaused()) handoff.advancing = false; }, 8000);
+});
 onAudio("play", () => {
     const gap = Date.now() - handoff.lastPlayingAt;
     /* Трек доиграл и пошёл следующий — это не «нажали играть», даже если
