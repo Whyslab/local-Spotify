@@ -6232,7 +6232,10 @@ document.addEventListener("keydown", (event) => {
     if (event.defaultPrevented || event.ctrlKey || event.altKey || event.metaKey) return;
     if (openMenu) return;
     const dialogOpen = document.querySelector("dialog[open]");
-    if (event.code === "Slash" && event.shiftKey) {
+    /* «?» и «/» — и по клавише, и по знаку: в русской раскладке на этой
+     * клавише «.» и «,», а знак «?» стоит на Shift+7. */
+    const help = (event.code === "Slash" && event.shiftKey) || event.key === "?";
+    if (help) {
         if (dialogOpen && dialogOpen.id !== "keysDialog") return;
         if (hotkeyBlocked(document.activeElement)) return;
         event.preventDefault();
@@ -6271,6 +6274,8 @@ document.addEventListener("keydown", (event) => {
         focusSearch();
         return;
     default:
+        if (event.key === "/") { event.preventDefault(); focusSearch(); }
+        return;
     }
 });
 

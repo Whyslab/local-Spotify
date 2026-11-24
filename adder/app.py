@@ -2776,6 +2776,7 @@ class HandoffTrack(BaseModel):
     path: str = Field(max_length=4096)
     artist: str = Field(default="", max_length=1000)
     title: str = Field(default="", max_length=1000)
+    duration: float | None = Field(default=None, ge=0, le=86400, allow_inf_nan=False)
 
 
 class HandoffReport(BaseModel):

@@ -76,3 +76,37 @@ def test_now_needs_the_token(client):
     client.headers.pop("Authorization")
     assert client.get("/api/now").status_code == 401
     assert client.put("/api/now", json={"device": LAPTOP}).status_code == 401
+
+
+def test_a_claim_without_a_queue_is_not_lost(client):
+    """Рецензия 24.11: телефон перезаписал очередь, ноутбук нажал «играть», не
+    прислав свою (та же метка), — сервер ответил need_queue и забыл заявку, и
+    следующий отчёт ноутбука получил «пауза»."""
+    report(client, LAPTOP, claim=True, queue=QUEUE)
+    client.post("/api/now/take", json={"device": PHONE, "label": "айфоне"})
+    report(client, PHONE, label="айфоне", claim=True, queue=QUEUE, stamp=9)
+    answer = report(client, LAPTOP, claim=True)  # без очереди
+    assert answer.get("need_queue") is True and answer["yield"] is False
+    assert report(client, LAPTOP)["yield"] is False
+    assert report(client, PHONE, label="айфоне", stamp=9)["yield"] is True
+
+
+def test_the_place_of_a_silent_device_is_not_counted_on(client, monkeypatch):
+    from adder import handoff
+
+    clock = [1000.0]
+    monkeypatch.setattr(handoff.time, "time", lambda: clock[0])
+    track = dict(TRACK, duration=100)
+    report(client, LAPTOP, claim=True, queue=QUEUE, track=track, at=30)
+    clock[0] += 12
+    now = client.get("/api/now").json()["now"]
+    assert now["playing"] is True and now["at"] == 42 and now["age"] == 12
+    clock[0] += 200  # трек кончился бы — дальше конца не считаем
+    now = client.get("/api/now").json()["now"]
+    # Молчит дольше 30 с: закрыли вкладку — «играло», место — последнее.
+    assert now["playing"] is False and now["at"] == 30
+    clock[0] = 1000.0 + 25
+    assert client.get("/api/now").json()["now"]["at"] == 55
+    report(client, LAPTOP, track=track, at=95)
+    clock[0] += 20
+    assert client.get("/api/now").json()["now"]["at"] == 99  # конец трека − 1 с

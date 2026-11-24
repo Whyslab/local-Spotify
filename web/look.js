@@ -475,6 +475,8 @@ const SKIP_SWIPE_PX = 70;
 document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape" || !sheetOpen()) return;
     if (openMenu) return;
+    /* Открыт <dialog> (горячие клавиши) — Esc закрывает его, а не плеер. */
+    if (document.querySelector("dialog[open]")) return;
     const fade = document.getElementById("playerFadeMenu");
     if (fade && !fade.hidden) {
         /* Меню перехода — не из общих меню, Esc его само не закрывало. */

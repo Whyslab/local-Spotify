@@ -170,4 +170,8 @@ if [[ "$UFW_STATUS" == *"Status: active"* ]]; then
   sudo ufw allow from "$LAN_SUBNET" to any port "$PORT_VALUE" proto tcp comment "Adder LAN"
 fi
 
-echo "OK: adder http://localhost:$PORT_VALUE | navidrome http://localhost:4533"
+if [[ -n "$(env_value NAVIDROME_USER)" ]]; then
+  echo "OK: adder http://localhost:$PORT_VALUE | navidrome http://localhost:4533"
+else
+  echo "OK: adder http://localhost:$PORT_VALUE"
+fi

@@ -82,7 +82,13 @@ def report(
         owner = state.get("owner")
         if claim or not owner:
             owner = device
-            state["owner_label"] = label
+            # Сразу в базу: даже если ниже окажется, что очереди нет
+            # (need_queue), «слушают здесь» не должно потеряться — иначе
+            # следующий отчёт этого же устройства получил бы «пауза».
+            if state.get("owner") != device:
+                state["owner"] = device
+                state["owner_label"] = label
+                _store(STATE_KEY, state)
         if owner != device and playing:
             # Слушают уже на другом устройстве — этому встать на паузу.
             return {"yield": True, "to": state.get("owner_label") or ""}
@@ -116,15 +122,36 @@ def report(
     return {"yield": False, "to": ""}
 
 
+# Отчёты идут раз в 10 с; молчит дольше — устройство уже не играет (закрыли
+# вкладку посреди трека, уснул телефон), и место дальше не досчитывать.
+SILENT_AFTER = 30
+
+
 def current() -> dict | None:
-    """Последнее, что играло: для плашки на другом устройстве."""
+    """Последнее, что играло: для плашки на другом устройстве.
+
+    ``age`` — сколько секунд назад пришёл отчёт, по часам сервера: часы
+    телефона и ноутбука могут расходиться. ``at`` — место сейчас: у ещё
+    играющего досчитано на ``age``, но не дальше конца трека.
+    """
     state = _load(STATE_KEY)
     if not state or not state.get("track"):
         return None
-    return {
+    out = {
         key: state.get(key)
         for key in ("device", "label", "track", "index", "at", "playing", "stamp", "updated")
     }
+    age = max(0.0, time.time() - float(state.get("updated") or 0))
+    out["age"] = round(age, 1)
+    if out["playing"] and age > SILENT_AFTER:
+        out["playing"] = False
+    if out["playing"]:
+        at = float(out["at"] or 0) + age
+        duration = (state.get("track") or {}).get("duration")
+        if isinstance(duration, int | float) and duration > 0:
+            at = min(at, max(0.0, float(duration) - 1))
+        out["at"] = round(at, 1)
+    return out
 
 
 def saved_queue(stamp: int) -> dict[str, Any] | None:

@@ -31,15 +31,21 @@ const handoff = {
     again: false,      // пока шёл отчёт, понадобился ещё один
     offer: null,       // {now, saved}: что предлагает плашка
     busy: false,
+    advancing: false,  // трек доиграл сам — следующий play не «нажали»
+    device: "",
 };
 
 function handoffDevice() {
+    if (handoff.device) return handoff.device;
     let id = "";
     try { id = localStorage.getItem(HANDOFF_DEVICE_KEY) || ""; } catch (e) { /* закрыто */ }
     if (id.length < 8) {
         id = (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2) + Date.now());
-        try { localStorage.setItem(HANDOFF_DEVICE_KEY, id); } catch (e) { /* без памяти — новый id на сеанс */ }
+        try { localStorage.setItem(HANDOFF_DEVICE_KEY, id); } catch (e) { /* без памяти — свой на сеанс */ }
     }
+    /* В памяти страницы: при закрытом хранилище (приватный режим Safari)
+     * каждый отчёт иначе шёл бы от «нового устройства» и ставил бы паузу сам себе. */
+    handoff.device = id;
     return id;
 }
 
@@ -68,14 +74,22 @@ async function handoffReport() {
     /* Свежая очередь в localStorage — она же уйдёт на сервер. */
     if (typeof saveQueue === "function") saveQueue();
     let queue;
-    if (queueStamp !== handoff.sentStamp) {
+    /* С заявкой «слушают здесь» — очередь всегда: на сервере могла остаться
+     * очередь другого устройства, и без неё место не сохранить. */
+    if (queueStamp !== handoff.sentStamp || handoff.claimDue) {
         try { queue = JSON.parse(localStorage.getItem(QUEUE_KEY) || "null") || undefined; } catch (e) { queue = undefined; }
         if (queue && queue.stamp !== queueStamp) queue = undefined;
     }
     const body = {
         device: handoffDevice(),
         label: handoffLabel(),
-        track: { path: track.path, artist: String(track.artist || ""), title: String(track.title || "") },
+        track: {
+            path: track.path,
+            artist: String(track.artist || ""),
+            title: String(track.title || ""),
+            duration: Number.isFinite(player.audio.duration) && player.audio.duration > 0
+                ? Math.min(86400, player.audio.duration) : null,
+        },
         index: player.index,
         at: Math.max(0, Math.min(86400, handoffPosition())),
         playing: !audioPaused(),
@@ -91,14 +105,17 @@ async function handoffReport() {
             method: "PUT",
             headers: { ...headers(), "Content-Type": "application/json" },
             body: json,
-            /* Уходя со страницы — дослать; keepalive не берёт больше 64 КБ. */
-            keepalive: json.length < 60000,
+            /* Уходя со страницы — дослать. keepalive не берёт больше 64 КиБ,
+             * а кириллица — два байта на букву: считать байты, не буквы. */
+            keepalive: new TextEncoder().encode(json).length < 60000,
+            /* Зависший запрос не должен держать отчёты навсегда (busy). */
+            signal: AbortSignal.timeout ? AbortSignal.timeout(15000) : undefined,
         });
         if (!r.ok) return;
         const answer = await r.json();
-        if (body.claim) handoff.claimDue = false;
         if (queue) handoff.sentStamp = body.stamp;
         if (answer.need_queue) handoff.sentStamp = -1;
+        else if (body.claim) handoff.claimDue = false;
         if (answer.yield && !audioPaused() && !handoff.claimDue) {
             player.pauseReason = "продолжили на другом устройстве";
             player.audio.pause();
@@ -110,9 +127,14 @@ async function handoffReport() {
     }
 }
 
+onAudio("ended", () => { handoff.advancing = true; });
 onAudio("play", () => {
     const gap = Date.now() - handoff.lastPlayingAt;
-    const claim = !handoff.claimed || gap > HANDOFF_CLAIM_GAP_MS;
+    /* Трек доиграл и пошёл следующий — это не «нажали играть», даже если
+     * следующий грузился дольше HANDOFF_CLAIM_GAP_MS. */
+    const advanced = handoff.advancing;
+    handoff.advancing = false;
+    const claim = !handoff.claimed || (gap > HANDOFF_CLAIM_GAP_MS && !advanced);
     handoff.claimed = true;
     handoff.lastPlayingAt = Date.now();
     hideHandoffOffer();
@@ -145,10 +167,10 @@ async function checkHandoffOffer() {
         now = (await r.json()).now;
     } catch (e) { return; }
     if (!now || !now.track || now.device === handoffDevice()) { hideHandoffOffer(); return; }
-    const age = Date.now() / 1000 - (now.updated || 0);
-    if (!(age >= 0 && age < HANDOFF_FRESH_S)) return;
+    /* Возраст и место считает сервер — по своим часам (adder/handoff.py). */
+    if (!(now.age >= 0 && now.age < HANDOFF_FRESH_S)) return;
     try { if (sessionStorage.getItem(HANDOFF_DISMISS_KEY) === handoffDismissKey(now)) return; } catch (e) { /* нет */ }
-    const at = (now.at || 0) + (now.playing ? age : 0);
+    const at = now.at || 0;
     /* Здесь уже то же самое и там же — продолжать нечего. */
     const mine = player.queue[player.index];
     if (mine && mine.path === now.track.path && Math.abs(handoffPosition() - at) < 15) return;
