@@ -30,15 +30,27 @@ def space_of(vectors: dict[str, list[float]]) -> sonic.Space:
 
 
 ROWS = [
-    row("a1", "A"), row("a2", "A"), row("b1", "B"),   # подборка: два «угла»
-    row("near_a", "C"), row("near_b", "D"), row("far", "E"),
-    row("c2", "C"), row("c3", "C"),
+    row("a1", "A"),
+    row("a2", "A"),
+    row("b1", "B"),  # подборка: два «угла»
+    row("near_a", "C"),
+    row("near_b", "D"),
+    row("far", "E"),
+    row("c2", "C"),
+    row("c3", "C"),
 ]
-SPACE = space_of({
-    "a1": [1, 0, 0], "a2": [0.98, 0.1, 0], "b1": [0, 1, 0],
-    "near_a": [0.97, 0.05, 0.05], "near_b": [0.05, 0.98, 0.0], "far": [0, 0, 1],
-    "c2": [0.96, 0.04, 0.1], "c3": [0.95, 0.06, 0.1],
-})
+SPACE = space_of(
+    {
+        "a1": [1, 0, 0],
+        "a2": [0.98, 0.1, 0],
+        "b1": [0, 1, 0],
+        "near_a": [0.97, 0.05, 0.05],
+        "near_b": [0.05, 0.98, 0.0],
+        "far": [0, 0, 1],
+        "c2": [0.96, 0.04, 0.1],
+        "c3": [0.95, 0.06, 0.1],
+    }
+)
 
 
 def test_close_to_part_of_the_playlist_beats_the_average():
@@ -60,7 +72,14 @@ def test_skipped_and_outside_tracks_are_not_offered():
 
 
 def test_without_sound_the_playlist_artists_are_used():
-    rows = [row("a1", "A"), row("a2", "A"), row("a3", "A"), row("b1", "B"), row("b2", "B"), row("x", "X")]
+    rows = [
+        row("a1", "A"),
+        row("a2", "A"),
+        row("a3", "A"),
+        row("b1", "B"),
+        row("b2", "B"),
+        row("x", "X"),
+    ]
     got = playlist_similar.from_library(["a1", "a2", "b1"], rows, None, seed="pl")
     assert [t["path"] for t in got] == ["a3", "b2"]  # частый в подборке артист — первым
 
@@ -115,11 +134,16 @@ def test_the_endpoint_answers_for_a_playlist_and_404_for_none(client, monkeypatc
     from adder import playlists
 
     monkeypatch.setattr(
-        playlists, "read",
-        lambda name: type("P", (), {"entries": [type("E", (), {"path": p})() for p in ("a1", "a2", "b1")]})(),
+        playlists,
+        "read",
+        lambda name: type(
+            "P", (), {"entries": [type("E", (), {"path": p})() for p in ("a1", "a2", "b1")]}
+        )(),
     )
     data = client.get("/api/playlists/Проба/similar").json()
     assert data["by"] == "sound" and data["tracks"][-1]["path"] == "far"
     monkeypatch.setattr(app_module.playlist_similar, "from_outside", lambda m, r: 1 / 0)
-    assert client.get("/api/playlists/Проба/similar", params={"part": "new"}).json() == {"tracks": []}
+    assert client.get("/api/playlists/Проба/similar", params={"part": "new"}).json() == {
+        "tracks": []
+    }
     assert client.get("/api/playlists/Проба/similar", params={"part": "x"}).status_code == 422

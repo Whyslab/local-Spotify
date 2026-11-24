@@ -5,7 +5,7 @@ import datetime
 import pytest
 from fastapi.testclient import TestClient
 
-from adder import config, db, library, navidrome, shelves
+from adder import config, db, library, navidrome, shelves, stats
 
 ROWS = [
     {"path": "A/a1.m4a", "artist": "Аня", "title": "Первая", "album": "X", "duration": 200.0},
@@ -216,3 +216,50 @@ def test_stats_top_lists_stop_at_ten(client, monkeypatch):
     assert len(body["tracks"]) == 10 and len(body["artists"]) == 10
     assert body["tracks"][0]["path"] == "P/14.m4a" and body["tracks"][0]["plays"] == 15
     assert body["plays"] == sum(range(1, 16))
+
+
+# ---------------- «Итоги года» (stats.wrapped, /api/stats/wrapped) ----------------
+
+
+def test_wrapped_year_switches_on_the_sixteenth_of_january():
+    assert stats.wrapped_year(datetime.date(2027, 1, 15)) == 2026
+    assert stats.wrapped_year(datetime.date(2027, 1, 16)) == 2027
+    assert stats.wrapped_year(datetime.date(2026, 12, 1)) == 2026
+
+
+def test_wrapped_counts_the_year_and_only_what_was_heard(client):
+    # Аня: три дня подряд вечером; Борис — один длинный день; Вера пропущена.
+    for day in ("2026-03-01", "2026-03-02", "2026-03-03"):
+        play("A/a1.m4a", f"{day} 20:00:00", 200)
+    for minute in range(4):  # «на повторе»: четыре раза за день
+        play("A/a2.m4a", f"2026-05-10 21:{minute:02d}:00", 180)
+    play("B/b1.m4a", "2026-07-07 14:00:00", 240)
+    play("B/b1.m4a", "2026-07-07 15:00:00", 240)
+    play("C/c1.m4a", "2026-07-07 16:00:00", 100, skipped=True)
+    play("C/c1.m4a", "2025-12-31 23:00:00", 100)  # прошлый год
+    play("C/c1.m4a", "2027-01-01 00:10:00", 100)  # следующий
+    play("Gone/x.m4a", "2026-08-01 09:00:00", 300)  # удалён: в часах есть, в местах — нет
+
+    w = client.get("/api/stats/wrapped", params={"year": 2026}).json()
+    assert w["year"] == 2026 and w["plays"] == 10
+    assert w["seconds"] == 3 * 200 + 4 * 180 + 2 * 240 + 300
+    assert [a["name"] for a in w["top_artists"]] == ["Аня", "Борис"]
+    assert w["top_artists"][0]["tracks"] == 2
+    assert w["top_tracks"][0]["path"] == "A/a2.m4a" and w["top_tracks"][0]["plays"] == 4
+    assert [t["path"] for t in w["playlist"]] == ["A/a2.m4a", "A/a1.m4a", "B/b1.m4a"]
+    assert w["streak"] == {"days": 3, "from": "2026-03-01", "to": "2026-03-03"}
+    assert w["top_day"]["date"] == "2026-05-10"
+    assert w["top_part"] == "вечером"
+    assert abs(sum(p["share"] for p in w["parts_of_day"]) - 1) < 0.01
+    assert w["on_repeat"]["path"] == "A/a2.m4a" and w["on_repeat"]["plays"] == 4
+    assert len(w["months"]) == 12 and w["months"][2]["seconds"] == 600
+    assert w["first"] == "2026-03-01"
+
+
+def test_wrapped_of_an_empty_year_is_empty_not_an_error(client):
+    w = client.get("/api/stats/wrapped", params={"year": 2031}).json()
+    assert w["plays"] == 0 and "top_artists" not in w
+    assert client.get("/api/stats/wrapped", params={"year": 1900}).status_code == 422
+    assert client.get("/api/stats/wrapped").json()["year"] == stats.wrapped_year(
+        datetime.date.today()
+    )

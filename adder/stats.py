@@ -231,3 +231,147 @@ def smart_skips(days: int = SMART_DAYS, engine: str = "sonic") -> dict[str, Any]
         "outside_plays": other["plays"] or 0,
         "share": round(skips / plays, 3) if plays else None,
     }
+
+
+# «Итоги года» — как Spotify Wrapped. Показываются в «Статистике» всегда, а
+# на главной баннером с 1 декабря по 15 января (до 15 января — итоги прошлого
+# года: в первые дни нового смотреть ещё не на что).
+WRAPPED_TOP = 5
+WRAPPED_PLAYLIST = 50
+WRAPPED_LAST_JANUARY_DAY = 15
+PARTS_OF_DAY = (("ночью", 0, 6), ("утром", 6, 12), ("днём", 12, 18), ("вечером", 18, 24))
+
+
+def wrapped_year(today: datetime.date) -> int:
+    """Чьи итоги сейчас: до 15 января — прошлого года."""
+    if today.month == 1 and today.day <= WRAPPED_LAST_JANUARY_DAY:
+        return today.year - 1
+    return today.year
+
+
+def _longest_streak(days: list[str]) -> dict[str, Any]:
+    """Самая длинная серия дней подряд с музыкой (даты по возрастанию)."""
+    best: dict[str, Any] = {"days": 0, "from": None, "to": None}
+    prev: datetime.date | None = None
+    run_from = datetime.date.min
+    length = 0
+    for key in days:
+        day = datetime.date.fromisoformat(key)
+        if prev is not None and day - prev == datetime.timedelta(days=1):
+            length += 1
+        else:
+            run_from, length = day, 1
+        prev = day
+        if length > best["days"]:
+            best = {"days": length, "from": run_from.isoformat(), "to": day.isoformat()}
+    return best
+
+
+def wrapped(year: int, rows: list[dict], today: datetime.date) -> dict[str, Any]:
+    """Итоги ``year``: сколько, кто и что, когда — из журнала, без пропущенного.
+
+    Удалённые с тех пор треки в общем времени есть, а в первых местах — нет
+    (как у summary): включить их нечем.
+    """
+    start, end = f"{year:04d}-01-01", f"{year + 1:04d}-01-01"
+    where = HEARD + " AND played_at >= ? AND played_at < ?"
+    params = (MIN_HEARD_SECONDS, start, end)
+    total = db.db_query(
+        f"SELECT COUNT(*) AS plays, COALESCE(SUM(played_seconds), 0) AS seconds, "
+        f"COUNT(DISTINCT path) AS tracks, MIN(played_at) AS first FROM plays WHERE {where}",
+        params,
+    )[0]
+    out: dict[str, Any] = {
+        "year": year,
+        "complete": today.year > year,
+        "plays": total["plays"] or 0,
+        "seconds": round(total["seconds"] or 0, 1),
+        "tracks_count": total["tracks"] or 0,
+        "first": (total["first"] or "")[:10] or None,
+    }
+    if not out["plays"]:
+        return out
+
+    by_path = {row["path"]: row for row in rows}
+    tracks: list[dict] = []
+    artists: dict[str, dict] = {}
+    for row in db.db_query(
+        f"SELECT path, COUNT(*) AS plays, SUM(played_seconds) AS seconds "
+        f"FROM plays WHERE {where} GROUP BY path ORDER BY plays DESC, seconds DESC, path",
+        params,
+    ):
+        tag = by_path.get(row["path"])
+        if not tag:
+            continue
+        seconds = round(row["seconds"] or 0, 1)
+        tracks.append(
+            {
+                **{k: tag.get(k) for k in ("path", "artist", "title", "album", "duration")},
+                "plays": row["plays"],
+                "seconds": seconds,
+            }
+        )
+        name = main_artist(tag)
+        who = artists.setdefault(
+            name, {"name": name, "plays": 0, "seconds": 0.0, "cover": tag["path"], "tracks": 0}
+        )
+        who["plays"] += row["plays"]
+        who["seconds"] = round(who["seconds"] + seconds, 1)
+        who["tracks"] += 1
+    ranked = sorted(artists.values(), key=lambda a: (-a["seconds"], -a["plays"]))
+    out["artists_count"] = len(artists)
+    out["top_artists"] = ranked[:WRAPPED_TOP]
+    out["top_tracks"] = tracks[:WRAPPED_TOP]
+    # «Слушать лучшее года» — первые пятьдесят, в порядке мест.
+    out["playlist"] = [
+        {k: t.get(k) for k in ("path", "artist", "title", "album", "duration")}
+        for t in tracks[:WRAPPED_PLAYLIST]
+    ]
+
+    days = db.db_query(
+        f"SELECT substr(played_at, 1, 10) AS day, SUM(played_seconds) AS seconds "
+        f"FROM plays WHERE {where} GROUP BY day ORDER BY day",
+        params,
+    )
+    top_day = max(days, key=lambda d: (d["seconds"] or 0, d["day"]))
+    out["top_day"] = {"date": top_day["day"], "seconds": round(top_day["seconds"] or 0, 1)}
+    out["days_count"] = len(days)
+    out["streak"] = _longest_streak([d["day"] for d in days])
+
+    months = dict.fromkeys(_months(datetime.date(year, 1, 1), datetime.date(year, 12, 1)), 0.0)
+    for d in days:
+        months[d["day"][:7]] = round(months.get(d["day"][:7], 0.0) + (d["seconds"] or 0), 1)
+    out["months"] = [{"key": k, "seconds": v} for k, v in months.items()]
+
+    hours = db.db_query(
+        f"SELECT CAST(substr(played_at, 12, 2) AS INTEGER) AS hour, SUM(played_seconds) AS seconds "
+        f"FROM plays WHERE {where} GROUP BY hour",
+        params,
+    )
+    parts = {name: 0.0 for name, _, _ in PARTS_OF_DAY}
+    for h in hours:
+        for name, lo, hi in PARTS_OF_DAY:
+            if h["hour"] is not None and lo <= h["hour"] < hi:
+                parts[name] += h["seconds"] or 0
+    whole = sum(parts.values()) or 1.0
+    out["parts_of_day"] = [
+        {"name": name, "share": round(value / whole, 3)} for name, value in parts.items()
+    ]
+    out["top_part"] = max(parts, key=lambda name: parts[name])
+
+    # «На повторе»: трек, сыгранный больше всего раз за один день.
+    repeat = db.db_query(
+        f"SELECT path, substr(played_at, 1, 10) AS day, COUNT(*) AS plays FROM plays "
+        f"WHERE {where} GROUP BY path, day ORDER BY plays DESC, day DESC LIMIT 20",
+        params,
+    )
+    for row in repeat:
+        tag = by_path.get(row["path"])
+        if tag and row["plays"] >= 3:
+            out["on_repeat"] = {
+                **{k: tag.get(k) for k in ("path", "artist", "title")},
+                "plays": row["plays"],
+                "date": row["day"],
+            }
+            break
+    return out

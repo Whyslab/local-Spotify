@@ -12,8 +12,10 @@ Needs the browser: `python -m playwright install chromium` (CI does this).
 from __future__ import annotations
 
 import contextlib
+import datetime
 import importlib.util
 import json
+import re
 import shutil
 import socket
 import subprocess
@@ -7767,11 +7769,26 @@ def test_handoff_bar_continues_what_played_elsewhere(page, monkeypatch):
     put = """async (body) => (await fetch('/api/now', {method: 'PUT',
         headers: {...headers(), 'Content-Type': 'application/json'},
         body: JSON.stringify(body)})).json()"""
-    answer = page.evaluate(put, {
-        "device": other, "label": "айфоне", "track": quiet, "index": 1, "at": 7,
-        "playing": False, "claim": True, "stamp": 5,
-        "queue": {"v": 1, "queue": [loud, quiet], "index": 0, "shuffle": False, "repeat": "off"},
-    })
+    answer = page.evaluate(
+        put,
+        {
+            "device": other,
+            "label": "айфоне",
+            "track": quiet,
+            "index": 1,
+            "at": 7,
+            "playing": False,
+            "claim": True,
+            "stamp": 5,
+            "queue": {
+                "v": 1,
+                "queue": [loud, quiet],
+                "index": 0,
+                "shuffle": False,
+                "repeat": "off",
+            },
+        },
+    )
     assert answer["yield"] is False
     page.evaluate("window.__played = 0; togglePlay = () => { window.__played += 1; }; true")
     page.evaluate("checkHandoffOffer()")
@@ -7788,19 +7805,38 @@ def test_handoff_bar_continues_what_played_elsewhere(page, monkeypatch):
     assert page.evaluate("window.__played") == 1
     # Айфон ещё играет — следующий его отчёт: пауза, слушают здесь.
     page.wait_for_timeout(300)  # «take» ушёл без ожидания
-    answer = page.evaluate(put, {"device": other, "label": "айфоне", "track": quiet,
-                                 "index": 1, "at": 20, "playing": True, "stamp": 5})
+    answer = page.evaluate(
+        put,
+        {
+            "device": other,
+            "label": "айфоне",
+            "track": quiet,
+            "index": 1,
+            "at": 20,
+            "playing": True,
+            "stamp": 5,
+        },
+    )
     assert answer["yield"] is True
 
 
 def test_handoff_bar_can_be_dismissed(page, monkeypatch):
     monkeypatch.setattr(handoff, "current", REAL_HANDOFF_CURRENT)
     loud = {"path": "Loud Band/Singles/Loud.opus", "artist": "Loud Band", "title": "Loud"}
-    page.evaluate("""async (body) => fetch('/api/now', {method: 'PUT',
-        headers: {...headers(), 'Content-Type': 'application/json'}, body: JSON.stringify(body)})""", {
-        "device": "other-laptop-2", "label": "ноутбуке", "track": loud, "at": 0,
-        "playing": False, "claim": True, "stamp": 11, "queue": {"v": 1, "queue": [loud], "index": 0},
-    })
+    page.evaluate(
+        """async (body) => fetch('/api/now', {method: 'PUT',
+        headers: {...headers(), 'Content-Type': 'application/json'}, body: JSON.stringify(body)})""",
+        {
+            "device": "other-laptop-2",
+            "label": "ноутбуке",
+            "track": loud,
+            "at": 0,
+            "playing": False,
+            "claim": True,
+            "stamp": 11,
+            "queue": {"v": 1, "queue": [loud], "index": 0},
+        },
+    )
     page.evaluate("checkHandoffOffer()")
     page.locator("#handoffBar").wait_for(state="visible")
     page.locator(".handoff-close").click()
@@ -7858,13 +7894,39 @@ def test_similar_tracks_under_a_playlist_are_offered_and_added(page, server):
     def similar(route):
         asked.append(route.request.url)
         if "part=new" in route.request.url:
-            body = {"tracks": [{"path": "outside:k1", "artist": "Новый", "title": "Свежее",
-                                "duration": 180, "external": True, "outside": True, "state": "unknown"}]}
+            body = {
+                "tracks": [
+                    {
+                        "path": "outside:k1",
+                        "artist": "Новый",
+                        "title": "Свежее",
+                        "duration": 180,
+                        "external": True,
+                        "outside": True,
+                        "state": "unknown",
+                    }
+                ]
+            }
         else:
-            body = {"by": "sound", "tracks": [
-                {"path": QUIET_PATH, "artist": "Quiet", "title": "Quiet", "album": "", "duration": 12},
-                {"path": EVIL_PATH, "artist": "Evil", "title": XSS_TITLE, "album": "", "duration": 2},
-            ]}
+            body = {
+                "by": "sound",
+                "tracks": [
+                    {
+                        "path": QUIET_PATH,
+                        "artist": "Quiet",
+                        "title": "Quiet",
+                        "album": "",
+                        "duration": 12,
+                    },
+                    {
+                        "path": EVIL_PATH,
+                        "artist": "Evil",
+                        "title": XSS_TITLE,
+                        "album": "",
+                        "duration": 2,
+                    },
+                ],
+            }
         route.fulfill(status=200, content_type="application/json", body=json.dumps(body))
 
     page.route("**/api/playlists/*/similar*", similar)
@@ -7890,3 +7952,56 @@ def test_similar_tracks_under_a_playlist_are_offered_and_added(page, server):
     page.evaluate("openPlaylist('Клипы')")
     page.wait_for_timeout(300)
     assert page.locator("#playlistSimilar").is_hidden()
+
+
+def test_year_in_review_opens_from_stats_and_pages_through(page, server):
+    """«Итоги года» (просьба 24.11.2026): вход в «Статистике», слайды листаются
+    кнопками и точками, Esc закрывает, баннер на главной — только в сезон."""
+    from adder import db
+
+    year = datetime.date.today().year
+    for day in range(1, 4):
+        db.db_exec(
+            "INSERT INTO plays(path, played_at, played_seconds, duration, skipped, source, mode) "
+            "VALUES(?, ?, 600, 12, 0, 'player', 'manual')",
+            (QUIET_PATH, f"{year}-02-0{day} 20:00:00"),
+        )
+    page.set_viewport_size({"width": 1266, "height": 760})
+    page.evaluate("switchView('viewStats')")
+    entry = page.get_by_role("button", name=re.compile(r"Итоги \d{4}"))
+    entry.click()
+    dialog = page.locator("#wrappedDialog")
+    page.wait_for_selector("#wrappedTrack .wrapped-slide[aria-roledescription='слайд']")
+    assert dialog.evaluate("d => d.open && d.matches(':modal')")
+    slides = page.locator("#wrappedTrack .wrapped-slide")
+    count = slides.count()
+    assert count >= 4
+    assert slides.first.get_attribute("aria-label") == f"1 из {count}"
+    assert "Quiet" in page.locator("#wrappedTrack").inner_text()
+    assert page.locator(".wrapped-prev").is_disabled()
+    page.locator(".wrapped-next").click()
+    page.wait_for_function(
+        "document.getElementById('wrappedStatus').textContent === 'Слайд 2 из ' + "
+        "document.getElementById('wrappedTrack').childElementCount"
+    )
+    assert (
+        page.locator("#wrappedMarkers .wrapped-dot").nth(1).get_attribute("aria-current") == "true"
+    )
+    page.locator("#wrappedMarkers .wrapped-dot").last.click()
+    page.wait_for_function("document.querySelector('.wrapped-next').disabled")
+    # Стрелки в окне — не перемотка трека: горячие клавиши молчат.
+    assert page.evaluate("hotkeyBlocked(document.activeElement)") is True
+    page.keyboard.press("Escape")
+    page.wait_for_function("!document.getElementById('wrappedDialog').open")
+    # Сезон баннера: 1 декабря — 15 января.
+    assert page.evaluate(
+        "wrappedSeason(new Date(2026, 11, 1)) && wrappedSeason(new Date(2027, 0, 15))"
+        " && !wrappedSeason(new Date(2027, 0, 16)) && !wrappedSeason(new Date(2026, 10, 30))"
+    )
+    assert page.evaluate("wrappedYearNow(new Date(2027, 0, 10))") == 2026
+    page.evaluate(
+        "localStorage.removeItem('wrappedBannerHidden'); wrappedSeason = () => true;"
+        "document.body.prepend(wrappedBanner())"
+    )
+    page.get_by_role("button", name="Скрыть баннер итогов").click()
+    assert page.evaluate("wrappedBanner()") is None

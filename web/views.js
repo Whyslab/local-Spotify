@@ -620,6 +620,9 @@ function renderLabHome(data) {
     /* «Продолжить» — первой строкой (аудит 19.11, идея 1): очередь и место в
      * треке сохраняются (restoreQueue), а до них было не добраться без
      * прокрутки. Рядом — свои подборки, «Любимое» первым. */
+    /* Декабрь и начало января — итоги года первыми (решение 24.11.2026). */
+    const banner = wrappedBanner();
+    if (banner) parts.push(banner);
     const going = continueSection();
     if (going) parts.push(going);
     const yours = yourPlaylistsSection();
@@ -882,13 +885,14 @@ function renderStats() {
     });
     /* Пока считается новый период, прежние цифры стоят: экран не мигает. */
     const shown = body.querySelector(".stats-content") || el("div", "stats-content", "", el("p", "empty", "Считаю…"));
-    put(body, seg, shown);
+    const entry = body.querySelector(".wrapped-entry") || wrappedEntry();
+    put(body, entry, seg, shown);
     fetch("/api/stats?period=" + statsPeriod, { headers: headers() })
         .then((r) => (r.ok ? r.json() : null))
         .catch(() => null)
         .then((data) => {
             if (ticket !== statsTicket || !body.isConnected) return;
-            put(body, seg, data ? statsContent(data) : el("div", "stats-content", "", el("p", "empty", "Не собралось.")));
+            put(body, entry, seg, data ? statsContent(data) : el("div", "stats-content", "", el("p", "empty", "Не собралось.")));
             if (typeof markPlayingRow === "function") markPlayingRow();
         });
 }
@@ -1668,3 +1672,290 @@ function similarNewRow(t, tracks, i, note) {
     };
     return row;
 }
+
+/* ---------------- Итоги года ----------------
+ *
+ * Как Spotify Wrapped: слайды по горизонтали в окне на весь экран (GET
+ * /api/stats/wrapped). Вход — в «Статистике» всегда, а на главной — баннер с
+ * 1 декабря по 15 января (до 15 января — итоги прошлого года).
+ *
+ * Карусель — родная прокрутка со scroll-snap; кнопки «назад/вперёд» и точки
+ * только просят прокрутку, а номер слайда, точки и объявление для чтения с
+ * экрана считаются из того, где прокрутка остановилась (scrollend, без него —
+ * пауза после scroll). Листать по кругу не нужно: это рассказ с концом. */
+const MONTHS_OF = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа",
+    "сентября", "октября", "ноября", "декабря"];
+const WRAPPED_BANNER_KEY = "wrappedBannerHidden";
+let wrappedData = null;
+let wrappedTarget = null;   // куда сейчас листают кнопкой или точкой
+let wrappedSettled = 0;
+
+function wrappedYearNow(now = new Date()) {
+    return now.getMonth() === 0 && now.getDate() <= 15 ? now.getFullYear() - 1 : now.getFullYear();
+}
+
+function wrappedSeason(now = new Date()) {
+    return now.getMonth() === 11 || (now.getMonth() === 0 && now.getDate() <= 15);
+}
+
+function dayWords(key) {
+    const [, m, d] = String(key || "").split("-").map(Number);
+    return m && d ? `${d} ${MONTHS_OF[m - 1]}` : "";
+}
+
+function hoursWord(seconds) {
+    const h = Math.round((seconds || 0) / 3600);
+    return h >= 1 ? plural(h, "час", "часа", "часов") : listenTime(seconds);
+}
+
+/* Баннер на главной: только в сезон и пока его не закрыли в этом сезоне. */
+function wrappedBanner() {
+    if (!wrappedSeason()) return null;
+    const year = wrappedYearNow();
+    try { if (localStorage.getItem(WRAPPED_BANNER_KEY) === String(year)) return null; } catch (e) { /* нет */ }
+    const close = button("icon-button wrapped-banner-close", () => {
+        try { localStorage.setItem(WRAPPED_BANNER_KEY, String(year)); } catch (e) { /* нет */ }
+        banner.remove();
+    }, document.createTextNode("×"));
+    close.setAttribute("aria-label", "Скрыть баннер итогов");
+    const banner = el("section", "o-section wrapped-banner", "",
+        el("div", "wrapped-banner-text", "",
+            el("strong", "", `Ваши итоги ${year}`),
+            el("span", "", "Сколько слушали, кого и что чаще всего")),
+        button("wrapped-banner-open", () => openWrapped(year), document.createTextNode("Смотреть")),
+        close);
+    return banner;
+}
+
+/* Вход в «Статистике» — всегда. */
+function wrappedEntry() {
+    const year = wrappedYearNow();
+    return button("wrapped-entry", () => openWrapped(year),
+        el("span", "wrapped-entry-title", `Итоги ${year}`),
+        el("span", "wrapped-entry-sub", "Артист и песня года, когда слушали"),
+        labIcon("chevron"));
+}
+
+async function openWrapped(year) {
+    const dialog = document.getElementById("wrappedDialog");
+    if (!dialog) return;
+    document.getElementById("wrappedTitle").textContent = `Итоги ${year}`;
+    const track = document.getElementById("wrappedTrack");
+    track.replaceChildren(el("div", "wrapped-slide is-loading", "", el("p", "wrapped-small", "Считаю…")));
+    document.getElementById("wrappedMarkers").replaceChildren();
+    if (!dialog.open) dialog.showModal();
+    let data = null;
+    try {
+        const r = await fetch("/api/stats/wrapped?year=" + encodeURIComponent(year), { headers: headers() });
+        if (r.ok) data = await r.json();
+    } catch (e) { /* ниже — «не собралось» */ }
+    if (!dialog.open) return;
+    wrappedData = data;
+    const slides = data ? wrappedSlides(data) : [];
+    if (!slides.length) {
+        track.replaceChildren(el("div", "wrapped-slide", "",
+            el("p", "wrapped-big", data ? "Пока пусто" : "Не собралось"),
+            el("p", "wrapped-small", data
+                ? `В ${year} году в этом плеере ещё ничего не слушали.`
+                : "Не удалось посчитать итоги — попробуйте ещё раз.")));
+        return;
+    }
+    slides.forEach((slide, i) => {
+        slide.setAttribute("role", "group");
+        slide.setAttribute("aria-roledescription", "слайд");
+        slide.setAttribute("aria-label", `${i + 1} из ${slides.length}`);
+    });
+    track.replaceChildren(...slides);
+    track.scrollLeft = 0;
+    const markers = document.getElementById("wrappedMarkers");
+    markers.replaceChildren(...slides.map((_, i) => {
+        const dot = button("wrapped-dot", () => wrappedGo(i));
+        dot.setAttribute("aria-label", `Слайд ${i + 1}`);
+        return dot;
+    }));
+    wrappedSettled = 0;
+    wrappedMark(0);
+    wrappedButtons(0);
+}
+
+function wrappedSlides(d) {
+    if (!d.plays) return [];
+    const slides = [];
+    const since = d.first && d.first > `${d.year}-01-01`
+        ? `С ${dayWords(d.first)} — с тех пор, как плеер ведёт журнал` : "";
+    slides.push(el("div", "wrapped-slide is-intro", "",
+        el("p", "wrapped-small", `Ваш ${d.year}`),
+        el("p", "wrapped-big", hoursWord(d.seconds)),
+        el("p", "wrapped-mid", "музыки"),
+        el("p", "wrapped-small", [
+            plural(d.plays, "прослушивание", "прослушивания", "прослушиваний"),
+            plural(d.tracks_count, "трек", "трека", "треков"),
+            plural(d.artists_count || 0, "артист", "артиста", "артистов"),
+        ].join(" · ")),
+        since ? el("p", "wrapped-note", since) : null));
+
+    const artists = d.top_artists || [];
+    if (artists.length) {
+        const a = artists[0];
+        slides.push(el("div", "wrapped-slide is-artist", "",
+            el("p", "wrapped-small", "Артист года"),
+            labArtistCover(a.name, a.cover, THUMB_LARGE, true),
+            el("p", "wrapped-big is-name", a.name),
+            el("p", "wrapped-small", `${listenTime(a.seconds)} · ${timesWord(a.plays)} · ${plural(a.tracks, "трек", "трека", "треков")}`),
+            button("wrapped-action", () => { document.getElementById("wrappedDialog").close(); openArtistPage(a.name); },
+                document.createTextNode("Открыть артиста"))));
+        const list = el("ol", "wrapped-list");
+        for (const x of artists) {
+            list.appendChild(el("li", "", "",
+                labArtistCover(x.name, x.cover, THUMB_SMALL, true),
+                el("span", "wrapped-list-text", "", el("span", "wrapped-list-title", x.name),
+                    el("span", "wrapped-list-sub", listenTime(x.seconds)))));
+        }
+        slides.push(el("div", "wrapped-slide", "", el("p", "wrapped-mid", "Чаще всего"), list));
+    }
+
+    const tracks = d.top_tracks || [];
+    if (tracks.length) {
+        const t = tracks[0];
+        const cover = el("div", "o-cover wrapped-cover");
+        loadTrackCover(cover, t.path, THUMB_LARGE);
+        const list = el("ol", "wrapped-list");
+        for (const x of tracks.slice(1)) {
+            list.appendChild(el("li", "", "",
+                el("span", "wrapped-list-text", "", el("span", "wrapped-list-title", x.title || ""),
+                    el("span", "wrapped-list-sub", `${x.artist || ""} · ${timesWord(x.plays)}`))));
+        }
+        slides.push(el("div", "wrapped-slide is-track", "",
+            el("p", "wrapped-small", "Песня года"),
+            cover,
+            el("p", "wrapped-big is-name", t.title || ""),
+            el("p", "wrapped-small", `${t.artist || ""} · ${timesWord(t.plays)}`),
+            list.childElementCount ? list : null));
+    }
+
+    const parts = d.parts_of_day || [];
+    const when = el("div", "wrapped-slide is-when", "", el("p", "wrapped-small", "Когда слушали"),
+        el("p", "wrapped-big", d.top_part || ""));
+    if (parts.length) {
+        const bars = el("div", "wrapped-parts");
+        for (const p of parts) {
+            const bar = el("div", "wrapped-part" + (p.name === d.top_part ? " is-top" : ""));
+            bar.style.setProperty("--share", String(p.share || 0));
+            bar.append(el("span", "wrapped-part-fill"), el("span", "wrapped-part-name", `${p.name} · ${Math.round((p.share || 0) * 100)} %`));
+            bars.appendChild(bar);
+        }
+        when.appendChild(bars);
+    }
+    if (d.top_day) when.appendChild(el("p", "wrapped-small", `Самый музыкальный день — ${dayWords(d.top_day.date)}: ${listenTime(d.top_day.seconds)}`));
+    if (d.streak && d.streak.days > 1) {
+        when.appendChild(el("p", "wrapped-small",
+            `Без перерыва — ${plural(d.streak.days, "день", "дня", "дней")} подряд, с ${dayWords(d.streak.from)} по ${dayWords(d.streak.to)}`));
+    }
+    if (d.on_repeat) {
+        when.appendChild(el("p", "wrapped-small",
+            `На повторе: «${d.on_repeat.title || ""}» — ${timesWord(d.on_repeat.plays)} за ${dayWords(d.on_repeat.date)}`));
+    }
+    slides.push(when);
+
+    const playlist = d.playlist || [];
+    const finale = el("div", "wrapped-slide is-finale", "",
+        el("p", "wrapped-small", `${d.year} — ${hoursWord(d.seconds)}`),
+        el("p", "wrapped-big", "Спасибо, что слушали"),
+        d.complete ? null : el("p", "wrapped-note", "Год ещё идёт — итоги дополняются каждый день"));
+    if (playlist.length) {
+        finale.appendChild(button("wrapped-action is-primary", () => {
+            document.getElementById("wrappedDialog").close();
+            playQueue(playlist, 0, "manual");
+        }, document.createTextNode(`Слушать лучшее ${d.year}`)));
+        finale.appendChild(el("p", "wrapped-note", `${plural(playlist.length, "трек", "трека", "треков")}, которые вы слушали чаще всего`));
+    }
+    slides.push(finale);
+    return slides;
+}
+
+/* Номер слайда — по тому, чей центр ближе к центру дорожки. */
+function wrappedCurrent() {
+    const track = document.getElementById("wrappedTrack");
+    const mid = track.scrollLeft + track.clientWidth / 2;
+    let best = 0, gap = Infinity;
+    [...track.children].forEach((slide, i) => {
+        const d = Math.abs(slide.offsetLeft + slide.offsetWidth / 2 - mid);
+        if (d < gap) { gap = d; best = i; }
+    });
+    return best;
+}
+
+function wrappedGo(i) {
+    const track = document.getElementById("wrappedTrack");
+    const slide = track.children[i];
+    if (!slide) return;
+    wrappedTarget = i;
+    wrappedMark(i);
+    const smooth = window.matchMedia("(prefers-reduced-motion: no-preference)").matches;
+    /* scrollBy по дорожке, не scrollIntoView: тот прокрутил бы и страницу. */
+    track.scrollBy({
+        left: slide.offsetLeft + slide.offsetWidth / 2 - (track.scrollLeft + track.clientWidth / 2),
+        behavior: smooth ? "smooth" : "auto",
+    });
+}
+
+function wrappedStep(step) {
+    const from = wrappedTarget !== null ? wrappedTarget : wrappedCurrent();
+    const count = document.getElementById("wrappedTrack").childElementCount;
+    wrappedGo(Math.max(0, Math.min(count - 1, from + step)));
+}
+
+function wrappedMark(i) {
+    document.querySelectorAll("#wrappedMarkers .wrapped-dot").forEach((dot, n) => {
+        if (n === i) dot.setAttribute("aria-current", "true");
+        else dot.removeAttribute("aria-current");
+    });
+}
+
+function wrappedButtons(i) {
+    const count = document.getElementById("wrappedTrack").childElementCount;
+    const prev = document.querySelector(".wrapped-prev");
+    const next = document.querySelector(".wrapped-next");
+    const focused = document.activeElement;
+    prev.disabled = i <= 0;
+    next.disabled = i >= count - 1;
+    /* Кнопка с фокусом стала недоступной — фокус на соседнюю, а не в никуда. */
+    if (focused === prev && prev.disabled && !next.disabled) next.focus();
+    else if (focused === next && next.disabled && !prev.disabled) prev.focus();
+}
+
+function wrappedSettle() {
+    const track = document.getElementById("wrappedTrack");
+    if (!track || !track.childElementCount) return;
+    const i = wrappedCurrent();
+    if (wrappedTarget !== null && wrappedTarget !== i) return;  // остановка прежней прокрутки
+    wrappedTarget = null;
+    wrappedMark(i);
+    wrappedButtons(i);
+    if (i !== wrappedSettled) {
+        wrappedSettled = i;
+        document.getElementById("wrappedStatus").textContent = `Слайд ${i + 1} из ${track.childElementCount}`;
+    }
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+    const track = document.getElementById("wrappedTrack");
+    if (!track) return;
+    document.querySelector(".wrapped-prev").addEventListener("click", () => wrappedStep(-1));
+    document.querySelector(".wrapped-next").addEventListener("click", () => wrappedStep(1));
+    let frame = 0;
+    track.addEventListener("scroll", () => {
+        if (wrappedTarget !== null || frame) return;
+        frame = requestAnimationFrame(() => { frame = 0; wrappedMark(wrappedCurrent()); });
+    }, { passive: true });
+    if ("onscrollend" in window) {
+        track.addEventListener("scrollend", wrappedSettle);
+    } else {
+        let timer = 0;
+        track.addEventListener("scroll", () => { clearTimeout(timer); timer = setTimeout(wrappedSettle, 120); }, { passive: true });
+    }
+    document.getElementById("wrappedDialog").addEventListener("close", () => {
+        wrappedTarget = null;
+        document.getElementById("wrappedStatus").textContent = "";
+    });
+});

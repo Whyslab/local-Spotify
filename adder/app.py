@@ -21,7 +21,17 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 
 import httpx
-from fastapi import Depends, FastAPI, File, HTTPException, Request, Security, UploadFile, status
+from fastapi import (
+    Depends,
+    FastAPI,
+    File,
+    HTTPException,
+    Query,
+    Request,
+    Security,
+    UploadFile,
+    status,
+)
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
@@ -3378,6 +3388,17 @@ def listening_stats(period: stats.Period = "month", authenticated: bool = Depend
     Даты — по часам этой машины, как и played_at в журнале.
     """
     return stats.summary(period, library.library_index(), datetime.date.today())
+
+
+@app.get("/api/stats/wrapped")
+def wrapped_stats(
+    year: int | None = Query(default=None, ge=2000, le=2100),
+    authenticated: bool = Depends(verify_token),
+):
+    """«Итоги года» (stats.wrapped). Без ``year`` — те, что сейчас уместны:
+    до 15 января — прошлого года."""
+    today = datetime.date.today()
+    return stats.wrapped(year or stats.wrapped_year(today), library.library_index(), today)
 
 
 @app.get("/api/plays/stats")

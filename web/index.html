@@ -711,6 +711,31 @@
   <dl id="keysList" class="keys-list"></dl>
 </dialog>
 
+<!-- «Итоги года» (web/views.js, GET /api/stats/wrapped): слайды по горизонтали. -->
+<dialog id="wrappedDialog" class="wrapped-dialog" aria-labelledby="wrappedTitle">
+  <div class="wrapped-head">
+    <h1 id="wrappedTitle">Итоги</h1>
+    <form method="dialog">
+      <button class="icon-button wrapped-close" aria-label="Закрыть итоги" autofocus>
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+      </button>
+    </form>
+  </div>
+  <section class="wrapped-carousel" aria-roledescription="карусель" aria-labelledby="wrappedTitle">
+    <div class="wrapped-controls">
+      <button type="button" class="icon-button wrapped-prev" aria-label="Предыдущий слайд">
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
+      </button>
+      <button type="button" class="icon-button wrapped-next" aria-label="Следующий слайд">
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg>
+      </button>
+    </div>
+    <div id="wrappedTrack" class="wrapped-track" tabindex="0" role="group" aria-label="Слайды"></div>
+    <p id="wrappedStatus" class="visually-hidden" role="status" aria-live="polite"></p>
+    <nav id="wrappedMarkers" class="wrapped-markers" aria-label="Выбрать слайд"></nav>
+  </section>
+</dialog>
+
 <script src="/static/app.js"></script>
 <script src="/static/player.js"></script>
 <script src="/static/mix.js"></script>

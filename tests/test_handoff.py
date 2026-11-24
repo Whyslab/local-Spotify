@@ -52,7 +52,9 @@ def test_a_new_queue_without_its_contents_is_asked_for(client):
 
 def test_continue_on_the_phone_pauses_the_laptop(client):
     report(client, LAPTOP, claim=True, queue=QUEUE)
-    assert client.post("/api/now/take", json={"device": PHONE, "label": "айфоне"}).status_code == 200
+    assert (
+        client.post("/api/now/take", json={"device": PHONE, "label": "айфоне"}).status_code == 200
+    )
     report(client, PHONE, label="айфоне", claim=True, queue=QUEUE, stamp=9)
     # Ноутбук ещё играет — следующий его отчёт: встань на паузу.
     answer = report(client, LAPTOP)

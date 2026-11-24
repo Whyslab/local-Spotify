@@ -595,7 +595,10 @@ def test_install_leaves_navidrome_alone_when_the_service_does_not_use_it():
     """С 24.11.2026 Navidrome выключен (пустой NAVIDROME_USER): установщик не
     должен ставить ему настройки, перезапускать его и открывать его порт."""
     install = (Path(__file__).resolve().parent.parent / "deploy" / "install.sh").read_text()
-    assert 'if command -v navidrome >/dev/null && [[ -n "$(env_value NAVIDROME_USER)" ]]; then' in install
+    assert (
+        'if command -v navidrome >/dev/null && [[ -n "$(env_value NAVIDROME_USER)" ]]; then'
+        in install
+    )
     port_rule = install.index('port 4533 proto tcp comment "Navidrome LAN"')
     guard = install.rindex('if [[ -n "$(env_value NAVIDROME_USER)" ]]; then', 0, port_rule)
     assert install[guard:port_rule].count("fi\n") == 0

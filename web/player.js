@@ -6198,7 +6198,8 @@ function hotkeyBlocked(el) {
     if (!el) return false;
     const tag = el.tagName;
     if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el.isContentEditable) return true;
-    return Boolean(el.closest && el.closest('[role="menu"], [role="listbox"], [role="radiogroup"], [role="tablist"]'));
+    /* Открыто окно («Итоги», подсказка клавиш) — стрелки листают его, а не трек. */
+    return Boolean(el.closest && el.closest('dialog[open], [role="menu"], [role="listbox"], [role="radiogroup"], [role="tablist"]'));
 }
 
 function focusSearch() {

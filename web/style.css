@@ -3324,3 +3324,142 @@ kbd {
 .similar-add { min-width: 44px; min-height: 44px; font-size: 22px; line-height: 1; padding: 0; }
 .similar-track.is-new { cursor: pointer; }
 .similar-track.is-new:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ---------------- Итоги года (web/views.js) ---------------- */
+.visually-hidden {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0;
+}
+/* Окно на весь экран: на телефоне это и есть «история», на ноутбуке — по центру. */
+.wrapped-dialog {
+    width: min(480px, 100vw);
+    height: min(860px, 100dvh);
+    max-width: 100vw;
+    max-height: 100dvh;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: #0b0b0f;
+    color: #fff;
+    overflow: hidden;
+}
+.wrapped-dialog[open] { display: flex; flex-direction: column; }
+@media (min-width: 600px) and (min-height: 700px) {
+    .wrapped-dialog { border-radius: 22px; }
+}
+/* Без этого прокрутка над подложкой или внутри окна листает страницу под ним. */
+.wrapped-dialog:modal, .keys-dialog:modal { overscroll-behavior: contain; }
+.wrapped-dialog::backdrop, .keys-dialog::backdrop { overflow: hidden; overscroll-behavior: contain; }
+.wrapped-dialog::backdrop { background: rgb(0 0 0 / 0.75); }
+.wrapped-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: calc(env(safe-area-inset-top) + 10px) 12px 6px 20px;
+}
+.wrapped-head h1 { margin: 0; font-size: 17px; font-weight: 650; }
+.wrapped-head form { margin: 0; }
+.wrapped-close, .wrapped-prev, .wrapped-next {
+    min-width: 44px; min-height: 44px; color: #fff; touch-action: manipulation;
+}
+.wrapped-carousel { position: relative; flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.wrapped-track {
+    flex: 1; display: flex; overflow-x: auto; overflow-y: hidden; min-height: 0;
+    scroll-snap-type: x mandatory;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+    touch-action: manipulation;
+}
+.wrapped-track::-webkit-scrollbar { display: none; }
+.wrapped-track:focus-visible { outline: 2px solid #fff; outline-offset: -4px; }
+@media (prefers-reduced-motion: no-preference) {
+    .wrapped-track { scroll-behavior: smooth; }
+}
+.wrapped-slide {
+    flex: 0 0 100%; scroll-snap-align: center;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
+    padding: 24px 28px 28px; text-align: center; overflow-y: auto; box-sizing: border-box;
+    background: linear-gradient(160deg, #3a1c71 0%, #d76d77 60%, #ffaf7b 100%);
+}
+.wrapped-slide:nth-child(5n + 2) { background: linear-gradient(160deg, #0f2027 0%, #2c5364 55%, #1db954 120%); }
+.wrapped-slide:nth-child(5n + 3) { background: linear-gradient(160deg, #1f1c2c 0%, #6a3093 60%, #a044ff 100%); }
+.wrapped-slide:nth-child(5n + 4) { background: linear-gradient(160deg, #141e30 0%, #243b55 50%, #f7971e 130%); }
+.wrapped-slide:nth-child(5n) { background: linear-gradient(160deg, #200122 0%, #6f0000 60%, #ff512f 120%); }
+.wrapped-slide.is-loading { background: #0b0b0f; }
+.wrapped-big {
+    margin: 0; font-size: clamp(38px, 11vw, 60px); font-weight: 800; line-height: 1.02;
+    letter-spacing: -0.03em; text-wrap: balance;
+}
+.wrapped-big.is-name { font-size: clamp(30px, 8.5vw, 44px); overflow-wrap: anywhere; }
+.wrapped-mid { margin: 0; font-size: 24px; font-weight: 700; }
+.wrapped-small { margin: 0; font-size: 16px; color: rgb(255 255 255 / 0.88); text-wrap: balance; }
+.wrapped-note { margin: 4px 0 0; font-size: 14px; color: rgb(255 255 255 / 0.72); text-wrap: balance; }
+.wrapped-slide .o-cover { width: min(210px, 52vw); height: auto; aspect-ratio: 1; margin: 6px 0; box-shadow: 0 18px 40px rgb(0 0 0 / 0.35); }
+.wrapped-slide .o-cover.is-round { border-radius: 50%; }
+.wrapped-cover { border-radius: 10px; overflow: hidden; background: rgb(255 255 255 / 0.12); }
+.wrapped-cover img, .wrapped-slide .o-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.wrapped-list {
+    list-style: none; counter-reset: place; margin: 8px 0 0; padding: 0;
+    width: 100%; max-width: 360px; display: grid; gap: 10px; text-align: left;
+}
+.wrapped-list li { counter-increment: place; display: flex; align-items: center; gap: 12px; }
+.wrapped-list li::before { content: counter(place); min-width: 1.4em; font-weight: 800; font-size: 20px; text-align: right; }
+.wrapped-slide.is-track .wrapped-list li::before { content: counter(place, decimal); }
+.wrapped-slide.is-track .wrapped-list { counter-reset: place 1; }
+.wrapped-list .o-cover { width: 44px; margin: 0; box-shadow: none; flex: none; }
+.wrapped-list-text { display: flex; flex-direction: column; min-width: 0; }
+.wrapped-list-title { font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wrapped-list-sub { font-size: 14px; color: rgb(255 255 255 / 0.75); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wrapped-parts { width: 100%; max-width: 340px; display: grid; gap: 8px; margin: 6px 0 4px; }
+.wrapped-part { position: relative; height: 34px; border-radius: 9px; background: rgb(255 255 255 / 0.14); overflow: hidden; }
+.wrapped-part-fill { position: absolute; inset: 0 auto 0 0; width: calc(var(--share) * 100%); background: rgb(255 255 255 / 0.35); }
+.wrapped-part.is-top .wrapped-part-fill { background: #fff; }
+.wrapped-part-name { position: relative; display: block; padding: 0 12px; line-height: 34px; text-align: left; font-weight: 600; mix-blend-mode: difference; }
+.wrapped-action {
+    margin-top: 10px; min-height: 44px; padding: 0 22px; border-radius: 22px; border: 1px solid rgb(255 255 255 / 0.6);
+    background: transparent; color: #fff; font: inherit; font-weight: 650; cursor: pointer; touch-action: manipulation;
+}
+.wrapped-action.is-primary { background: #fff; color: #000; border-color: #fff; }
+.wrapped-action:focus-visible, .wrapped-dot:focus-visible,
+.wrapped-close:focus-visible, .wrapped-prev:focus-visible, .wrapped-next:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+.wrapped-controls {
+    position: absolute; inset: 50% 0 auto 0; transform: translateY(-50%); z-index: 1;
+    display: flex; justify-content: space-between; padding: 0 4px; pointer-events: none;
+}
+.wrapped-controls button { pointer-events: auto; border-radius: 50%; background: rgb(0 0 0 / 0.25); }
+.wrapped-controls button:disabled { opacity: 0; pointer-events: none; }
+/* На телефоне листают пальцем — стрелки только мешали бы тексту. */
+@media (pointer: coarse) { .wrapped-controls { display: none; } }
+.wrapped-markers {
+    display: flex; justify-content: center; gap: 4px;
+    padding: 10px 0 calc(env(safe-area-inset-bottom) + 14px);
+}
+/* Точка 8 px, а нажимается 24: прозрачная рамка вокруг. */
+.wrapped-dot {
+    width: 24px; height: 24px; padding: 0; border: 8px solid transparent; border-radius: 50%;
+    background: rgb(255 255 255 / 0.4); background-clip: padding-box; cursor: pointer; touch-action: manipulation;
+}
+/* Текущая — не только цветом: шире (WCAG 1.4.1). */
+.wrapped-dot[aria-current="true"] { width: 40px; border-radius: 12px; background: #fff; background-clip: padding-box; }
+
+/* Вход в «Статистике» и баннер на главной. */
+.wrapped-entry {
+    display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 2px 12px; width: calc(100% - 32px);
+    margin: 4px 16px 18px; padding: 16px 16px 16px 18px; border: 0; border-radius: var(--r-card); text-align: left;
+    color: #fff; font: inherit; cursor: pointer;
+    background: linear-gradient(120deg, #3a1c71, #d76d77 70%, #ffaf7b);
+}
+.wrapped-entry-title { font-size: 20px; font-weight: 800; }
+.wrapped-entry-sub { grid-column: 1; font-size: 14px; color: rgb(255 255 255 / 0.85); }
+.wrapped-entry svg { grid-row: 1 / span 2; grid-column: 2; }
+.wrapped-entry:focus-visible, .wrapped-banner-open:focus-visible, .wrapped-banner-close:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
+.wrapped-banner {
+    display: flex; align-items: center; gap: 12px; margin: 10px 16px 0; padding: 14px 8px 14px 18px;
+    border-radius: var(--r-card); color: #fff; background: linear-gradient(120deg, #3a1c71, #d76d77 70%, #ffaf7b);
+}
+.wrapped-banner-text { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.wrapped-banner-text strong { font-size: 18px; }
+.wrapped-banner-text span { font-size: 14px; color: rgb(255 255 255 / 0.85); }
+.wrapped-banner-open {
+    min-height: 40px; padding: 0 16px; border: 0; border-radius: 20px; background: #fff; color: #000;
+    font: inherit; font-weight: 650; cursor: pointer;
+}
+.wrapped-banner-close { min-width: 40px; min-height: 40px; color: #fff; font-size: 22px; background: transparent; border: 0; cursor: pointer; }

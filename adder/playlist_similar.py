@@ -137,9 +137,7 @@ def from_outside(members: list[str], rows: list[dict], want: int = OUTSIDE_WANT)
     seeds = seed_artists(members, rows)
     if not seeds:
         return []
-    found = outside.candidates(
-        seeds, outside.library_keys(rows), want * 3, budget=OUTSIDE_BUDGET
-    )
+    found = outside.candidates(seeds, outside.library_keys(rows), want * 3, budget=OUTSIDE_BUDGET)
     found = outside.one_per_artist(found)[:want]
     if not found:
         return []

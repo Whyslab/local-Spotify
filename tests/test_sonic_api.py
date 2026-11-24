@@ -97,7 +97,11 @@ def test_partly_measured_library_stays_on_the_old_engine(client):
 
 def test_the_setting_brings_the_old_engine_back(client):
     _store_sound()
-    assert client.get("/api/settings").json() == {"outside_mix": "off", "smart_engine": "sonic", "shelf_playlists": False}
+    assert client.get("/api/settings").json() == {
+        "outside_mix": "off",
+        "smart_engine": "sonic",
+        "shelf_playlists": False,
+    }
     r = client.put("/api/settings", json={"smart_engine": "classic"})
     assert r.json() == {"outside_mix": "off", "smart_engine": "classic", "shelf_playlists": False}
     assert client.get("/api/shuffle").json()["engine"] == "classic"
