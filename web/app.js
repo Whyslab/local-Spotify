@@ -331,7 +331,7 @@ function switchView(id) {
     for (const section of document.querySelectorAll(".view")) {
         section.hidden = section.id !== id;
     }
-    if (id === "viewService") { libraryHealth(); blindScore(); }
+    if (id === "viewService") { libraryHealth(); blindScore(); loadShelfPlaylists(); }
     /* Поиск по всей фонотеке — при входе в раздел, а не на каждом опросе. */
     if (id === "viewAdd") libraryDuplicates();
     /* Вкладки и пункты левой панели подсвечивает views.js (syncNav): у
@@ -3377,3 +3377,41 @@ function initPanels() {
 }
 
 initPanels();
+
+/* ---------------- «★»-подборки ---------------- */
+
+/* Ночная выгрузка полок в подборки «★ …» (adder/shelves.py). Настройка общая
+ * для всех устройств — хранится на сервере. Выключение убирает и уже
+ * лежащие «★» (в корзину службы, как обычное удаление). */
+async function loadShelfPlaylists() {
+    const box = document.getElementById("shelfPlaylistsSwitch");
+    if (!box) return;
+    try {
+        const r = await fetch("/api/settings", { headers: headers() });
+        if (r.ok) box.checked = Boolean((await r.json()).shelf_playlists);
+    } catch (e) { /* без сети — как было */ }
+}
+
+async function setShelfPlaylists(on) {
+    const box = document.getElementById("shelfPlaylistsSwitch");
+    const note = document.getElementById("shelfPlaylistsNote");
+    box.disabled = true;
+    try {
+        const r = await fetch("/api/settings", {
+            method: "PUT",
+            headers: { ...headers(), "Content-Type": "application/json" },
+            body: JSON.stringify({ shelf_playlists: on }),
+        });
+        if (!r.ok) throw new Error("Ошибка " + r.status);
+        box.checked = Boolean((await r.json()).shelf_playlists);
+        note.textContent = on
+            ? "Включено: подборки «★» появятся этой ночью."
+            : "Выключено: «★» убраны и больше не появятся.";
+        if (typeof playlists === "function") playlists();
+    } catch (e) {
+        box.checked = !on;
+        note.textContent = "Не сохранилось — нет связи со службой.";
+    } finally {
+        box.disabled = false;
+    }
+}

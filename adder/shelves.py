@@ -236,8 +236,59 @@ def _moods(rows: list[dict], features: list[dict], limit: int, seed: int) -> lis
     return out
 
 
+# Выгружать ли полки файлами «★ …» каждую ночь. Выгрузка была для Amperfy
+# (подборка на телефоне — только файл). С 24.11.2026 Amperfy удалён, слушают
+# в своём плеере, где полки и так есть на главной, а «★» мешали в подборках и
+# возвращались после удаления. Поэтому по умолчанию выключено, включается в
+# «Настройках».
+EXPORT_KEY = "shelf_playlists"
+# Имена «★»-подборок, удалённых руками: ночью они больше не появляются.
+DROPPED_KEY = "shelf_playlists_dropped"
+
+
+def _setting(key: str) -> str | None:
+    try:
+        rows = db.db_query("SELECT value FROM settings WHERE key = ?", (key,))
+    except sqlite3.Error:
+        return None
+    return rows[0]["value"] if rows else None
+
+
+def export_enabled() -> bool:
+    return _setting(EXPORT_KEY) == "on"
+
+
+def set_export_enabled(enabled: bool) -> None:
+    db.db_exec(
+        "INSERT OR REPLACE INTO settings(key, value) VALUES(?, ?)",
+        (EXPORT_KEY, "on" if enabled else "off"),
+    )
+    if enabled:
+        # Включил снова — значит, хочет все полки, и удалённые раньше тоже.
+        db.db_exec("DELETE FROM settings WHERE key = ?", (DROPPED_KEY,))
+
+
+def dropped() -> set[str]:
+    raw = _setting(DROPPED_KEY)
+    return {name for name in (raw or "").split("\n") if name}
+
+
+def note_deleted(name: str) -> None:
+    """Подборку удалили руками. «★»-полка после этого не пересоздаётся."""
+    if not name.startswith(PREFIX):
+        return
+    names = dropped() | {name}
+    db.db_exec(
+        "INSERT OR REPLACE INTO settings(key, value) VALUES(?, ?)",
+        (DROPPED_KEY, "\n".join(sorted(names))),
+    )
+
+
 def export(limit: int = 40) -> list[dict]:
     """Записать полки главной в подборки `.m3u` и рассказать, что вышло.
+
+    Удалённые руками полки (`dropped`) пропускаются: подборка, которую убрали,
+    не должна возвращаться следующей ночью.
 
     Данные те же, что отдаёт `GET /api/home`: индекс фонотеки и измерения. Так
     выгруженная подборка совпадает с тем, что видно в панели, — иначе полка на
@@ -261,10 +312,21 @@ def export(limit: int = 40) -> list[dict]:
     )
 
     report = []
+    skip = dropped()
     for shelf, paths in shelves:
-        # В отчёте — имя подборки, а не полки: это то, что лежит в фонотеке и
-        # что человек увидит в Amperfy.
+        # В отчёте — имя подборки, а не полки: это то, что лежит в фонотеке.
         name = f"{PREFIX}{shelf}"
+        if name in skip:
+            report.append(
+                {
+                    "name": name,
+                    "count": 0,
+                    "written": False,
+                    "dropped": True,
+                    "reason": "удалена руками — не пишется",
+                }
+            )
+            continue
         alive = [path for path in paths if path in known]
         if len(alive) < MIN_TRACKS:
             logger.info("Полка %r пропущена: треков %d", name, len(alive))

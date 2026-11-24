@@ -2042,6 +2042,8 @@ def delete_playlist(name: str, authenticated: bool = Depends(verify_token)):
     """
     result = playlists.delete(name)
     covers.delete(name)
+    # Удалённая «★»-полка не должна вернуться следующей ночью.
+    shelves.note_deleted(name)
     result["navidrome"] = _sync_navidrome("delete", name)
     return result
 
@@ -2673,12 +2675,18 @@ class SettingsRequest(BaseModel):
     # Оба поля необязательны: меню меняет одно, второе не трогается.
     outside_mix: Literal["off", "few", "on"] | None = None
     smart_engine: Literal["sonic", "classic"] | None = None
+    # Ночная выгрузка полок в подборки «★ …» (adder/shelves.py).
+    shelf_playlists: bool | None = None
 
 
 @app.get("/api/settings")
 def get_settings(authenticated: bool = Depends(verify_token)):
     """Настройки, общие для всех устройств (хранятся на сервере)."""
-    return {"outside_mix": outside.mix_level(), "smart_engine": sonic.engine_level()}
+    return {
+        "outside_mix": outside.mix_level(),
+        "smart_engine": sonic.engine_level(),
+        "shelf_playlists": shelves.export_enabled(),
+    }
 
 
 @app.put("/api/settings")
@@ -2687,7 +2695,28 @@ def put_settings(req: SettingsRequest, authenticated: bool = Depends(verify_toke
         outside.set_mix_level(req.outside_mix)
     if req.smart_engine is not None:
         sonic.set_engine_level(req.smart_engine)
+    if req.shelf_playlists is not None:
+        shelves.set_export_enabled(req.shelf_playlists)
+        if not req.shelf_playlists:
+            _drop_shelf_playlists()
     return get_settings(authenticated)
+
+
+def _drop_shelf_playlists() -> list[str]:
+    """Выключили «★»-подборки — убрать и уже лежащие (в trash/, как обычное удаление)."""
+    gone = []
+    for item in playlists.listing():
+        name = item["name"]
+        if not name.startswith(shelves.PREFIX):
+            continue
+        try:
+            playlists.delete(name)
+        except HTTPException:
+            continue  # уже убрали с другого устройства
+        covers.delete(name)
+        _sync_navidrome("delete", name)
+        gone.append(name)
+    return gone
 
 
 class SmartShuffleRequest(BaseModel):

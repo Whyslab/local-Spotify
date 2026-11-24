@@ -61,7 +61,10 @@ def shelf_library(tmp_path, monkeypatch):
 
     rows = _index_rows()
     monkeypatch.setattr(library, "library_index", lambda: rows)
-    monkeypatch.setattr(db, "db_query", lambda sql, params=(): _features())
+    # Отвечает только на измерения: настройки (settings) — пустые, как в новой базе.
+    monkeypatch.setattr(
+        db, "db_query", lambda sql, params=(): _features() if "audio_features" in sql else []
+    )
     monkeypatch.setattr(shelves, "discover", _discover_returning(10))
     return config.LIBRARY
 
@@ -136,7 +139,9 @@ def test_a_measured_track_that_left_the_library_is_not_written(shelf_library, mo
         # сразу в три полки.
         {"path": ghost, "tempo": 200.0, "energy": 0.99, "brightness": 9000.0}
     ]
-    monkeypatch.setattr(db, "db_query", lambda sql, params=(): measured)
+    monkeypatch.setattr(
+        db, "db_query", lambda sql, params=(): measured if "audio_features" in sql else []
+    )
 
     shelves.export()
 
@@ -314,3 +319,43 @@ def test_favourites_without_a_readable_journal_come_from_the_library(monkeypatch
     rows = [{"path": f"Big/{i}.m4a", "artist": "Big"} for i in range(3)]
     rows += [{"path": "Small/0.m4a", "artist": "Small"}]
     assert shelves.favourite_artists(rows, top=2) == ["Big", "Small"]
+
+
+# ---------------------------------------------------------------------------
+# «★»-подборки по выбору (24.11.2026): по умолчанию выключены, удалённая
+# руками не возвращается.
+
+
+@pytest.fixture()
+def settings_db(tmp_path, monkeypatch):
+    from adder import runtime
+
+    monkeypatch.setattr(runtime, "DB_PATH", tmp_path / "adder.db")
+    db.db_init()
+    return tmp_path
+
+
+def test_shelf_playlists_are_off_by_default(settings_db):
+    assert shelves.export_enabled() is False
+    shelves.set_export_enabled(True)
+    assert shelves.export_enabled() is True
+    shelves.set_export_enabled(False)
+    assert shelves.export_enabled() is False
+
+
+def test_a_star_playlist_deleted_by_hand_is_not_written_again(shelf_library, monkeypatch):
+    monkeypatch.setattr(shelves, "dropped", lambda: {"★ В машину"})
+    report = {item["name"]: item for item in shelves.export()}
+    assert report["★ В машину"]["written"] is False
+    assert report["★ В машину"].get("dropped") is True
+    assert not (shelf_library / "★ В машину.m3u").exists()
+    assert (shelf_library / "★ На работу.m3u").exists()
+
+
+def test_only_star_playlists_are_remembered_as_dropped(settings_db):
+    shelves.note_deleted("★ Весёлое")
+    shelves.note_deleted("Мой микс")
+    assert shelves.dropped() == {"★ Весёлое"}
+    # Включил снова — хочет все полки, и удалённые раньше тоже.
+    shelves.set_export_enabled(True)
+    assert shelves.dropped() == set()

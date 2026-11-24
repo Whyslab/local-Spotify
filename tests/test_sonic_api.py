@@ -97,13 +97,13 @@ def test_partly_measured_library_stays_on_the_old_engine(client):
 
 def test_the_setting_brings_the_old_engine_back(client):
     _store_sound()
-    assert client.get("/api/settings").json() == {"outside_mix": "off", "smart_engine": "sonic"}
+    assert client.get("/api/settings").json() == {"outside_mix": "off", "smart_engine": "sonic", "shelf_playlists": False}
     r = client.put("/api/settings", json={"smart_engine": "classic"})
-    assert r.json() == {"outside_mix": "off", "smart_engine": "classic"}
+    assert r.json() == {"outside_mix": "off", "smart_engine": "classic", "shelf_playlists": False}
     assert client.get("/api/shuffle").json()["engine"] == "classic"
     # Одно поле меняет только себя.
     r = client.put("/api/settings", json={"outside_mix": "few"})
-    assert r.json() == {"outside_mix": "few", "smart_engine": "classic"}
+    assert r.json() == {"outside_mix": "few", "smart_engine": "classic", "shelf_playlists": False}
     assert client.put("/api/settings", json={"smart_engine": "x"}).status_code == 422
 
 
@@ -323,3 +323,22 @@ def test_top_up_never_leaves_the_playlist_and_keeps_the_label(client, monkeypatc
     own = [e["path"] for e in payload if not e.get("external")]
     assert set(own) <= core
     assert app_module._engine_used() == "sonic"
+
+
+def test_turning_star_playlists_off_removes_them_and_keeps_own(client):
+    """Выключил «★»-подборки — лежащие «★» уходят в корзину, свои остаются."""
+    (config.LIBRARY / "★ Весёлое.m3u").write_text("#EXTM3U\n", encoding="utf-8")
+    (config.LIBRARY / "Мой микс.m3u").write_text("#EXTM3U\n", encoding="utf-8")
+    client.put("/api/settings", json={"shelf_playlists": True})
+    r = client.put("/api/settings", json={"shelf_playlists": False})
+    assert r.json()["shelf_playlists"] is False
+    assert not (config.LIBRARY / "★ Весёлое.m3u").exists()
+    assert (config.LIBRARY / "Мой микс.m3u").exists()
+
+
+def test_a_deleted_star_playlist_is_remembered(client):
+    from adder import shelves
+
+    (config.LIBRARY / "★ Грустное.m3u").write_text("#EXTM3U\n", encoding="utf-8")
+    assert client.delete("/api/playlists/★ Грустное").status_code == 200
+    assert "★ Грустное" in shelves.dropped()

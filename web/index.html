@@ -383,6 +383,20 @@
         </label>
       </div>
 
+      <div class="card">
+        <div class="card-head">
+          <svg class="icon accent" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l2.6 5.6 6 .7-4.5 4.1 1.2 6L12 16.4 6.7 19.4l1.2-6L3.4 9.3l6-.7z"/></svg>
+          <h2>Подборки</h2>
+        </div>
+        <label class="switch-row">
+          <span>
+            <b>Подборки «★» по настроению</b>
+            <small id="shelfPlaylistsNote">Каждую ночь собирать «★ В машину», «★ Весёлое» и другие. Выключено — их нет, и удалённая «★» не вернётся. Плитки «Под настроение» на главной работают всегда.</small>
+          </span>
+          <input id="shelfPlaylistsSwitch" class="switch" type="checkbox" role="switch" onchange="setShelfPlaylists(this.checked)">
+        </label>
+      </div>
+
       <!-- Слепое сравнение: честный ответ на «умное перемешивание правда
            лучше?» (план, Q6). Какая очередь умная — знает только сервер. -->
       <div id="blindCard" class="card">

@@ -47,6 +47,15 @@ def main() -> int:
             f"См. scripts/README.md."
         ) from exc
 
+    if not shelves.export_enabled():
+        # Выключено в «Настройках» (по умолчанию с 24.11.2026). Остальное —
+        # миниатюры, релизы, подборка недели — нужно и без «★»-подборок.
+        print("Подборки «★» выключены в «Настройках» — не пишутся", flush=True)
+        print(f"Миниатюры: просмотрено треков {thumbs.prepare_library(config.LIBRARY)}", flush=True)
+        new_releases(library, releases)
+        weekly_selection(library, weekly)
+        return 0
+
     report = shelves.export()
     if not report:
         print(
@@ -71,7 +80,8 @@ def main() -> int:
     # Ни одной записанной полки — это уже неисправность, а не «просто нечего
     # показывать»: таймер должен пожаловаться в журнал, иначе подборки будут
     # молча стареть.
-    return 0 if written else 1
+    # Все полки удалены руками — это выбор, а не неисправность.
+    return 0 if written or all(item.get("dropped") for item in report) else 1
 
 
 def new_releases(library, releases) -> None:
