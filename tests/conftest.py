@@ -92,6 +92,10 @@ def _outside_stays_offline(monkeypatch, tmp_path, request):
     monkeypatch.setattr(artist_graph, "GRAPH_FILE", tmp_path / "artist-graph.json")
     sonic.forget()
     artist_graph.forget()
+    # «Под настроение» главной кэшируются в процессе — каждому тесту свои.
+    from adder import app as app_module
+
+    monkeypatch.setitem(app_module._MOOD_CACHE, "key", None)
     # И обход текстов в фоне — тоже сеть.
     from adder import lyrics
 

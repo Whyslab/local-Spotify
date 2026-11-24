@@ -176,6 +176,12 @@ async def lifespan(app: FastAPI):
     # «Клипы» — очередь на починку: версии ищутся и сравниваются в фоне.
     repair.start()
 
+    # Прогреть главную: первое открытие после перезапуска ждало сборки индекса
+    # фонотеки и полок (~6 с на ThinkPad). В фоне — запуск службы не ждёт.
+    # В тестах — нет: фоновый поток спорил бы с их подменами фонотеки.
+    if not runtime.under_test():
+        threading.Thread(target=_warm_home, name="warm-home", daemon=True).start()
+
     # Задачи, упавшие из-за ограничения YouTube, через час пробуют снова сами.
     threading.Thread(target=_auto_requeue_loop, name="auto-requeue", daemon=True).start()
 
@@ -2339,7 +2345,40 @@ def _queue_payload(queue: list[shuffle.Track], core: set[str] | None = None) -> 
     return out
 
 
+# «Под настроение» на главной считались заново при каждом её открытии:
+# 0,5 с на сервере (3,5 с после перезапуска) — почти всё время ответа
+# /api/home. Полки и так меняются раз в сутки (shelves.shelf_seed), поэтому
+# ответ живёт MOOD_CACHE_TTL секунд или до перемен: другие сутки полок,
+# фонотека изменилась (invalidate_library_index), другое умное, новые
+# измерения темпа или звучания.
+MOOD_CACHE_TTL = 15 * 60
+_MOOD_CACHE: dict[str, Any] = {"key": None, "at": 0.0, "value": None}
+_MOOD_CACHE_LOCK = threading.Lock()
+
+
 def _mood_shelves(features: list[dict]) -> list[dict]:
+    try:
+        measured = db.db_query("SELECT COUNT(*) AS n, MAX(analyzed_at) AS at FROM sonic")[0]
+        sound = (measured["n"], measured["at"])
+    except Exception:  # noqa: BLE001 — нет таблицы: звучания нет, ключ без него
+        sound = None
+    key = (
+        shelves.shelf_seed(),
+        library.index_generation(),
+        sonic.engine_level(),
+        len(features),
+        sound,
+    )
+    with _MOOD_CACHE_LOCK:
+        if _MOOD_CACHE["key"] == key and time.time() - _MOOD_CACHE["at"] < MOOD_CACHE_TTL:
+            return _MOOD_CACHE["value"]
+    value = _compute_mood_shelves(features)
+    with _MOOD_CACHE_LOCK:
+        _MOOD_CACHE.update({"key": key, "at": time.time(), "value": value})
+    return value
+
+
+def _compute_mood_shelves(features: list[dict]) -> list[dict]:
     """Подборки по настроению: по звучанию и в порядке нового умного, если
     звучание посчитано, иначе — как раньше, по темпу и громкости."""
     rows = library.library_index()
@@ -2377,6 +2416,13 @@ def _mood_shelves(features: list[dict]) -> list[dict]:
             }
         )
     return out
+
+
+def _warm_home() -> None:
+    try:
+        home(True)
+    except Exception:  # noqa: BLE001 — прогрев не обязателен, первая главная посчитает сама
+        logger.info("Прогрев главной не вышел", exc_info=True, extra={"task_id": "system"})
 
 
 @app.get("/api/home")

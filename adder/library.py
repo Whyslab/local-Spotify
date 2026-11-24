@@ -279,6 +279,11 @@ def library_index() -> list[dict]:
         return list(rows)
 
 
+def index_generation() -> int:
+    """Растёт при каждой перемене фонотеки через службу — ключ для кэшей поверх индекса."""
+    return int(_LIBRARY_INDEX["generation"])
+
+
 def invalidate_library_index() -> None:
     # Not under the lock on purpose: a writer must not wait for a rebuild. The
     # generation tells a rebuild in progress that it started too early.

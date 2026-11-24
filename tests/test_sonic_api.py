@@ -342,3 +342,26 @@ def test_a_deleted_star_playlist_is_remembered(client):
     (config.LIBRARY / "★ Грустное.m3u").write_text("#EXTM3U\n", encoding="utf-8")
     assert client.delete("/api/playlists/★ Грустное").status_code == 200
     assert "★ Грустное" in shelves.dropped()
+
+
+def test_home_moods_are_computed_once_until_the_library_changes(client, monkeypatch):
+    """«Под настроение» были 0,5 с при каждом открытии главной — теперь кэш."""
+    from adder import app as app_module
+
+    calls = []
+    real = app_module._compute_mood_shelves
+    monkeypatch.setattr(
+        app_module, "_compute_mood_shelves", lambda features: calls.append(1) or real(features)
+    )
+    app_module._mood_shelves([])
+    app_module._mood_shelves([])
+    assert len(calls) == 1
+    library.invalidate_library_index()
+    app_module._mood_shelves([])
+    assert len(calls) == 2
+    _store_sound()  # посчиталось звучание — полки другие
+    app_module._mood_shelves([])
+    assert len(calls) == 3
+    client.put("/api/settings", json={"smart_engine": "classic"})
+    app_module._mood_shelves([])
+    assert len(calls) == 4
