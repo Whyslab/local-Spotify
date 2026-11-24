@@ -1841,7 +1841,7 @@ function wrappedSlides(d) {
         for (const p of parts) {
             const bar = el("div", "wrapped-part" + (p.name === d.top_part ? " is-top" : ""));
             bar.style.setProperty("--share", String(p.share || 0));
-            bar.append(el("span", "wrapped-part-fill"), el("span", "wrapped-part-name", `${p.name} · ${Math.round((p.share || 0) * 100)} %`));
+            bar.append(el("span", "wrapped-part-name", `${p.name} · ${Math.round((p.share || 0) * 100)} %`), el("span", "wrapped-part-fill"));
             bars.appendChild(bar);
         }
         when.appendChild(bars);
@@ -1853,7 +1853,7 @@ function wrappedSlides(d) {
     }
     if (d.on_repeat) {
         when.appendChild(el("p", "wrapped-small",
-            `На повторе: «${d.on_repeat.title || ""}» — ${timesWord(d.on_repeat.plays)} за ${dayWords(d.on_repeat.date)}`));
+            `На повторе: «${d.on_repeat.title || ""}» — ${timesWord(d.on_repeat.plays)} за один день, ${dayWords(d.on_repeat.date)}`));
     }
     slides.push(when);
 
