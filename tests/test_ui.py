@@ -6315,6 +6315,9 @@ def test_a_shelf_menu_closes_when_the_page_scrolls_under_it(page):
     # Меню полосы висит поверх страницы; колесо мыши не даёт pointerdown, и
     # оно оставалось над чужими строками.
     page.set_viewport_size({"width": 1280, "height": 800})
+    # Своя главная подкладывается поверх настоящей: та, догрузившись позже
+    # (медленный CI 25.11), затирала её. Сначала настоящая дорисовывается.
+    page.wait_for_function("homeRendered !== null && homeLoading === null")
     page.evaluate("""async () => {
         const r = await fetch('/api/library?limit=50', { headers: headers() });
         const all = await r.json();
@@ -7120,7 +7123,11 @@ def test_monday_is_shown_as_favourites_first_with_hearts_in_rows(page, server):
     monday.write_text(QUIET_PATH + "\n", encoding="utf-8")
     try:
         page.evaluate("loadFavourites(); playlists(); true")
-        page.wait_for_function("knownPlaylists.length >= 2 && favouritePaths !== null")
+        # Ждём саму Monday в списке: «≥ 2 подборок» было и до этого запроса, и
+        # «Любимое» могло ответить раньше списка (CI 25.11: первой — «Вкладки»).
+        page.wait_for_function(
+            "knownPlaylists.some((p) => p.name === 'Monday') && favouritePaths !== null"
+        )
         assert page.evaluate("knownPlaylists[0].name") == "Monday"
         page.wait_for_function(
             "document.querySelector('#railPlaylists .rail-item b')?.textContent === 'Любимое'"
