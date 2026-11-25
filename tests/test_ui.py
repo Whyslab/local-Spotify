@@ -6674,6 +6674,33 @@ def test_a_slow_copy_of_a_page_file_is_not_replaced_by_another_version(page):
     assert text == "// saved copy"
 
 
+def test_a_page_file_comes_from_the_network_when_the_storage_is_slow(page):
+    """Айфон 25.11: хранилище при запуске отвечало дольше 300 мс, сеть — за 20,
+    и каждый файл страницы ждал фору копии. Подтверждённая версия из сети
+    берётся сразу, а в хранилище не переписывается, раз копия там есть."""
+    worker = _controlled_by_worker(page)
+    url = page.evaluate("document.querySelector('script[src*=\"/static/app.js\"]').src")
+    assert page.evaluate(
+        "(u) => caches.open('shell-v1').then((c) => c.match(u)).then(Boolean)", url
+    )
+    worker.evaluate(_SLOW_STORAGE, 1500)
+    worker.evaluate(
+        """() => {
+            self.__puts = 0;
+            const put = Cache.prototype.put;
+            Cache.prototype.put = function (...args) { self.__puts += 1; return put.apply(this, args); };
+        }"""
+    )
+    took = page.evaluate(
+        """(u) => { const t0 = performance.now();
+            return fetch(u, { cache: 'no-store' }).then((r) => r.text()).then(() => performance.now() - t0); }""",
+        url,
+    )
+    assert took < 1000, took  # не ждали копию 1,5 с
+    page.wait_for_timeout(2000)  # медленный поиск копии кончился
+    assert worker.evaluate("self.__puts") == 0
+
+
 def test_a_late_answer_beats_a_slow_copy_of_a_list(page):
     """Сеть не успела за 2,5 с, а поиск копии в хранилище идёт ещё дольше:
     пришедший за это время свежий ответ лучше старой копии."""

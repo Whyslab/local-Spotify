@@ -324,8 +324,12 @@ async function remember(cacheName, request, copy, dropOldVersions) {
  * Сеть в этой гонке считается, только если сервер подтвердил отпечаток
  * (immutable, StaticCaching в app.py): после выкатки старый ?v= приходит с
  * новым содержимым и no-cache — взяв его, страница собралась бы из файлов
- * разных версий, а запись под старым ключом стёрла бы новую копию. */
-const COPY_HEAD_START_MS = 300;
+ * разных версий, а запись под старым ключом стёрла бы новую копию.
+ *
+ * 50 мс, а не 300: на айфоне хранилище при запуске отвечало дольше 300 мс,
+ * а сеть — за 20, и каждый файл ждал фору впустую (журнал 25.11:
+ * app.js:slow306). Цена — ~250 КБ файлов по сети на холодный запуск. */
+const COPY_HEAD_START_MS = 50;
 async function cacheFirst(event, request) {
     const started = Date.now();
     const copy = findCopy(request, SHELL);
@@ -334,8 +338,12 @@ async function cacheFirst(event, request) {
     const raw = fetch(request);
     const confirmed = raw.then((response) => {
         if (!isConfirmedVersion(response)) return undefined;
+        /* В хранилище — только если копии там правда нет: на айфоне сеть
+         * выигрывает почти всегда, и каждый запуск переписывал бы все файлы
+         * страницы (с обходом ключей) в и без того медленное хранилище. */
         const kept = response.clone();
-        try { event.waitUntil(remember(SHELL, request, kept, true)); } catch (e) { /* без копии */ }
+        const saved = copy.then((found) => (found ? undefined : remember(SHELL, request, kept, true)));
+        try { event.waitUntil(saved); } catch (e) { /* без копии */ }
         return response;
     }, () => undefined);
     const winner = await firstFound([copy, confirmed]).catch(() => undefined);
