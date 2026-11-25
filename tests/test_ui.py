@@ -3579,6 +3579,10 @@ def test_search_groups_computed_once(page):
     """Each letter grouped the whole library into artists and albums again,
     with a Russian collation sort: on a phone that was most of the budget.
     One index, one grouping."""
+    # Главная достраивается по labIndex() и группирует те же строки: пришла её
+    # выборка после подмены ниже — и счёт 2 вместо 1 (CI 25.11). Сначала она
+    # дорисовывается целиком, потом подмена.
+    page.wait_for_function("homeRendered !== null && homeLoading === null")
     page.evaluate("labIndex().then(() => true)")  # the page's own load is over
     page.evaluate(
         """(rows) => {
