@@ -130,8 +130,32 @@ def _get(client: httpx.Client, url: str, params: dict) -> list:
     return body.get("data") or []
 
 
+# Кого Deezer нашёл по имени — в памяти: про одного артиста спрашивают и
+# похожих, и популярные треки, и каждый вопрос начинался с того же поиска
+# (24.11.2026: 81 поиск из 162 запросов одного перемешивания). Неделю: имя у
+# Deezer само не переедет, а служба живёт дольше.
+FOUND_TTL = 7 * 24 * 3600
+FOUND_MAX = 5000
+_found: dict[str, tuple[float, dict | None]] = {}
+_found_lock = threading.Lock()
+
+
 def _find_artist(client: httpx.Client, name: str) -> dict | None:
     """Артист Deezer по имени. None — «не знает такого», иначе `_Unreachable`."""
+    key = name.strip().lower()
+    with _found_lock:
+        known = _found.get(key)
+    if known is not None and time.time() - known[0] < FOUND_TTL:
+        return known[1]
+    artist = _search_artist(client, name)
+    with _found_lock:
+        if len(_found) >= FOUND_MAX:
+            _found.clear()
+        _found[key] = (time.time(), artist)
+    return artist
+
+
+def _search_artist(client: httpx.Client, name: str) -> dict | None:
     candidates = _get(client, SEARCH, {"q": name, "limit": 5})
     if not candidates:
         return None
@@ -194,6 +218,27 @@ def _ask_top(name: str, limit: int) -> list[dict] | None:
         return None
 
 
+# Сбой связи про артиста помнится несколько минут, в памяти: в кэш его
+# класть нельзя (завтра ответят), но и главная не должна на каждом заходе
+# ждать лежащий Deezer по 8 с на артиста (рецензия 24.11.2026).
+DOWN_SECONDS = 300
+_down: dict[tuple[str, str], float] = {}
+_down_lock = threading.Lock()
+
+
+def _recently_down(kind: str, name: str) -> bool:
+    with _down_lock:
+        at = _down.get((kind, name.lower()))
+    return at is not None and time.monotonic() - at < DOWN_SECONDS
+
+
+def _note_down(kind: str, name: str) -> None:
+    with _down_lock:
+        if len(_down) > 2000:
+            _down.clear()
+        _down[(kind, name.lower())] = time.monotonic()
+
+
 def similar_artists(artist: str, cache_dir: Path, limit: int = 12) -> list[str]:
     """Кого Deezer считает похожим. Пустой список — значит не знает."""
     name = primary(artist)
@@ -204,10 +249,13 @@ def similar_artists(artist: str, cache_dir: Path, limit: int = 12) -> list[str]:
     cached = _recall(slot, "names")
     if cached is not None:
         return cached
+    if _recently_down("", name):
+        return []
 
     names = _ask(name, limit)
     if names is None:
         # Сеть молчит. Не запоминаем: это не про этого артиста.
+        _note_down("", name)
         return []
 
     _remember(slot, cache_dir, name, "names", names)
@@ -276,6 +324,13 @@ def artist_picture(artist: str, cache_dir: Path) -> str:
     return found[0] if found else ""
 
 
+def cached(artist: str, cache_dir: Path, kind: str = "") -> bool:
+    """Есть ли ответ в кэше: ``kind`` "" — похожие, "top2:" — популярные треки."""
+    name = primary(artist)
+    field = "tracks" if kind == "top2:" else "names"
+    return len(name) >= 2 and _recall(_slot(cache_dir, name, kind=kind), field) is not None
+
+
 def top_tracks(artist: str, cache_dir: Path, limit: int = 5) -> list[dict]:
     """Популярные треки артиста: `[{"artist", "title", "duration", "album", "cover"}]`.
 
@@ -293,9 +348,12 @@ def top_tracks(artist: str, cache_dir: Path, limit: int = 5) -> list[dict]:
     cached = _recall(slot, "tracks")
     if cached is not None:
         return cached
+    if _recently_down("top2:", name):
+        return []
 
     tracks = _ask_top(name, limit)
     if tracks is None:
+        _note_down("top2:", name)
         return []
 
     _remember(slot, cache_dir, name, "tracks", tracks)

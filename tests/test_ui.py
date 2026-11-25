@@ -6597,6 +6597,109 @@ def test_the_library_opens_from_the_saved_copy_while_the_network_is_slow(page):
     assert titles and not [t for t in titles if "Song " in t], titles
 
 
+_SLOW_STORAGE = """(ms) => {
+    const match = Cache.prototype.match;
+    Cache.prototype.match = function (...args) {
+        return new Promise((done) => setTimeout(() => done(match.apply(this, args)), ms));
+    };
+}"""
+
+_SLOW_NETWORK = """([part, ms]) => {
+    const real = self.fetch;
+    self.fetch = (request, options) => {
+        if (!String(request.url || request).includes(part)) return real(request, options);
+        return new Promise((done) => setTimeout(() => done(real(request, options)), ms));
+    };
+}"""
+
+
+def test_lyrics_of_a_downloaded_track_open_without_the_network(page):
+    """Текст скачанного трека offline.js кладёт к обложкам (offline-covers-v1):
+    без сети worker обязан найти его и там, даже если онлайн текст не открывали."""
+    worker = _controlled_by_worker(page)
+    page.evaluate(
+        """() => caches.open('offline-covers-v1').then((c) => c.put(
+            '/api/lyrics?path=' + encodeURIComponent('X/Y.m4a'),
+            new Response(JSON.stringify({ found: true, plain: 'saved words' }),
+                { headers: { 'Content-Type': 'application/json' } })))"""
+    )
+    worker.evaluate(
+        """() => {
+            const real = self.fetch;
+            self.fetch = (request, options) => String(request.url || request).includes('/api/lyrics')
+                ? Promise.reject(new TypeError('offline')) : real(request, options);
+        }"""
+    )
+    body = page.evaluate(
+        "fetch('/api/lyrics?path=' + encodeURIComponent('X/Y.m4a'), { headers: headers() })"
+        ".then((r) => r.json())"
+    )
+    assert body == {"found": True, "plain": "saved words"}
+
+
+def test_a_slow_copy_of_a_page_file_is_not_replaced_by_another_version(page):
+    """После выкатки сервер отдаёт старый ?v= с новым содержимым и no-cache.
+    Медленное хранилище не повод взять его: страница собралась бы из файлов
+    разных версий. Сеть обгоняет копию, только если версия подтверждена."""
+    worker = _controlled_by_worker(page)
+    page.evaluate(
+        """() => caches.open('shell-v1').then((c) => c.put('/static/app.js?v=old-version',
+            new Response('// saved copy', { headers: { 'Content-Type': 'text/javascript' } })))"""
+    )
+    worker.evaluate(_SLOW_STORAGE, 1500)
+    text = page.evaluate("fetch('/static/app.js?v=old-version').then((r) => r.text())")
+    assert text == "// saved copy"
+
+
+def test_a_late_answer_beats_a_slow_copy_of_a_list(page):
+    """Сеть не успела за 2,5 с, а поиск копии в хранилище идёт ещё дольше:
+    пришедший за это время свежий ответ лучше старой копии."""
+    worker = _controlled_by_worker(page)
+    page.evaluate(
+        """() => caches.open('api-v1').then((c) => c.put('/api/home?probe=1',
+            new Response(JSON.stringify({ stale: true }), { headers: { 'Content-Type': 'application/json' } })))"""
+    )
+    worker.evaluate(_SLOW_STORAGE, 4000)
+    worker.evaluate(_SLOW_NETWORK, ["/api/home", 3000])
+    # Свежий ответ ложится в хранилище, и медленная копия к своему концу уже
+    # он же: отличает только время — 3 с от сети, а не 2,5 + 4 через копию.
+    answer = page.evaluate(
+        """(() => { const t0 = performance.now();
+            return fetch('/api/home?probe=1', { headers: headers() }).then(async (r) =>
+                ({ saved: r.headers.get('X-Saved-Copy'), body: await r.json(),
+                   ms: performance.now() - t0 })); })()"""
+    )
+    assert answer["saved"] is None and "stale" not in answer["body"]
+    assert answer["ms"] < 5000, answer["ms"]  # через копию было бы 2,5 + 4 с
+
+
+def test_a_list_from_the_copy_is_marked_and_an_edit_waits_for_the_network(page):
+    """Главная из копии помечена (app.js перечитает её, когда сеть проснётся);
+    чтение перед правкой подборки (X-Fresh) копию через 2,5 с не берёт."""
+    worker = _controlled_by_worker(page)
+    page.evaluate(
+        """() => caches.open('api-v1').then((c) => Promise.all([
+            c.put('/api/home?probe=1', new Response(JSON.stringify({ stale: true }),
+                { headers: { 'Content-Type': 'application/json' } })),
+            c.put('/api/playlists/Probe/tracks', new Response(JSON.stringify({ stale: true }),
+                { headers: { 'Content-Type': 'application/json' } })),
+        ]))"""
+    )
+    worker.evaluate(_SLOW_NETWORK, ["/api/", 4000])
+    answer = page.evaluate(
+        """Promise.all([
+            fetch('/api/home?probe=1', { headers: headers() }).then(async (r) =>
+                ({ saved: r.headers.get('X-Saved-Copy'), body: await r.json() })),
+            fetch('/api/playlists/Probe/tracks', { headers: { ...headers(), 'X-Fresh': '1' } })
+                .then(async (r) => ({ saved: r.headers.get('X-Saved-Copy'), status: r.status,
+                    body: await r.text() })),
+        ])"""
+    )
+    home, edit = answer
+    assert home == {"saved": "1", "body": {"stale": True}}
+    assert edit["saved"] is None and "stale" not in edit["body"], edit
+
+
 def test_a_saved_copy_with_old_tags_gives_way_to_the_server(page):
     """Пути в копии те же, а теги на ноутбуке переписаны: сравнение по путям
     оставило бы старые названия до следующего добавленного трека. И замер

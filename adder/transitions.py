@@ -260,8 +260,17 @@ def _render(job: dict) -> dict:
     return answer
 
 
+def _mtime(path: Path) -> float:
+    # Файл могли удалить между glob и stat — тогда он «самый старый»: иначе
+    # исключение здесь объявляло неудачной только что собранную связку.
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
 def _prune() -> None:
-    plans = sorted(runtime.TRANSITIONS_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime)
+    plans = sorted(runtime.TRANSITIONS_DIR.glob("*.json"), key=_mtime)
     for old in plans[:-KEEP] if len(plans) > KEEP else []:
         old.with_suffix(".flac").unlink(missing_ok=True)
         old.unlink(missing_ok=True)

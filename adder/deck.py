@@ -537,13 +537,15 @@ def heard(
             if own_round and source_round == state["round"] + 1 and in_next:
                 state = _roll(state, None, None, rng, now)
                 rolled = True
-            elif not (own_round and source_round == state["round"]):
+            elif (
+                not (own_round and source_round == state["round"])
+                and started + played_seconds < state["started_at"]
+            ):
                 # Без метки или с меткой другого круга решает время: кончилось до
                 # начала круга — это про прошлый круг (пришло без сети). Кончилось
                 # позже — услышано сейчас: второе устройство доигрывает свои
                 # треки прошлого круга, а этот уже начался.
-                if started + played_seconds < state["started_at"]:
-                    continue
+                continue
             if _mark(state, path, skipped, played_seconds, rng) or rolled:
                 _save(key, state)
                 changed.append(key)

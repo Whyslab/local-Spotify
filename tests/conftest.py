@@ -92,6 +92,15 @@ def _outside_stays_offline(monkeypatch, tmp_path, request):
     monkeypatch.setattr(artist_graph, "GRAPH_FILE", tmp_path / "artist-graph.json")
     sonic.forget()
     artist_graph.forget()
+    # Найденные Deezer артисты помнятся в процессе — каждому тесту свои.
+    from adder import similar, sources
+
+    monkeypatch.setattr(similar, "_found", {})
+    monkeypatch.setattr(similar, "_down", {})
+    # Поиск YouTube внутри процесса — сеть мимо run_yt_dlp, который тесты
+    # подменяют сами; выдача помнится 10 минут — каждому тесту своя.
+    monkeypatch.setattr(sources, "_search_in_process", lambda query, count: None)
+    monkeypatch.setattr(sources, "_search_cache", {})
     # «Под настроение» главной кэшируются в процессе — каждому тесту свои.
     from adder import app as app_module
 

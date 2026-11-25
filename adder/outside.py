@@ -117,7 +117,13 @@ SEED_LIMIT = 12
 NEIGHBOURS_PER_SEED = 6
 # Сколько секунд перемешивание готово ждать Deezer. Что не успело, досчитается
 # в фоне и попадёт в кэш — к следующему разу.
-CANDIDATE_BUDGET = 6.0
+CANDIDATE_BUDGET = 3.0
+# Ночной прогрев кэша (warm_cache): сколько минут можно спрашивать Deezer.
+# Юнит music-shelves: 30 мин на всё; экспорт ~1 мин, граф артистов — до 12 и
+# ещё минуты на последнем артисте. Шесть минут оставляют запас (рецензия 25.11).
+WARM_BUDGET = 6 * 60
+# Подряд столько неотвеченных — Deezer лежит или квота кончилась: хватит.
+WARM_FAILURES = 5
 
 _KEY = re.compile(r"^[0-9a-f]{16}$")
 
@@ -337,6 +343,62 @@ def _gather(names: list[str], ask, budget_end: float) -> dict[str, list]:
         if future.done() and not future.cancelled() and future.exception() is None:
             answers[name] = future.result() or []
     return answers
+
+
+def warm_cache(rows: list[dict], budget: float = WARM_BUDGET) -> dict:
+    """Ночью — заранее спросить Deezer про артистов фонотеки и их соседей.
+
+    Умное перемешивание с подмешиванием нового ждало Deezer до 6 с на каждое
+    нажатие (24.11.2026: 162 запроса за одно перемешивание): кэш похожих
+    наполнялся только тем, что успело ответить днём. Здесь — сначала похожие
+    для каждого артиста фонотеки (чаще встречающиеся — первыми), потом
+    популярные треки его и соседей, сколько успеем за ``budget`` секунд. Что
+    уже в кэше, не переспрашивается.
+    """
+    end = time.monotonic() + budget
+    cache = _similar_cache()
+    counts: dict[str, int] = {}
+    shown: dict[str, str] = {}
+    for row in rows:
+        name = similar.primary(row.get("artist") or "")
+        if len(name) < 2:
+            continue
+        counts[name.lower()] = counts.get(name.lower(), 0) + 1
+        shown.setdefault(name.lower(), name)
+    order = sorted(counts, key=lambda k: (-counts[k], k))
+    queue: list[tuple[str, str]] = [(shown[k], "") for k in order]
+    seen: set[tuple[str, str]] = set()
+    asked = failed = streak = 0
+    complete = True
+    i = 0
+    while i < len(queue):
+        name, kind = queue[i]
+        i += 1
+        if (name.lower(), kind) in seen:
+            continue
+        seen.add((name.lower(), kind))
+        known = similar.cached(name, cache, kind)
+        if not known and time.monotonic() > end:
+            complete = False
+            break
+        if kind == "":
+            neighbours = similar.similar_artists(name, cache)
+            queue.append((name, "top2:"))
+            queue.extend((other, "top2:") for other in neighbours[:NEIGHBOURS_PER_SEED])
+        elif not known:
+            similar.top_tracks(name, cache, limit=5)
+        if known:
+            continue
+        asked += 1
+        if similar.cached(name, cache, kind):
+            streak = 0
+        else:
+            failed += 1
+            streak += 1
+            if streak >= WARM_FAILURES:
+                complete = False
+                break
+    return {"asked": asked, "failed": failed, "complete": complete}
 
 
 def candidates(

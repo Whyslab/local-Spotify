@@ -5603,7 +5603,7 @@ async function addToPlaylist(box, card, note, cancel, name, track) {
     try {
         await flushSettled();  // иначе её запись и эта обгоняют друг друга
         const url = "/api/playlists/" + encodeURIComponent(name) + "/tracks";
-        const got = await fetch(url, { headers: headers() });
+        const got = await fetch(url, { headers: { ...headers(), "X-Fresh": "1" } });  // свежая ревизия, см. editFavourites
         if (!got.ok) throw new Error("Ошибка " + got.status);
         const pl = withPendingEdit(await got.json());
 
@@ -5757,7 +5757,30 @@ let favouritePaths = null;  // Set путей Monday; null — ещё не зн�
 let favouritesRevision = null;  // версия, с которой они прочитаны
 let favouriteBusy = false;
 
-async function loadFavourites() {
+/* Одно чтение за раз: при запуске его просили и DOMContentLoaded, и список
+ * подборок (favouritesListed — версии ещё нет), и Monday (~1100 записей)
+ * качалась дважды, мешая первому экрану. */
+/* again === true — прочесть заново, даже если чтение уже идёт (вход с новым
+ * ключом: идущее чтение было без него). Из DOMContentLoaded сюда приходит
+ * событие — оно не «заново». */
+let favouritesLoading = null;
+let favouritesAgain = false;
+function loadFavourites(again) {
+    if (favouritesLoading) {
+        if (again === true) favouritesAgain = true;
+        return favouritesLoading;
+    }
+    favouritesLoading = readFavourites().finally(() => {
+        favouritesLoading = null;
+        if (favouritesAgain) {
+            favouritesAgain = false;
+            loadFavourites();
+        }
+    });
+    return favouritesLoading;
+}
+
+async function readFavourites() {
     if (favouriteBusy) return;  // запись сама скажет, что вышло
     try {
         const r = await fetch("/api/playlists/" + encodeURIComponent(FAVOURITES) + "/tracks", { headers: headers() });
@@ -5857,7 +5880,10 @@ function sayFavourite(text, undo) {
  * было. Возвращает { result, before } или null, если Monday нет. */
 async function editFavourites(track, change) {
     await flushSettled();  // иначе отложенная правка и эта обгоняют друг друга
-    const got = await fetch("/api/playlists/" + encodeURIComponent(FAVOURITES) + "/tracks", { headers: headers() });
+    /* X-Fresh: sw.js тогда ждёт сеть полный срок, а не отдаёт копию через
+     * 2,5 с — правке нужна свежая ревизия. */
+    const got = await fetch("/api/playlists/" + encodeURIComponent(FAVOURITES) + "/tracks",
+        { headers: { ...headers(), "X-Fresh": "1" } });
     if (got.status === 404) { favouritePaths = null; return null; }
     if (!got.ok) throw new Error("Ошибка " + got.status);
     const pl = withPendingEdit(await got.json());

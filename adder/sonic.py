@@ -99,13 +99,28 @@ RU = "ru"
 OTHER = "other"
 
 
+# Буквы кириллического блока U+0400–U+04FF; U+0482–U+0489 — знак тысяч и
+# диакритика, не буквы (isalpha() у них ложно).
+_CYRILLIC_LETTER = re.compile("[\u0400-\u0481\u048a-\u04ff]")
+
+
 def is_cyrillic_text(text: str) -> float:
-    """Доля кириллицы среди букв строки (0, если букв нет)."""
-    letters = [ch for ch in text if ch.isalpha()]
+    """Доля кириллицы среди букв строки (0, если букв нет).
+
+    Счёт — встроенными map и re, а не перебором символов в Python: тексты всей
+    фонотеки — 2,4 млн знаков, и перебор стоил 2 с на каждую пересборку
+    (профиль 24.11.2026)."""
+    letters = sum(map(str.isalpha, text))
     if not letters:
         return 0.0
-    cyr = sum(1 for ch in letters if "Ѐ" <= ch <= "ӿ")
-    return cyr / len(letters)
+    return len(_CYRILLIC_LETTER.findall(text)) / letters
+
+
+def text_verdict(text: str) -> str | None:
+    """Язык по тексту песни; None — текста мало (меньше 40 букв) или нет."""
+    if text and sum(map(str.isalpha, text)) >= 40:
+        return RU if is_cyrillic_text(text) >= 0.3 else OTHER
+    return None
 
 
 _BRACKETS = re.compile(r"[(\[][^)\]]*[)\]]")
@@ -117,8 +132,15 @@ def _bare_title(title: str) -> str:
     return _BRACKETS.sub(" ", title).strip() or title
 
 
-def languages(rows: Iterable[dict], lyrics: Callable[[str], str] | None = None) -> dict[str, str]:
+def languages(
+    rows: Iterable[dict],
+    lyrics: Callable[[str], str] | None = None,
+    verdict_of: Callable[[str], str | None] | None = None,
+) -> dict[str, str]:
     """Язык каждого трека: ``ru`` или ``other``.
+
+    ``verdict_of`` — готовый вывод по тексту для пути (``text_verdict`` от
+    текста песни), вместо ``lyrics``: так служба не считает буквы заново.
 
     По порядку доверия: текст песни (кэш LRCLIB), кириллица в названии,
     большинство треков того же артиста. Латинские названия у русского рэпа —
@@ -130,11 +152,11 @@ def languages(rows: Iterable[dict], lyrics: Callable[[str], str] | None = None) 
     by_artist: dict[str, list[str]] = {}
     for row in rows:
         path = row["path"]
-        text = lyrics(path) if lyrics else ""
-        verdict: str | None = None
-        if text and sum(ch.isalpha() for ch in text) >= 40:
-            verdict = RU if is_cyrillic_text(text) >= 0.3 else OTHER
-        elif is_cyrillic_text(_bare_title(row.get("title") or "")) >= 0.3:
+        if verdict_of is not None:
+            verdict = verdict_of(path)
+        else:
+            verdict = text_verdict(lyrics(path) if lyrics else "")
+        if verdict is None and is_cyrillic_text(_bare_title(row.get("title") or "")) >= 0.3:
             verdict = RU
         own[path] = verdict
         for artist in _artists(row):
@@ -397,10 +419,41 @@ class _Ctx:
     focus: list[str]
     # Артист → {облако: сколько его треков там}; для треков без звучания.
     artist_clouds: dict[str, dict[int, int]] = field(default_factory=dict)
+    # Разобранное один раз на очередь: участники, альбом и расстояние до якоря
+    # спрашиваются тысячи раз за сборку (профиль 24.11.2026: половина времени).
+    _artist_memo: dict[str, list[str]] = field(default_factory=dict)
+    _artist_set_memo: dict[str, frozenset[str]] = field(default_factory=dict)
+    _album_memo: dict[str, str] = field(default_factory=dict)
+    _distance_memo: dict[tuple[str, str], float] = field(default_factory=dict)
+
+    def artists_of(self, path: str) -> list[str]:
+        found = self._artist_memo.get(path)
+        if found is None:
+            found = self._artist_memo[path] = _artists(self.meta.get(path, {}))
+        return found
+
+    def artist_set(self, path: str) -> frozenset[str]:
+        found = self._artist_set_memo.get(path)
+        if found is None:
+            found = self._artist_set_memo[path] = frozenset(self.artists_of(path))
+        return found
+
+    def album_of(self, path: str) -> str:
+        found = self._album_memo.get(path)
+        if found is None:
+            found = self._album_memo[path] = _album(self.meta.get(path, {}))
+        return found
 
 
 def distance(ctx: _Ctx, path: str, anchor: str) -> float:
     """Расстояние трека до якоря блока (см. WEIGHTS)."""
+    known = ctx._distance_memo.get((path, anchor))
+    if known is None:
+        known = ctx._distance_memo[(path, anchor)] = _distance(ctx, path, anchor)
+    return known
+
+
+def _distance(ctx: _Ctx, path: str, anchor: str) -> float:
     space = ctx.space
     i, j = space.index.get(path), space.index.get(anchor)
     if i is not None and j is not None:
@@ -410,8 +463,8 @@ def distance(ctx: _Ctx, path: str, anchor: str) -> float:
     else:
         # Без звучания (новый, ещё не посчитанный трек) — «не знаем»: середина.
         sound, energy, language = 1.0, 0.5, 0.5
-    artists_a = _artists(ctx.meta.get(path, {}))
-    artists_b = _artists(ctx.meta.get(anchor, {}))
+    artists_a = ctx.artists_of(path)
+    artists_b = ctx.artists_of(anchor)
     artist = 1.0 - ctx.artist_sim(artists_a, artists_b)
     first, second = ctx.tracks.get(path), ctx.tracks.get(anchor)
     tempo_gap = shuffle.tempo_distance(
@@ -435,7 +488,7 @@ def _standing(ctx: _Ctx, path: str) -> float:
     weight *= ctx.taste.get(path, 1.0)
     if ctx.focus:
         # Радио: похожесть на артиста станции.
-        weight *= 0.3 + ctx.artist_sim(_artists(ctx.meta.get(path, {})), ctx.focus)
+        weight *= 0.3 + ctx.artist_sim(ctx.artists_of(path), ctx.focus)
     return weight
 
 
@@ -449,18 +502,17 @@ def _wave(ctx: _Ctx, path: str, position: int, phase: float) -> float:
 
 def _blocked(ctx: _Ctx, path: str, queue: list[str], strict: int) -> bool:
     """Нарушает ли ``path`` разнос артиста (strict ≥ 1) и альбома (strict ≥ 2)."""
-    meta = ctx.meta.get(path, {})
     if strict >= 1:
-        mine = set(_artists(meta))
+        mine = ctx.artist_set(path)
         if mine:
             for other in queue[-(ARTIST_GAP - 1) :]:
-                if mine & set(_artists(ctx.meta.get(other, {}))):
+                if mine & ctx.artist_set(other):
                     return True
     if strict >= 2:
-        album = _album(meta)
+        album = ctx.album_of(path)
         if album:
             for other in queue[-(ALBUM_GAP - 1) :]:
-                if _album(ctx.meta.get(other, {})) == album:
+                if ctx.album_of(other) == album:
                     return True
     return False
 
@@ -505,7 +557,7 @@ def _home_cloud(ctx: _Ctx, path: str) -> int | None:
         return cloud
     # Без звучания — облако, где больше всего треков того же артиста.
     votes: dict[int, int] = {}
-    for artist in _artists(ctx.meta.get(path, {})):
+    for artist in ctx.artists_of(path):
         for c, n in ctx.artist_clouds.get(artist, {}).items():
             votes[c] = votes.get(c, 0) + n
     return max(sorted(votes), key=lambda c: votes[c]) if votes else None
@@ -770,7 +822,7 @@ def load_space(index_rows: list[dict]) -> Space | None:
 
 
 def _build_from_db(index_rows: list[dict], present: set[str]) -> Space | None:
-    from . import db, lyrics
+    from . import db
 
     rows = [
         row
@@ -780,14 +832,40 @@ def _build_from_db(index_rows: list[dict], present: set[str]) -> Space | None:
         )
         if row["path"] in present
     ]
-    language_of = languages(index_rows, lyrics.plain_text)
+    language_of = languages(index_rows, verdict_of=_lyrics_verdict)
     return build_space(rows, language_of)
+
+
+# Язык по тексту песни — по отпечатку файла кэша текстов: пересборка после
+# каждого нового трека читала все ~1650 файлов и считала в них буквы заново
+# (2,2 с из 2,6 с сборки, замер 24.11.2026). Файл не менялся — вывод тот же.
+_TEXTS: dict[str, tuple[int, str | None]] = {}
+_TEXTS_LOCK = threading.Lock()
+
+
+def _lyrics_verdict(rel_path: str) -> str | None:
+    from . import lyrics
+
+    try:
+        stamp = lyrics._key(rel_path).stat().st_mtime_ns
+    except OSError:
+        stamp = -1
+    with _TEXTS_LOCK:
+        known = _TEXTS.get(rel_path)
+    if known is not None and known[0] == stamp:
+        return known[1]
+    verdict = text_verdict(lyrics.plain_text(rel_path)) if stamp != -1 else None
+    with _TEXTS_LOCK:
+        _TEXTS[rel_path] = (stamp, verdict)
+    return verdict
 
 
 def forget() -> None:
     with _CACHE_LOCK:
         _CACHE["key"] = None
         _CACHE["space"] = None
+    with _TEXTS_LOCK:
+        _TEXTS.clear()
 
 
 # ---------------------------------------------------------------------------

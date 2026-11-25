@@ -14,6 +14,7 @@ import hashlib
 import logging
 import subprocess
 import threading
+import time
 from contextlib import suppress
 from pathlib import Path
 from typing import Literal, overload
@@ -125,6 +126,29 @@ def cover(path: Path, size: int, make: bool = True) -> tuple[bytes, str] | str |
         except OSError:
             return LATER
     return shrink(art, size)
+
+
+# Миниатюра под хешем картинки: замена обложки оставляла старые навсегда
+# (94 МБ на 24.11.2026). Живые читаются каждую ночь (prepare_library) и при
+# показе — atime (relatime: раз в сутки) у них свежий. Удалённая по ошибке
+# просто сделается заново при следующем показе.
+THUMB_KEEP_DAYS = 90
+
+
+def prune(now: float | None = None) -> int:
+    """Удалить миниатюры, которых не читали ``THUMB_KEEP_DAYS`` дней."""
+    cutoff = (time.time() if now is None else now) - THUMB_KEEP_DAYS * 24 * 3600
+    removed = 0
+    for file in runtime.THUMB_DIR.glob("*.jpg"):
+        try:
+            st = file.stat()
+        except OSError:
+            continue
+        if max(st.st_atime, st.st_mtime) < cutoff:
+            with suppress(OSError):
+                file.unlink()
+                removed += 1
+    return removed
 
 
 def prepare(path: Path) -> None:

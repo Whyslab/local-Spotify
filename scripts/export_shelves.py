@@ -54,6 +54,7 @@ def main() -> int:
         print(f"Миниатюры: просмотрено треков {thumbs.prepare_library(config.LIBRARY)}", flush=True)
         new_releases(library, releases)
         weekly_selection(library, weekly)
+        warm_similar(library)
         return 0
 
     report = shelves.export()
@@ -77,6 +78,7 @@ def main() -> int:
     print(f"Миниатюры: просмотрено треков {thumbs.prepare_library(config.LIBRARY)}", flush=True)
     new_releases(library, releases)
     weekly_selection(library, weekly)
+    warm_similar(library)
     # Ни одной записанной полки — это уже неисправность, а не «просто нечего
     # показывать»: таймер должен пожаловаться в журнал, иначе подборки будут
     # молча стареть.
@@ -102,6 +104,24 @@ def new_releases(library, releases) -> None:
         f"новых {len(report['new'])}"
         + (f", отдано в скачивание {sent}" if sent else "")
         + ("" if report["complete"] else " — Deezer перестал отвечать, проход неполный"),
+        flush=True,
+    )
+
+
+def warm_similar(library) -> None:
+    """Похожие артисты и их популярные треки — в кэш заранее (outside.warm_cache):
+    умное перемешивание тогда не ждёт Deezer днём. Последним: релизы и подборка
+    недели важнее, а прогрев доделает следующая ночь."""
+    from adder import outside
+
+    try:
+        report = outside.warm_cache(library.library_index())
+    except Exception as exc:  # noqa: BLE001 — сеть, диск
+        print(f"Похожие артисты: не вышло ({exc})", flush=True)
+        return
+    print(
+        f"Похожие артисты: спрошено {report['asked']}, без ответа {report['failed']}"
+        + ("" if report["complete"] else " — не всё, доделаю следующей ночью"),
         flush=True,
     )
 

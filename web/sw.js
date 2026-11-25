@@ -10,8 +10,9 @@
  *    и без сети, и с ней (зачем качать второй раз). <audio> просит файл
  *    кусками (Range), и айфон без честного ответа 206 на кусок не играет
  *    вовсе — поэтому куски режутся здесь.
- * 3. Списки (фонотека, подборки, главная, обложки, тексты) — сначала сеть,
- *    без неё — то, что пришло в последний раз.
+ * 3. Списки (фонотека, подборки, главная, тексты) — сначала сеть, без неё —
+ *    то, что пришло в последний раз. Обложки — сеть, без неё — копия
+ *    скачанного трека.
  *
  * Скачивает и удаляет треки страница (offline.js), здесь их только отдают.
  * Имена хранилищ общие с offline.js.
@@ -24,6 +25,14 @@ const META = "offline-meta-v1";
 const COVERS = "offline-covers-v1";   // обложки скачанных треков — их не вытесняет API_MAX
 const KNOWN = [SHELL, API, AUDIO, META, COVERS];
 const NETWORK_TIMEOUT_MS = 6000;
+/* Списки первого экрана (главная, подборки) — при копии на телефоне
+ * ждём сеть меньше: проснувшийся туннель Tailscale молчит секундами, и
+ * первый экран ждал все 6 с (журнал 24.11: dom@3432 → ready@9573). Чтение
+ * перед правкой подборки ждёт полные 6 с (см. fetch ниже). */
+const LIST_TIMEOUT_MS = 2500;
+/* Фонотеки здесь нет: её копию страница рисует сама (app.js) и ждёт от сети
+ * именно свежий ответ, чтобы заменить им копию. */
+const FIRST_SCREEN = [/^\/api\/playlists$/, /^\/api\/playlists\/[^/]+\/tracks$/, /^\/api\/home$/];
 /* Сама страница ждёт сеть недолго: запуск с иконки — это чёрный экран, пока
  * она не пришла, а туннель Tailscale после сна просыпается секундами (видео
  * 23.10: 2–4 с). Не успела — сохранённая копия, а свежая всё равно ложится в
@@ -109,7 +118,16 @@ self.addEventListener("fetch", (event) => {
     } else if (REMEMBERED.some((re) => re.test(url.pathname))) {
         // Поиск по фонотеке не помнится: каждое нажатие клавиши — своя запись.
         const search = url.pathname === "/api/library" && (url.searchParams.get("q") || "") !== "";
-        event.respondWith(search ? fetch(request) : networkFirst(event, request, API, false));
+        /* X-Fresh — чтение перед правкой подборки (player.js): ему нужна
+         * свежая ревизия, а не быстрая копия, иначе запись получит 409.
+         * Свой заголовок, а не request.cache: его WebKit точно передаёт. */
+        const quick = request.headers.get("X-Fresh") !== "1" && FIRST_SCREEN.some((re) => re.test(url.pathname));
+        const wait = quick ? LIST_TIMEOUT_MS : NETWORK_TIMEOUT_MS;
+        /* Обложка не запоминается в API: каждая смена трека писала её туда и
+         * раз в 50 записей обходила 1500 ключей — очередь хранилища, в которой
+         * стояли списки. Без сети обложка скачанного трека есть в COVERS. */
+        const store = url.pathname === "/api/cover" ? null : API;
+        event.respondWith(search ? fetch(request) : networkFirst(event, request, store, false, wait));
     }
 });
 
@@ -185,19 +203,26 @@ function withTimeout(promise, ms) {
 
 /* Сеть, а при удаче — копия в хранилище. Без сети, при ответе «сервер
  * недоступен» (502–504: так отвечает Tailscale, когда компьютер спит) или
- * если сеть молчит дольше NETWORK_TIMEOUT_MS — последняя копия. Ждать
- * дольше таймаута стоит, когда копии нет: тексты песен сервер ищет до 16 с,
- * и обрыв на 6-й превращал медленный ответ в ошибку. Ответ с ошибкой (401
+ * если сеть молчит дольше таймаута — последняя копия. Ждать дольше
+ * таймаута стоит, когда копии нет: тексты песен сервер ищет до 16 с, и
+ * обрыв на 6-й превращал медленный ответ в ошибку. Ответ с ошибкой (401
  * после смены токена, 500) не сохраняется и не подменяется старой копией:
- * страница должна увидеть, что что-то не так. */
+ * страница должна увидеть, что что-то не так.
+ *
+ * Хранилище — только когда сеть не ответила. Раньше копия искалась до
+ * ответа сети, на каждом запросе: на айфоне со скачанными подборками
+ * (3,5 ГБ в Cache API) первое обращение к хранилищу после запуска стоит
+ * секунды — сервер ответил за 44 мс, а страница начала читаться на 2,5-й
+ * секунде (журнал 24.11.2026). Пока сеть отвечает, хранилище не ждём. */
 async function networkFirst(event, request, cacheName, dropOldVersions, timeoutMs = NETWORK_TIMEOUT_MS) {
+    const started = Date.now();
     const network = fetch(request);
     /* Копия пишется после ответа, а не до него: страница ждала запись в
      * хранилище (и обход старых версий) на каждом списке. waitUntil держит
      * worker живым, пока запись не кончится. Копия снимается раньше, чем
      * страница начнёт читать ответ: этот обработчик стоит в очереди первым. */
     const saved = network.then((response) => {
-        if (response.ok && response.status === 200) {
+        if (cacheName && response.ok && response.status === 200) {
             return remember(cacheName, request, response.clone(), dropOldVersions);
         }
         return undefined;
@@ -206,16 +231,80 @@ async function networkFirst(event, request, cacheName, dropOldVersions, timeoutM
      * пока ответ странице не отдан, но если браузер строже — запись всё равно
      * идёт, а ответ странице не должен из-за этого сорваться. */
     try { event.waitUntil(saved); } catch (e) { /* см. выше */ }
-    // Копия ищется во всех хранилищах: обложка скачанного трека лежит в COVERS.
-    const cached = await caches.match(request);
-    if (!cached) return network;
+    let early = null;
     try {
-        const response = await withTimeout(network, timeoutMs);
-        return SERVER_DOWN.has(response.status) ? cached : response;
-    } catch (error) {
-        return cached;
+        early = await withTimeout(network, timeoutMs);
+        if (!SERVER_DOWN.has(early.status)) {
+            note(request, started, "net");
+            return early;
+        }
+    } catch (error) { /* сеть молчит или её нет — к копии */ }
+    /* Сеть не успела — что раньше: копия или всё-таки сеть. Поиск копии на
+     * айфоне бывает секундами, и пришедший за это время свежий ответ лучше
+     * старой копии. */
+    const late = early ? Promise.resolve(undefined)
+        : network.then((r) => (SERVER_DOWN.has(r.status) ? undefined : r), () => undefined);
+    const found = await firstFound([
+        findCopy(request, cacheName).then((c) => c && { copy: c }),
+        late.then((r) => r && { fresh: r }),
+    ]).catch(() => null);
+    if (found && found.fresh) {
+        note(request, started, "late");
+        return found.fresh;
     }
+    if (found) {
+        note(request, started, early ? "down" : "copy");
+        return cacheName === API ? markedCopy(found.copy) : found.copy;
+    }
+    // Копии нет — ждём сеть сколько потребуется (или отдаём её 502–504).
+    note(request, started, "wait");
+    return early || network;
 }
+
+/* Список из копии — с пометкой: страница (app.js) не считает такую главную
+ * свежей и перечитывает её, когда сеть проснётся. */
+async function markedCopy(copy) {
+    const headers = new Headers(copy.headers);
+    headers.set("X-Saved-Copy", "1");
+    /* blob, а не поток copy.body: поток из Cache API в конструкторе — то, в чём
+     * WebKit мог бы отказать, и тогда без сети вместо копии была бы ошибка. */
+    return new Response(await copy.blob(), { status: copy.status, statusText: copy.statusText, headers });
+}
+
+/* Копия — в своём хранилище; обложка скачанного трека лежит ещё и в COVERS
+ * (её не вытесняет API_MAX). Остальные хранилища — скачанный звук — не
+ * трогаем: их обход на айфоне и стоил секунд. */
+const WITH_DOWNLOADS = new Set(["/api/cover", "/api/lyrics"]);
+
+async function findCopy(request, cacheName) {
+    try {
+        const own = cacheName ? await (await caches.open(cacheName)).match(request) : undefined;
+        if (own) return own;
+        // Обложки и тексты скачанных треков offline.js кладёт в COVERS: без
+        // сети они должны найтись, даже если онлайн этот текст не открывали.
+        if (WITH_DOWNLOADS.has(new URL(request.url).pathname)) {
+            return await (await caches.open(COVERS)).match(request);
+        }
+    } catch (e) { /* хранилище недоступно — как будто копии нет */ }
+    return undefined;
+}
+
+/* Как ответили страница и её первые запросы: страница спросит это при
+ * запуске и допишет в строку «startup» журнала (app.js) — так видно, ждали ли
+ * сеть или хранилище. Только первые NOTES_MAX за жизнь worker'а. */
+const NOTES_MAX = 12;
+const notes = [];
+function note(request, started, how) {
+    if (notes.length >= NOTES_MAX) return;
+    const path = new URL(request.url).pathname;
+    const name = path === "/" ? "page" : path.replace(/^\/(api|static)\//, "").split("/")[0].slice(0, 9);
+    notes.push(`${name}:${how}${Date.now() - started}`);
+}
+
+self.addEventListener("message", (event) => {
+    if (event.data !== "sw-notes" || !event.ports || !event.ports[0]) return;
+    event.ports[0].postMessage(notes.join(","));
+});
 
 async function remember(cacheName, request, copy, dropOldVersions) {
     const cache = await caches.open(cacheName);
@@ -227,18 +316,73 @@ async function remember(cacheName, request, copy, dropOldVersions) {
     if (cacheName === API && apiPuts++ % TRIM_EVERY === 0) await trimCache(cache, API_MAX);
 }
 
-/* Файл с отпечатком: копия есть — она и есть ответ, сеть не нужна. */
+/* Файл с отпечатком: копия есть — она и есть ответ, сеть не нужна. Но копии
+ * даётся только COPY_HEAD_START_MS форы: на айфоне первое обращение к
+ * хранилищу после запуска бывает секундами (см. networkFirst), и тогда
+ * файлы страницы идут по сети — что придёт раньше, то и ответ.
+ *
+ * Сеть в этой гонке считается, только если сервер подтвердил отпечаток
+ * (immutable, StaticCaching в app.py): после выкатки старый ?v= приходит с
+ * новым содержимым и no-cache — взяв его, страница собралась бы из файлов
+ * разных версий, а запись под старым ключом стёрла бы новую копию. */
+const COPY_HEAD_START_MS = 300;
 async function cacheFirst(event, request) {
-    const cached = await caches.match(request);
-    return cached || networkFirst(event, request, SHELL, true);
+    const started = Date.now();
+    const copy = findCopy(request, SHELL);
+    const quick = await Promise.race([copy, sleep(COPY_HEAD_START_MS).then(() => undefined)]);
+    if (quick) return quick;
+    const raw = fetch(request);
+    const confirmed = raw.then((response) => {
+        if (!isConfirmedVersion(response)) return undefined;
+        const kept = response.clone();
+        try { event.waitUntil(remember(SHELL, request, kept, true)); } catch (e) { /* без копии */ }
+        return response;
+    }, () => undefined);
+    const winner = await firstFound([copy, confirmed]).catch(() => undefined);
+    if (winner) {
+        note(request, started, "slow");
+        return winner;
+    }
+    /* Ни копии, ни подтверждённой версии — сеть как есть, но не в хранилище. */
+    note(request, started, "wait");
+    return raw;
+}
+
+function isConfirmedVersion(response) {
+    return response.status === 200 && /immutable/.test(response.headers.get("Cache-Control") || "");
+}
+
+function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+
+/* Первый из обещанных ответов, который есть (не пустой и не ошибка). */
+function firstFound(promises) {
+    return new Promise((resolve, reject) => {
+        let left = promises.length;
+        const miss = () => { if (--left === 0) reject(new Error("nothing")); };
+        for (const promise of promises) {
+            promise.then((value) => (value ? resolve(value) : miss()), miss);
+        }
+    });
 }
 
 /* Старые записи — первыми: Cache API хранит их в порядке добавления. */
 async function trimCache(cache, max) {
     try {
-        const keys = await cache.keys();
-        for (let i = 0; i < keys.length - max; i++) await cache.delete(keys[i]);
+        const all = await cache.keys();
+        /* Обложки в API больше не пишутся (см. fetch) — старые убираются здесь
+         * же, обход ключей всё равно сделан. */
+        const covers = [], keys = [];
+        for (const key of all) (new URL(key.url).pathname === "/api/cover" ? covers : keys).push(key);
+        await deleteAll(cache, covers.concat(keys.slice(0, Math.max(0, keys.length - max))));
     } catch (e) { /* не страшно */ }
+}
+
+/* Пачками, а не по одному: старых обложек в API на айфоне — тысячи, а
+ * каждое обращение к Cache API там небыстрое. */
+async function deleteAll(cache, keys) {
+    for (let i = 0; i < keys.length; i += 50) {
+        await Promise.all(keys.slice(i, i + 50).map(key => cache.delete(key)));
+    }
 }
 
 /* /static/app.js?v=… после каждой новой версии — другой адрес. Старые

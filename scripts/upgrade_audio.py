@@ -268,7 +268,7 @@ def csv_links(path: Path) -> dict[tuple[str, str], str]:
 
 
 def make_client():
-    import yt_dlp  # type: ignore[import-untyped]
+    import yt_dlp
 
     options: dict = {
         "quiet": True,

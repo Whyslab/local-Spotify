@@ -8,13 +8,16 @@ the awkward case and most of this file is about it.
 import json
 import logging
 import re
+import threading
+import time
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
 import requests
 
-from . import enrich, ingest, studio
+from . import config, enrich, ingest, runtime, studio
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +66,30 @@ def _normalise(text: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+# Тот же запрос в ближайшие минуты — из памяти: человек листает выдачу,
+# возвращается назад, поправляет одну букву и стирает её.
+SEARCH_CACHE_SECONDS = 600
+# Поиск внутри службы дольше этого не ждём: зависшее соединение (дома ломается
+# IPv6) держало бы запрос минутами, а отдельный процесс снимается по своему
+# сроку и при остановке службы.
+IN_PROCESS_SECONDS = 12
+# Между поисками внутри службы — не меньше секунды: импорт подборки ищет трек
+# за треком, и без процесса (3 с на запуск) запросы шли бы к YouTube втрое
+# чаще. Как --sleep-requests 1 в ~/.config/yt-dlp/config у отдельного процесса.
+SEARCH_GAP_SECONDS = 1.0
+_search_gap_lock = threading.Lock()
+_last_search = [0.0]
+
+
+class _RateLimited(Exception):
+    """YouTube ответил 429: отдельным процессом спрашивать незачем."""
+
+
+SEARCH_CACHE_MAX = 200
+_search_cache: dict[tuple[str, int], tuple[float, list[dict]]] = {}
+_search_cache_lock = threading.Lock()
+
+
 def search_youtube(query: str, limit: int = 8) -> list[dict]:
     """Search YouTube and return what was found, without downloading anything.
 
@@ -73,33 +100,36 @@ def search_youtube(query: str, limit: int = 8) -> list[dict]:
     query = (query or "").strip()
     if not query:
         return []
+    key = (query.lower(), limit)
+    with _search_cache_lock:
+        hit = _search_cache.get(key)
+    if hit is not None and time.monotonic() - hit[0] < SEARCH_CACHE_SECONDS:
+        return [dict(row) for row in hit[1]]
 
     # Студийные записи YouTube Music — первыми и с пометкой (канал «YouTube
     # Music · студийная · 18+»): выбирает человек, но лучшее у него перед
     # глазами. Только те, где в запросе есть и артист, и название: иначе на
     # «Монеточка» первыми встали бы чужие песни.
-    studio_first = [
-        studio.as_search_result(song) for song in studio.search_query(query, limit=STUDIO_RESULTS)
-    ]
+    # Оба поиска — разом: по очереди это было 0,8 + 3 с (замер 24.11.2026).
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="studio-search") as pool:
+        studio_future = pool.submit(studio.search_query, query, limit=STUDIO_RESULTS)
+        entries, error = _youtube_entries(query, limit)
+        try:
+            studio_songs = studio_future.result()
+            studio_ok = True
+        except Exception as exc:  # noqa: BLE001 — студийные — дополнение к выдаче
+            logger.info("Студийные для «%s» не нашлись: %s", query, exc)
+            studio_songs, studio_ok = [], False
+    studio_first = [studio.as_search_result(song) for song in studio_songs]
     seen = {row["url"].rsplit("=", 1)[-1] for row in studio_first}
 
-    result = ingest.run_yt_dlp(
-        [
-            *ingest.ytdlp_base(),
-            "-J",
-            "--flat-playlist",
-            f"ytsearch{max(1, min(limit, 20))}:{query}",
-        ],
-        timeout=90,
-    )
-    if result.returncode != 0:
+    if entries is None:
         if studio_first:
             return studio_first
-        raise RuntimeError(ingest.ytdlp_error(result.stderr))
+        raise RuntimeError(error)
 
-    payload = json.loads(result.stdout or "{}")
     found = list(studio_first)
-    for entry in payload.get("entries") or []:
+    for entry in entries:
         video_id = entry.get("id")
         if not video_id or video_id in seen:
             continue
@@ -111,7 +141,103 @@ def search_youtube(query: str, limit: int = 8) -> list[dict]:
                 "duration": entry.get("duration"),
             }
         )
+    # Урезанную выдачу (студийный поиск упал) и пустую не запоминаем: через
+    # минуту человек спросит снова и должен получить полную.
+    if studio_ok and found:
+        with _search_cache_lock:
+            if len(_search_cache) >= SEARCH_CACHE_MAX:
+                _search_cache.clear()
+            _search_cache[key] = (time.monotonic(), [dict(row) for row in found])
     return found
+
+
+def _youtube_entries(query: str, limit: int) -> tuple[list[dict] | None, str]:
+    """Строки выдачи YouTube или (None, причина сбоя)."""
+    count = max(1, min(limit, 20))
+    if not config.COOKIES_FROM_BROWSER:
+        try:
+            entries = _search_in_process(query, count)
+        except _RateLimited as exc:
+            # Пауза для всех вызовов yt-dlp, как у очереди загрузок: следующий
+            # поиск пойдёт в run_yt_dlp, а тот её честно выждет.
+            runtime.pause_youtube(config.RATE_LIMIT_BACKOFF)
+            return None, str(exc)
+        if entries is not None:
+            return entries, ""
+    result = ingest.run_yt_dlp(
+        [*ingest.ytdlp_base(), "-J", "--flat-playlist", f"ytsearch{count}:{query}"],
+        timeout=90,
+    )
+    if result.returncode != 0:
+        return None, ingest.ytdlp_error(result.stderr)
+    payload = json.loads(result.stdout or "{}")
+    return list(payload.get("entries") or []), ""
+
+
+def _search_in_process(query: str, count: int) -> list[dict] | None:
+    """Поиск yt-dlp внутри службы, без нового процесса: 0,8–1,2 с вместо 3
+    (запуск Python и импорт всех разборщиков каждый раз — замер 24.11.2026).
+
+    None — «не вышло, спроси отдельным процессом»: при паузе YouTube (её
+    честно выждет run_yt_dlp), при любой ошибке и при cookies из браузера
+    (они настроены только для командной строки). Отдельный процесс остаётся
+    и запасом на случай, когда загруженный в память yt-dlp устарел, а
+    music-ytdlp-update уже поставил новый.
+    """
+    if runtime.youtube_pause_left():
+        return None
+    answer: dict = {}
+
+    def ask() -> None:
+        try:
+            import yt_dlp
+
+            runtime.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            options = {
+                "quiet": True,
+                "no_warnings": True,
+                "noprogress": True,
+                "extract_flat": True,
+                "skip_download": True,
+                "socket_timeout": 10,
+                "extractor_retries": 1,
+                # ~/.config/yt-dlp/config сюда не читается: --force-ipv4 оттуда
+                # (IPv6 дома ломается, и yt-dlp молча висит) — здесь.
+                "source_address": "0.0.0.0",
+                # Тот же кэш, что у отдельного процесса (ingest.ytdlp_env).
+                "cachedir": str(runtime.CACHE_DIR / "yt-dlp"),
+            }
+            with yt_dlp.YoutubeDL(options) as ydl:
+                answer["info"] = ydl.extract_info(f"ytsearch{count}:{query}", download=False)
+        except Exception as exc:  # noqa: BLE001 — запасной путь в _youtube_entries
+            answer["error"] = exc
+
+    # Свой поток-демон, а не пул: зависший поиск не держит ни этот запрос
+    # дольше срока, ни остановку службы (пул ждал бы его на выходе).
+    with _search_gap_lock:
+        wait = _last_search[0] + SEARCH_GAP_SECONDS - time.monotonic()
+        _last_search[0] = time.monotonic() + max(0.0, wait)
+    if wait > 0 and runtime.shutdown_event.wait(wait):
+        return None
+    worker = threading.Thread(target=ask, name="yt-search", daemon=True)
+    worker.start()
+    deadline = time.monotonic() + IN_PROCESS_SECONDS
+    while worker.is_alive() and time.monotonic() < deadline:
+        if runtime.shutdown_event.is_set():
+            return None
+        worker.join(0.2)
+    if worker.is_alive():
+        logger.info("Поиск YouTube в процессе завис — отдельным процессом")
+        return None
+    info = answer.get("info")
+    if "error" in answer and ingest.classify_error(str(answer["error"])) == "rate_limited":
+        raise _RateLimited(str(answer["error"]))
+    if "error" in answer or not isinstance(info, dict):
+        logger.info(
+            "Поиск YouTube в процессе не вышел (%s) — отдельным процессом", answer.get("error")
+        )
+        return None
+    return [entry for entry in info.get("entries") or [] if isinstance(entry, dict)]
 
 
 def youtube_playlist(url: str) -> list[str]:

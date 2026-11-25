@@ -16,6 +16,7 @@ already in it that are one song under two names — «Кайен» and «Кай�
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import re
@@ -188,14 +189,30 @@ def _artists(row: dict) -> list[str]:
     return names
 
 
-def _artist_keys(row: dict) -> set[str]:
-    return {_fold(name) for name in _artists(row)} - {""}
+def _artist_keys(row: dict) -> frozenset[str]:
+    return _artist_keys_of(row.get("artist") or "", row.get("albumartist") or "")
+
+
+# Ключи зависят только от строк тегов, а главная спрашивала «сколько
+# одинаковых» на каждом заходе — половина её времени (профиль 24.11.2026).
+@functools.lru_cache(maxsize=8192)
+def _artist_keys_of(artist: str, albumartist: str) -> frozenset[str]:
+    row = {"artist": artist, "albumartist": albumartist}
+    return frozenset({_fold(name) for name in _artists(row)} - {""})
 
 
 def _title_key(row: dict) -> str:
+    return _title_key_of(
+        row.get("title") or "", row.get("artist") or "", row.get("albumartist") or ""
+    )
+
+
+@functools.lru_cache(maxsize=8192)
+def _title_key_of(raw_title: str, artist: str, albumartist: str) -> str:
+    row = {"artist": artist, "albumartist": albumartist}
     # Не lyrics.clean_title: тот режет всё после «(prod», и «Song (prod. X)
     # (Remix)» стал бы просто «Song».
-    title = _OPEN_PROD.sub("", row.get("title") or "")
+    title = _OPEN_PROD.sub("", raw_title)
     title = _TAIL.sub(_drop_junk, _JUNK.sub(_drop_junk, title))
     # «GONE.Fludd, ЛСП — Ути-Пути»: артист, попавший в название из имени ролика.
     for dash in (" — ", " – ", " - "):

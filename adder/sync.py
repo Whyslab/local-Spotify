@@ -341,9 +341,11 @@ def status() -> dict:
     with _LOCK:
         last = dict(_LAST)
     age = time.time() - float(last["at"] or 0)
+    configured = navidrome.configured()
     return {
-        "configured": navidrome.configured(),
-        "queued": navidrome.pending_count(),
+        "configured": configured,
+        # Без Navidrome очереди к нему нет — и базу на каждый /health не спрашиваем.
+        "queued": navidrome.pending_count() if configured else 0,
         "last_check_seconds_ago": int(age) if last["at"] else None,
         "last_result": last["result"],
         "last_error": last["error"],

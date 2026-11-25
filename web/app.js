@@ -41,6 +41,7 @@ let appReady = false;
 function markAppReady() {
     if (appReady) return;
     appReady = true;
+    askWorkerNotes();
     requestAnimationFrame(() => {
         performance.mark("app-ready");
         probeMark("ready");
@@ -141,7 +142,7 @@ function sendBootProbe(end) {
      * секунд ответу: большое число — это сохранённая копия из sw.js, а не сервер. */
     const detail = [
         probe.kind, end, net && "net=" + net, css && "css=" + css, js && "js=" + js,
-        storageMb && "mb=" + storageMb, ...probe.marks, skips && "skip=" + skips,
+        storageMb && "mb=" + storageMb, swNotes && "sw=" + swNotes, ...probe.marks, skips && "skip=" + skips,
         probe.age && "age=" + probe.age, probe.cv && "cv=" + probe.cv, "n=" + probe.calls,
         probe.mode && "m=" + probe.mode, probe.rows && "k=" + probe.rows,
         "v=" + (probe.view || activeView).replace(/^view/, ""),
@@ -163,6 +164,22 @@ try {
     navigator.storage?.estimate?.().then((e) => { storageMb = String(Math.round((e.usage || 0) / 1e6)); })
         .catch(() => { /* не скажет — и ладно */ });
 } catch (e) { /* старый браузер */ }
+
+/* Как service worker ответил на первые запросы (sw.js, note): page:net40 —
+ * страница по сети за 40 мс, home:copy2500 — главная копией после ожидания.
+ * Спрашиваем, когда первый экран готов (и на всякий случай через 8 с: при
+ * «timeout» готовности нет), ответ ложится в строку замера. */
+let swNotes = "";
+function askWorkerNotes() {
+    try {
+        const worker = navigator.serviceWorker?.controller;
+        if (!worker || typeof MessageChannel === "undefined") return;
+        const channel = new MessageChannel();
+        channel.port1.onmessage = (e) => { swNotes = String(e.data || "").slice(0, 110); };
+        worker.postMessage("sw-notes", [channel.port2]);
+    } catch (e) { /* старый браузер */ }
+}
+setTimeout(askWorkerNotes, 8000);
 
 startBootProbe("load");
 document.addEventListener("visibilitychange", () => {
@@ -232,7 +249,7 @@ function saveToken() {
     refresh(true);
     flushPendingPlays();  /* прослушивания, отвергнутые со старым токеном */
     flushPlaylistEdits();  /* правки подборок — тоже */
-    loadFavourites();  /* без токена Monday было не прочесть — сердце пряталось */
+    loadFavourites(true);  /* без токена Monday было не прочесть — сердце пряталось */
 }
 
 function logout() {
@@ -1370,10 +1387,15 @@ async function fillLibraryLyricHits(drawn = null) {
 /* Подборка: строка, у которой фраза есть в тексте, остаётся видна — и под ней
  * строчка, где фраза нашлась. */
 let playlistLyricTicket = 0;
+const LYRIC_HITS_PAUSE_MS = 200;
 async function markPlaylistLyricHits(needle) {
     const ticket = ++playlistLyricTicket;
     for (const quote of document.querySelectorAll("#playlistTracks .lyric-quote")) quote.remove();
     if (!needle) return;
+    /* Запрос по текстам — когда перестали печатать: строки фильтруются на
+     * каждую букву, а сервер спрашивался на каждую букву тоже. */
+    await new Promise((resolve) => setTimeout(resolve, LYRIC_HITS_PAUSE_MS));
+    if (ticket !== playlistLyricTicket) return;
     const field = document.getElementById("librarySearch");
     const data = await lyricHits(field ? field.value : needle);
     if (ticket !== playlistLyricTicket || !data.hits.length) return;
@@ -1393,10 +1415,16 @@ async function markPlaylistLyricHits(needle) {
 /* Совпадение по тексту строки целиком: в ней и название, и артист, и альбом. */
 function rowMatches(row, needle) {
     if (!needle) return true;
-    /* Строчка песни под строкой — не название: её не сравниваем. */
-    const quote = typeof row.querySelector === "function" ? row.querySelector(".lyric-quote") : null;
-    const text = quote ? row.textContent.replace(quote.textContent, "") : row.textContent;
-    return foldText(text).includes(needle);
+    /* Свёрнутый текст строки — один раз на строку: 1100 строк «Любимого» на
+     * каждую букву сворачивались заново. Строку меняет только пересборка
+     * списка, а она делает новые узлы. */
+    if (typeof row._fold !== "string") {
+        /* Строчка песни под строкой — не название: её не сравниваем. */
+        const quote = typeof row.querySelector === "function" ? row.querySelector(".lyric-quote") : null;
+        const text = quote ? row.textContent.replace(quote.textContent, "") : row.textContent;
+        row._fold = foldText(text);
+    }
+    return row._fold.includes(needle);
 }
 
 /* Строки прячем, а не пересобираем список: у каждой строки записан её номер в
@@ -1493,6 +1521,7 @@ let homeCache = null;
  * главная, открытая без сети, так и оставалась прошлой копией. */
 let homeCacheAt = 0;
 const HOME_FRESH_MS = 30 * 60 * 1000;
+const HOME_RETRY_MS = 3000;  // главная из копии — перечитать через столько
 /* Из каких данных собран экран. Главная перерисовывалась каждые три секунды
  * фоновым опросом — при одних и тех же данных, — и каждая перерисовка сбрасывала
  * листание полок вбок: пролистал ряд обложек, через пару секунд он снова в
@@ -1542,7 +1571,15 @@ async function loadHome(box, again = false) {
         const r = await fetch("/api/home", { headers: headers() });
         if (!r.ok) { if (!again) homeNote(box, "Не собралось."); return; }
         const data = await r.json();
-        homeCacheAt = Date.now();
+        /* Из копии (sw.js не дождался сети) — не свежая: перечитать, когда
+         * сеть проснётся, а не через полчаса. */
+        const saved = r.headers.get("X-Saved-Copy") === "1";
+        homeCacheAt = saved ? 0 : Date.now();
+        if (saved && !again) {
+            setTimeout(() => {
+                if (!homeLoading) homeLoading = loadHome(box, true).finally(() => { homeLoading = null; });
+            }, HOME_RETRY_MS);
+        }
         if (again && JSON.stringify(data) === JSON.stringify(homeCache)) return;
         homeCache = data;
         if (again && activeView !== "viewHome") return;  // нарисуется при заходе

@@ -287,6 +287,12 @@ def prune_play_history(days: int) -> int:
         "DELETE FROM outside_plays WHERE played_at < datetime('now', 'localtime', ?)",
         (f"-{int(days)} days",),
     )
+    # Отправленное в ListenBrainz копилось навсегда; неотправленное ждёт сети.
+    db_exec(
+        "DELETE FROM listens WHERE sent = 1"
+        " AND listened_at < CAST(strftime('%s', 'now', ?) AS INTEGER)",
+        (f"-{int(days)} days",),
+    )
     # Колоды (adder/deck.py) удалённых и переименованных подборок.
     from . import deck
 

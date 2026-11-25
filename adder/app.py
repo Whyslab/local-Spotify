@@ -799,6 +799,20 @@ def _housekeeping() -> None:
             logger.info("Pruned %d play journal entries", removed, extra={"task_id": "system"})
     except Exception as exc:
         logger.warning("Could not prune the play journal: %s", exc, extra={"task_id": "system"})
+    # Чужие треки чистились только при перемешивании и запуске: без умного
+    # неделями 300 МБ лежали до перезапуска (рецензия 24.11.2026).
+    try:
+        outside.cleanup_now_and_then()
+    except Exception as exc:
+        logger.warning("Could not clean outside tracks: %s", exc, extra={"task_id": "system"})
+    try:
+        removed = thumbs.prune()
+        if removed:
+            logger.info(
+                "Removed %d unused cover thumbnail(s)", removed, extra={"task_id": "system"}
+            )
+    except Exception as exc:
+        logger.warning("Could not prune thumbnails: %s", exc, extra={"task_id": "system"})
 
 
 def _auto_requeue_loop() -> None:
@@ -2467,7 +2481,9 @@ def _compute_mood_shelves(features: list[dict]) -> list[dict]:
 
 def _warm_home() -> None:
     try:
-        home(True)
+        # Без заготовки подборки недели: перезапуск службы, когда никто не
+        # слушает, не должен качать треки с YouTube (рецензия 24.11.2026).
+        _home_payload(prefetch=False)
     except Exception:  # noqa: BLE001 — прогрев не обязателен, первая главная посчитает сама
         logger.info("Прогрев главной не вышел", exc_info=True, extra={"task_id": "system"})
 
@@ -2480,12 +2496,17 @@ def home(authenticated: bool = Depends(verify_token)):
     список похожих артистов, и он кэшируется навсегда: соседство артистов
     меняется годами, а не днями.
     """
+    return _home_payload(prefetch=True)
+
+
+def _home_payload(prefetch: bool) -> dict:
     rows = library.library_index()
     features = db.db_query("SELECT path, tempo, energy, brightness FROM audio_features")
     picks = weekly.current()
     # Подборка — сплошь треки со стороны: первые качаются заранее, чтобы
     # «Слушать» было с чего начать (плеер не скачанное пропускает).
-    weekly.prefetch(picks["tracks"])
+    if prefetch:
+        weekly.prefetch(picks["tracks"])
 
     by_path = {row["path"]: row for row in rows}
 
@@ -3335,9 +3356,17 @@ def record_play(req: PlayRequest, authenticated: bool = Depends(verify_token)):
         logger.exception(
             "Deck: play of %s not counted", _one_line(req.path), extra={"task_id": "deck"}
         )
-    # A listen by ListenBrainz's rule is queued for sending; never fails the journal.
-    with suppress(Exception):
+    # A listen by ListenBrainz's rule is queued for sending; never fails the journal,
+    # but a lost listen is said in the log rather than dropped silently.
+    try:
         listenbrainz.queue_listen(req.path, req.played_seconds, req.duration, started)
+    except Exception:
+        logger.warning(
+            "Listen of %s not queued for ListenBrainz",
+            req.path,
+            exc_info=True,
+            extra={"task_id": "player"},
+        )
     return {"recorded": req.path}
 
 
@@ -3517,7 +3546,8 @@ def health(credentials: HTTPAuthorizationCredentials = Security(security)):
         "albums": albums,
         "playlists": len(playlists.listing()) if library_status == "ok" else 0,
         "navidrome": "configured" if navidrome.configured() else "not configured",
-        "navidrome_pending": navidrome.pending_count(),
+        # Отключён (24.11.2026) — и спрашивать базу на каждый опрос незачем.
+        "navidrome_pending": navidrome.pending_count() if navidrome.configured() else 0,
         # Что в работе прямо сейчас, а не только что ждёт своей очереди:
         # queue_size выше — это длина очереди, и пока качается единственный трек,
         # она равна нулю. Панель показывает этот список в рельсе, поэтому он

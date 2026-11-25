@@ -606,8 +606,11 @@ def _render(
     a_end = a_end_i / SR  # секунды в окне A
     b_start = b_start_i / SR  # секунды файла B
     voice = job.get("voice_b")
-    ok = isinstance(voice, (int, float)) and math.isfinite(voice)
-    voice_b = (float(voice) - b_start) if ok else None
+    # isinstance прямо в условии: так mypy видит, что voice — число (CI).
+    if isinstance(voice, (int, float)) and math.isfinite(voice):
+        voice_b: float | None = float(voice) - b_start
+    else:
+        voice_b = None
     if voice_b is not None and voice_b < 0:
         voice_b = 0.0
     b_body = b[b_start_i:]
