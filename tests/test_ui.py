@@ -541,6 +541,17 @@ def test_the_transition_choices_stand_one_per_line(page):
     page.evaluate("closeFadeMenu()")
 
 
+def _why_no_text(locator):
+    """Почему inner_text пуст: на CI 25.11 три проверки так падали, а локально
+    нет. Подозрение — content-visibility: auto у строк .rows."""
+    return locator.evaluate(
+        """(el) => { const row = el.closest('.track') || el; const box = row.getBoundingClientRect();
+            return { text: el.textContent, inner: el.innerText,
+                cv: getComputedStyle(row).contentVisibility, top: Math.round(box.top),
+                height: Math.round(box.height), viewport: innerHeight }; }"""
+    )
+
+
 def _controlled_by_worker(page):
     page.evaluate("navigator.serviceWorker.ready.then(() => true)")
     if not page.evaluate("!!navigator.serviceWorker.controller"):
@@ -6052,7 +6063,12 @@ def test_stats_screen_shows_time_tops_and_bars_for_each_period(page):
         page.wait_for_function("document.querySelectorAll('#statsBody .stats-col').length === 12")
         assert page.locator("#statsBody .stats-sub").inner_text() == "5 прослушиваний"
         evil = page.locator("#statsBody .stats-tracks .track").filter(has_text="onerror")
-        assert evil.locator(".track-title").inner_text() == XSS_TITLE
+        # На CI 25.11 inner_text здесь был пуст, локально — нет. Строка вне
+        # экрана не разложена (content-visibility: auto): ждём, пока она встанет
+        # на место, и показываем её; не поможет — _why_no_text скажет, в чём дело.
+        evil.scroll_into_view_if_needed()
+        title = evil.locator(".track-title")
+        assert title.inner_text() == XSS_TITLE, _why_no_text(title)
         assert page.evaluate("window.pwned") is None
 
         # Трек играет с себя, по списку первых; артист открывает свою страницу.
@@ -6956,7 +6972,9 @@ def test_a_smart_queue_from_a_page_is_honest_about_itself(page):
     page.evaluate("toggleQueuePanel()")
     rows = page.locator("#playQueueRows .queue-row")
     rows.nth(2).wait_for()
-    assert rows.nth(1).locator(".queue-outside").inner_text() == "не в фонотеке"
+    rows.nth(1).scroll_into_view_if_needed()  # content-visibility: auto, см. выше
+    outside = rows.nth(1).locator(".queue-outside")
+    assert outside.inner_text() == "не в фонотеке", _why_no_text(outside)
     assert rows.nth(1).locator(".queue-keep").inner_text() == "+ в фонотеку"
     assert rows.nth(2).locator(".queue-outside").inner_text() == "не из подборки"
 
@@ -7219,7 +7237,8 @@ def test_on_a_phone_the_queue_keeps_whole_titles_for_outside_tracks(server, brow
         rows = phone.locator("#playQueueRows .queue-row")
         rows.nth(2).wait_for()
         keep = rows.nth(1).locator(".queue-keep")
-        assert keep.inner_text() == "+"
+        rows.nth(1).scroll_into_view_if_needed()  # content-visibility: auto
+        assert keep.inner_text() == "+", _why_no_text(keep)
         assert "фонотеку" in (keep.get_attribute("aria-label") or "")
         assert rows.nth(1).locator(".track-title .queue-outside").count() == 0
         assert rows.nth(1).locator(".track-artist .queue-outside").inner_text() == "не в фонотеке"
